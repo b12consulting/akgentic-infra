@@ -33,3 +33,31 @@ class TeamListResponse(BaseModel):
     """Response body for GET /teams."""
 
     teams: list[TeamResponse] = Field(description="List of team metadata entries")
+
+
+class SendMessageRequest(BaseModel):
+    """Request body for POST /teams/{team_id}/message."""
+
+    content: str = Field(description="Message content to send to the team")
+
+
+class HumanInputRequest(BaseModel):
+    """Request body for POST /teams/{team_id}/human-input."""
+
+    content: str = Field(description="Human response content")
+    message_id: str = Field(description="ID of the original message being answered")
+
+
+class EventResponse(BaseModel):
+    """Serialized form of a PersistedEvent."""
+
+    team_id: uuid.UUID = Field(description="Team instance this event belongs to")
+    sequence: int = Field(description="Monotonically increasing event sequence number")
+    event: dict[str, object] = Field(description="Serialized event payload")
+    timestamp: datetime = Field(description="Timestamp when the event was persisted")
+
+
+class EventListResponse(BaseModel):
+    """Response body for GET /teams/{team_id}/events."""
+
+    events: list[EventResponse] = Field(description="List of persisted events")

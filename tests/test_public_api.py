@@ -68,6 +68,8 @@ def test_infra_all_includes_server_app_and_models() -> None:
     expected = (
         "create_app", "CreateTeamRequest", "TeamResponse",
         "TeamListResponse", "TeamService",
+        "SendMessageRequest", "HumanInputRequest",
+        "EventResponse", "EventListResponse",
     )
     for name in expected:
         assert name in infra.__all__, f"Missing export: {name}"
