@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import cast
+from typing import NoReturn, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -140,7 +140,6 @@ def restore_team(
         process = service.restore_team(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
-        raise  # unreachable, satisfies type checker
     return _process_to_response(process)
 
 
@@ -167,13 +166,13 @@ def get_events(
     )
 
 
-def _raise_action_error(exc: ValueError) -> None:
+def _raise_action_error(exc: ValueError) -> NoReturn:
     """Map ValueError messages to appropriate HTTP status codes.
 
     Raises:
-        HTTPException: 404 for not-found errors, 409 for state conflicts.
+        HTTPException: 404 for not-found/deleted errors, 409 for state conflicts.
     """
     detail = str(exc)
-    if "not found" in detail:
+    if "not found" in detail or "deleted" in detail:
         raise HTTPException(status_code=404, detail=detail) from None
     raise HTTPException(status_code=409, detail=detail) from None

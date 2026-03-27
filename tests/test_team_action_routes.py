@@ -123,6 +123,24 @@ def test_get_events_not_found(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def test_stop_deleted_team(client: TestClient) -> None:
+    """POST /teams/{id}/stop on deleted team returns 404."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    client.delete(f"/teams/{team_id}")
+    resp = client.post(f"/teams/{team_id}/stop")
+    assert resp.status_code == 404
+
+
+def test_restore_deleted_team(client: TestClient) -> None:
+    """POST /teams/{id}/restore on deleted team returns 404."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    client.delete(f"/teams/{team_id}")
+    resp = client.post(f"/teams/{team_id}/restore")
+    assert resp.status_code == 404
+
+
 def test_get_events_running_team(client: TestClient) -> None:
     """GET /teams/{id}/events on running team returns events."""
     create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
