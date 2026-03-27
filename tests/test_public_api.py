@@ -19,9 +19,43 @@ def test_protocols_exports() -> None:
         assert hasattr(protocols, name), f"Missing export: {name}"
 
 
-def test_infra_all_matches_protocols_all() -> None:
-    """akgentic.infra.__all__ re-exports all protocols."""
+def test_adapters_exports() -> None:
+    """All declared __all__ symbols are importable from akgentic.infra.adapters."""
+    from akgentic.infra import adapters
+
+    for name in adapters.__all__:
+        assert hasattr(adapters, name), f"Missing export: {name}"
+
+
+def test_infra_all_includes_protocols() -> None:
+    """akgentic.infra.__all__ includes all protocol exports."""
     from akgentic import infra
     from akgentic.infra import protocols
 
-    assert set(infra.__all__) == set(protocols.__all__)
+    for name in protocols.__all__:
+        assert name in infra.__all__, f"Protocol {name} not in infra.__all__"
+
+
+def test_infra_all_includes_adapters() -> None:
+    """akgentic.infra.__all__ includes all adapter exports."""
+    from akgentic import infra
+    from akgentic.infra import adapters
+
+    for name in adapters.__all__:
+        assert name in infra.__all__, f"Adapter {name} not in infra.__all__"
+
+
+def test_infra_all_includes_server_models() -> None:
+    """akgentic.infra.__all__ includes ServerSettings, TierServices, CommunityServices."""
+    from akgentic import infra
+
+    assert "ServerSettings" in infra.__all__
+    assert "TierServices" in infra.__all__
+    assert "CommunityServices" in infra.__all__
+
+
+def test_infra_all_includes_wiring() -> None:
+    """akgentic.infra.__all__ includes wire_community."""
+    from akgentic import infra
+
+    assert "wire_community" in infra.__all__
