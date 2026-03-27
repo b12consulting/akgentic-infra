@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from pkgutil import extend_path
 
+from akgentic.infra.adapters import (
+    LocalPlacement,
+    LocalServiceRegistry,
+    NoAuth,
+    TelemetrySubscriber,
+)
 from akgentic.infra.protocols import (
     AuthStrategy,
     ChannelMessage,
@@ -15,10 +21,14 @@ from akgentic.infra.protocols import (
     PlacementStrategy,
     RecoveryPolicy,
 )
+from akgentic.infra.server.deps import CommunityServices, TierServices
+from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.wiring import wire_community
 
 __path__ = extend_path(__path__, __name__)
 
 __all__ = [
+    # Protocols
     "AuthStrategy",
     "ChannelMessage",
     "ChannelParser",
@@ -28,4 +38,15 @@ __all__ = [
     "InteractionChannelIngestion",
     "PlacementStrategy",
     "RecoveryPolicy",
+    # Adapters
+    "LocalPlacement",
+    "LocalServiceRegistry",
+    "NoAuth",
+    "TelemetrySubscriber",
+    # Server
+    "CommunityServices",
+    "ServerSettings",
+    "TierServices",
+    # Wiring
+    "wire_community",
 ]
