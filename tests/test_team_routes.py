@@ -61,6 +61,9 @@ def test_delete_team_success(client: TestClient) -> None:
     team_id = create_resp.json()["team_id"]
     resp = client.delete(f"/teams/{team_id}")
     assert resp.status_code == 204
+    # Verify team is actually gone
+    get_resp = client.get(f"/teams/{team_id}")
+    assert get_resp.status_code == 404
 
 
 def test_delete_team_not_found(client: TestClient) -> None:
