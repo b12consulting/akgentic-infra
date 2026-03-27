@@ -18,6 +18,7 @@ from akgentic.infra.protocols import (
     HealthMonitor,
     InteractionChannelAdapter,
     InteractionChannelIngestion,
+    JsonValue,
     PlacementStrategy,
     RecoveryPolicy,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "HealthMonitor",
     "InteractionChannelAdapter",
     "InteractionChannelIngestion",
+    "JsonValue",
     "PlacementStrategy",
     "RecoveryPolicy",
     # Adapters
