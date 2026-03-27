@@ -1,20 +1,16 @@
 [project]
-name = "akgentic-<module>"
+name = "akgentic-infra"
 version = "0.1.0"
-description = "Short description of your module"
+description = "Infrastructure backend: protocol abstractions and community-tier implementations for akgentic"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
-    { name = "your-name", email = "your-mail-address" }
+    { name = "B12 Consulting", email = "info@b12consulting.com" }
 ]
-keywords = ["agents", "ai", "akgentic"]
+keywords = ["agents", "ai", "akgentic", "infrastructure"]
 
 dependencies = [
-    "pydantic>=2.0.0",
-    # Add module-specific dependencies here
-    # Examples:
-    # "akgentic",           # If you need core actor framework
-    # "akgentic-llm",       # If you need LLM integration
+    "akgentic>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -30,16 +26,11 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Uncomment and configure if your module depends on workspace packages
-# [tool.uv.sources]
-# akgentic = { workspace = true }
-# akgentic-llm = { workspace = true }
+[tool.uv.sources]
+akgentic = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/akgentic"]
-
-# Tool configurations inherit from root workspace pyproject.toml
-# Only override when package-specific behavior is needed
 
 [tool.mypy]
 python_version = "3.12"
@@ -53,5 +44,19 @@ target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
-ignore = []
+select = ["E", "F", "I", "N", "UP", "ANN", "ASYNC"]
+ignore = ["ANN401", "N802"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["integration: Full server flow tests requiring real LLM and API keys"]
+addopts = "-m 'not integration'"
+
+[tool.coverage.run]
+source = ["akgentic/infra"]
+branch = true
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+fail_under = 90
