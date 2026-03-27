@@ -1,0 +1,164 @@
+"""Integration test fixtures — real app, real actors, real LLM (no mocks)."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Generator
+from pathlib import Path
+
+import pytest
+import yaml
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from akgentic.infra.server.app import create_app
+from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.services.team_service import TeamService
+from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.wiring import wire_community
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _write_yaml(path: Path, data: dict[str, object]) -> None:
+    """Write a single YAML entry file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.dump(data, default_flow_style=False))
+
+
+def _seed_integration_catalog(catalog_root: Path) -> None:
+    """Seed YAML catalog with an LLM-capable agent for integration testing.
+
+    Uses gpt-4o-mini for fast, cheap LLM calls.
+    """
+    _write_yaml(
+        catalog_root / "agents" / "human-proxy.yaml",
+        {
+            "id": "human-proxy",
+            "tool_ids": [],
+            "card": {
+                "role": "Human",
+                "description": "Human user interface",
+                "skills": [],
+                "agent_class": "akgentic.agent.HumanProxy",
+                "config": {"name": "@Human", "role": "Human"},
+                "routes_to": ["@Manager"],
+            },
+        },
+    )
+    _write_yaml(
+        catalog_root / "agents" / "manager.yaml",
+        {
+            "id": "manager",
+            "tool_ids": [],
+            "card": {
+                "role": "Manager",
+                "description": "Integration test manager agent",
+                "skills": ["coordination"],
+                "agent_class": "akgentic.agent.BaseAgent",
+                "config": {
+                    "name": "@Manager",
+                    "role": "Manager",
+                    "prompt": {
+                        "template": (
+                            "You are a helpful assistant. "
+                            "Reply concisely in one or two sentences."
+                        ),
+                    },
+                    "model_cfg": {
+                        "provider": "openai",
+                        "model": "gpt-4o-mini",
+                        "temperature": 0.0,
+                    },
+                    "usage_limits": {
+                        "request_limit": 5,
+                        "total_tokens_limit": 10000,
+                    },
+                },
+                "routes_to": [],
+            },
+        },
+    )
+    _write_yaml(
+        catalog_root / "teams" / "test-team.yaml",
+        {
+            "id": "test-team",
+            "name": "Integration Test Team",
+            "entry_point": "human-proxy",
+            "message_types": ["akgentic.agent.AgentMessage"],
+            "members": [
+                {"agent_id": "human-proxy"},
+                {"agent_id": "manager"},
+            ],
+            "profiles": [],
+        },
+    )
+    (catalog_root / "templates").mkdir(parents=True, exist_ok=True)
+    (catalog_root / "tools").mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", autouse=True)
+def openai_api_key() -> str:
+    """Ensure OPENAI_API_KEY is available; fail fast if not."""
+    load_dotenv(_PROJECT_ROOT / ".env")
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        pytest.fail("OPENAI_API_KEY not set — required for integration tests")
+    return key
+
+
+@pytest.fixture()
+def integration_settings(tmp_path: Path) -> ServerSettings:
+    """ServerSettings backed by tmp_path with a seeded integration catalog."""
+    settings = ServerSettings(workspaces_root=tmp_path / "workspaces")
+    _seed_integration_catalog(settings.workspaces_root / "catalog")
+    return settings
+
+
+@pytest.fixture()
+def integration_services(
+    integration_settings: ServerSettings,
+) -> Generator[CommunityServices, None, None]:
+    """Wired community services with real actor system — shuts down on teardown."""
+    services = wire_community(integration_settings)
+    yield services
+    services.actor_system.shutdown()
+
+
+@pytest.fixture()
+def integration_team_service(
+    integration_services: CommunityServices,
+) -> TeamService:
+    """TeamService wired to integration services."""
+    return TeamService(
+        services=integration_services,
+        team_catalog=integration_services.team_catalog,
+        agent_catalog=integration_services.agent_catalog,
+        tool_catalog=integration_services.tool_catalog,
+        template_catalog=integration_services.template_catalog,
+    )
+
+
+@pytest.fixture()
+def integration_app(
+    integration_services: CommunityServices,
+    integration_team_service: TeamService,
+) -> FastAPI:
+    """FastAPI app backed by real actors and real LLM."""
+    return create_app(integration_services, integration_team_service)
+
+
+@pytest.fixture()
+def integration_client(integration_app: FastAPI) -> TestClient:
+    """Sync HTTP test client hitting a real FastAPI app."""
+    return TestClient(integration_app)
