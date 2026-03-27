@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,10 +22,10 @@ def _wait_for_llm_response(
     client: TestClient,
     team_id: str,
     timeout: float = POLL_TIMEOUT_S,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     """Poll events until an LLM-generated response from @Manager appears."""
     deadline = time.monotonic() + timeout
-    events: list[dict[str, Any]] = []
+    events: list[dict[str, object]] = []
     while time.monotonic() < deadline:
         resp = client.get(f"/teams/{team_id}/events")
         assert resp.status_code == 200
@@ -40,21 +39,26 @@ def _wait_for_llm_response(
     )
 
 
-def _has_llm_content(events: list[dict[str, Any]]) -> bool:
+def _has_llm_content(events: list[dict[str, object]]) -> bool:
     """Check if any event contains LLM-generated content from @Manager."""
     for ev_wrapper in events:
         ev = ev_wrapper["event"]
+        if not isinstance(ev, dict):
+            continue
         # SentMessage wraps a message with content
         msg = ev.get("message")
-        if isinstance(msg, dict):
-            content = msg.get("content")
-            sender = ev.get("sender", {})
-            if (
-                isinstance(content, str)
-                and len(content) > 0
-                and sender.get("name") == "@Manager"
-            ):
-                return True
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        sender = ev.get("sender")
+        if not isinstance(sender, dict):
+            continue
+        if (
+            isinstance(content, str)
+            and len(content) > 0
+            and sender.get("name") == "@Manager"
+        ):
+            return True
     return False
 
 
