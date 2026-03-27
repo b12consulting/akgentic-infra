@@ -12,7 +12,7 @@ class AuthStrategy(Protocol):
     SsoRbacAuth (enterprise).
     """
 
-    def authenticate(self, request: Any) -> str | None:  # noqa: ANN401
+    def authenticate(self, request: Any) -> str | None:
         """Authenticate a request and return user identifier.
 
         Args:

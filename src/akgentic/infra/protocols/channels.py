@@ -55,7 +55,7 @@ class ChannelParser(Protocol):
     Runs in FastAPI async context — uses async signatures.
     """
 
-    async def parse(self, payload: dict[str, Any]) -> ChannelMessage:  # noqa: ANN401
+    async def parse(self, payload: dict[str, Any]) -> ChannelMessage:
         """Parse a raw webhook payload into a structured channel message.
 
         Args:

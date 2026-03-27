@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import inspect
-from typing import Protocol
+import uuid
+from typing import Protocol, get_type_hints
 
 
 def test_placement_strategy_is_protocol() -> None:
@@ -139,6 +140,70 @@ def test_channel_registry_has_find_team() -> None:
     assert "channel_id" in sig.parameters
     assert "sender_id" in sig.parameters
     assert inspect.iscoroutinefunction(ChannelRegistry.find_team)
+
+
+def test_placement_strategy_return_type() -> None:
+    """PlacementStrategy.select_worker returns uuid.UUID."""
+    from akgentic.infra.protocols import PlacementStrategy
+
+    hints = get_type_hints(PlacementStrategy.select_worker)
+    assert hints["return"] is uuid.UUID
+
+
+def test_auth_strategy_return_type() -> None:
+    """AuthStrategy.authenticate returns str | None."""
+    from akgentic.infra.protocols import AuthStrategy
+
+    hints = get_type_hints(AuthStrategy.authenticate)
+    assert hints["return"] == str | None
+
+
+def test_recovery_policy_return_type() -> None:
+    """RecoveryPolicy.recover returns None."""
+    from akgentic.infra.protocols import RecoveryPolicy
+
+    hints = get_type_hints(RecoveryPolicy.recover)
+    assert hints["return"] is type(None)
+
+
+def test_health_monitor_return_type() -> None:
+    """HealthMonitor.check_health returns list[uuid.UUID]."""
+    from akgentic.infra.protocols import HealthMonitor
+
+    hints = get_type_hints(HealthMonitor.check_health)
+    assert hints["return"] == list[uuid.UUID]
+
+
+def test_interaction_channel_adapter_return_type() -> None:
+    """InteractionChannelAdapter.send returns None."""
+    from akgentic.infra.protocols import InteractionChannelAdapter
+
+    hints = get_type_hints(InteractionChannelAdapter.send)
+    assert hints["return"] is type(None)
+
+
+def test_interaction_channel_ingestion_return_type() -> None:
+    """InteractionChannelIngestion.route_inbound returns None."""
+    from akgentic.infra.protocols import InteractionChannelIngestion
+
+    hints = get_type_hints(InteractionChannelIngestion.route_inbound)
+    assert hints["return"] is type(None)
+
+
+def test_channel_parser_return_type() -> None:
+    """ChannelParser.parse returns ChannelMessage."""
+    from akgentic.infra.protocols import ChannelMessage, ChannelParser
+
+    hints = get_type_hints(ChannelParser.parse)
+    assert hints["return"] is ChannelMessage
+
+
+def test_channel_registry_return_type() -> None:
+    """ChannelRegistry.find_team returns uuid.UUID | None."""
+    from akgentic.infra.protocols import ChannelRegistry
+
+    hints = get_type_hints(ChannelRegistry.find_team)
+    assert hints["return"] == uuid.UUID | None
 
 
 def test_channel_message_is_pydantic_model() -> None:
