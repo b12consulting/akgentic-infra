@@ -10,12 +10,11 @@ from akgentic.infra.server.services.team_service import TeamService
 
 
 def test_create_app_returns_fastapi(
-    community_services: object,
+    community_services: CommunityServices,
     team_service: TeamService,
 ) -> None:
     """create_app returns a FastAPI instance with routes mounted."""
-    svc: CommunityServices = community_services  # type: ignore[assignment]
-    app = create_app(svc, team_service)
+    app = create_app(community_services, team_service)
     assert app.title == "Akgentic Platform API"
     route_paths = [r.path for r in app.routes]  # type: ignore[union-attr]
     assert "/teams/" in route_paths
@@ -36,12 +35,11 @@ def test_cors_headers_present(client: TestClient) -> None:
 
 
 def test_custom_cors_origins(
-    community_services: object,
+    community_services: CommunityServices,
     team_service: TeamService,
 ) -> None:
     """create_app respects custom cors_origins."""
-    svc: CommunityServices = community_services  # type: ignore[assignment]
-    app = create_app(svc, team_service, cors_origins=["http://example.com"])
+    app = create_app(community_services, team_service, cors_origins=["http://example.com"])
     test_client = TestClient(app)
     resp = test_client.options(
         "/teams/",

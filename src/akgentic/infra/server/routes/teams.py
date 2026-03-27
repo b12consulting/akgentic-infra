@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 
 def get_team_service(request: Request) -> TeamService:
     """FastAPI dependency: extract TeamService from app.state."""
-    return request.app.state.team_service  # type: ignore[no-any-return]
+    return cast(TeamService, request.app.state.team_service)
 
 
 def _process_to_response(process: Process) -> TeamResponse:
@@ -44,10 +45,10 @@ def create_team(
     try:
         process = service.create_team(
             catalog_entry_id=body.catalog_entry_id,
-            user_id="anonymous",
+            user_id="anonymous",  # Community tier: no auth, single-user
         )
     except EntryNotFoundError:
-        raise HTTPException(status_code=404, detail="Catalog entry not found")
+        raise HTTPException(status_code=404, detail="Catalog entry not found") from None
     return _process_to_response(process)
 
 
@@ -56,7 +57,7 @@ def list_teams(
     service: TeamService = Depends(get_team_service),
 ) -> TeamListResponse:
     """List all teams for the current user."""
-    processes = service.list_teams(user_id="anonymous")
+    processes = service.list_teams(user_id="anonymous")  # Community tier: no auth
     return TeamListResponse(teams=[_process_to_response(p) for p in processes])
 
 
@@ -81,4 +82,4 @@ def delete_team(
     try:
         service.delete_team(team_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail="Team not found") from None

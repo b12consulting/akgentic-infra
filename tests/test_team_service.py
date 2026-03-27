@@ -66,6 +66,15 @@ def test_delete_team_stops_and_deletes(team_service: TeamService) -> None:
     assert after is None
 
 
+def test_delete_stopped_team(team_service: TeamService) -> None:
+    """delete_team handles an already-stopped team without calling stop_team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service._services.team_manager.stop_team(process.team_id)
+    team_service.delete_team(process.team_id)
+    after = team_service.get_team(process.team_id)
+    assert after is None
+
+
 def test_delete_team_not_found_raises(team_service: TeamService) -> None:
     """delete_team raises ValueError for a nonexistent team ID."""
     with pytest.raises(ValueError, match="not found"):

@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections.abc import Generator
 from pathlib import Path
 
+import pykka
 import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from akgentic.infra.server.app import create_app
+from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
 from akgentic.infra.wiring import wire_community
@@ -90,36 +92,29 @@ def seeded_settings(tmp_path: Path) -> ServerSettings:
 @pytest.fixture()
 def community_services(
     seeded_settings: ServerSettings,
-) -> Generator[object, None, None]:
+) -> Generator[CommunityServices, None, None]:
     """Wired community services with seeded catalog data."""
-    from akgentic.infra.server.deps import CommunityServices
-
-    services: CommunityServices = wire_community(seeded_settings)
+    services = wire_community(seeded_settings)
     yield services
+    pykka.ActorRegistry.stop_all()
 
 
 @pytest.fixture()
-def team_service(community_services: object) -> TeamService:
+def team_service(community_services: CommunityServices) -> TeamService:
     """TeamService wired to community services."""
-    from akgentic.infra.server.deps import CommunityServices
-
-    svc: CommunityServices = community_services  # type: ignore[assignment]
     return TeamService(
-        services=svc,
-        team_catalog=svc.team_catalog,
-        agent_catalog=svc.agent_catalog,
-        tool_catalog=svc.tool_catalog,
-        template_catalog=svc.template_catalog,
+        services=community_services,
+        team_catalog=community_services.team_catalog,
+        agent_catalog=community_services.agent_catalog,
+        tool_catalog=community_services.tool_catalog,
+        template_catalog=community_services.template_catalog,
     )
 
 
 @pytest.fixture()
-def app(community_services: object, team_service: TeamService) -> FastAPI:
+def app(community_services: CommunityServices, team_service: TeamService) -> FastAPI:
     """FastAPI app with wired services."""
-    from akgentic.infra.server.deps import CommunityServices
-
-    svc: CommunityServices = community_services  # type: ignore[assignment]
-    return create_app(svc, team_service)
+    return create_app(community_services, team_service)
 
 
 @pytest.fixture()
