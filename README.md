@@ -1,3 +1,5 @@
+![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/b12consulting/<GIST_ID>/raw/coverage.json)
+
 # Akgentic <Module>: [One-line description]
 
 **Status:** [Alpha/Beta/Production] - [Phase or version]
