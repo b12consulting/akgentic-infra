@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Generator
 from pathlib import Path
 
@@ -72,6 +73,13 @@ def _seed_catalog(catalog_root: Path) -> None:
     # Empty dirs for templates and tools (no entries needed for this team)
     (catalog_root / "templates").mkdir(parents=True, exist_ok=True)
     (catalog_root / "tools").mkdir(parents=True, exist_ok=True)
+
+
+@pytest.fixture(autouse=True)
+def _ensure_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Set a dummy OPENAI_API_KEY so BaseAgent actors can initialise in unit tests."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-dummy-key")
 
 
 @pytest.fixture()
