@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -20,10 +21,12 @@ class TestWireCommunity:
     """AC6: wire_community() assembles CommunityServices correctly."""
 
     @pytest.fixture()
-    def services(self, tmp_path: Path) -> CommunityServices:
-        """Wire community services with a temp workspace root."""
+    def services(self, tmp_path: Path) -> Generator[CommunityServices, None, None]:
+        """Wire community services with a temp workspace root and cleanup ActorSystem."""
         settings = ServerSettings(workspaces_root=tmp_path)
-        return wire_community(settings)
+        svc = wire_community(settings)
+        yield svc
+        svc.team_manager._actor_system.shutdown(timeout=5)
 
     def test_returns_community_services(self, services: CommunityServices) -> None:
         """wire_community returns a CommunityServices instance."""
@@ -53,4 +56,7 @@ class TestWireCommunity:
         """wire_community passes settings.workspaces_root to YamlEventStore."""
         settings = ServerSettings(workspaces_root=tmp_path)
         services = wire_community(settings)
-        assert isinstance(services.event_store, YamlEventStore)
+        try:
+            assert isinstance(services.event_store, YamlEventStore)
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)

@@ -6,10 +6,16 @@ import inspect
 import uuid
 
 from akgentic.infra.adapters.local_placement import LocalPlacement
+from akgentic.infra.protocols.placement import PlacementStrategy
 
 
 class TestLocalPlacementProtocolCompliance:
     """AC1: LocalPlacement implements PlacementStrategy protocol."""
+
+    def test_satisfies_placement_strategy_protocol(self) -> None:
+        """LocalPlacement structurally satisfies PlacementStrategy."""
+        adapter = LocalPlacement()
+        assert isinstance(adapter, PlacementStrategy)
 
     def test_has_select_worker_method(self) -> None:
         """LocalPlacement exposes select_worker with correct signature."""

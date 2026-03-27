@@ -5,10 +5,16 @@ from __future__ import annotations
 import inspect
 
 from akgentic.infra.adapters.no_auth import NoAuth
+from akgentic.infra.protocols.auth import AuthStrategy
 
 
 class TestNoAuthProtocolCompliance:
     """AC2: NoAuth implements AuthStrategy protocol."""
+
+    def test_satisfies_auth_strategy_protocol(self) -> None:
+        """NoAuth structurally satisfies AuthStrategy."""
+        adapter = NoAuth()
+        assert isinstance(adapter, AuthStrategy)
 
     def test_has_authenticate_method(self) -> None:
         """NoAuth exposes authenticate with correct signature."""
