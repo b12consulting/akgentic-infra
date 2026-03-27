@@ -9,6 +9,7 @@ from akgentic.infra.protocols.channels import (
     ChannelRegistry,
     InteractionChannelAdapter,
     InteractionChannelIngestion,
+    JsonValue,
 )
 from akgentic.infra.protocols.health import HealthMonitor
 from akgentic.infra.protocols.placement import PlacementStrategy
@@ -22,6 +23,7 @@ __all__ = [
     "HealthMonitor",
     "InteractionChannelAdapter",
     "InteractionChannelIngestion",
+    "JsonValue",
     "PlacementStrategy",
     "RecoveryPolicy",
 ]

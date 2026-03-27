@@ -59,3 +59,23 @@ def test_infra_all_includes_wiring() -> None:
     from akgentic import infra
 
     assert "wire_community" in infra.__all__
+
+
+def test_infra_all_includes_server_app_and_models() -> None:
+    """akgentic.infra.__all__ includes create_app, request/response models, and TeamService."""
+    from akgentic import infra
+
+    expected = (
+        "create_app", "CreateTeamRequest", "TeamResponse",
+        "TeamListResponse", "TeamService",
+    )
+    for name in expected:
+        assert name in infra.__all__, f"Missing export: {name}"
+
+
+def test_server_module_exports() -> None:
+    """akgentic.infra.server.__all__ includes all server-layer symbols."""
+    from akgentic.infra import server
+
+    for name in server.__all__:
+        assert hasattr(server, name), f"Missing export: {name}"

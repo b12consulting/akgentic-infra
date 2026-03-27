@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from akgentic.catalog.services import (
+    AgentCatalog,
+    TeamCatalog,
+    TemplateCatalog,
+    ToolCatalog,
+)
+from akgentic.core import ActorSystem
 from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.team.manager import TeamManager
@@ -39,11 +46,27 @@ class TierServices(BaseModel):
 
 
 class CommunityServices(TierServices):
-    """Community-tier service container with embedded TeamManager.
+    """Community-tier service container with embedded TeamManager and catalogs.
 
-    Extends TierServices with an in-process TeamManager for single-process deployment.
+    Extends TierServices with an in-process TeamManager and YAML-backed
+    catalogs for single-process deployment.
     """
 
+    actor_system: ActorSystem = Field(
+        description="Actor system for managing agent lifecycle"
+    )
     team_manager: TeamManager = Field(
         description="Team lifecycle manager (embedded, in-process)"
+    )
+    team_catalog: TeamCatalog = Field(
+        description="Catalog service for team entry resolution"
+    )
+    agent_catalog: AgentCatalog = Field(
+        description="Catalog service for agent entry resolution"
+    )
+    tool_catalog: ToolCatalog = Field(
+        description="Catalog service for tool entry resolution"
+    )
+    template_catalog: TemplateCatalog = Field(
+        description="Catalog service for template entry resolution"
     )

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Protocol
+from typing import Protocol
 
 from pydantic import BaseModel, Field
+
+# Recursive JSON-safe type for webhook payloads — replaces dict[str, Any].
+JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 
 
 class ChannelMessage(BaseModel):
@@ -55,7 +58,7 @@ class ChannelParser(Protocol):
     Runs in FastAPI async context — uses async signatures.
     """
 
-    async def parse(self, payload: dict[str, Any]) -> ChannelMessage:
+    async def parse(self, payload: dict[str, JsonValue]) -> ChannelMessage:
         """Parse a raw webhook payload into a structured channel message.
 
         Args:

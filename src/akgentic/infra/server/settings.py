@@ -33,3 +33,7 @@ class ServerSettings(BaseSettings):
         default=Path("workspaces"),
         description="Root directory for team workspace storage",
     )
+    cors_origins: list[str] = Field(
+        default=["*"],
+        description="Allowed CORS origins for the HTTP server",
+    )

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import uuid
 
-from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 from akgentic.team.ports import ServiceRegistry
+
+from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 
 
 class TestLocalServiceRegistryProtocolCompliance:

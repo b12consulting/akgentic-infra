@@ -12,6 +12,11 @@ keywords = ["agents", "ai", "akgentic", "infrastructure"]
 dependencies = [
     "akgentic>=0.1.0",
     "akgentic-team>=0.1.0",
+    "akgentic-catalog>=0.1.0",
+    "akgentic-agent>=0.1.0",
+    "akgentic-llm>=0.1.0",
+    "akgentic-tool>=0.1.0",
+    "fastapi>=0.100.0",
     "pydantic-settings>=2.0.0",
     "logfire>=0.1.0",
 ]
@@ -21,6 +26,7 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
+    "httpx>=0.27.0",
     "mypy>=1.8.0",
     "ruff>=0.1.0",
 ]
@@ -32,6 +38,10 @@ build-backend = "hatchling.build"
 [tool.uv.sources]
 akgentic = { workspace = true }
 akgentic-team = { workspace = true }
+akgentic-catalog = { workspace = true }
+akgentic-agent = { workspace = true }
+akgentic-llm = { workspace = true }
+akgentic-tool = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/akgentic"]
