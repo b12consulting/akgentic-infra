@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
+@runtime_checkable
 class PlacementStrategy(Protocol):
     """Selects a worker instance to host a new team.
 
