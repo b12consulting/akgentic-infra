@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+from akgentic.catalog.repositories.yaml import (
+    YamlAgentCatalogRepository,
+    YamlTeamCatalogRepository,
+    YamlTemplateCatalogRepository,
+    YamlToolCatalogRepository,
+)
+from akgentic.catalog.services import (
+    AgentCatalog,
+    TeamCatalog,
+    TemplateCatalog,
+    ToolCatalog,
+)
 from akgentic.core import ActorSystem, EventSubscriber
 from akgentic.infra.adapters.local_placement import LocalPlacement
 from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
@@ -24,6 +36,7 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
     5. TeamManager
     6. PlacementStrategy (LocalPlacement)
     7. AuthStrategy (NoAuth)
+    8. Catalogs: Template + Tool → Agent → Team
 
     Args:
         settings: Server configuration
@@ -44,10 +57,31 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
     placement = LocalPlacement()
     auth = NoAuth()
 
+    catalog_root = settings.workspaces_root / "catalog"
+    template_catalog = TemplateCatalog(
+        repository=YamlTemplateCatalogRepository(catalog_dir=catalog_root / "templates"),
+    )
+    tool_catalog = ToolCatalog(
+        repository=YamlToolCatalogRepository(catalog_dir=catalog_root / "tools"),
+    )
+    agent_catalog = AgentCatalog(
+        repository=YamlAgentCatalogRepository(catalog_dir=catalog_root / "agents"),
+        template_catalog=template_catalog,
+        tool_catalog=tool_catalog,
+    )
+    team_catalog = TeamCatalog(
+        repository=YamlTeamCatalogRepository(catalog_dir=catalog_root / "teams"),
+        agent_catalog=agent_catalog,
+    )
+
     return CommunityServices(
         placement=placement,
         service_registry=service_registry,
         auth=auth,
         event_store=event_store,
         team_manager=team_manager,
+        team_catalog=team_catalog,
+        agent_catalog=agent_catalog,
+        tool_catalog=tool_catalog,
+        template_catalog=template_catalog,
     )
