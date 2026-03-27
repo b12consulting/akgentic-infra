@@ -6,6 +6,8 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
+from akgentic.team.manager import TeamManager
+from akgentic.team.repositories.yaml import YamlEventStore
 
 from akgentic.infra.adapters.local_placement import LocalPlacement
 from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
@@ -13,8 +15,6 @@ from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import ServerSettings
 from akgentic.infra.wiring import wire_community
-from akgentic.team.manager import TeamManager
-from akgentic.team.repositories.yaml import YamlEventStore
 
 
 class TestWireCommunity:

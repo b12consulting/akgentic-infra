@@ -79,6 +79,7 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
         service_registry=service_registry,
         auth=auth,
         event_store=event_store,
+        actor_system=actor_system,
         team_manager=team_manager,
         team_catalog=team_catalog,
         agent_catalog=agent_catalog,

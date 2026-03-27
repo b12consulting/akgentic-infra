@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Generator
 from pathlib import Path
 
-import pykka
 import pytest
 import yaml
 from fastapi import FastAPI
@@ -96,7 +95,7 @@ def community_services(
     """Wired community services with seeded catalog data."""
     services = wire_community(seeded_settings)
     yield services
-    pykka.ActorRegistry.stop_all()
+    services.actor_system.shutdown()
 
 
 @pytest.fixture()

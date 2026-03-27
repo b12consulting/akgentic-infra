@@ -10,6 +10,7 @@ from akgentic.catalog.services import (
     TemplateCatalog,
     ToolCatalog,
 )
+from akgentic.core import ActorSystem
 from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.team.manager import TeamManager
@@ -51,6 +52,9 @@ class CommunityServices(TierServices):
     catalogs for single-process deployment.
     """
 
+    actor_system: ActorSystem = Field(
+        description="Actor system for managing agent lifecycle"
+    )
     team_manager: TeamManager = Field(
         description="Team lifecycle manager (embedded, in-process)"
     )
