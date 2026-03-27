@@ -1,0 +1,145 @@
+"""Tests for TeamService action methods with real in-memory adapters."""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+from akgentic.team.models import TeamStatus
+
+from akgentic.infra.server.services.team_service import TeamService
+
+
+def test_send_message_success(team_service: TeamService) -> None:
+    """send_message delivers to a running team without error."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    # Should not raise
+    team_service.send_message(process.team_id, "hello")
+
+
+def test_send_message_not_found(team_service: TeamService) -> None:
+    """send_message raises ValueError for non-existent team."""
+    with pytest.raises(ValueError, match="not found"):
+        team_service.send_message(uuid.uuid4(), "hello")
+
+
+def test_send_message_stopped_team(team_service: TeamService) -> None:
+    """send_message raises ValueError for stopped team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+    with pytest.raises(ValueError, match="not running"):
+        team_service.send_message(process.team_id, "hello")
+
+
+def test_stop_team_success(team_service: TeamService) -> None:
+    """stop_team transitions a running team to stopped."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+    after = team_service.get_team(process.team_id)
+    assert after is not None
+    assert after.status == TeamStatus.STOPPED
+
+
+def test_stop_team_not_found(team_service: TeamService) -> None:
+    """stop_team raises ValueError for non-existent team."""
+    with pytest.raises(ValueError, match="not found"):
+        team_service.stop_team(uuid.uuid4())
+
+
+def test_stop_team_already_stopped(team_service: TeamService) -> None:
+    """stop_team raises ValueError for already stopped team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+    with pytest.raises(ValueError, match="already stopped"):
+        team_service.stop_team(process.team_id)
+
+
+def test_restore_team_success(team_service: TeamService) -> None:
+    """restore_team transitions a stopped team back to running."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+    restored = team_service.restore_team(process.team_id)
+    assert restored.status == TeamStatus.RUNNING
+
+
+def test_restore_team_not_found(team_service: TeamService) -> None:
+    """restore_team raises ValueError for non-existent team."""
+    with pytest.raises(ValueError, match="not found"):
+        team_service.restore_team(uuid.uuid4())
+
+
+def test_restore_team_already_running(team_service: TeamService) -> None:
+    """restore_team raises ValueError for already running team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    with pytest.raises(ValueError, match="already running"):
+        team_service.restore_team(process.team_id)
+
+
+def test_get_events_success(team_service: TeamService) -> None:
+    """get_events returns events for an existing team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    events = team_service.get_events(process.team_id)
+    assert isinstance(events, list)
+
+
+def test_get_events_not_found(team_service: TeamService) -> None:
+    """get_events raises ValueError for non-existent team."""
+    with pytest.raises(ValueError, match="not found"):
+        team_service.get_events(uuid.uuid4())
+
+
+def test_process_human_input_not_found_team(team_service: TeamService) -> None:
+    """process_human_input raises ValueError for non-existent team."""
+    with pytest.raises(ValueError, match="not found"):
+        team_service.process_human_input(uuid.uuid4(), "yes", "msg-id")
+
+
+def test_process_human_input_invalid_message(team_service: TeamService) -> None:
+    """process_human_input raises ValueError for non-existent message_id."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    with pytest.raises(ValueError, match="not found"):
+        team_service.process_human_input(process.team_id, "yes", "nonexistent")
+
+
+def test_create_team_caches_runtime(team_service: TeamService) -> None:
+    """create_team caches the TeamRuntime for subsequent action methods."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    assert process.team_id in team_service._runtimes
+
+
+def test_stop_team_removes_runtime_cache(team_service: TeamService) -> None:
+    """stop_team removes runtime from cache."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+    assert process.team_id not in team_service._runtimes
+
+
+def test_restore_team_caches_runtime(team_service: TeamService) -> None:
+    """restore_team caches the new runtime."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+    team_service.restore_team(process.team_id)
+    assert process.team_id in team_service._runtimes
+
+
+def test_delete_team_removes_runtime_cache(team_service: TeamService) -> None:
+    """delete_team removes runtime from cache."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.delete_team(process.team_id)
+    assert process.team_id not in team_service._runtimes
+
+
+def test_stop_team_deleted_raises(team_service: TeamService) -> None:
+    """stop_team raises ValueError for a deleted team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.delete_team(process.team_id)
+    with pytest.raises(ValueError):
+        team_service.stop_team(process.team_id)
+
+
+def test_restore_team_deleted_raises(team_service: TeamService) -> None:
+    """restore_team raises ValueError for a deleted team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.delete_team(process.team_id)
+    with pytest.raises(ValueError):
+        team_service.restore_team(process.team_id)

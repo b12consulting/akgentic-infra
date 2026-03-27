@@ -6,6 +6,10 @@ from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
 from akgentic.infra.server.models import (
     CreateTeamRequest,
+    EventListResponse,
+    EventResponse,
+    HumanInputRequest,
+    SendMessageRequest,
     TeamListResponse,
     TeamResponse,
 )
@@ -15,6 +19,10 @@ from akgentic.infra.server.settings import ServerSettings
 __all__ = [
     "CommunityServices",
     "CreateTeamRequest",
+    "EventListResponse",
+    "EventResponse",
+    "HumanInputRequest",
+    "SendMessageRequest",
     "ServerSettings",
     "TeamListResponse",
     "TeamResponse",
