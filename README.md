@@ -1,4 +1,4 @@
-![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/b12consulting/<GIST_ID>/raw/coverage.json)
+![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/b12consulting/REPLACE_WITH_GIST_ID/raw/coverage.json)
 
 # Akgentic <Module>: [One-line description]
 
