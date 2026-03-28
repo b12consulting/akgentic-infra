@@ -213,7 +213,7 @@ class TestReply:
 
 
 class TestChat:
-    def test_chat_requires_team_id(self) -> None:
+    def test_chat_no_args_shows_error(self) -> None:
         result = _invoke(["chat"])
         assert result.exit_code != 0
 
@@ -232,7 +232,7 @@ class TestChat:
         mock_session_cls.assert_called_once()
         mock_run.assert_called_once_with(mock_session.run())
 
-    def test_chat_create_flag(self) -> None:
+    def test_chat_create_flag_no_team_id(self) -> None:
         mock = _mock_client()
         with (
             patch("akgentic.infra.cli.main.ChatSession") as mock_session_cls,
@@ -240,7 +240,7 @@ class TestChat:
             patch("akgentic.infra.cli.main.asyncio.run"),
         ):
             mock_session_cls.return_value = MagicMock()
-            result = _invoke(["chat", "ignored", "--create", "my-catalog"], mock)
+            result = _invoke(["chat", "--create", "my-catalog"], mock)
         assert result.exit_code == 0
         mock.create_team.assert_called_once_with("my-catalog")
 

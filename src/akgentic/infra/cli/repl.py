@@ -7,6 +7,8 @@ import json
 import sys
 from typing import Any
 
+import websockets.exceptions
+
 from akgentic.infra.cli.client import ApiClient
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.ws_client import WsClient
@@ -80,6 +82,12 @@ class ChatSession:
                 _print_event(event)
             except asyncio.CancelledError:
                 raise
+            except websockets.exceptions.ConnectionClosed as exc:
+                if exc.rcvd is not None and exc.rcvd.code == 4004:
+                    print("Error: team not found", file=sys.stderr)
+                elif exc.rcvd is not None and exc.rcvd.code not in (1000, 1001):
+                    print(f"Connection closed: {exc.rcvd.reason or exc.rcvd.code}", file=sys.stderr)
+                break
             except Exception:  # noqa: BLE001
                 if self._running:
                     break
@@ -92,8 +100,7 @@ class ChatSession:
             return
         displayed = False
         for evt in events:
-            inner = evt.get("event", {})
-            if _print_event(evt if "__model__" in evt else {"event": inner}):
+            if _print_event(evt):
                 displayed = True
         if displayed:
             print("--- history ---")

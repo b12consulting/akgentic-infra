@@ -146,7 +146,7 @@ def reply(
 
 @app.command("chat")
 def chat(
-    team_id: Annotated[str, typer.Argument(help="Team ID to chat with")],
+    team_id: Annotated[str | None, typer.Argument(help="Team ID to chat with")] = None,
     create: Annotated[
         str | None, typer.Option("--create", help="Create team from catalog entry first")
     ] = None,
@@ -156,6 +156,10 @@ def chat(
         team = _state.client.create_team(create)
         team_id = str(team["team_id"])
         typer.echo(f"Created team {team_id}")
+
+    if team_id is None:
+        typer.echo("Error: provide a TEAM_ID or use --create <catalog_entry>", err=True)
+        raise typer.Exit(code=1)
 
     ws = WsClient(
         base_url=_state.server,

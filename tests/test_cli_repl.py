@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import websockets.exceptions
 
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.repl import ChatSession, _print_event
@@ -201,6 +202,40 @@ class TestReceiveLoop:
 
         out = capsys.readouterr().out
         assert "StateChanged" not in out
+
+
+class TestReceiveLoopCloseCode:
+    async def test_close_code_4004_prints_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        close_frame = MagicMock()
+        close_frame.code = 4004
+        close_frame.reason = "Team not found"
+        exc = websockets.exceptions.ConnectionClosedError(rcvd=close_frame, sent=None)
+        client = _mock_client()
+        ws = _mock_ws()
+        ws.receive_event = AsyncMock(side_effect=exc)
+        session = ChatSession(client, ws, "t1", OutputFormat.table)
+
+        with patch("akgentic.infra.cli.repl._read_input", side_effect=["/quit"]):
+            await session.run()
+
+        err = capsys.readouterr().err
+        assert "team not found" in err
+
+    async def test_close_code_1000_no_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        close_frame = MagicMock()
+        close_frame.code = 1000
+        close_frame.reason = "OK"
+        exc = websockets.exceptions.ConnectionClosedOK(rcvd=close_frame, sent=None)
+        client = _mock_client()
+        ws = _mock_ws()
+        ws.receive_event = AsyncMock(side_effect=exc)
+        session = ChatSession(client, ws, "t1", OutputFormat.table)
+
+        with patch("akgentic.infra.cli.repl._read_input", side_effect=["/quit"]):
+            await session.run()
+
+        err = capsys.readouterr().err
+        assert err == ""
 
 
 class TestPrintEvent:

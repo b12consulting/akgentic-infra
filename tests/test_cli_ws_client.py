@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import websockets.exceptions
 
 from akgentic.infra.cli.ws_client import WsClient
 
@@ -67,6 +68,38 @@ class TestConnect:
                 await client.connect()
             assert exc_info.value.code == 1
 
+    async def test_connect_invalid_status_404_exits(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        exc = websockets.exceptions.InvalidStatus(mock_response)
+        with patch(
+            "akgentic.infra.cli.ws_client.websockets.asyncio.client.connect",
+            new_callable=AsyncMock,
+            side_effect=exc,
+        ):
+            client = WsClient("http://localhost:8000", "t1")
+            with pytest.raises(SystemExit) as exc_info:
+                await client.connect()
+            assert exc_info.value.code == 1
+        assert "team not found" in capsys.readouterr().err
+
+    async def test_connect_invalid_handshake_exits(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        exc = websockets.exceptions.InvalidHandshake("bad handshake")
+        with patch(
+            "akgentic.infra.cli.ws_client.websockets.asyncio.client.connect",
+            new_callable=AsyncMock,
+            side_effect=exc,
+        ):
+            client = WsClient("http://localhost:8000", "t1")
+            with pytest.raises(SystemExit) as exc_info:
+                await client.connect()
+            assert exc_info.value.code == 1
+        assert "handshake failed" in capsys.readouterr().err
+
 
 class TestReceiveEvent:
     async def test_receive_json(self) -> None:
@@ -86,6 +119,11 @@ class TestReceiveEvent:
         client._ws = mock_ws
         result = await client.receive_event()
         assert result == event
+
+    async def test_receive_not_connected_raises(self) -> None:
+        client = WsClient("http://localhost:8000", "t1")
+        with pytest.raises(RuntimeError, match="Not connected"):
+            await client.receive_event()
 
 
 class TestClose:

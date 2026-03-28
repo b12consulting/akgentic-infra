@@ -7,6 +7,7 @@ import sys
 from typing import Any
 
 import websockets.asyncio.client
+import websockets.exceptions
 
 
 class WsClient:
@@ -35,11 +36,22 @@ class WsClient:
         except (ConnectionRefusedError, OSError) as exc:
             print(f"Connection error: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
+        except websockets.exceptions.InvalidStatus as exc:
+            status = exc.response.status_code
+            if status == 404 or status == 403:
+                print("Error: team not found", file=sys.stderr)
+            else:
+                print(f"WebSocket rejected: HTTP {status}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        except websockets.exceptions.InvalidHandshake as exc:
+            print(f"WebSocket handshake failed: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
         return self
 
     async def receive_event(self) -> dict[str, Any]:
         """Read next JSON message from WebSocket."""
-        assert self._ws is not None, "Not connected"  # noqa: S101
+        if self._ws is None:
+            raise RuntimeError("Not connected")
         raw = await self._ws.recv()
         text = raw if isinstance(raw, str) else raw.decode("utf-8")
         return json.loads(text)  # type: ignore[no-any-return]
