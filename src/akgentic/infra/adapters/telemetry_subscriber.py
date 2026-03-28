@@ -21,12 +21,21 @@ class TelemetrySubscriber:
     subscriber across all teams.
     """
 
+    def __init__(self) -> None:
+        self._restoring = False
+
+    def set_restoring(self, restoring: bool) -> None:
+        """Toggle restore mode to suppress span emission during event replay."""
+        self._restoring = restoring
+
     def on_message(self, msg: Message) -> None:
         """Log and trace an orchestrator event via logfire.
 
         Args:
             msg: Orchestrator telemetry message
         """
+        if self._restoring:
+            return
         msg_type = type(msg).__name__
         logfire.info(
             "orchestrator event: {msg_type}",
