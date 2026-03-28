@@ -121,6 +121,19 @@ def test_workspace_file_upload_team_not_found(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def test_workspace_file_upload_size_limit(
+    client: TestClient, team_with_workspace: uuid.UUID
+) -> None:
+    """POST /workspace/{team_id}/file returns 413 for uploads exceeding 10 MB."""
+    big_data = b"\x00" * (10_485_760 + 1)
+    resp = client.post(
+        f"/workspace/{team_with_workspace}/file",
+        data={"path": "huge-upload.bin"},
+        files={"file": ("huge-upload.bin", big_data, "application/octet-stream")},
+    )
+    assert resp.status_code == 413
+
+
 def test_workspace_file_upload_traversal_attack(
     client: TestClient, team_with_workspace: uuid.UUID
 ) -> None:

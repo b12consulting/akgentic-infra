@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import PurePosixPath
 from typing import Annotated, cast
 
 from fastapi import APIRouter, HTTPException, Request, Response, UploadFile
@@ -61,27 +62,21 @@ def list_workspace_tree(
 def read_workspace_file(
     team_id: uuid.UUID,
     request: Request,
-    path: str = "",
+    path: str,
 ) -> Response:
     """Read a file from a team's workspace."""
     _validate_team(team_id, request)
     settings = cast(ServerSettings, request.app.state.settings)
     ws = _get_workspace(team_id, settings)
     try:
-        validated = ws._validate_path(path)  # noqa: SLF001
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="Path access denied") from None
-    if not validated.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-    if validated.stat().st_size > _MAX_FILE_SIZE:
-        raise HTTPException(status_code=413, detail="File exceeds 10 MB size limit")
-    try:
         data = ws.read(path)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="File not found") from None
     except PermissionError:
         raise HTTPException(status_code=403, detail="Path access denied") from None
-    filename = validated.name
+    if len(data) > _MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File exceeds 10 MB size limit")
+    filename = PurePosixPath(path).name
     return Response(
         content=data,
         media_type="application/octet-stream",
