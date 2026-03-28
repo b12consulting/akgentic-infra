@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -9,6 +10,8 @@ import typer
 
 from akgentic.infra.cli.client import ApiClient
 from akgentic.infra.cli.formatters import OutputFormat, format_output
+from akgentic.infra.cli.repl import ChatSession
+from akgentic.infra.cli.ws_client import WsClient
 
 app = typer.Typer(name="ak-infra", help="Akgentic Infrastructure CLI")
 team_app = typer.Typer(name="team", help="Manage agent teams")
@@ -26,6 +29,8 @@ class _State:
 
     client: ApiClient
     fmt: OutputFormat
+    server: str
+    api_key: str | None
 
 
 _state = _State()
@@ -54,6 +59,8 @@ def main(
     """Akgentic Infrastructure CLI — manage teams, messaging, and workspace."""
     _state.client = ApiClient(base_url=server, api_key=api_key)
     _state.fmt = fmt
+    _state.server = server
+    _state.api_key = api_key
 
 
 # -- team commands --
@@ -134,13 +141,33 @@ def reply(
         _print({"team_id": team_id, "message_id": message_id, "status": "sent"})
 
 
-# -- chat placeholder --
+# -- chat --
 
 
 @app.command("chat")
-def chat() -> None:
-    """Interactive chat REPL (not yet implemented)."""
-    typer.echo("Not yet implemented — see Story 5.2a")
+def chat(
+    team_id: Annotated[str | None, typer.Argument(help="Team ID to chat with")] = None,
+    create: Annotated[
+        str | None, typer.Option("--create", help="Create team from catalog entry first")
+    ] = None,
+) -> None:
+    """Interactive chat REPL — connect to a team via WebSocket."""
+    if create is not None:
+        team = _state.client.create_team(create)
+        team_id = str(team["team_id"])
+        typer.echo(f"Created team {team_id}")
+
+    if team_id is None:
+        typer.echo("Error: provide a TEAM_ID or use --create <catalog_entry>", err=True)
+        raise typer.Exit(code=1)
+
+    ws = WsClient(
+        base_url=_state.server,
+        team_id=team_id,
+        api_key=_state.api_key,
+    )
+    session = ChatSession(_state.client, ws, team_id, _state.fmt)
+    asyncio.run(session.run())
 
 
 # -- workspace commands --

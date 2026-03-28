@@ -209,14 +209,40 @@ class TestReply:
         assert "sent" in result.output.lower()
 
 
-# -- chat placeholder --
+# -- chat --
 
 
 class TestChat:
-    def test_not_implemented(self) -> None:
+    def test_chat_no_args_shows_error(self) -> None:
         result = _invoke(["chat"])
+        assert result.exit_code != 0
+
+    def test_chat_invokes_session(self) -> None:
+        mock = _mock_client()
+        with (
+            patch("akgentic.infra.cli.main.ChatSession") as mock_session_cls,
+            patch("akgentic.infra.cli.main.WsClient") as mock_ws_cls,
+            patch("akgentic.infra.cli.main.asyncio.run") as mock_run,
+        ):
+            mock_session = MagicMock()
+            mock_session_cls.return_value = mock_session
+            result = _invoke(["chat", "t1"], mock)
         assert result.exit_code == 0
-        assert "5.2a" in result.output
+        mock_ws_cls.assert_called_once()
+        mock_session_cls.assert_called_once()
+        mock_run.assert_called_once_with(mock_session.run())
+
+    def test_chat_create_flag_no_team_id(self) -> None:
+        mock = _mock_client()
+        with (
+            patch("akgentic.infra.cli.main.ChatSession") as mock_session_cls,
+            patch("akgentic.infra.cli.main.WsClient"),
+            patch("akgentic.infra.cli.main.asyncio.run"),
+        ):
+            mock_session_cls.return_value = MagicMock()
+            result = _invoke(["chat", "--create", "my-catalog"], mock)
+        assert result.exit_code == 0
+        mock.create_team.assert_called_once_with("my-catalog")
 
 
 # -- workspace --
