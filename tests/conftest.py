@@ -119,9 +119,13 @@ def team_service(community_services: CommunityServices) -> TeamService:
 
 
 @pytest.fixture()
-def app(community_services: CommunityServices, team_service: TeamService) -> FastAPI:
+def app(
+    community_services: CommunityServices,
+    team_service: TeamService,
+    seeded_settings: ServerSettings,
+) -> FastAPI:
     """FastAPI app with wired services."""
-    return create_app(community_services, team_service)
+    return create_app(community_services, team_service, settings=seeded_settings)
 
 
 @pytest.fixture()

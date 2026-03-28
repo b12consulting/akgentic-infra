@@ -26,6 +26,9 @@ from akgentic.infra.protocols import (
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
 from akgentic.infra.server.models import (
+    CatalogTeamListResponse,
+    CatalogTeamMember,
+    CatalogTeamResponse,
     CreateTeamRequest,
     EventListResponse,
     EventResponse,
@@ -33,6 +36,9 @@ from akgentic.infra.server.models import (
     SendMessageRequest,
     TeamListResponse,
     TeamResponse,
+    WorkspaceFileEntry,
+    WorkspaceFileUploadResponse,
+    WorkspaceTreeResponse,
 )
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
@@ -59,6 +65,9 @@ __all__ = [
     "TelemetrySubscriber",
     "WebSocketEventSubscriber",
     # Server
+    "CatalogTeamListResponse",
+    "CatalogTeamMember",
+    "CatalogTeamResponse",
     "CommunityServices",
     "CreateTeamRequest",
     "EventListResponse",
@@ -70,6 +79,9 @@ __all__ = [
     "TeamResponse",
     "TeamService",
     "TierServices",
+    "WorkspaceFileEntry",
+    "WorkspaceFileUploadResponse",
+    "WorkspaceTreeResponse",
     "create_app",
     # Wiring
     "wire_community",
