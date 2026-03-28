@@ -88,7 +88,12 @@ def load_frontend_adapter(fqdn: str) -> FrontendAdapter:
     except AttributeError as exc:
         raise ImportError(f"Cannot load frontend adapter '{fqdn}': {exc}") from exc
 
-    instance = cls()
+    try:
+        instance = cls()
+    except TypeError as exc:
+        raise TypeError(
+            f"Cannot instantiate frontend adapter '{fqdn}': {exc}"
+        ) from exc
     if not isinstance(instance, FrontendAdapter):
         raise TypeError(f"Class '{fqdn}' does not implement FrontendAdapter protocol")
 

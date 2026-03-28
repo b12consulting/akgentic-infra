@@ -132,6 +132,28 @@ class TestLoadFrontendAdapter:
             ):
                 load_frontend_adapter("fake_adapter_module._NotAnAdapter")
 
+    def test_load_adapter_with_constructor_args_raises_type_error(self) -> None:
+        """Adapter requiring constructor args raises clear TypeError."""
+        mod = _make_stub_module()
+
+        class _NeedsArgs:
+            def __init__(self, required: str) -> None:
+                pass
+
+            def register_routes(self, app: FastAPI) -> None:
+                pass
+
+            def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
+                return WrappedWsEvent(payload={})
+
+        mod._NeedsArgs = _NeedsArgs  # type: ignore[attr-defined]
+        with patch(
+            "akgentic.infra.server.routes.frontend_adapter.importlib.import_module",
+            return_value=mod,
+        ):
+            with pytest.raises(TypeError, match="Cannot instantiate frontend adapter"):
+                load_frontend_adapter("fake_adapter_module._NeedsArgs")
+
     def test_load_invalid_fqdn_no_module_path(self) -> None:
         """AC #4: FQDN without module path raises ImportError."""
         with pytest.raises(ImportError, match="invalid FQDN"):
@@ -283,8 +305,8 @@ class TestWebSocketAdapterIntegration:
     @pytest.fixture()
     def client_with_adapter(
         self,
-        community_services: MagicMock,
-        team_service: MagicMock,
+        community_services: object,
+        team_service: object,
         seeded_settings: ServerSettings,
     ) -> TestClient:
         """TestClient with a stub adapter set on app.state."""

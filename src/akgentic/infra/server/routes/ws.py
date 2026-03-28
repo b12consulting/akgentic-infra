@@ -153,7 +153,12 @@ async def _send_loop(
             break
 
         if adapter is not None and team_id is not None:
-            msg_data = json.loads(item)
+            try:
+                msg_data = json.loads(item)
+            except json.JSONDecodeError:
+                logger.warning("Malformed JSON in event queue, sending raw text")
+                await websocket.send_text(item)
+                continue
             event = PersistedEvent.model_validate({
                 "team_id": str(team_id),
                 "sequence": seq,
