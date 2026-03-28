@@ -7,6 +7,7 @@ from pkgutil import extend_path
 from akgentic.infra.adapters import (
     ChannelConfig,
     ChannelParserRegistry,
+    InteractionChannelDispatcher,
     LocalPlacement,
     LocalServiceRegistry,
     NoAuth,
@@ -64,6 +65,7 @@ __all__ = [
     # Adapters
     "ChannelConfig",
     "ChannelParserRegistry",
+    "InteractionChannelDispatcher",
     "LocalPlacement",
     "LocalServiceRegistry",
     "NoAuth",
