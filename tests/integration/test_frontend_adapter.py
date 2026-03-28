@@ -6,6 +6,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 pytestmark = pytest.mark.integration
 
@@ -26,7 +27,8 @@ def _create_v1_team(client: TestClient) -> str:
     assert "id" in data
     assert "status" in data
     assert "params" in data
-    return data["id"]
+    team_id: str = data["id"]
+    return team_id
 
 
 def _wait_for_v1_messages(
@@ -225,7 +227,7 @@ class TestV1WebSocket:
                 assert "state" in payload
 
         # Stop team to avoid LLM-in-flight hang
-        v1_adapter_client.post(f"/teams/{team_id}/stop")
+        v1_adapter_client.delete(f"/process/{team_id}/archive")
         time.sleep(0.5)
 
     def test_ws_v1_message_fields(self, v1_adapter_client: TestClient) -> None:
@@ -245,7 +247,7 @@ class TestV1WebSocket:
             while time.monotonic() < deadline:
                 try:
                     data = ws.receive_json(mode="text")
-                except Exception:
+                except (WebSocketDisconnect, RuntimeError):
                     break
                 if not isinstance(data, dict) or "payload" not in data:
                     continue
@@ -264,5 +266,5 @@ class TestV1WebSocket:
         assert msg["message_type"] in ("user", "agent", "system")
 
         # Stop team
-        v1_adapter_client.post(f"/teams/{team_id}/stop")
+        v1_adapter_client.delete(f"/process/{team_id}/archive")
         time.sleep(0.5)
