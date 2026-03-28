@@ -147,13 +147,16 @@ class TestNotifyRestore:
 
     def test_notify_restore_activates_connections(self) -> None:
         """notify_restore subscribes each waiting WS to the restored orchestrator."""
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, PropertyMock
+
+        from starlette.websockets import WebSocketState
 
         from akgentic.infra.server.routes.ws import notify_restore
 
         mgr = ConnectionManager()
         tid = uuid.uuid4()
         ws = MagicMock()
+        type(ws).client_state = PropertyMock(return_value=WebSocketState.CONNECTED)
         mgr.add_waiting(tid, ws)
 
         runtime = MagicMock()
@@ -166,7 +169,31 @@ class TestNotifyRestore:
         notify_restore(mgr, service, tid)
 
         orch_proxy.subscribe.assert_called_once()
-        assert hasattr(ws, "_subscriber")
+
+    def test_notify_restore_skips_disconnected(self) -> None:
+        """notify_restore skips WebSocket connections that are no longer connected."""
+        from unittest.mock import MagicMock, PropertyMock
+
+        from starlette.websockets import WebSocketState
+
+        from akgentic.infra.server.routes.ws import notify_restore
+
+        mgr = ConnectionManager()
+        tid = uuid.uuid4()
+        ws = MagicMock()
+        type(ws).client_state = PropertyMock(return_value=WebSocketState.DISCONNECTED)
+        mgr.add_waiting(tid, ws)
+
+        runtime = MagicMock()
+        orch_proxy = MagicMock()
+        runtime.actor_system.proxy_ask.return_value = orch_proxy
+
+        service = MagicMock()
+        service.get_runtime.return_value = runtime
+
+        notify_restore(mgr, service, tid)
+
+        orch_proxy.subscribe.assert_not_called()
 
 
 def _trigger_subscriber_event(client: TestClient, team_id: str) -> None:

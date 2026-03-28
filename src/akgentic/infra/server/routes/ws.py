@@ -26,11 +26,13 @@ class ConnectionManager:
     """Tracks idle WebSocket connections waiting for team restore.
 
     Stored on ``app.state.connection_manager`` so the restore endpoint
-    can notify waiting connections.
+    can notify waiting connections. Also maps restored WebSockets to
+    their subscribers (avoiding monkey-patching attributes on WebSocket).
     """
 
     def __init__(self) -> None:
         self._waiting: dict[uuid.UUID, list[WebSocket]] = {}
+        self._subscribers: dict[int, WebSocketEventSubscriber] = {}
 
     def add_waiting(self, team_id: uuid.UUID, ws: WebSocket) -> None:
         """Register an idle WebSocket waiting for a team to be restored."""
@@ -46,10 +48,19 @@ class ConnectionManager:
                 pass
             if not conns:
                 del self._waiting[team_id]
+        self._subscribers.pop(id(ws), None)
 
     def pop_waiting(self, team_id: uuid.UUID) -> list[WebSocket]:
         """Pop and return all waiting connections for a team."""
         return self._waiting.pop(team_id, [])
+
+    def set_subscriber(self, ws: WebSocket, sub: WebSocketEventSubscriber) -> None:
+        """Associate a subscriber with a restored WebSocket connection."""
+        self._subscribers[id(ws)] = sub
+
+    def get_subscriber(self, ws: WebSocket) -> WebSocketEventSubscriber | None:
+        """Look up the subscriber assigned to a WebSocket, if any."""
+        return self._subscribers.pop(id(ws), None)
 
 
 def _get_team_service(ws: WebSocket) -> TeamService:
@@ -118,7 +129,7 @@ async def _send_loop(
     subscriber: WebSocketEventSubscriber,
 ) -> None:
     """Read from subscriber queue and send over WebSocket."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     q = subscriber.get_queue()
     while True:
         try:
@@ -148,8 +159,8 @@ async def _run_idle_loop(
             try:
                 await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
             except TimeoutError:
-                if hasattr(websocket, "_subscriber"):
-                    sub: WebSocketEventSubscriber = websocket._subscriber
+                sub = conn_mgr.get_subscriber(websocket)
+                if sub is not None:
                     await _send_loop(websocket, sub)
                     return
             except WebSocketDisconnect:
@@ -177,10 +188,12 @@ def notify_restore(
         return
 
     for ws in waiting:
+        if ws.client_state != WebSocketState.CONNECTED:
+            continue
         subscriber = WebSocketEventSubscriber()
         orch_proxy = runtime.actor_system.proxy_ask(runtime.orchestrator_addr, Orchestrator)
         orch_proxy.subscribe(subscriber)
-        ws._subscriber = subscriber  # type: ignore[attr-defined]
+        conn_mgr.set_subscriber(ws, subscriber)
 
 
 class _QueueTimeoutError(Exception):
