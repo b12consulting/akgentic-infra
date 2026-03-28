@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.routes.catalog import router as catalog_router
+from akgentic.infra.server.routes.frontend_adapter import load_frontend_adapter
 from akgentic.infra.server.routes.teams import router as teams_router
 from akgentic.infra.server.routes.workspace import router as workspace_router
 from akgentic.infra.server.routes.ws import ConnectionManager
@@ -53,5 +54,10 @@ def create_app(
     app.include_router(catalog_router)
     app.include_router(workspace_router)
     app.include_router(ws_router)
+
+    if app.state.settings.frontend_adapter:
+        adapter = load_frontend_adapter(app.state.settings.frontend_adapter)
+        adapter.register_routes(app)
+        app.state.frontend_adapter = adapter
 
     return app
