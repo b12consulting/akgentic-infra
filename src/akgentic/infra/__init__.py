@@ -5,11 +5,14 @@ from __future__ import annotations
 from pkgutil import extend_path
 
 from akgentic.infra.adapters import (
+    ChannelConfig,
+    ChannelParserRegistry,
     LocalPlacement,
     LocalServiceRegistry,
     NoAuth,
     TelemetrySubscriber,
     WebSocketEventSubscriber,
+    YamlChannelRegistry,
 )
 from akgentic.infra.protocols import (
     AuthStrategy,
@@ -59,11 +62,14 @@ __all__ = [
     "PlacementStrategy",
     "RecoveryPolicy",
     # Adapters
+    "ChannelConfig",
+    "ChannelParserRegistry",
     "LocalPlacement",
     "LocalServiceRegistry",
     "NoAuth",
     "TelemetrySubscriber",
     "WebSocketEventSubscriber",
+    "YamlChannelRegistry",
     # Server
     "CatalogTeamListResponse",
     "CatalogTeamMember",
