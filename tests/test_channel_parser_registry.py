@@ -199,6 +199,42 @@ def test_registry_invalid_adapter_fqcn() -> None:
         ChannelParserRegistry(config)
 
 
+class _NotAParser:
+    """Deliberately does NOT satisfy ChannelParser protocol."""
+
+    pass
+
+
+class _NotAnAdapter:
+    """Deliberately does NOT satisfy InteractionChannelAdapter protocol."""
+
+    pass
+
+
+def test_registry_rejects_non_parser_protocol() -> None:
+    """ChannelParserRegistry raises TypeError when class doesn't satisfy ChannelParser."""
+    config = {
+        "bad": ChannelConfig(
+            parser_fqcn="tests.test_channel_parser_registry._NotAParser",
+            adapter_fqcn="tests.test_channel_parser_registry.StubWhatsAppAdapter",
+        ),
+    }
+    with pytest.raises(TypeError, match="ChannelParser"):
+        ChannelParserRegistry(config)
+
+
+def test_registry_rejects_non_adapter_protocol() -> None:
+    """ChannelParserRegistry raises TypeError for non-InteractionChannelAdapter."""
+    config = {
+        "bad": ChannelConfig(
+            parser_fqcn="tests.test_channel_parser_registry.StubWhatsAppParser",
+            adapter_fqcn="tests.test_channel_parser_registry._NotAnAdapter",
+        ),
+    }
+    with pytest.raises(TypeError, match="InteractionChannelAdapter"):
+        ChannelParserRegistry(config)
+
+
 def test_channel_config_is_pydantic_model() -> None:
     """ChannelConfig is a Pydantic model with correct fields."""
     from pydantic import BaseModel

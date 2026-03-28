@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import importlib
-from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:
-    from akgentic.infra.protocols.channels import (
-        ChannelParser,
-        InteractionChannelAdapter,
-    )
+from akgentic.infra.protocols.channels import (
+    ChannelParser,
+    InteractionChannelAdapter,
+)
 
 
 class ChannelConfig(BaseModel):
@@ -70,8 +68,20 @@ class ChannelParserRegistry:
             parser_cls = import_class(cfg.parser_fqcn)
             adapter_cls = import_class(cfg.adapter_fqcn)
 
-            parser: ChannelParser = parser_cls()
-            adapter: InteractionChannelAdapter = adapter_cls()
+            parser = parser_cls()
+            if not isinstance(parser, ChannelParser):
+                msg = (
+                    f"Class '{cfg.parser_fqcn}' does not satisfy ChannelParser protocol"
+                )
+                raise TypeError(msg)
+
+            adapter = adapter_cls()
+            if not isinstance(adapter, InteractionChannelAdapter):
+                msg = (
+                    f"Class '{cfg.adapter_fqcn}' does not satisfy "
+                    f"InteractionChannelAdapter protocol"
+                )
+                raise TypeError(msg)
 
             self._parsers[parser.channel_name] = parser
             self._adapters.append(adapter)

@@ -267,6 +267,25 @@ def test_channel_parser_return_type() -> None:
     assert hints["return"] is ChannelMessage
 
 
+def test_channel_parser_structural_subtyping() -> None:
+    """A concrete class satisfying ChannelParser is recognized."""
+    from akgentic.infra.protocols import ChannelMessage, ChannelParser
+
+    class FakeParser:
+        @property
+        def channel_name(self) -> str:
+            return "fake"
+
+        @property
+        def default_catalog_entry(self) -> str:
+            return "default-fake"
+
+        async def parse(self, payload: dict[str, object]) -> ChannelMessage:
+            return ChannelMessage(content="", channel_user_id="")
+
+    assert isinstance(FakeParser(), ChannelParser)
+
+
 # --- ChannelRegistry ---
 
 
