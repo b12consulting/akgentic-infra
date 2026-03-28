@@ -9,6 +9,7 @@ from akgentic.infra.adapters import (
     LocalServiceRegistry,
     NoAuth,
     TelemetrySubscriber,
+    WebSocketEventSubscriber,
 )
 from akgentic.infra.protocols import (
     AuthStrategy,
@@ -56,6 +57,7 @@ __all__ = [
     "LocalServiceRegistry",
     "NoAuth",
     "TelemetrySubscriber",
+    "WebSocketEventSubscriber",
     # Server
     "CommunityServices",
     "CreateTeamRequest",

@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.routes.teams import router as teams_router
+from akgentic.infra.server.routes.ws import ConnectionManager
+from akgentic.infra.server.routes.ws import router as ws_router
 from akgentic.infra.server.services.team_service import TeamService
 
 
@@ -40,7 +42,9 @@ def create_app(
 
     app.state.services = services
     app.state.team_service = team_service
+    app.state.connection_manager = ConnectionManager()
 
     app.include_router(teams_router)
+    app.include_router(ws_router)
 
     return app
