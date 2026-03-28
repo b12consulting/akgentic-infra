@@ -61,3 +61,58 @@ class EventListResponse(BaseModel):
     """Response body for GET /teams/{team_id}/events."""
 
     events: list[EventResponse] = Field(description="List of persisted events")
+
+
+# --- Catalog response models ---
+
+
+class CatalogTeamMember(BaseModel):
+    """Simplified view of a team member in a catalog template."""
+
+    agent_id: str = Field(description="Agent identifier")
+    children: list[CatalogTeamMember] = Field(
+        default_factory=list, description="Nested child members"
+    )
+
+
+class CatalogTeamResponse(BaseModel):
+    """Serialized team template from the catalog."""
+
+    id: str = Field(description="Template identifier")
+    name: str = Field(description="Human-readable template name")
+    description: str = Field(description="Template description")
+    entry_point: str = Field(description="Entry-point agent identifier")
+    members: list[CatalogTeamMember] = Field(description="Team member hierarchy")
+    profiles: list[str] = Field(description="Available runtime profiles")
+
+
+class CatalogTeamListResponse(BaseModel):
+    """Response body for GET /catalog/teams."""
+
+    teams: list[CatalogTeamResponse] = Field(description="List of team templates")
+
+
+# --- Workspace response models ---
+
+
+class WorkspaceFileEntry(BaseModel):
+    """Single entry in a workspace file tree listing."""
+
+    name: str = Field(description="File or directory name")
+    is_dir: bool = Field(description="True if entry is a directory")
+    size: int = Field(description="File size in bytes (0 for directories)")
+
+
+class WorkspaceTreeResponse(BaseModel):
+    """Response body for GET /workspace/{team_id}/tree."""
+
+    team_id: str = Field(description="Team identifier")
+    path: str = Field(description="Listed directory path")
+    entries: list[WorkspaceFileEntry] = Field(description="Directory entries")
+
+
+class WorkspaceFileUploadResponse(BaseModel):
+    """Response body for POST /workspace/{team_id}/file."""
+
+    path: str = Field(description="Destination file path")
+    size: int = Field(description="File size in bytes")
