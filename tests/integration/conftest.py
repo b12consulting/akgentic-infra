@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import yaml
@@ -12,11 +13,17 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.local_ingestion import LocalIngestion
+from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
 from akgentic.infra.wiring import wire_community
+
+if TYPE_CHECKING:
+    from .test_channels import StubChannelAdapter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -227,3 +234,70 @@ def v1_adapter_app(
 def v1_adapter_client(v1_adapter_app: FastAPI) -> TestClient:
     """Sync HTTP test client hitting a V1-adapter-enabled FastAPI app."""
     return TestClient(v1_adapter_app)
+
+
+# ---------------------------------------------------------------------------
+# Channel Integration Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def test_adapter() -> StubChannelAdapter:
+    """Shared StubChannelAdapter instance for inspecting delivered messages."""
+    from .test_channels import StubChannelAdapter as _StubChannelAdapter
+
+    return _StubChannelAdapter()
+
+
+@pytest.fixture()
+def channel_parser_registry(
+    test_adapter: StubChannelAdapter,
+) -> ChannelParserRegistry:
+    """ChannelParserRegistry with test stubs manually injected."""
+    from .test_channels import StubChannelParser
+
+    registry = ChannelParserRegistry(channels_config={})
+    parser = StubChannelParser()
+    registry._parsers[parser.channel_name] = parser
+    registry._adapters.append(test_adapter)
+    return registry
+
+
+@pytest.fixture()
+def channel_registry_instance(tmp_path: Path) -> YamlChannelRegistry:
+    """YamlChannelRegistry backed by tmp_path."""
+    return YamlChannelRegistry(registry_path=tmp_path / "channel-registry.yaml")
+
+
+@pytest.fixture()
+def channel_ingestion(
+    integration_team_service: TeamService,
+) -> LocalIngestion:
+    """LocalIngestion wired to the integration TeamService."""
+    return LocalIngestion(team_service=integration_team_service)
+
+
+@pytest.fixture()
+def channel_app(
+    integration_services: CommunityServices,
+    integration_team_service: TeamService,
+    integration_settings: ServerSettings,
+    channel_parser_registry: ChannelParserRegistry,
+    channel_registry_instance: YamlChannelRegistry,
+    channel_ingestion: LocalIngestion,
+) -> FastAPI:
+    """FastAPI app with webhook wiring for channel integration tests."""
+    return create_app(
+        integration_services,
+        integration_team_service,
+        settings=integration_settings,
+        channel_parser_registry=channel_parser_registry,
+        channel_registry=channel_registry_instance,
+        ingestion=channel_ingestion,
+    )
+
+
+@pytest.fixture()
+def channel_client(channel_app: FastAPI) -> TestClient:
+    """Sync HTTP test client hitting a channel-enabled FastAPI app."""
+    return TestClient(channel_app)
