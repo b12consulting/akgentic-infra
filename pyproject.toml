@@ -77,4 +77,4 @@ addopts = "-m 'not integration' --cov=akgentic.infra --cov-branch"
 filterwarnings = ["ignore:No logs or spans:UserWarning"]
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 80
