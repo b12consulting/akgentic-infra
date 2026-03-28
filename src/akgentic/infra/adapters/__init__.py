@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+from akgentic.infra.adapters.channel_parser_registry import (
+    ChannelConfig,
+    ChannelParserRegistry,
+)
 from akgentic.infra.adapters.local_placement import LocalPlacement
 from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.adapters.websocket_subscriber import WebSocketEventSubscriber
+from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 
 __all__ = [
+    "ChannelConfig",
+    "ChannelParserRegistry",
     "LocalPlacement",
     "LocalServiceRegistry",
     "NoAuth",
     "TelemetrySubscriber",
     "WebSocketEventSubscriber",
+    "YamlChannelRegistry",
 ]
