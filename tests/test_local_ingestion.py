@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock
 
+import pytest
+
 from akgentic.infra.adapters.local_ingestion import LocalIngestion
 from akgentic.infra.protocols.channels import InteractionChannelIngestion
 from akgentic.infra.server.services.team_service import TeamService
@@ -88,11 +90,5 @@ async def test_route_reply_propagates_value_error() -> None:
     ingestion = LocalIngestion(mock_service)
     team_id = uuid.uuid4()
 
-    try:
+    with pytest.raises(ValueError, match="Team not found"):
         await ingestion.route_reply(team_id, "hello")
-        raised = False
-    except ValueError as exc:
-        raised = True
-        assert "Team not found" in str(exc)
-
-    assert raised, "Expected ValueError to propagate"

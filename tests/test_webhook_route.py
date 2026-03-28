@@ -84,10 +84,14 @@ class StubIngestion:
 # ---------------------------------------------------------------------------
 
 def _build_parser_registry(parser: StubParser) -> ChannelParserRegistry:
-    """Build a ChannelParserRegistry with a pre-registered stub parser."""
+    """Build a ChannelParserRegistry with a pre-registered stub parser.
+
+    Uses __new__ to bypass the constructor which requires importable FQCNs.
+    The webhook route only needs get_parser(), so adapter resolution is irrelevant.
+    """
     registry = ChannelParserRegistry.__new__(ChannelParserRegistry)
-    registry._parsers = {parser.channel_name: parser}
-    registry._adapters = []
+    registry._parsers = {parser.channel_name: parser}  # noqa: SLF001
+    registry._adapters = []  # noqa: SLF001
     return registry
 
 

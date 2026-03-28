@@ -23,12 +23,12 @@ def get_channel_parser_registry(request: Request) -> ChannelParserRegistry:
 
 def get_channel_registry(request: Request) -> ChannelRegistry:
     """FastAPI dependency: extract ChannelRegistry from app.state."""
-    return cast("ChannelRegistry", request.app.state.channel_registry)
+    return cast(ChannelRegistry, request.app.state.channel_registry)
 
 
 def get_ingestion(request: Request) -> InteractionChannelIngestion:
     """FastAPI dependency: extract InteractionChannelIngestion from app.state."""
-    return cast("InteractionChannelIngestion", request.app.state.ingestion)
+    return cast(InteractionChannelIngestion, request.app.state.ingestion)
 
 
 @router.post("/{channel}", status_code=204)

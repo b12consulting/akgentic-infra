@@ -33,10 +33,17 @@ def create_app(
     Args:
         services: Wired community services container.
         team_service: Pre-built team service for dependency injection.
+        settings: Server settings. Defaults to ServerSettings().
         cors_origins: Allowed CORS origins. Defaults to ["*"] for community tier.
+        channel_parser_registry: Optional channel parser registry for webhook support.
+        channel_registry: Required when channel_parser_registry is provided.
+        ingestion: Required when channel_parser_registry is provided.
 
     Returns:
         Configured FastAPI application instance.
+
+    Raises:
+        ValueError: If channel_parser_registry is provided without channel_registry/ingestion.
     """
     app = FastAPI(title="Akgentic Platform API")
 
@@ -62,6 +69,12 @@ def create_app(
     app.include_router(ws_router)
 
     if channel_parser_registry is not None:
+        if channel_registry is None or ingestion is None:
+            msg = (
+                "channel_registry and ingestion are required "
+                "when channel_parser_registry is provided"
+            )
+            raise ValueError(msg)
         app.state.channel_parser_registry = channel_parser_registry
         app.state.channel_registry = channel_registry
         app.state.ingestion = ingestion
