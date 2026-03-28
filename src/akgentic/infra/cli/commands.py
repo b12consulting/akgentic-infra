@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json as json_mod
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -163,8 +164,6 @@ async def _history_handler(args: str, session: ChatSession) -> None:
 
 def _is_displayable(data: dict[str, Any]) -> bool:
     """Check if an event is displayable (SentMessage or ErrorMessage)."""
-    import json as json_mod
-
     event = data.get("event", data)
     if isinstance(event, str):
         try:
@@ -228,13 +227,15 @@ async def _upload_handler(args: str, session: ChatSession) -> None:
         print("Usage: /upload <local_path>")
         return
 
+    loop = asyncio.get_running_loop()
     p = Path(local_path)
-    if not p.is_file():  # noqa: ASYNC240
+
+    is_file = await loop.run_in_executor(None, p.is_file)
+    if not is_file:
         print(f"Error: {local_path} is not a file or does not exist.")
         return
 
-    file_data = p.read_bytes()  # noqa: ASYNC240
-    loop = asyncio.get_running_loop()
+    file_data = await loop.run_in_executor(None, p.read_bytes)
     try:
         result = await loop.run_in_executor(
             None, session.client.workspace_upload, session.team_id, p.name, file_data
@@ -291,13 +292,11 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
     # Close current WebSocket
     await old_ws.close()
 
-    # Create new WsClient for the new team
+    # Create new WsClient using stored server_url and api_key
     new_ws = WsClient(
-        base_url=old_ws.url.replace(f"/ws/{old_team_id}", "")
-        .replace("ws://", "http://")
-        .replace("wss://", "https://"),
+        base_url=session.server_url,
         team_id=new_team_id,
-        api_key=None,  # API key is already in the HTTP client
+        api_key=session.api_key,
     )
 
     try:
@@ -305,8 +304,14 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
     except (SystemExit, Exception):  # noqa: BLE001
         print(f"Team {new_team_id} not found.", file=sys.stderr)
         # Restore previous connection
+        restored = WsClient(
+            base_url=session.server_url,
+            team_id=old_team_id,
+            api_key=session.api_key,
+        )
         try:
-            await old_ws.connect()
+            await restored.connect()
+            session.ws_client = restored
         except Exception:  # noqa: BLE001
             print("Failed to restore previous connection.", file=sys.stderr)
         return
@@ -315,16 +320,16 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
     session.team_id = new_team_id
     session.ws_client = new_ws
 
-    # Replay history for the new team
-    session._replay_history()
-
-    # Cancel and restart the receive loop
+    # Cancel old receive loop before replaying history
     if session._receive_task is not None:
         session._receive_task.cancel()
         try:
             await session._receive_task
         except asyncio.CancelledError:
             pass
+
+    # Replay history for the new team (non-blocking)
+    await session.replay_history_async()
 
     session._receive_task = asyncio.create_task(session._receive_loop())
 

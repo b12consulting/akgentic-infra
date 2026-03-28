@@ -166,7 +166,10 @@ def chat(
         team_id=team_id,
         api_key=_state.api_key,
     )
-    session = ChatSession(_state.client, ws, team_id, _state.fmt)
+    session = ChatSession(
+        _state.client, ws, team_id, _state.fmt,
+        server_url=_state.server, api_key=_state.api_key,
+    )
     asyncio.run(session.run())
 
 

@@ -27,11 +27,16 @@ class ChatSession:
         ws_client: WsClient,
         team_id: str,
         fmt: OutputFormat,
+        *,
+        server_url: str = "http://localhost:8000",
+        api_key: str | None = None,
     ) -> None:
         self.client = client
         self.ws_client = ws_client
         self.team_id = team_id
         self.fmt = fmt
+        self.server_url = server_url
+        self.api_key = api_key
         self.command_registry: CommandRegistry = build_default_registry()
         self._running = True
         self._receive_task: asyncio.Task[None] | None = None
@@ -106,6 +111,21 @@ class ChatSession:
             events = self.client.get_events(self.team_id)
         except SystemExit:
             return
+        self._display_events(events)
+
+    async def replay_history_async(self) -> None:
+        """Async version of _replay_history — uses run_in_executor to avoid blocking."""
+        loop = asyncio.get_running_loop()
+        try:
+            events = await loop.run_in_executor(
+                None, self.client.get_events, self.team_id
+            )
+        except SystemExit:
+            return
+        self._display_events(events)
+
+    def _display_events(self, events: list[dict[str, Any]]) -> None:
+        """Print a list of events, adding a history separator if any were displayed."""
         displayed = False
         for evt in events:
             if _print_event(evt):

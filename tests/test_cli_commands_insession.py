@@ -80,7 +80,10 @@ def _make_session(
         client = _mock_client()
     if ws is None:
         ws = _mock_ws()
-    return ChatSession(client, ws, team_id, OutputFormat.table)
+    return ChatSession(
+        client, ws, team_id, OutputFormat.table,
+        server_url="http://localhost:8000", api_key="test-key",
+    )
 
 
 # =============================================================================
@@ -283,6 +286,14 @@ class TestHistoryHandler:
         out = capsys.readouterr().out
         assert "Usage" in out
 
+    async def test_negative_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _history_handler("-5", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
     async def test_filters_non_displayable(self, capsys: pytest.CaptureFixture[str]) -> None:
         events = [
             {"event": {"__model__": "StateChangedMessage", "state": "running"}},
@@ -477,12 +488,16 @@ class TestSwitchHandler:
         session._receive_task = asyncio.create_task(asyncio.sleep(100))
 
         new_ws_mock = _mock_ws()
-        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
+        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock) as ws_cls:
             await _switch_handler("t2", session)
 
         old_ws.close.assert_called_once()
         assert session.team_id == "t2"
         assert session.ws_client is new_ws_mock
+        # Verify server_url and api_key are passed to new WsClient
+        ws_cls.assert_called_once_with(
+            base_url="http://localhost:8000", team_id="t2", api_key="test-key",
+        )
         out = capsys.readouterr().out
         assert "Switched to team t2" in out
 
@@ -499,15 +514,21 @@ class TestSwitchHandler:
         old_ws = _mock_ws()
         session = _make_session(client=client, ws=old_ws)
 
+        # First call creates the new WsClient (connect will fail),
+        # second call creates the restored WsClient for the old team
         new_ws_mock = _mock_ws()
         new_ws_mock.connect = AsyncMock(side_effect=SystemExit(1))
-        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
+        restored_ws_mock = _mock_ws()
+        with patch(
+            "akgentic.infra.cli.commands.WsClient",
+            side_effect=[new_ws_mock, restored_ws_mock],
+        ):
             await _switch_handler("bad-team", session)
 
         err = capsys.readouterr().err
         assert "not found" in err
-        # Old ws should have been re-connected
-        old_ws.connect.assert_called_once()
+        # Session ws should be the restored connection
+        assert session.ws_client is restored_ws_mock
         assert session.team_id == "t1"  # unchanged
 
 
