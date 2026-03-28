@@ -8,9 +8,13 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from akgentic.core.messages.message import Message, UserMessage
+from akgentic.core.actor_address import ActorAddress
+from akgentic.core.agent_state import BaseState
+from akgentic.core.messages.message import Message, ResultMessage, UserMessage
 from akgentic.core.messages.orchestrator import (
     ReceivedMessage,
+    SentMessage,
+    StateChangedMessage,
 )
 from akgentic.team.models import PersistedEvent, Process, TeamCard, TeamStatus
 from fastapi import FastAPI
@@ -27,6 +31,7 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
     V1ProcessList,
     V1ProcessParams,
     V1StateEntry,
+    V1StatusResponse,
 )
 from akgentic.infra.server.settings import ServerSettings
 
@@ -562,6 +567,87 @@ class TestV1StatesRoute:
         resp = v1_client.get(f"/states/{_TEAM_ID}")
         assert resp.status_code == 200
         assert resp.json() == []
+
+    def test_get_states_with_state_events(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC #5: GET /states/{id} returns state changes in V1 format."""
+        sender = MagicMock()
+        sender.name = "@Manager"
+        state_msg = StateChangedMessage(state=BaseState())
+        state_msg.sender = sender
+        mock_service.get_events.return_value = [
+            _make_persisted_event(state_msg, sequence=1),
+        ]
+        resp = v1_client.get(f"/states/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["agent"] == "@Manager"
+        assert isinstance(data[0]["state"], dict)
+        assert data[0]["timestamp"] == _NOW.isoformat()
+
+
+class TestV1MessageExtraction:
+    """Test message content extraction and classification helper coverage."""
+
+    def test_sent_message_content_extraction(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """SentMessage.message.content is extracted when outer has no content."""
+        inner = UserMessage(content="inner content")
+        recipient = MagicMock(spec=ActorAddress)
+        recipient.name = "@Worker"
+        sent = SentMessage(message=inner, recipient=recipient)
+        mock_service.get_events.return_value = [
+            _make_persisted_event(sent, sequence=1),
+        ]
+        resp = v1_client.get(f"/messages/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) >= 1
+
+    def test_result_message_classified_as_agent(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """ResultMessage events are classified as 'agent' type."""
+        result_msg = ResultMessage(content="AI response")
+        mock_service.get_events.return_value = [
+            _make_persisted_event(result_msg, sequence=1),
+        ]
+        resp = v1_client.get(f"/messages/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["type"] == "agent"
+
+    def test_llm_context_filters_non_content_events(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """GET /llm_context/{id} filters out events without displayable content."""
+        user_msg = UserMessage(content="hello")
+        received = ReceivedMessage(message_id=uuid.uuid4())
+        mock_service.get_events.return_value = [
+            _make_persisted_event(user_msg, sequence=1),
+            _make_persisted_event(received, sequence=2),
+        ]
+        resp = v1_client.get(f"/llm_context/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["content"] == "hello"
+
+
+class TestV1StatusResponseModel:
+    """Test V1StatusResponse Pydantic model."""
+
+    def test_v1_status_response_serialization(self) -> None:
+        """V1StatusResponse serializes correctly."""
+        resp = V1StatusResponse(status="ok")
+        data = resp.model_dump()
+        assert data == {"status": "ok"}
+        restored = V1StatusResponse.model_validate(data)
+        assert restored == resp
 
 
 class TestV1ErrorCases:

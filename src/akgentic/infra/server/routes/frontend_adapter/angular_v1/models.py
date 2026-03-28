@@ -73,3 +73,9 @@ class V1ProcessList(BaseModel):
         default_factory=list,
         description="List of V1 process contexts",
     )
+
+
+class V1StatusResponse(BaseModel):
+    """V1 simple status response for action endpoints."""
+
+    status: str = Field(description="Operation status, e.g. 'ok'")

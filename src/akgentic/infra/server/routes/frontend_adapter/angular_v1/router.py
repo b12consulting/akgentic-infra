@@ -11,7 +11,7 @@ from typing import NoReturn, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from akgentic.core.messages.message import Message
+from akgentic.core.messages.message import Message, ResultMessage, UserMessage
 from akgentic.core.messages.orchestrator import (
     SentMessage,
     StateChangedMessage,
@@ -22,6 +22,7 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
     V1ProcessContext,
     V1ProcessList,
     V1StateEntry,
+    V1StatusResponse,
 )
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.models import PersistedEvent, Process
@@ -90,10 +91,9 @@ def _extract_message_content(event: Message) -> str | None:
 
 def _classify_message_type(event: Message) -> str:
     """Classify a message event as user/agent/system."""
-    model_name = type(event).__name__
-    if model_name == "UserMessage":
+    if isinstance(event, UserMessage):
         return "user"
-    if model_name in ("ResultMessage", "SentMessage"):
+    if isinstance(event, (ResultMessage, SentMessage)):
         return "agent"
     return "system"
 
@@ -164,47 +164,47 @@ def get_process(
     return _to_v1_process_context(process)
 
 
-@process_router.patch("/{id}", status_code=200)
+@process_router.patch("/{id}", status_code=200, response_model=V1StatusResponse)
 def send_process_message(
     id: str,
     body: V1MessageBody,
     service: TeamService = Depends(get_team_service),
-) -> dict[str, str]:
+) -> V1StatusResponse:
     """PATCH /process/{id} -> send message via V2 service."""
     team_id = _parse_uuid(id)
     try:
         service.send_message(team_id, body.content)
     except ValueError as exc:
         _raise_action_error(exc)
-    return {"status": "ok"}
+    return V1StatusResponse(status="ok")
 
 
-@process_router.delete("/{id}", status_code=200)
+@process_router.delete("/{id}", status_code=200, response_model=V1StatusResponse)
 def delete_process(
     id: str,
     service: TeamService = Depends(get_team_service),
-) -> dict[str, str]:
+) -> V1StatusResponse:
     """DELETE /process/{id} -> delete team via V2 service."""
     team_id = _parse_uuid(id)
     try:
         service.delete_team(team_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
-    return {"status": "ok"}
+    return V1StatusResponse(status="ok")
 
 
-@process_router.delete("/{id}/archive", status_code=200)
+@process_router.delete("/{id}/archive", status_code=200, response_model=V1StatusResponse)
 def archive_process(
     id: str,
     service: TeamService = Depends(get_team_service),
-) -> dict[str, str]:
+) -> V1StatusResponse:
     """DELETE /process/{id}/archive -> stop team via V2 service."""
     team_id = _parse_uuid(id)
     try:
         service.stop_team(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
-    return {"status": "ok"}
+    return V1StatusResponse(status="ok")
 
 
 @process_router.post("/{id}/restore", response_model=V1ProcessContext)
@@ -224,13 +224,13 @@ def restore_process(
 # --- Human input route ---
 
 
-@human_input_router.post("/{id}/human/{proxy}", status_code=200)
+@human_input_router.post("/{id}/human/{proxy}", status_code=200, response_model=V1StatusResponse)
 def process_human_input(
     id: str,
     proxy: str,
     body: V1HumanInputBody,
     service: TeamService = Depends(get_team_service),
-) -> dict[str, str]:
+) -> V1StatusResponse:
     """POST /process_human_input/{id}/human/{proxy} -> route human input.
 
     V1 had `proxy` in path but V2 finds HumanProxy automatically — ignore proxy param.
@@ -240,7 +240,7 @@ def process_human_input(
         service.process_human_input(team_id, body.content, body.message_id)
     except ValueError as exc:
         _raise_action_error(exc)
-    return {"status": "ok"}
+    return V1StatusResponse(status="ok")
 
 
 # --- Messages route ---
