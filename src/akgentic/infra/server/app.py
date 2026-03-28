@@ -5,10 +5,13 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.routes.catalog import router as catalog_router
 from akgentic.infra.server.routes.frontend_adapter import load_frontend_adapter
 from akgentic.infra.server.routes.teams import router as teams_router
+from akgentic.infra.server.routes.webhook import router as webhook_router
 from akgentic.infra.server.routes.workspace import router as workspace_router
 from akgentic.infra.server.routes.ws import ConnectionManager
 from akgentic.infra.server.routes.ws import router as ws_router
@@ -21,6 +24,9 @@ def create_app(
     team_service: TeamService,
     settings: ServerSettings | None = None,
     cors_origins: list[str] | None = None,
+    channel_parser_registry: ChannelParserRegistry | None = None,
+    channel_registry: ChannelRegistry | None = None,
+    ingestion: InteractionChannelIngestion | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -54,6 +60,12 @@ def create_app(
     app.include_router(catalog_router)
     app.include_router(workspace_router)
     app.include_router(ws_router)
+
+    if channel_parser_registry is not None:
+        app.state.channel_parser_registry = channel_parser_registry
+        app.state.channel_registry = channel_registry
+        app.state.ingestion = ingestion
+        app.include_router(webhook_router)
 
     if app.state.settings.frontend_adapter:
         adapter = load_frontend_adapter(app.state.settings.frontend_adapter)

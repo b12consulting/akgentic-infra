@@ -1,0 +1,77 @@
+"""Webhook route — inbound message ingestion from external interaction channels."""
+
+from __future__ import annotations
+
+from typing import cast
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.protocols.channels import (
+    ChannelRegistry,
+    InteractionChannelIngestion,
+    JsonValue,
+)
+
+router = APIRouter(prefix="/webhook", tags=["webhook"])
+
+
+def get_channel_parser_registry(request: Request) -> ChannelParserRegistry:
+    """FastAPI dependency: extract ChannelParserRegistry from app.state."""
+    return cast(ChannelParserRegistry, request.app.state.channel_parser_registry)
+
+
+def get_channel_registry(request: Request) -> ChannelRegistry:
+    """FastAPI dependency: extract ChannelRegistry from app.state."""
+    return cast("ChannelRegistry", request.app.state.channel_registry)
+
+
+def get_ingestion(request: Request) -> InteractionChannelIngestion:
+    """FastAPI dependency: extract InteractionChannelIngestion from app.state."""
+    return cast("InteractionChannelIngestion", request.app.state.ingestion)
+
+
+@router.post("/{channel}", status_code=204)
+async def webhook(
+    channel: str,
+    request: Request,
+    parser_registry: ChannelParserRegistry = Depends(get_channel_parser_registry),
+    channel_registry: ChannelRegistry = Depends(get_channel_registry),
+    ingestion: InteractionChannelIngestion = Depends(get_ingestion),
+) -> None:
+    """Process an inbound webhook from an external interaction channel.
+
+    Three routing flows based on parsed ChannelMessage:
+    1. Reply: team_id is set → route_reply
+    2. Continuation: no team_id but existing team found → route_reply
+    3. Initiation: no existing team → initiate_team + register
+    """
+    parser = parser_registry.get_parser(channel)
+    if parser is None:
+        raise HTTPException(status_code=404, detail=f"Unknown channel: {channel}")
+
+    payload: dict[str, JsonValue] = await request.json()
+    message = await parser.parse(payload)
+
+    if message.team_id is not None:
+        # Reply flow
+        await ingestion.route_reply(
+            message.team_id, message.content, message.message_id
+        )
+    else:
+        existing_team = await channel_registry.find_team(
+            channel, message.channel_user_id
+        )
+        if existing_team is not None:
+            # Continuation flow
+            await ingestion.route_reply(existing_team, message.content)
+        else:
+            # Initiation flow
+            new_team_id = await ingestion.initiate_team(
+                message.content,
+                message.channel_user_id,
+                parser.default_catalog_entry,
+            )
+            await channel_registry.register(
+                channel, message.channel_user_id, new_team_id
+            )

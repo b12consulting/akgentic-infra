@@ -7,6 +7,7 @@ from akgentic.infra.adapters.channel_parser_registry import (
     ChannelConfig,
     ChannelParserRegistry,
 )
+from akgentic.infra.adapters.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.local_placement import LocalPlacement
 from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 from akgentic.infra.adapters.no_auth import NoAuth
@@ -18,6 +19,7 @@ __all__ = [
     "ChannelConfig",
     "ChannelParserRegistry",
     "InteractionChannelDispatcher",
+    "LocalIngestion",
     "LocalPlacement",
     "LocalServiceRegistry",
     "NoAuth",
