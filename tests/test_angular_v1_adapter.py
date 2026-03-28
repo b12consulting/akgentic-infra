@@ -21,10 +21,12 @@ from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter, Wrapp
 from akgentic.infra.server.routes.frontend_adapter.angular_v1 import AngularV1Adapter
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
     V1ActorAddress,
+    V1LlmContextEntry,
     V1MessageEntry,
     V1ProcessContext,
     V1ProcessList,
     V1ProcessParams,
+    V1StateEntry,
 )
 from akgentic.infra.server.settings import ServerSettings
 
@@ -194,6 +196,30 @@ class TestV1Models:
         restored = V1ProcessList.model_validate(data)
         assert len(restored.processes) == 1
         assert restored.processes[0].id == str(_TEAM_ID)
+
+    def test_v1_llm_context_entry_serialization(self) -> None:
+        """V1LlmContextEntry serializes correctly."""
+        entry = V1LlmContextEntry(
+            role="user",
+            content="hello",
+            timestamp=_NOW.isoformat(),
+        )
+        data = entry.model_dump()
+        restored = V1LlmContextEntry.model_validate(data)
+        assert restored == entry
+        assert restored.role == "user"
+
+    def test_v1_state_entry_serialization(self) -> None:
+        """V1StateEntry serializes correctly."""
+        entry = V1StateEntry(
+            agent="@Manager",
+            state={"status": "active"},
+            timestamp=_NOW.isoformat(),
+        )
+        data = entry.model_dump()
+        restored = V1StateEntry.model_validate(data)
+        assert restored == entry
+        assert restored.agent == "@Manager"
 
 
 # ---------------------------------------------------------------------------

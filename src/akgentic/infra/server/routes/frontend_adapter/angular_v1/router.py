@@ -6,7 +6,7 @@ Every route delegates to TeamService — zero business logic in the adapter.
 from __future__ import annotations
 
 import uuid
-from typing import Any, NoReturn, cast
+from typing import NoReturn, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -17,9 +17,11 @@ from akgentic.core.messages.orchestrator import (
     StateChangedMessage,
 )
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
+    V1LlmContextEntry,
     V1MessageEntry,
     V1ProcessContext,
     V1ProcessList,
+    V1StateEntry,
 )
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.models import PersistedEvent, Process
@@ -261,50 +263,54 @@ def get_messages(
 # --- LLM context route ---
 
 
-@llm_context_router.get("/{id}", response_model=list[dict[str, Any]])
+@llm_context_router.get("/{id}", response_model=list[V1LlmContextEntry])
 def get_llm_context(
     id: str,
     service: TeamService = Depends(get_team_service),
-) -> list[dict[str, Any]]:
+) -> list[V1LlmContextEntry]:
     """GET /llm_context/{id} -> LLM context events in V1 format."""
     team_id = _parse_uuid(id)
     try:
         events = service.get_events(team_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
-    result: list[dict[str, Any]] = []
+    result: list[V1LlmContextEntry] = []
     for ev in events:
         content = _extract_message_content(ev.event)
         if content is None:
             continue
-        result.append({
-            "role": _classify_message_type(ev.event),
-            "content": content,
-            "timestamp": ev.timestamp.isoformat(),
-        })
+        result.append(
+            V1LlmContextEntry(
+                role=_classify_message_type(ev.event),
+                content=content,
+                timestamp=ev.timestamp.isoformat(),
+            )
+        )
     return result
 
 
 # --- States route ---
 
 
-@states_router.get("/{id}", response_model=list[dict[str, Any]])
+@states_router.get("/{id}", response_model=list[V1StateEntry])
 def get_states(
     id: str,
     service: TeamService = Depends(get_team_service),
-) -> list[dict[str, Any]]:
+) -> list[V1StateEntry]:
     """GET /states/{id} -> state change events in V1 format."""
     team_id = _parse_uuid(id)
     try:
         events = service.get_events(team_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
-    result: list[dict[str, Any]] = []
+    result: list[V1StateEntry] = []
     for ev in events:
         if isinstance(ev.event, StateChangedMessage):
-            result.append({
-                "agent": _get_sender_name(ev.event),
-                "state": ev.event.state.model_dump(mode="json"),
-                "timestamp": ev.timestamp.isoformat(),
-            })
+            result.append(
+                V1StateEntry(
+                    agent=_get_sender_name(ev.event),
+                    state=ev.event.state.model_dump(mode="json"),
+                    timestamp=ev.timestamp.isoformat(),
+                )
+            )
     return result

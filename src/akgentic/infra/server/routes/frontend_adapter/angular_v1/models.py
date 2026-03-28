@@ -50,6 +50,22 @@ class V1MessageEntry(BaseModel):
     type: str = Field(description="Message type: user, agent, system")
 
 
+class V1LlmContextEntry(BaseModel):
+    """V1 LLM context entry — maps from persisted events."""
+
+    role: str = Field(description="Message role: user, agent, system")
+    content: str = Field(description="Message content")
+    timestamp: str = Field(description="ISO datetime string")
+
+
+class V1StateEntry(BaseModel):
+    """V1 state change entry — maps from StateChangedMessage events."""
+
+    agent: str = Field(description="Agent name that changed state")
+    state: dict[str, object] = Field(description="Serialized agent state")
+    timestamp: str = Field(description="ISO datetime string")
+
+
 class V1ProcessList(BaseModel):
     """V1 list of processes."""
 
