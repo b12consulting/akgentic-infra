@@ -1,0 +1,347 @@
+"""Slash command registry and dispatcher for in-session REPL commands."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from akgentic.infra.cli.ws_client import WsClient
+
+if TYPE_CHECKING:
+    from akgentic.infra.cli.repl import ChatSession
+
+# Type alias for command handlers: async def handler(args: str, session: ChatSession) -> None
+CommandHandler = Callable[[str, "ChatSession"], Awaitable[None]]
+
+
+@dataclass
+class SlashCommand:
+    """A registered slash command."""
+
+    name: str
+    handler: CommandHandler
+    help_text: str
+    usage: str
+
+
+class CommandRegistry:
+    """Registry and dispatcher for slash commands."""
+
+    def __init__(self) -> None:
+        self._commands: dict[str, SlashCommand] = {}
+
+    def register(
+        self,
+        name: str,
+        handler: CommandHandler,
+        help_text: str,
+        usage: str,
+    ) -> None:
+        """Register a slash command."""
+        self._commands[name] = SlashCommand(
+            name=name, handler=handler, help_text=help_text, usage=usage
+        )
+
+    async def dispatch(self, line: str, session: ChatSession) -> bool:
+        """Parse and dispatch a slash command.
+
+        Returns True if a command was handled (or an unknown /command was caught),
+        False if the line is not a command (no / prefix).
+        """
+        stripped = line.strip()
+        if not stripped.startswith("/"):
+            return False
+
+        parts = stripped.split(maxsplit=1)
+        cmd_name = parts[0][1:]  # strip leading /
+        args = parts[1] if len(parts) > 1 else ""
+
+        if cmd_name in self._commands:
+            await self._commands[cmd_name].handler(args, session)
+            return True
+
+        print(f"Unknown command: /{cmd_name}. Type /help for available commands.")
+        return True
+
+    @property
+    def commands(self) -> dict[str, SlashCommand]:
+        """Return registered commands."""
+        return self._commands
+
+
+# -- Built-in commands --
+
+
+async def _help_handler(args: str, session: ChatSession) -> None:
+    """List all registered commands."""
+    registry = session.command_registry
+    print("Available commands:")
+    for cmd in registry.commands.values():
+        print(f"  /{cmd.name:<12s} {cmd.help_text}")
+        if cmd.usage:
+            print(f"  {'':12s}   Usage: {cmd.usage}")
+
+
+# -- Team inspection commands --
+
+
+async def _status_handler(args: str, session: ChatSession) -> None:
+    """Show team status and agent states."""
+    loop = asyncio.get_running_loop()
+    try:
+        team = await loop.run_in_executor(None, session.client.get_team, session.team_id)
+    except SystemExit:
+        print("Error fetching team status.", file=sys.stderr)
+        return
+
+    name = team.get("name", session.team_id)
+    status = team.get("status", "unknown")
+    agents: list[dict[str, Any]] = team.get("agents", [])
+    print(f"Team: {name}")
+    print(f"Status: {status}")
+    print(f"Agents: {len(agents)}")
+
+
+async def _agents_handler(args: str, session: ChatSession) -> None:
+    """List team members with roles and state."""
+    loop = asyncio.get_running_loop()
+    try:
+        team = await loop.run_in_executor(None, session.client.get_team, session.team_id)
+    except SystemExit:
+        print("Error fetching agents.", file=sys.stderr)
+        return
+
+    agents: list[dict[str, Any]] = team.get("agents", [])
+    if not agents:
+        print("No agents in team.")
+        return
+
+    # Print header
+    print(f"{'NAME':<20s} {'ROLE':<20s} {'STATE':<15s}")
+    print(f"{'-' * 20:<20s} {'-' * 20:<20s} {'-' * 15:<15s}")
+    for agent in agents:
+        name = agent.get("name", "unknown")
+        role = agent.get("role", "unknown")
+        state = agent.get("state", "unknown")
+        print(f"{name:<20s} {role:<20s} {state:<15s}")
+
+
+# -- History command --
+
+
+async def _history_handler(args: str, session: ChatSession) -> None:
+    """Show recent messages."""
+    limit = 20
+    if args.strip():
+        try:
+            limit = int(args.strip())
+        except ValueError:
+            print("Usage: /history [N]  — N must be a positive integer.")
+            return
+        if limit <= 0:
+            print("Usage: /history [N]  — N must be a positive integer.")
+            return
+
+    loop = asyncio.get_running_loop()
+    try:
+        events = await loop.run_in_executor(None, session.client.get_events, session.team_id)
+    except SystemExit:
+        print("Error fetching history.", file=sys.stderr)
+        return
+
+    from akgentic.infra.cli.repl import _print_event
+
+    # Filter to displayable events and take last N
+    displayable = [e for e in events if _is_displayable(e)]
+    for evt in displayable[-limit:]:
+        _print_event(evt)
+
+
+def _is_displayable(data: dict[str, Any]) -> bool:
+    """Check if an event is displayable (SentMessage or ErrorMessage)."""
+    import json as json_mod
+
+    event = data.get("event", data)
+    if isinstance(event, str):
+        try:
+            event = json_mod.loads(event)
+        except (json_mod.JSONDecodeError, TypeError):
+            return False
+    model = event.get("__model__", "")
+    return model in {"SentMessage", "ErrorMessage"}
+
+
+# -- Workspace commands --
+
+
+async def _files_handler(args: str, session: ChatSession) -> None:
+    """Show workspace file tree."""
+    loop = asyncio.get_running_loop()
+    try:
+        tree = await loop.run_in_executor(None, session.client.workspace_tree, session.team_id)
+    except SystemExit:
+        print("Error fetching file tree.", file=sys.stderr)
+        return
+
+    entries: list[dict[str, Any]] = tree.get("entries", [])
+    if not entries:
+        print("(empty workspace)")
+        return
+    for entry in entries:
+        prefix = "D " if entry.get("is_dir") else "  "
+        name = entry.get("name", "")
+        size = entry.get("size", 0)
+        suffix = f"  ({size} bytes)" if not entry.get("is_dir") else ""
+        print(f"{prefix}{name}{suffix}")
+
+
+async def _read_handler(args: str, session: ChatSession) -> None:
+    """Read a file from the workspace."""
+    path = args.strip()
+    if not path:
+        print("Usage: /read <path>")
+        return
+
+    loop = asyncio.get_running_loop()
+    try:
+        data = await loop.run_in_executor(
+            None, session.client.workspace_read, session.team_id, path
+        )
+    except SystemExit:
+        print(f"Error reading file: {path}", file=sys.stderr)
+        return
+
+    try:
+        print(data.decode("utf-8"), end="")
+    except UnicodeDecodeError:
+        print(f"(binary file, {len(data)} bytes)")
+
+
+async def _upload_handler(args: str, session: ChatSession) -> None:
+    """Upload a local file to the workspace."""
+    local_path = args.strip()
+    if not local_path:
+        print("Usage: /upload <local_path>")
+        return
+
+    p = Path(local_path)
+    if not p.is_file():  # noqa: ASYNC240
+        print(f"Error: {local_path} is not a file or does not exist.")
+        return
+
+    file_data = p.read_bytes()  # noqa: ASYNC240
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, session.client.workspace_upload, session.team_id, p.name, file_data
+        )
+    except SystemExit:
+        print(f"Error uploading file: {local_path}", file=sys.stderr)
+        return
+
+    uploaded_path = result.get("path", p.name)
+    size = result.get("size", len(file_data))
+    print(f"Uploaded {uploaded_path} ({size} bytes)")
+
+
+# -- Lifecycle commands --
+
+
+async def _stop_handler(args: str, session: ChatSession) -> None:
+    """Stop the team."""
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, session.client.delete_team, session.team_id)
+    except SystemExit:
+        print("Error stopping team.", file=sys.stderr)
+        return
+
+    print(f"Team {session.team_id} stopped.")
+
+
+async def _restore_handler(args: str, session: ChatSession) -> None:
+    """Restore a stopped team."""
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, session.client.restore_team, session.team_id)
+    except SystemExit:
+        print("Error restoring team.", file=sys.stderr)
+        return
+
+    print(f"Team {session.team_id} restored. Live events resumed.")
+
+
+# -- Switch command --
+
+
+async def _switch_handler(args: str, session: ChatSession) -> None:
+    """Switch to a different team."""
+    new_team_id = args.strip()
+    if not new_team_id:
+        print("Usage: /switch <team_id>")
+        return
+
+    old_team_id = session.team_id
+    old_ws = session.ws_client
+
+    # Close current WebSocket
+    await old_ws.close()
+
+    # Create new WsClient for the new team
+    new_ws = WsClient(
+        base_url=old_ws.url.replace(f"/ws/{old_team_id}", "")
+        .replace("ws://", "http://")
+        .replace("wss://", "https://"),
+        team_id=new_team_id,
+        api_key=None,  # API key is already in the HTTP client
+    )
+
+    try:
+        await new_ws.connect()
+    except (SystemExit, Exception):  # noqa: BLE001
+        print(f"Team {new_team_id} not found.", file=sys.stderr)
+        # Restore previous connection
+        try:
+            await old_ws.connect()
+        except Exception:  # noqa: BLE001
+            print("Failed to restore previous connection.", file=sys.stderr)
+        return
+
+    # Update session state
+    session.team_id = new_team_id
+    session.ws_client = new_ws
+
+    # Replay history for the new team
+    session._replay_history()
+
+    # Cancel and restart the receive loop
+    if session._receive_task is not None:
+        session._receive_task.cancel()
+        try:
+            await session._receive_task
+        except asyncio.CancelledError:
+            pass
+
+    session._receive_task = asyncio.create_task(session._receive_loop())
+
+    print(f"Switched to team {new_team_id}.")
+
+
+def build_default_registry() -> CommandRegistry:
+    """Create a command registry with all built-in commands."""
+    registry = CommandRegistry()
+    registry.register("help", _help_handler, "Show available commands", "/help")
+    registry.register("status", _status_handler, "Show team status", "/status")
+    registry.register("agents", _agents_handler, "List team agents", "/agents")
+    registry.register("history", _history_handler, "Show recent messages", "/history [N]")
+    registry.register("files", _files_handler, "Show workspace files", "/files")
+    registry.register("read", _read_handler, "Read a workspace file", "/read <path>")
+    registry.register("upload", _upload_handler, "Upload a file to workspace", "/upload <path>")
+    registry.register("stop", _stop_handler, "Stop the team", "/stop")
+    registry.register("restore", _restore_handler, "Restore a stopped team", "/restore")
+    registry.register("switch", _switch_handler, "Switch to another team", "/switch <team_id>")
+    return registry

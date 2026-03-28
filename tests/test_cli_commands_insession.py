@@ -1,0 +1,598 @@
+"""Tests for in-session slash command registry, handlers, and ChatSession integration."""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from akgentic.infra.cli.commands import (
+    CommandRegistry,
+    _agents_handler,
+    _files_handler,
+    _help_handler,
+    _history_handler,
+    _read_handler,
+    _restore_handler,
+    _status_handler,
+    _stop_handler,
+    _switch_handler,
+    _upload_handler,
+    build_default_registry,
+)
+from akgentic.infra.cli.formatters import OutputFormat
+from akgentic.infra.cli.repl import ChatSession
+
+# -- Helpers --
+
+
+def _mock_client(**overrides: Any) -> MagicMock:
+    """Build a mock ApiClient."""
+    mock = MagicMock()
+    mock.get_events.return_value = []
+    mock.send_message.return_value = None
+    mock.get_team.return_value = {
+        "team_id": "t1",
+        "name": "Test Team",
+        "status": "running",
+        "agents": [
+            {"name": "agent-a", "role": "researcher", "state": "idle"},
+            {"name": "agent-b", "role": "writer", "state": "busy"},
+        ],
+    }
+    mock.workspace_tree.return_value = {
+        "entries": [
+            {"name": "docs", "is_dir": True, "size": 0},
+            {"name": "readme.md", "is_dir": False, "size": 42},
+        ]
+    }
+    mock.workspace_read.return_value = b"file content here"
+    mock.workspace_upload.return_value = {"path": "test.txt", "size": 5}
+    mock.delete_team.return_value = None
+    mock.restore_team.return_value = {"team_id": "t1", "status": "running"}
+    for k, v in overrides.items():
+        setattr(mock, k, v)
+    return mock
+
+
+def _mock_ws() -> AsyncMock:
+    """Build a mock WsClient."""
+    ws = AsyncMock()
+    ws.__aenter__ = AsyncMock(return_value=ws)
+    ws.__aexit__ = AsyncMock(return_value=None)
+    ws.receive_event = AsyncMock(side_effect=asyncio.CancelledError)
+    ws.url = "ws://localhost:8000/ws/t1"
+    ws.close = AsyncMock()
+    ws.connect = AsyncMock(return_value=ws)
+    return ws
+
+
+def _make_session(
+    client: MagicMock | None = None,
+    ws: AsyncMock | None = None,
+    team_id: str = "t1",
+) -> ChatSession:
+    """Create a ChatSession with mocked dependencies."""
+    if client is None:
+        client = _mock_client()
+    if ws is None:
+        ws = _mock_ws()
+    return ChatSession(client, ws, team_id, OutputFormat.table)
+
+
+# =============================================================================
+# Task 8.1: Test CommandRegistry
+# =============================================================================
+
+
+class TestCommandRegistryDispatch:
+    """Test dispatch returns True for registered commands, False for non-commands."""
+
+    async def test_dispatch_returns_true_for_registered_command(self) -> None:
+        registry = CommandRegistry()
+        handler = AsyncMock()
+        registry.register("test", handler, "Test command", "/test")
+        session = _make_session()
+
+        result = await registry.dispatch("/test", session)
+
+        assert result is True
+        handler.assert_called_once_with("", session)
+
+    async def test_dispatch_returns_false_for_non_command(self) -> None:
+        registry = CommandRegistry()
+        session = _make_session()
+
+        result = await registry.dispatch("hello world", session)
+
+        assert result is False
+
+    async def test_dispatch_passes_args_to_handler(self) -> None:
+        registry = CommandRegistry()
+        handler = AsyncMock()
+        registry.register("test", handler, "Test", "/test <arg>")
+        session = _make_session()
+
+        await registry.dispatch("/test some args here", session)
+
+        handler.assert_called_once_with("some args here", session)
+
+    async def test_unknown_command_prints_error_returns_true(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        registry = CommandRegistry()
+        session = _make_session()
+
+        result = await registry.dispatch("/xxx", session)
+
+        assert result is True
+        out = capsys.readouterr().out
+        assert "Unknown command: /xxx" in out
+        assert "/help" in out
+
+    async def test_dispatch_strips_whitespace(self) -> None:
+        registry = CommandRegistry()
+        handler = AsyncMock()
+        registry.register("test", handler, "Test", "/test")
+        session = _make_session()
+
+        result = await registry.dispatch("  /test  ", session)
+
+        assert result is True
+        handler.assert_called_once()
+
+
+class TestHelpCommand:
+    """Test /help lists all registered commands."""
+
+    async def test_help_lists_all_commands(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+        registry = build_default_registry()
+        session.command_registry = registry
+
+        await _help_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "/status" in out
+        assert "/agents" in out
+        assert "/history" in out
+        assert "/files" in out
+        assert "/read" in out
+        assert "/upload" in out
+        assert "/stop" in out
+        assert "/restore" in out
+        assert "/switch" in out
+        assert "/help" in out
+
+
+# =============================================================================
+# Task 8.2: Test each command handler in isolation
+# =============================================================================
+
+
+class TestStatusHandler:
+    async def test_shows_team_info(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _status_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Test Team" in out
+        assert "running" in out
+        assert "2" in out  # 2 agents
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.get_team.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _status_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestAgentsHandler:
+    async def test_lists_agents(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _agents_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "agent-a" in out
+        assert "researcher" in out
+        assert "idle" in out
+        assert "agent-b" in out
+        assert "writer" in out
+        assert "busy" in out
+
+    async def test_no_agents(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.get_team.return_value = {"agents": []}
+        session = _make_session(client=client)
+
+        await _agents_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "No agents" in out
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.get_team.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _agents_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestHistoryHandler:
+    async def test_shows_history_default_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        events = [
+            {"event": {"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"}}
+            for i in range(25)
+        ]
+        client = _mock_client()
+        client.get_events.return_value = events
+        session = _make_session(client=client)
+
+        await _history_handler("", session)
+
+        out = capsys.readouterr().out
+        # Default limit 20, so first 5 should be missing
+        assert "msg-0" not in out
+        assert "msg-4" not in out
+        assert "msg-5" in out
+        assert "msg-24" in out
+
+    async def test_custom_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        events = [
+            {"event": {"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"}}
+            for i in range(25)
+        ]
+        client = _mock_client()
+        client.get_events.return_value = events
+        session = _make_session(client=client)
+
+        await _history_handler("10", session)
+
+        out = capsys.readouterr().out
+        assert "msg-14" not in out
+        assert "msg-15" in out
+        assert "msg-24" in out
+
+    async def test_invalid_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _history_handler("abc", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_zero_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _history_handler("0", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_filters_non_displayable(self, capsys: pytest.CaptureFixture[str]) -> None:
+        events = [
+            {"event": {"__model__": "StateChangedMessage", "state": "running"}},
+            {"event": {"__model__": "SentMessage", "sender": "bot", "content": "visible"}},
+        ]
+        client = _mock_client()
+        client.get_events.return_value = events
+        session = _make_session(client=client)
+
+        await _history_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "visible" in out
+        assert "StateChanged" not in out
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.get_events.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _history_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestFilesHandler:
+    async def test_shows_file_tree(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _files_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "docs" in out
+        assert "readme.md" in out
+        assert "42 bytes" in out
+
+    async def test_empty_workspace(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.workspace_tree.return_value = {"entries": []}
+        session = _make_session(client=client)
+
+        await _files_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "empty" in out.lower()
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.workspace_tree.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _files_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestReadHandler:
+    async def test_reads_file(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _read_handler("readme.md", session)
+
+        out = capsys.readouterr().out
+        assert "file content here" in out
+
+    async def test_no_arg_shows_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _read_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_binary_file(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.workspace_read.return_value = bytes(range(256))
+        session = _make_session(client=client)
+
+        await _read_handler("binary.bin", session)
+
+        out = capsys.readouterr().out
+        assert "binary" in out.lower() or "bytes" in out.lower()
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.workspace_read.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _read_handler("test.txt", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestUploadHandler:
+    async def test_uploads_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        f = tmp_path / "test.txt"
+        f.write_text("hello")
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _upload_handler(str(f), session)
+
+        out = capsys.readouterr().out
+        assert "Uploaded" in out
+        client.workspace_upload.assert_called_once()
+
+    async def test_no_arg_shows_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _upload_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_missing_file(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _upload_handler("/nonexistent/file.txt", session)
+
+        out = capsys.readouterr().out
+        assert "Error" in out or "not a file" in out
+
+    async def test_handles_api_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        f = tmp_path / "test.txt"
+        f.write_text("hello")
+        client = _mock_client()
+        client.workspace_upload.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _upload_handler(str(f), session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestStopHandler:
+    async def test_stops_team(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _stop_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Team t1 stopped." in out
+        client.delete_team.assert_called_once_with("t1")
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.delete_team.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _stop_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestRestoreHandler:
+    async def test_restores_team(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _restore_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Team t1 restored. Live events resumed." in out
+        client.restore_team.assert_called_once_with("t1")
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.restore_team.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _restore_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestSwitchHandler:
+    async def test_switches_team(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        old_ws = _mock_ws()
+        session = _make_session(client=client, ws=old_ws)
+        session._receive_task = asyncio.create_task(asyncio.sleep(100))
+
+        new_ws_mock = _mock_ws()
+        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
+            await _switch_handler("t2", session)
+
+        old_ws.close.assert_called_once()
+        assert session.team_id == "t2"
+        assert session.ws_client is new_ws_mock
+        out = capsys.readouterr().out
+        assert "Switched to team t2" in out
+
+    async def test_no_arg_shows_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _switch_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_switch_fails_restores_old(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        old_ws = _mock_ws()
+        session = _make_session(client=client, ws=old_ws)
+
+        new_ws_mock = _mock_ws()
+        new_ws_mock.connect = AsyncMock(side_effect=SystemExit(1))
+        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
+            await _switch_handler("bad-team", session)
+
+        err = capsys.readouterr().err
+        assert "not found" in err
+        # Old ws should have been re-connected
+        old_ws.connect.assert_called_once()
+        assert session.team_id == "t1"  # unchanged
+
+
+# =============================================================================
+# Task 8.3: Test integration with ChatSession._input_loop
+# =============================================================================
+
+
+class TestChatSessionCommandIntegration:
+    async def test_status_dispatched_not_sent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        ws = _mock_ws()
+        session = ChatSession(client, ws, "t1", OutputFormat.table)
+
+        with patch(
+            "akgentic.infra.cli.repl._read_input",
+            side_effect=["/status", "/quit"],
+        ):
+            await session.run()
+
+        # /status should have triggered get_team, not send_message
+        client.get_team.assert_called_once_with("t1")
+        client.send_message.assert_not_called()
+
+    async def test_regular_text_sent_as_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        ws = _mock_ws()
+        session = ChatSession(client, ws, "t1", OutputFormat.table)
+
+        with patch(
+            "akgentic.infra.cli.repl._read_input",
+            side_effect=["hello there", "/quit"],
+        ):
+            await session.run()
+
+        client.send_message.assert_called_once_with("t1", "hello there")
+
+    async def test_quit_still_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        ws = _mock_ws()
+        session = ChatSession(client, ws, "t1", OutputFormat.table)
+
+        with patch(
+            "akgentic.infra.cli.repl._read_input",
+            side_effect=["/quit"],
+        ):
+            await session.run()
+
+        out = capsys.readouterr().out
+        assert "Session closed." in out
+
+    async def test_unknown_slash_command_not_sent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        ws = _mock_ws()
+        session = ChatSession(client, ws, "t1", OutputFormat.table)
+
+        with patch(
+            "akgentic.infra.cli.repl._read_input",
+            side_effect=["/unknown", "/quit"],
+        ):
+            await session.run()
+
+        out = capsys.readouterr().out
+        assert "Unknown command: /unknown" in out
+        client.send_message.assert_not_called()
+
+
+# =============================================================================
+# Task 8.4: Verify build_default_registry has all commands
+# =============================================================================
+
+
+class TestBuildDefaultRegistry:
+    def test_all_commands_registered(self) -> None:
+        registry = build_default_registry()
+        expected = {
+            "help",
+            "status",
+            "agents",
+            "history",
+            "files",
+            "read",
+            "upload",
+            "stop",
+            "restore",
+            "switch",
+        }
+        assert set(registry.commands.keys()) == expected
