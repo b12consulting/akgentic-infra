@@ -10,6 +10,7 @@ import typer
 
 from akgentic.infra.cli.client import ApiClient
 from akgentic.infra.cli.formatters import OutputFormat, format_output
+from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession
 from akgentic.infra.cli.ws_client import WsClient
 
@@ -166,9 +167,15 @@ def chat(
         team_id=team_id,
         api_key=_state.api_key,
     )
+    renderer = RichRenderer()
     session = ChatSession(
-        _state.client, ws, team_id, _state.fmt,
-        server_url=_state.server, api_key=_state.api_key,
+        _state.client,
+        ws,
+        team_id,
+        _state.fmt,
+        server_url=_state.server,
+        api_key=_state.api_key,
+        renderer=renderer,
     )
     asyncio.run(session.run())
 

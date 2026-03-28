@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import websockets.exceptions
+from rich.console import Console
 
 from akgentic.infra.cli.formatters import OutputFormat
+from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession, _print_event
+
+
+def _captured_renderer() -> tuple[RichRenderer, io.StringIO]:
+    """Build a RichRenderer that captures output to a StringIO buffer."""
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120, no_color=True)
+    return RichRenderer(console=console), buf
 
 
 def _mock_client(**overrides: Any) -> MagicMock:
@@ -32,8 +41,22 @@ def _mock_ws() -> AsyncMock:
     return ws
 
 
+def _make_session(
+    client: MagicMock | None = None,
+    ws: AsyncMock | None = None,
+    renderer: RichRenderer | None = None,
+) -> ChatSession:
+    """Create a ChatSession with mocked dependencies and optional captured renderer."""
+    if client is None:
+        client = _mock_client()
+    if ws is None:
+        ws = _mock_ws()
+    return ChatSession(client, ws, "t1", OutputFormat.table, renderer=renderer)
+
+
 class TestReplayHistory:
-    def test_replay_displays_sent_messages(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_replay_displays_sent_messages(self) -> None:
+        renderer, buf = _captured_renderer()
         client = _mock_client(
             get_events=MagicMock(
                 return_value=[
@@ -53,47 +76,47 @@ class TestReplayHistory:
                 ]
             )
         )
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, renderer=renderer)
         session._replay_history()
-        out = capsys.readouterr().out
-        assert "[bot] hello" in out
-        assert "--- history ---" in out
+        out = buf.getvalue()
+        assert "bot" in out
+        assert "hello" in out
+        assert "history" in out  # separator
         assert "StateChanged" not in out
 
-    def test_replay_no_events(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_replay_no_events(self) -> None:
+        renderer, buf = _captured_renderer()
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, renderer=renderer)
         session._replay_history()
-        out = capsys.readouterr().out
-        assert "--- history ---" not in out
+        out = buf.getvalue()
+        assert "history" not in out
 
-    def test_replay_handles_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_replay_handles_error(self) -> None:
+        renderer, buf = _captured_renderer()
         client = _mock_client()
         client.get_events.side_effect = SystemExit(1)
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, renderer=renderer)
         session._replay_history()  # Should not raise
 
 
 class TestQuitHandling:
-    async def test_quit_command(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_quit_command(self) -> None:
+        renderer, buf = _captured_renderer()
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, renderer=renderer)
 
         with patch("akgentic.infra.cli.repl._read_input", side_effect=["/quit"]):
             await session.run()
 
-        out = capsys.readouterr().out
+        out = buf.getvalue()
         assert "Connected to team t1" in out
         assert "Session closed." in out
 
-    async def test_ctrl_c_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_ctrl_c_exits(self) -> None:
+        renderer, buf = _captured_renderer()
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, renderer=renderer)
 
         with patch(
             "akgentic.infra.cli.repl._read_input",
@@ -101,26 +124,26 @@ class TestQuitHandling:
         ):
             await session.run()
 
-        out = capsys.readouterr().out
+        out = buf.getvalue()
         assert "Session closed." in out
 
-    async def test_eof_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_eof_exits(self) -> None:
+        renderer, buf = _captured_renderer()
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, renderer=renderer)
 
         with patch("akgentic.infra.cli.repl._read_input", side_effect=EOFError):
             await session.run()
 
-        out = capsys.readouterr().out
+        out = buf.getvalue()
         assert "Session closed." in out
 
 
 class TestMessageSending:
-    async def test_sends_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_sends_message(self) -> None:
+        renderer, buf = _captured_renderer()
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, renderer=renderer)
 
         with patch(
             "akgentic.infra.cli.repl._read_input",
@@ -130,10 +153,10 @@ class TestMessageSending:
 
         client.send_message.assert_called_once_with("t1", "hello world")
 
-    async def test_empty_input_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_empty_input_skipped(self) -> None:
+        renderer, buf = _captured_renderer()
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, renderer=renderer)
 
         with patch(
             "akgentic.infra.cli.repl._read_input",
@@ -145,7 +168,8 @@ class TestMessageSending:
 
 
 class TestReceiveLoop:
-    async def test_prints_sent_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_renders_sent_message(self) -> None:
+        renderer, buf = _captured_renderer()
         events = [
             {"event": {"__model__": "SentMessage", "sender": "agent1", "content": "hi there"}},
         ]
@@ -163,7 +187,7 @@ class TestReceiveLoop:
             return {}
 
         ws.receive_event = AsyncMock(side_effect=recv_events)
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, ws=ws, renderer=renderer)
 
         with patch(
             "akgentic.infra.cli.repl._read_input",
@@ -171,10 +195,12 @@ class TestReceiveLoop:
         ):
             await session.run()
 
-        out = capsys.readouterr().out
-        assert "[agent1] hi there" in out
+        out = buf.getvalue()
+        assert "agent1" in out
+        assert "hi there" in out
 
-    async def test_skips_state_changed(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_skips_state_changed(self) -> None:
+        renderer, buf = _captured_renderer()
         events = [
             {"event": {"__model__": "StateChangedMessage", "state": "running"}},
         ]
@@ -192,7 +218,7 @@ class TestReceiveLoop:
             return {}
 
         ws.receive_event = AsyncMock(side_effect=recv_events)
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, ws=ws, renderer=renderer)
 
         with patch(
             "akgentic.infra.cli.repl._read_input",
@@ -200,12 +226,13 @@ class TestReceiveLoop:
         ):
             await session.run()
 
-        out = capsys.readouterr().out
+        out = buf.getvalue()
         assert "StateChanged" not in out
 
 
 class TestReceiveLoopCloseCode:
-    async def test_close_code_4004_prints_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_close_code_4004_prints_error(self) -> None:
+        renderer, buf = _captured_renderer()
         close_frame = MagicMock()
         close_frame.code = 4004
         close_frame.reason = "Team not found"
@@ -213,15 +240,16 @@ class TestReceiveLoopCloseCode:
         client = _mock_client()
         ws = _mock_ws()
         ws.receive_event = AsyncMock(side_effect=exc)
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, ws=ws, renderer=renderer)
 
         with patch("akgentic.infra.cli.repl._read_input", side_effect=["/quit"]):
             await session.run()
 
-        err = capsys.readouterr().err
-        assert "team not found" in err
+        out = buf.getvalue()
+        assert "team not found" in out
 
-    async def test_close_code_1000_no_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_close_code_1000_no_error(self) -> None:
+        renderer, buf = _captured_renderer()
         close_frame = MagicMock()
         close_frame.code = 1000
         close_frame.reason = "OK"
@@ -229,46 +257,133 @@ class TestReceiveLoopCloseCode:
         client = _mock_client()
         ws = _mock_ws()
         ws.receive_event = AsyncMock(side_effect=exc)
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client, ws=ws, renderer=renderer)
 
         with patch("akgentic.infra.cli.repl._read_input", side_effect=["/quit"]):
             await session.run()
 
-        err = capsys.readouterr().err
-        assert err == ""
+        out = buf.getvalue()
+        # Should NOT contain connection error — only system messages (Connected, Session closed)
+        assert "Connection closed" not in out
 
 
-class TestPrintEvent:
-    def test_sent_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+class TestRenderEvent:
+    def test_sent_message(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event(
+            {"event": {"__model__": "SentMessage", "sender": "bot", "content": "reply"}}
+        )
+        assert result is True
+        out = buf.getvalue()
+        assert "bot" in out
+        assert "reply" in out
+
+    def test_error_message(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event(
+            {"event": {"__model__": "ErrorMessage", "content": "something broke"}}
+        )
+        assert result is True
+        out = buf.getvalue()
+        assert "error" in out
+        assert "something broke" in out
+
+    def test_skip_start_message(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event({"event": {"__model__": "StartMessage"}})
+        assert result is False
+
+    def test_skip_received_message(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event({"event": {"__model__": "ReceivedMessage"}})
+        assert result is False
+
+    def test_skip_processed_message(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event({"event": {"__model__": "ProcessedMessage"}})
+        assert result is False
+
+    def test_sent_message_no_content(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event(
+            {"event": {"__model__": "SentMessage", "sender": "bot", "content": ""}}
+        )
+        assert result is False
+
+    def test_empty_event(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event({})
+        assert result is False
+
+    def test_event_message_tool_call(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event(
+            {
+                "event": {
+                    "__model__": "EventMessage",
+                    "event": {
+                        "tool_name": "search",
+                        "args": {"query": "test"},
+                    },
+                }
+            }
+        )
+        assert result is True
+        out = buf.getvalue()
+        assert "search" in out
+
+    def test_event_message_human_input(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event(
+            {
+                "event": {
+                    "__model__": "EventMessage",
+                    "event": {
+                        "__model__": "HumanInputRequest",
+                        "prompt": "Enter your name",
+                    },
+                }
+            }
+        )
+        assert result is True
+        out = buf.getvalue()
+        assert "Human Input Required" in out
+        assert "Enter your name" in out
+
+    def test_event_message_unknown_nested(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        result = session._render_event(
+            {
+                "event": {
+                    "__model__": "EventMessage",
+                    "event": {"__model__": "SomeOtherEvent", "data": "xyz"},
+                }
+            }
+        )
+        assert result is False
+
+
+class TestPrintEventBackwardCompat:
+    """Test the module-level _print_event backward compatibility wrapper."""
+
+    def test_sent_message(self) -> None:
         result = _print_event(
             {"event": {"__model__": "SentMessage", "sender": "bot", "content": "reply"}}
         )
         assert result is True
-        assert "[bot] reply" in capsys.readouterr().out
 
-    def test_error_message(self, capsys: pytest.CaptureFixture[str]) -> None:
-        result = _print_event(
-            {"event": {"__model__": "ErrorMessage", "content": "something broke"}}
-        )
-        assert result is True
-        assert "[error] something broke" in capsys.readouterr().out
-
-    def test_skip_start_message(self) -> None:
+    def test_skip_unknown(self) -> None:
         result = _print_event({"event": {"__model__": "StartMessage"}})
-        assert result is False
-
-    def test_skip_received_message(self) -> None:
-        result = _print_event({"event": {"__model__": "ReceivedMessage"}})
-        assert result is False
-
-    def test_skip_processed_message(self) -> None:
-        result = _print_event({"event": {"__model__": "ProcessedMessage"}})
-        assert result is False
-
-    def test_sent_message_no_content(self) -> None:
-        result = _print_event(
-            {"event": {"__model__": "SentMessage", "sender": "bot", "content": ""}}
-        )
         assert result is False
 
     def test_empty_event(self) -> None:

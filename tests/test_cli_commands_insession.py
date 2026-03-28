@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from rich.console import Console
 
 from akgentic.infra.cli.commands import (
     CommandRegistry,
@@ -24,6 +26,7 @@ from akgentic.infra.cli.commands import (
     build_default_registry,
 )
 from akgentic.infra.cli.formatters import OutputFormat
+from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession
 
 # -- Helpers --
@@ -70,10 +73,18 @@ def _mock_ws() -> AsyncMock:
     return ws
 
 
+def _captured_renderer() -> tuple[RichRenderer, io.StringIO]:
+    """Build a RichRenderer that captures output to a StringIO buffer."""
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=120, no_color=True)
+    return RichRenderer(console=console), buf
+
+
 def _make_session(
     client: MagicMock | None = None,
     ws: AsyncMock | None = None,
     team_id: str = "t1",
+    renderer: RichRenderer | None = None,
 ) -> ChatSession:
     """Create a ChatSession with mocked dependencies."""
     if client is None:
@@ -81,8 +92,13 @@ def _make_session(
     if ws is None:
         ws = _mock_ws()
     return ChatSession(
-        client, ws, team_id, OutputFormat.table,
-        server_url="http://localhost:8000", api_key="test-key",
+        client,
+        ws,
+        team_id,
+        OutputFormat.table,
+        server_url="http://localhost:8000",
+        api_key="test-key",
+        renderer=renderer,
     )
 
 
@@ -236,36 +252,38 @@ class TestAgentsHandler:
 
 
 class TestHistoryHandler:
-    async def test_shows_history_default_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_shows_history_default_limit(self) -> None:
         events = [
             {"event": {"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"}}
             for i in range(25)
         ]
         client = _mock_client()
         client.get_events.return_value = events
-        session = _make_session(client=client)
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _history_handler("", session)
 
-        out = capsys.readouterr().out
+        out = buf.getvalue()
         # Default limit 20, so first 5 should be missing
         assert "msg-0" not in out
         assert "msg-4" not in out
         assert "msg-5" in out
         assert "msg-24" in out
 
-    async def test_custom_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_custom_limit(self) -> None:
         events = [
             {"event": {"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"}}
             for i in range(25)
         ]
         client = _mock_client()
         client.get_events.return_value = events
-        session = _make_session(client=client)
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _history_handler("10", session)
 
-        out = capsys.readouterr().out
+        out = buf.getvalue()
         assert "msg-14" not in out
         assert "msg-15" in out
         assert "msg-24" in out
@@ -294,18 +312,19 @@ class TestHistoryHandler:
         out = capsys.readouterr().out
         assert "Usage" in out
 
-    async def test_filters_non_displayable(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_filters_non_displayable(self) -> None:
         events = [
             {"event": {"__model__": "StateChangedMessage", "state": "running"}},
             {"event": {"__model__": "SentMessage", "sender": "bot", "content": "visible"}},
         ]
         client = _mock_client()
         client.get_events.return_value = events
-        session = _make_session(client=client)
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _history_handler("", session)
 
-        out = capsys.readouterr().out
+        out = buf.getvalue()
         assert "visible" in out
         assert "StateChanged" not in out
 
@@ -496,7 +515,9 @@ class TestSwitchHandler:
         assert session.ws_client is new_ws_mock
         # Verify server_url and api_key are passed to new WsClient
         ws_cls.assert_called_once_with(
-            base_url="http://localhost:8000", team_id="t2", api_key="test-key",
+            base_url="http://localhost:8000",
+            team_id="t2",
+            api_key="test-key",
         )
         out = capsys.readouterr().out
         assert "Switched to team t2" in out

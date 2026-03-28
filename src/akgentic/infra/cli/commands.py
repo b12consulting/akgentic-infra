@@ -154,12 +154,10 @@ async def _history_handler(args: str, session: ChatSession) -> None:
         print("Error fetching history.", file=sys.stderr)
         return
 
-    from akgentic.infra.cli.repl import _print_event
-
     # Filter to displayable events and take last N
     displayable = [e for e in events if _is_displayable(e)]
     for evt in displayable[-limit:]:
-        _print_event(evt)
+        session._render_event(evt)
 
 
 def _is_displayable(data: dict[str, Any]) -> bool:
@@ -171,7 +169,7 @@ def _is_displayable(data: dict[str, Any]) -> bool:
         except (json_mod.JSONDecodeError, TypeError):
             return False
     model = event.get("__model__", "")
-    return model in {"SentMessage", "ErrorMessage"}
+    return model in {"SentMessage", "ErrorMessage", "EventMessage"}
 
 
 # -- Workspace commands --
