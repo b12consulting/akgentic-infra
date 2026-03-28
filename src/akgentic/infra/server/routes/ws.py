@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import queue
 import uuid
+from datetime import UTC, datetime
 from queue import Empty
 from typing import cast
 
@@ -14,8 +16,9 @@ from starlette.websockets import WebSocketState
 
 from akgentic.core.orchestrator import Orchestrator
 from akgentic.infra.adapters.websocket_subscriber import WebSocketEventSubscriber
+from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.team.models import TeamStatus
+from akgentic.team.models import PersistedEvent, TeamStatus
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +94,12 @@ async def websocket_events(websocket: WebSocket, team_id: uuid.UUID) -> None:
 
     await websocket.accept()
 
+    adapter: FrontendAdapter | None = getattr(websocket.app.state, "frontend_adapter", None)
+
     if process.status == TeamStatus.RUNNING:
-        await _run_streaming_loop(websocket, service, team_id, conn_mgr)
+        await _run_streaming_loop(websocket, service, team_id, conn_mgr, adapter)
     else:
-        await _run_idle_loop(websocket, team_id, conn_mgr, service)
+        await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
 
 
 async def _run_streaming_loop(
@@ -102,6 +107,7 @@ async def _run_streaming_loop(
     service: TeamService,
     team_id: uuid.UUID,
     conn_mgr: ConnectionManager,
+    adapter: FrontendAdapter | None = None,
 ) -> None:
     """Subscribe to orchestrator events and forward them over WebSocket."""
     runtime = service.get_runtime(team_id)
@@ -114,7 +120,7 @@ async def _run_streaming_loop(
     orch_proxy.subscribe(subscriber)
 
     try:
-        await _send_loop(websocket, subscriber)
+        await _send_loop(websocket, subscriber, team_id, adapter)
     except WebSocketDisconnect:
         pass
     finally:
@@ -127,10 +133,13 @@ async def _run_streaming_loop(
 async def _send_loop(
     websocket: WebSocket,
     subscriber: WebSocketEventSubscriber,
+    team_id: uuid.UUID | None = None,
+    adapter: FrontendAdapter | None = None,
 ) -> None:
     """Read from subscriber queue and send over WebSocket."""
     loop = asyncio.get_running_loop()
     q = subscriber.get_queue()
+    seq = 0
     while True:
         try:
             item: str | None = await loop.run_in_executor(None, _queue_get, q)
@@ -143,7 +152,24 @@ async def _send_loop(
             await websocket.close(code=1000)
             break
 
-        await websocket.send_text(item)
+        if adapter is not None and team_id is not None:
+            try:
+                msg_data = json.loads(item)
+            except json.JSONDecodeError:
+                logger.warning("Malformed JSON in event queue, sending raw text")
+                await websocket.send_text(item)
+                continue
+            event = PersistedEvent.model_validate({
+                "team_id": str(team_id),
+                "sequence": seq,
+                "event": msg_data,
+                "timestamp": datetime.now(tz=UTC).isoformat(),
+            })
+            seq += 1
+            wrapped = adapter.wrap_ws_event(event)
+            await websocket.send_text(wrapped.model_dump_json())
+        else:
+            await websocket.send_text(item)
 
 
 async def _run_idle_loop(
@@ -151,6 +177,7 @@ async def _run_idle_loop(
     team_id: uuid.UUID,
     conn_mgr: ConnectionManager,
     service: TeamService,
+    adapter: FrontendAdapter | None = None,
 ) -> None:
     """Wait for team restore or client disconnect."""
     conn_mgr.add_waiting(team_id, websocket)
@@ -161,7 +188,7 @@ async def _run_idle_loop(
             except TimeoutError:
                 sub = conn_mgr.get_subscriber(websocket)
                 if sub is not None:
-                    await _send_loop(websocket, sub)
+                    await _send_loop(websocket, sub, team_id, adapter)
                     return
             except WebSocketDisconnect:
                 return
