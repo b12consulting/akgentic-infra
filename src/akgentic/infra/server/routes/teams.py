@@ -133,13 +133,21 @@ def stop_team(
 @router.post("/{team_id}/restore", status_code=200, response_model=TeamResponse)
 def restore_team(
     team_id: uuid.UUID,
+    request: Request,
     service: TeamService = Depends(get_team_service),
 ) -> TeamResponse:
-    """Restore a stopped team."""
+    """Restore a stopped team and notify waiting WebSocket connections."""
     try:
         process = service.restore_team(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
+
+    conn_mgr = getattr(request.app.state, "connection_manager", None)
+    if conn_mgr is not None:
+        from akgentic.infra.server.routes.ws import notify_restore
+
+        notify_restore(conn_mgr, service, team_id)
+
     return _process_to_response(process)
 
 

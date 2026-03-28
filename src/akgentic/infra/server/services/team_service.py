@@ -163,6 +163,17 @@ class TeamService:
             raise ValueError(msg)
         return self._services.event_store.load_events(team_id)
 
+    def get_runtime(self, team_id: uuid.UUID) -> TeamRuntime | None:
+        """Return the cached runtime for a team, or None if not cached.
+
+        Args:
+            team_id: Team UUID.
+
+        Returns:
+            TeamRuntime if cached, else None.
+        """
+        return self._runtimes.get(team_id)
+
     def _get_running_runtime(self, team_id: uuid.UUID) -> TeamRuntime:
         """Look up a cached runtime, verifying the team is running.
 

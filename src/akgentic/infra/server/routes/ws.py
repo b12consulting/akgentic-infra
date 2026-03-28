@@ -1,0 +1,196 @@
+"""WebSocket route for real-time event streaming."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import queue
+import uuid
+from queue import Empty
+from typing import cast
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
+
+from akgentic.core.orchestrator import Orchestrator
+from akgentic.infra.adapters.websocket_subscriber import WebSocketEventSubscriber
+from akgentic.infra.server.services.team_service import TeamService
+from akgentic.team.models import TeamStatus
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+class ConnectionManager:
+    """Tracks idle WebSocket connections waiting for team restore.
+
+    Stored on ``app.state.connection_manager`` so the restore endpoint
+    can notify waiting connections.
+    """
+
+    def __init__(self) -> None:
+        self._waiting: dict[uuid.UUID, list[WebSocket]] = {}
+
+    def add_waiting(self, team_id: uuid.UUID, ws: WebSocket) -> None:
+        """Register an idle WebSocket waiting for a team to be restored."""
+        self._waiting.setdefault(team_id, []).append(ws)
+
+    def remove_waiting(self, team_id: uuid.UUID, ws: WebSocket) -> None:
+        """Remove a WebSocket from the waiting list."""
+        conns = self._waiting.get(team_id)
+        if conns is not None:
+            try:
+                conns.remove(ws)
+            except ValueError:
+                pass
+            if not conns:
+                del self._waiting[team_id]
+
+    def pop_waiting(self, team_id: uuid.UUID) -> list[WebSocket]:
+        """Pop and return all waiting connections for a team."""
+        return self._waiting.pop(team_id, [])
+
+
+def _get_team_service(ws: WebSocket) -> TeamService:
+    """Extract TeamService from app.state."""
+    return cast(TeamService, ws.app.state.team_service)
+
+
+def _get_connection_manager(ws: WebSocket) -> ConnectionManager:
+    """Extract ConnectionManager from app.state."""
+    return cast(ConnectionManager, ws.app.state.connection_manager)
+
+
+@router.websocket("/ws/{team_id}")
+async def websocket_events(websocket: WebSocket, team_id: uuid.UUID) -> None:
+    """Stream real-time orchestrator events over WebSocket.
+
+    - Running team: subscribes and pushes events in real-time.
+    - Stopped team: accepts connection and idles until restored.
+    - Non-existent team: rejects with close code 4004.
+    """
+    service = _get_team_service(websocket)
+    conn_mgr = _get_connection_manager(websocket)
+
+    process = service.get_team(team_id)
+    if process is None:
+        await websocket.close(code=4004, reason="Team not found")
+        return
+
+    await websocket.accept()
+
+    if process.status == TeamStatus.RUNNING:
+        await _run_streaming_loop(websocket, service, team_id, conn_mgr)
+    else:
+        await _run_idle_loop(websocket, team_id, conn_mgr, service)
+
+
+async def _run_streaming_loop(
+    websocket: WebSocket,
+    service: TeamService,
+    team_id: uuid.UUID,
+    conn_mgr: ConnectionManager,
+) -> None:
+    """Subscribe to orchestrator events and forward them over WebSocket."""
+    runtime = service.get_runtime(team_id)
+    if runtime is None:
+        await websocket.close(code=1011, reason="Runtime not available")
+        return
+
+    subscriber = WebSocketEventSubscriber()
+    orch_proxy = runtime.actor_system.proxy_ask(runtime.orchestrator_addr, Orchestrator)
+    orch_proxy.subscribe(subscriber)
+
+    try:
+        await _send_loop(websocket, subscriber)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            orch_proxy.unsubscribe(subscriber)
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to unsubscribe (orchestrator may be stopped)")
+
+
+async def _send_loop(
+    websocket: WebSocket,
+    subscriber: WebSocketEventSubscriber,
+) -> None:
+    """Read from subscriber queue and send over WebSocket."""
+    loop = asyncio.get_event_loop()
+    q = subscriber.get_queue()
+    while True:
+        try:
+            item: str | None = await loop.run_in_executor(None, _queue_get, q)
+        except _QueueTimeoutError:
+            if websocket.client_state != WebSocketState.CONNECTED:
+                break
+            continue
+
+        if item is None:
+            await websocket.close(code=1000)
+            break
+
+        await websocket.send_text(item)
+
+
+async def _run_idle_loop(
+    websocket: WebSocket,
+    team_id: uuid.UUID,
+    conn_mgr: ConnectionManager,
+    service: TeamService,
+) -> None:
+    """Wait for team restore or client disconnect."""
+    conn_mgr.add_waiting(team_id, websocket)
+    try:
+        while True:
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            except TimeoutError:
+                if hasattr(websocket, "_subscriber"):
+                    sub: WebSocketEventSubscriber = websocket._subscriber
+                    await _send_loop(websocket, sub)
+                    return
+            except WebSocketDisconnect:
+                return
+    finally:
+        conn_mgr.remove_waiting(team_id, websocket)
+
+
+def notify_restore(
+    conn_mgr: ConnectionManager,
+    service: TeamService,
+    team_id: uuid.UUID,
+) -> None:
+    """Called when a team is restored — activate all waiting WebSocket connections.
+
+    Creates a WebSocketEventSubscriber per waiting connection, subscribes each
+    to the restored team's orchestrator, and signals them to start streaming.
+    """
+    waiting = conn_mgr.pop_waiting(team_id)
+    if not waiting:
+        return
+
+    runtime = service.get_runtime(team_id)
+    if runtime is None:
+        return
+
+    for ws in waiting:
+        subscriber = WebSocketEventSubscriber()
+        orch_proxy = runtime.actor_system.proxy_ask(runtime.orchestrator_addr, Orchestrator)
+        orch_proxy.subscribe(subscriber)
+        ws._subscriber = subscriber  # type: ignore[attr-defined]
+
+
+class _QueueTimeoutError(Exception):
+    """Raised when queue.get times out."""
+
+
+def _queue_get(q: queue.Queue[str | None]) -> str | None:  # noqa: F821
+    """Blocking queue get with timeout for use in run_in_executor."""
+
+    try:
+        return q.get(timeout=0.5)
+    except Empty:
+        raise _QueueTimeoutError from None
