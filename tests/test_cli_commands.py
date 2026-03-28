@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,13 @@ from typer.testing import CliRunner
 from akgentic.infra.cli.main import app
 
 runner = CliRunner()
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape codes from text."""
+    return _ANSI_RE.sub("", text)
 
 
 def _mock_client(**overrides: Any) -> MagicMock:
@@ -81,17 +89,19 @@ class TestHelp:
     def test_help_shows_groups(self) -> None:
         result = _invoke(["--help"])
         assert result.exit_code == 0
-        assert "team" in result.output
-        assert "workspace" in result.output
-        assert "chat" in result.output
-        assert "message" in result.output
-        assert "reply" in result.output
+        output = _strip_ansi(result.output)
+        assert "team" in output
+        assert "workspace" in output
+        assert "chat" in output
+        assert "message" in output
+        assert "reply" in output
 
     def test_help_shows_global_options(self) -> None:
         result = _invoke(["--help"])
-        assert "--server" in result.output
-        assert "--api-key" in result.output
-        assert "--format" in result.output
+        output = _strip_ansi(result.output)
+        assert "--server" in output
+        assert "--api-key" in output
+        assert "--format" in output
 
 
 # -- team commands --
