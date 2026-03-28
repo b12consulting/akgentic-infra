@@ -10,11 +10,12 @@ import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 import uvicorn
+from click.testing import Result
 from fastapi import FastAPI
 from typer.testing import CliRunner
 
@@ -49,7 +50,7 @@ def _get_free_port() -> int:
 
 
 @pytest.fixture(autouse=True)
-def _httpx_follow_redirects() -> Generator[None, None, None]:
+def _httpx_follow_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch httpx.Client to follow redirects by default.
 
     The CLI's ApiClient creates httpx.Client without follow_redirects=True,
@@ -62,11 +63,7 @@ def _httpx_follow_redirects() -> Generator[None, None, None]:
         kwargs.setdefault("follow_redirects", True)
         _original_init(self, *args, **kwargs)
 
-    httpx.Client.__init__ = _patched_init  # type: ignore[method-assign]
-    try:
-        yield
-    finally:
-        httpx.Client.__init__ = _original_init  # type: ignore[method-assign]
+    monkeypatch.setattr(httpx.Client, "__init__", _patched_init)
 
 
 @pytest.fixture()
@@ -114,7 +111,7 @@ def cli_invoke(
     server_url: str,
     args: list[str],
     fmt: str | None = None,
-) -> Any:
+) -> Result:
     """Invoke the CLI app with --server and optional --format flags."""
     cmd: list[str] = ["--server", server_url]
     if fmt is not None:
@@ -135,31 +132,26 @@ class TestCliTeamLifecycle:
         self,
         cli_runner: CliRunner,
         cli_server: str,
-        integration_client: Any,
     ) -> None:
         """Create a team via CLI, then list teams and verify it appears."""
-        result = cli_invoke(cli_runner, cli_server, ["team", "create", CATALOG_ENTRY_ID])
-        assert result.exit_code == 0, result.output
-
-        # Extract team_id from the table output
-        assert "running" in result.output.lower() or "team_id" in result.output.lower()
-
-        result_list = cli_invoke(cli_runner, cli_server, ["team", "list"])
-        assert result_list.exit_code == 0, result_list.output
-
-        # Stop the team to avoid LLM-in-flight hang
-        # Parse team_id from JSON format for reliable extraction
-        result_json = cli_invoke(
+        # Create via JSON format for reliable team_id extraction
+        result = cli_invoke(
             cli_runner,
             cli_server,
             ["team", "create", CATALOG_ENTRY_ID],
             fmt="json",
         )
-        assert result_json.exit_code == 0
-        team_data = json.loads(result_json.output)
+        assert result.exit_code == 0, result.output
+        team_data = json.loads(result.output)
         team_id = team_data["team_id"]
+        assert team_data["status"] == "running"
 
-        # Cleanup: stop team
+        # List teams and verify the created team appears
+        result_list = cli_invoke(cli_runner, cli_server, ["team", "list"])
+        assert result_list.exit_code == 0, result_list.output
+        assert team_id in result_list.output
+
+        # Cleanup: stop team to avoid LLM-in-flight hang
         with httpx.Client(base_url=cli_server) as c:
             c.post(f"/teams/{team_id}/stop")
             time.sleep(0.3)
@@ -317,8 +309,14 @@ class TestCliTeamLifecycle:
         # Fetch events via CLI
         result_events = cli_invoke(cli_runner, cli_server, ["team", "events", team_id])
         assert result_events.exit_code == 0
-        # Events output should contain event data
-        assert len(result_events.output.strip()) > 0
+        # Events output should contain event data with sequence/timestamp columns
+        output = result_events.output.strip()
+        assert len(output) > 0
+        assert (
+            "sequence" in output.lower()
+            or "timestamp" in output.lower()
+            or "event" in output.lower()
+        )
 
         # Cleanup
         with httpx.Client(base_url=cli_server) as c:
@@ -366,16 +364,30 @@ class TestCliChat:
             base_url=cli_server,
             team_id=team_id,
         )
+
+        # Track rendered events to verify WebSocket delivery
+        rendered_events: list[str] = []
+        renderer = MagicMock()
+        renderer.render_agent_message = lambda sender, content: rendered_events.append(
+            f"{sender}: {content}"
+        )
+        renderer.render_system_message = MagicMock()
+        renderer.render_error = MagicMock()
+        renderer.render_tool_call = MagicMock()
+        renderer.render_human_input_request = MagicMock()
+        renderer.render_history_separator = MagicMock()
+
         session = ChatSession(
             api_client,
             ws,
             team_id,
             OutputFormat.table,
             server_url=cli_server,
+            renderer=renderer,
         )
 
-        # Mock stdin to send a message then /quit
-        inputs = iter(["Say hello", "/quit"])
+        # Mock stdin: send a message, wait for LLM to respond, then /quit
+        inputs = iter(["Say hello in one word", "/quit"])
 
         async def _run_session() -> None:
             with patch(
@@ -387,12 +399,17 @@ class TestCliChat:
         try:
             asyncio.run(_run_session())
         except TimeoutError:
-            pass  # acceptable — session may not exit instantly
-        finally:
-            api_client.close()
-            # Cleanup
-            integration_client.post(f"/teams/{team_id}/stop")
-            time.sleep(0.3)
+            pass  # session may not exit instantly after /quit
+
+        # Verify at least one WebSocket event was rendered (AC #2)
+        assert len(rendered_events) > 0, (
+            "ChatSession received no WebSocket events — expected at least one agent message"
+        )
+
+        api_client.close()
+        # Cleanup
+        integration_client.post(f"/teams/{team_id}/stop")
+        time.sleep(0.3)
 
     def test_cli_chat_create_shortcut(
         self,
