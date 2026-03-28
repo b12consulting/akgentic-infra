@@ -27,7 +27,7 @@ class InteractionChannelDispatcher:
     def __init__(
         self, adapters: list[InteractionChannelAdapter], team_id: uuid.UUID
     ) -> None:
-        self._adapters = adapters
+        self._adapters = list(adapters)
         self._team_id = team_id
         self._restoring = False
 

@@ -22,13 +22,17 @@ class _MatchingAdapter:
         self.deliver_called = False
         self.stop_called = False
         self.stop_team_id: uuid.UUID | None = None
+        self.matches_msg: SentMessage | None = None
+        self.deliver_msg: SentMessage | None = None
 
     def matches(self, msg: SentMessage) -> bool:
         self.matches_called = True
+        self.matches_msg = msg
         return True
 
     def deliver(self, msg: SentMessage) -> None:
         self.deliver_called = True
+        self.deliver_msg = msg
 
     def on_stop(self, team_id: uuid.UUID) -> None:
         self.stop_called = True
@@ -92,10 +96,13 @@ class TestDispatchToMatchingAdapter:
     def test_calls_matches_then_deliver(self) -> None:
         adapter = _MatchingAdapter()
         dispatcher = InteractionChannelDispatcher(adapters=[adapter], team_id=TEAM_ID)
-        dispatcher.on_message(_make_sent_message())
+        sent = _make_sent_message()
+        dispatcher.on_message(sent)
 
         assert adapter.matches_called
         assert adapter.deliver_called
+        assert adapter.matches_msg is sent
+        assert adapter.deliver_msg is sent
 
 
 # ---------------------------------------------------------------------------
