@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import yaml
@@ -20,6 +21,9 @@ from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
 from akgentic.infra.wiring import wire_community
+
+if TYPE_CHECKING:
+    from .test_channels import StubChannelAdapter
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -238,16 +242,16 @@ def v1_adapter_client(v1_adapter_app: FastAPI) -> TestClient:
 
 
 @pytest.fixture()
-def test_adapter() -> object:
+def test_adapter() -> StubChannelAdapter:
     """Shared StubChannelAdapter instance for inspecting delivered messages."""
-    from .test_channels import StubChannelAdapter
+    from .test_channels import StubChannelAdapter as _StubChannelAdapter
 
-    return StubChannelAdapter()
+    return _StubChannelAdapter()
 
 
 @pytest.fixture()
 def channel_parser_registry(
-    test_adapter: object,
+    test_adapter: StubChannelAdapter,
 ) -> ChannelParserRegistry:
     """ChannelParserRegistry with test stubs manually injected."""
     from .test_channels import StubChannelParser
@@ -255,7 +259,7 @@ def channel_parser_registry(
     registry = ChannelParserRegistry(channels_config={})
     parser = StubChannelParser()
     registry._parsers[parser.channel_name] = parser
-    registry._adapters.append(test_adapter)  # type: ignore[arg-type]
+    registry._adapters.append(test_adapter)
     return registry
 
 

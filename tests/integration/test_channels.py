@@ -106,13 +106,7 @@ def _find_team_via_registry(
     """Synchronously look up a team from the YAML channel registry."""
     import asyncio
 
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(
-            registry.find_team(channel, channel_user_id),
-        )
-    finally:
-        loop.close()
+    return asyncio.run(registry.find_team(channel, channel_user_id))
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +203,8 @@ class TestChannelContinuation:
             "Channel registry should have mapping after initiation"
         )
 
-        # Brief pause to let team initialize
-        time.sleep(2)
+        # Wait for LLM to process first message before sending follow-up
+        wait_for_llm_response(channel_client, str(team_id))
 
         # Step 2: Follow-up with same channel_user_id, no team_id
         resp = channel_client.post(
@@ -304,3 +298,6 @@ class TestDispatcherRestoreSuppression:
         assert ev_resp.status_code == 200
         events_after = ev_resp.json()["events"]
         assert len(events_after) == events_before
+
+        # Stop the team to allow clean actor system teardown
+        channel_client.post(f"/teams/{team_id}/stop")
