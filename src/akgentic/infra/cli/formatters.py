@@ -17,6 +17,13 @@ class OutputFormat(enum.StrEnum):
     yaml = "yaml"
 
 
+def _cell_str(val: object) -> str:
+    """Convert a cell value to a display string, serializing dicts as compact JSON."""
+    if isinstance(val, dict):
+        return json.dumps(val, default=str)
+    return str(val)
+
+
 def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     """Format rows as an aligned text table."""
     if not rows:
@@ -26,7 +33,7 @@ def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     widths: dict[str, int] = {col: len(col) for col in columns}
     for row in rows:
         for col in columns:
-            widths[col] = max(widths[col], len(str(row.get(col, ""))))
+            widths[col] = max(widths[col], len(_cell_str(row.get(col, ""))))
 
     # Header
     header = "  ".join(col.upper().ljust(widths[col]) for col in columns)
@@ -35,7 +42,7 @@ def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
     # Rows
     lines = [header, separator]
     for row in rows:
-        line = "  ".join(str(row.get(col, "")).ljust(widths[col]) for col in columns)
+        line = "  ".join(_cell_str(row.get(col, "")).ljust(widths[col]) for col in columns)
         lines.append(line)
 
     return "\n".join(lines)

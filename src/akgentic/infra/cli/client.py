@@ -18,6 +18,16 @@ class ApiClient:
             headers["Authorization"] = f"Bearer {api_key}"
         self._client = httpx.Client(base_url=base_url, headers=headers)
 
+    def close(self) -> None:
+        """Close the underlying HTTP client."""
+        self._client.close()
+
+    def __enter__(self) -> ApiClient:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
     # -- helpers --
 
     def _request(

@@ -37,6 +37,13 @@ class TestFormatTable:
         result = format_table(rows, ["name", "missing_col"])
         assert "x" in result
 
+    def test_nested_dict_values(self) -> None:
+        rows = [{"name": "evt1", "data": {"type": "started", "ts": 123}}]
+        result = format_table(rows, ["name", "data"])
+        # dict values should be JSON-serialized, not Python repr
+        assert '"type"' in result
+        assert "{'type'" not in result
+
     def test_column_alignment(self) -> None:
         rows = [{"a": "short", "b": "x"}, {"a": "x", "b": "longvalue"}]
         result = format_table(rows, ["a", "b"])

@@ -157,6 +157,13 @@ class TestTeamDelete:
         mock.delete_team.assert_called_once_with("t1")
         assert "deleted" in result.output.lower()
 
+    def test_json_output(self) -> None:
+        mock = _mock_client()
+        result = _invoke(["--format", "json", "team", "delete", "t1"], mock)
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["status"] == "deleted"
+
 
 class TestTeamRestore:
     def test_restores_team(self) -> None:
@@ -184,6 +191,13 @@ class TestMessage:
         assert result.exit_code == 0
         mock.send_message.assert_called_once_with("t1", "hello world")
         assert "sent" in result.output.lower()
+
+    def test_json_output(self) -> None:
+        mock = _mock_client()
+        result = _invoke(["--format", "json", "message", "t1", "hello"], mock)
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["status"] == "sent"
 
 
 class TestReply:
@@ -218,6 +232,11 @@ class TestWorkspaceTree:
     def test_json_output(self) -> None:
         result = _invoke(["--format", "json", "workspace", "tree", "t1"])
         parsed = json.loads(result.output)
+        assert "entries" in parsed
+
+    def test_yaml_output(self) -> None:
+        result = _invoke(["--format", "yaml", "workspace", "tree", "t1"])
+        parsed = yaml.safe_load(result.output)
         assert "entries" in parsed
 
 

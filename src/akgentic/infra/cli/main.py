@@ -87,7 +87,10 @@ def team_create(catalog_entry: str) -> None:
 def team_delete(team_id: str) -> None:
     """Delete a team."""
     _state.client.delete_team(team_id)
-    typer.echo(f"Team {team_id} deleted.")
+    if _state.fmt == OutputFormat.table:
+        typer.echo(f"Team {team_id} deleted.")
+    else:
+        _print({"team_id": team_id, "status": "deleted"})
 
 
 @team_app.command("restore")
@@ -111,7 +114,10 @@ def team_events(team_id: str) -> None:
 def message(team_id: str, content: str) -> None:
     """Send a message to a team (non-interactive)."""
     _state.client.send_message(team_id, content)
-    typer.echo("Message sent.")
+    if _state.fmt == OutputFormat.table:
+        typer.echo("Message sent.")
+    else:
+        _print({"team_id": team_id, "status": "sent"})
 
 
 @app.command("reply")
@@ -122,7 +128,10 @@ def reply(
 ) -> None:
     """Reply with human input to an agent request."""
     _state.client.human_input(team_id, content, message_id)
-    typer.echo("Reply sent.")
+    if _state.fmt == OutputFormat.table:
+        typer.echo("Reply sent.")
+    else:
+        _print({"team_id": team_id, "message_id": message_id, "status": "sent"})
 
 
 # -- chat placeholder --
