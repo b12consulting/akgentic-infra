@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.text import Text
 
 
 class RichRenderer:
@@ -44,20 +46,23 @@ class RichRenderer:
         tool_output: str | None = None,
     ) -> None:
         """Render a tool invocation as a panel with optional syntax highlighting."""
-        # Try to pretty-print JSON input
+        # Try to pretty-print and syntax-highlight JSON input
         try:
             parsed = json.loads(tool_input)
-            input_text = json.dumps(parsed, indent=2)
+            formatted_input = json.dumps(parsed, indent=2)
+            input_renderable: Syntax | Text = Syntax(formatted_input, "json", theme="monokai")
         except (json.JSONDecodeError, TypeError):
-            input_text = tool_input
+            input_renderable = Text(tool_input)
 
-        content_lines = f"Input:\n{input_text}"
+        parts: list[Syntax | Text] = [Text("Input:")]
+        parts.append(input_renderable)
 
         if tool_output is not None:
-            content_lines += f"\n\nOutput:\n{tool_output}"
+            parts.append(Text("\nOutput:"))
+            parts.append(Text(tool_output))
 
         panel = Panel(
-            content_lines,
+            Group(*parts),
             title=f"Tool: {tool_name}",
             border_style="dim",
         )

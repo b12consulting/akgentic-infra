@@ -139,66 +139,7 @@ class ChatSession:
 
     def _render_event(self, data: dict[str, Any]) -> bool:
         """Format and render a single event. Returns True if something was rendered."""
-        event = data.get("event", data)
-        if isinstance(event, str):
-            try:
-                event = json.loads(event)
-            except (json.JSONDecodeError, TypeError):
-                return False
-
-        model = event.get("__model__", "")
-        if model not in _DISPLAY_EVENTS:
-            return False
-
-        if model == "ErrorMessage":
-            content = event.get("content", event.get("error", ""))
-            self.renderer.render_error(str(content))
-            return True
-
-        if model == "EventMessage":
-            return self._render_event_message(event)
-
-        # SentMessage — agent response
-        sender = event.get("sender", "agent")
-        content = event.get("content", "")
-        if content:
-            self.renderer.render_agent_message(str(sender), str(content))
-            return True
-        return False
-
-    def _render_event_message(self, event: dict[str, Any]) -> bool:
-        """Handle EventMessage — inspect nested event for tool calls / human input."""
-        nested = event.get("event", {})
-        if isinstance(nested, str):
-            try:
-                nested = json.loads(nested)
-            except (json.JSONDecodeError, TypeError):
-                return False
-
-        if not isinstance(nested, dict):
-            return False
-
-        nested_model = nested.get("__model__", "")
-
-        # Tool call events
-        if "tool_name" in nested:
-            tool_name = str(nested["tool_name"])
-            tool_input = str(nested.get("args", nested.get("input", "")))
-            tool_output = nested.get("result")
-            self.renderer.render_tool_call(
-                tool_name,
-                tool_input,
-                str(tool_output) if tool_output is not None else None,
-            )
-            return True
-
-        # Human input request
-        if "HumanInput" in nested_model or "RequestInput" in nested_model:
-            prompt_text = str(nested.get("prompt", nested.get("content", "Input requested")))
-            self.renderer.render_human_input_request(prompt_text)
-            return True
-
-        return False
+        return _render_event_impl(data, self.renderer)
 
 
 def _read_input(prompt: str) -> str:
@@ -206,47 +147,87 @@ def _read_input(prompt: str) -> str:
     return input(prompt)
 
 
+def _render_event_impl(data: dict[str, Any], renderer: RichRenderer) -> bool:
+    """Shared event rendering logic used by both ChatSession and _print_event."""
+    event = data.get("event", data)
+    if isinstance(event, str):
+        try:
+            event = json.loads(event)
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    model = event.get("__model__", "")
+    if model not in _DISPLAY_EVENTS:
+        return False
+
+    if model == "ErrorMessage":
+        content = event.get("content", event.get("error", ""))
+        renderer.render_error(str(content))
+        return True
+
+    if model == "EventMessage":
+        return _render_event_message_impl(event, renderer)
+
+    # SentMessage — agent response
+    sender = event.get("sender", "agent")
+    content = event.get("content", "")
+    if content:
+        renderer.render_agent_message(str(sender), str(content))
+        return True
+    return False
+
+
+def _render_event_message_impl(event: dict[str, Any], renderer: RichRenderer) -> bool:
+    """Handle EventMessage — inspect nested event for tool calls / human input."""
+    nested = event.get("event", {})
+    if isinstance(nested, str):
+        try:
+            nested = json.loads(nested)
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    if not isinstance(nested, dict):
+        return False
+
+    nested_model = nested.get("__model__", "")
+
+    # Tool call events
+    if "tool_name" in nested:
+        tool_name = str(nested["tool_name"])
+        raw_input = nested.get("args", nested.get("input", ""))
+        if isinstance(raw_input, dict | list):
+            tool_input = json.dumps(raw_input, indent=2)
+        else:
+            tool_input = str(raw_input)
+        raw_output = nested.get("result")
+        if raw_output is None:
+            tool_output = None
+        elif isinstance(raw_output, dict | list):
+            tool_output = json.dumps(raw_output, indent=2)
+        else:
+            tool_output = str(raw_output)
+        renderer.render_tool_call(
+            tool_name,
+            tool_input,
+            tool_output,
+        )
+        return True
+
+    # Human input request
+    if "HumanInput" in nested_model or "RequestInput" in nested_model:
+        prompt_text = str(nested.get("prompt", nested.get("content", "Input requested")))
+        renderer.render_human_input_request(prompt_text)
+        return True
+
+    return False
+
+
 def _print_event(data: dict[str, Any]) -> bool:
     """Backward-compatible module-level event printer.
 
-    Delegates to a default RichRenderer for use by external callers.
+    Delegates to the shared rendering logic with a default RichRenderer.
     """
-    return _default_renderer_session._render_event(data)
+    return _render_event_impl(data, _default_renderer)
 
 
-class _DefaultRendererSession:
-    """Minimal wrapper providing _render_event with a default RichRenderer."""
-
-    def __init__(self) -> None:
-        self.renderer = RichRenderer()
-
-    def _render_event(self, data: dict[str, Any]) -> bool:
-        """Format and render a single event using the default renderer."""
-        event = data.get("event", data)
-        if isinstance(event, str):
-            try:
-                event = json.loads(event)
-            except (json.JSONDecodeError, TypeError):
-                return False
-
-        model = event.get("__model__", "")
-        if model not in _DISPLAY_EVENTS:
-            return False
-
-        if model == "ErrorMessage":
-            content = event.get("content", event.get("error", ""))
-            self.renderer.render_error(str(content))
-            return True
-
-        if model == "SentMessage":
-            sender = event.get("sender", "agent")
-            content = event.get("content", "")
-            if content:
-                self.renderer.render_agent_message(str(sender), str(content))
-                return True
-            return False
-
-        return False
-
-
-_default_renderer_session = _DefaultRendererSession()
+_default_renderer = RichRenderer()

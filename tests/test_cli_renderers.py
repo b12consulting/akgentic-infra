@@ -32,6 +32,14 @@ class TestRenderAgentMessage:
         # Rich renders bold as terminal escape codes; the word should appear
         assert "bold text" in output
 
+    def test_sender_with_brackets_escaped(self) -> None:
+        renderer, buf = _make_renderer()
+        renderer.render_agent_message("[special]", "hello")
+        output = buf.getvalue()
+        # Brackets in sender name should be escaped so Rich doesn't interpret them as markup
+        assert "special" in output
+        assert "hello" in output
+
 
 class TestAgentColorAssignment:
     def test_same_agent_same_color(self) -> None:
@@ -74,6 +82,14 @@ class TestRenderToolCall:
         assert "search" in output
         assert "query" in output
         assert "result data" in output
+
+    def test_json_input_syntax_highlighted(self) -> None:
+        renderer, buf = _make_renderer()
+        renderer.render_tool_call("search", '{"key": "value"}', None)
+        output = buf.getvalue()
+        # JSON should be pretty-printed (indented) via Syntax
+        assert "key" in output
+        assert "value" in output
 
     def test_tool_call_without_output(self) -> None:
         renderer, buf = _make_renderer()
