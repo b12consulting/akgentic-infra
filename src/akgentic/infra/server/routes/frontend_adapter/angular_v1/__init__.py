@@ -17,6 +17,7 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1.router import (
     process_router,
     states_router,
 )
+from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import wrap_event
 from akgentic.team.models import PersistedEvent
 
 __all__ = ["AngularV1Adapter"]
@@ -38,5 +39,5 @@ class AngularV1Adapter:
         app.include_router(states_router)
 
     def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
-        """Minimal passthrough — WebSocket wrapping is Story 3.2b scope."""
-        return WrappedWsEvent(payload=event.event.model_dump(mode="json"))
+        """Translate a V2 persisted event into a V1 WebSocket envelope."""
+        return wrap_event(event)

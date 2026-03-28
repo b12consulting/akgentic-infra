@@ -11,10 +11,14 @@ from typing import NoReturn, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from akgentic.core.messages.message import Message, ResultMessage, UserMessage
+from akgentic.core.messages.message import Message
 from akgentic.core.messages.orchestrator import (
-    SentMessage,
     StateChangedMessage,
+)
+from akgentic.infra.server.routes.frontend_adapter.angular_v1._helpers import (
+    classify_message_type,
+    extract_message_content,
+    get_sender_name,
 )
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
     V1LlmContextEntry,
@@ -82,27 +86,17 @@ def _parse_uuid(id_str: str) -> uuid.UUID:
 
 def _extract_message_content(event: Message) -> str | None:
     """Extract displayable content from a message event."""
-    if hasattr(event, "content"):
-        return str(event.content)
-    if isinstance(event, SentMessage) and hasattr(event.message, "content"):
-        return str(event.message.content)
-    return None
+    return extract_message_content(event)
 
 
 def _classify_message_type(event: Message) -> str:
     """Classify a message event as user/agent/system."""
-    if isinstance(event, UserMessage):
-        return "user"
-    if isinstance(event, (ResultMessage, SentMessage)):
-        return "agent"
-    return "system"
+    return classify_message_type(event)
 
 
 def _get_sender_name(event: Message) -> str:
     """Extract sender name from a message event."""
-    if event.sender is not None:
-        return str(event.sender.name) if hasattr(event.sender, "name") else str(event.sender)
-    return "system"
+    return get_sender_name(event)
 
 
 def _events_to_v1_messages(events: list[PersistedEvent]) -> list[V1MessageEntry]:
