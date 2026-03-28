@@ -11,7 +11,6 @@ from typing import NoReturn, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from akgentic.core.messages.message import Message
 from akgentic.core.messages.orchestrator import (
     StateChangedMessage,
 )
@@ -84,35 +83,20 @@ def _parse_uuid(id_str: str) -> uuid.UUID:
         raise HTTPException(status_code=422, detail=f"Invalid UUID: {id_str}") from None
 
 
-def _extract_message_content(event: Message) -> str | None:
-    """Extract displayable content from a message event."""
-    return extract_message_content(event)
-
-
-def _classify_message_type(event: Message) -> str:
-    """Classify a message event as user/agent/system."""
-    return classify_message_type(event)
-
-
-def _get_sender_name(event: Message) -> str:
-    """Extract sender name from a message event."""
-    return get_sender_name(event)
-
-
 def _events_to_v1_messages(events: list[PersistedEvent]) -> list[V1MessageEntry]:
     """Filter and transform persisted events to V1 message entries."""
     result: list[V1MessageEntry] = []
     for ev in events:
-        content = _extract_message_content(ev.event)
+        content = extract_message_content(ev.event)
         if content is None:
             continue
         result.append(
             V1MessageEntry(
                 id=str(ev.event.id),
-                sender=_get_sender_name(ev.event),
+                sender=get_sender_name(ev.event),
                 content=content,
                 timestamp=ev.timestamp.isoformat(),
-                type=_classify_message_type(ev.event),
+                type=classify_message_type(ev.event),
             )
         )
     return result
@@ -270,12 +254,12 @@ def get_llm_context(
         raise HTTPException(status_code=404, detail="Team not found") from None
     result: list[V1LlmContextEntry] = []
     for ev in events:
-        content = _extract_message_content(ev.event)
+        content = extract_message_content(ev.event)
         if content is None:
             continue
         result.append(
             V1LlmContextEntry(
-                role=_classify_message_type(ev.event),
+                role=classify_message_type(ev.event),
                 content=content,
                 timestamp=ev.timestamp.isoformat(),
             )
@@ -302,7 +286,7 @@ def get_states(
         if isinstance(ev.event, StateChangedMessage):
             result.append(
                 V1StateEntry(
-                    agent=_get_sender_name(ev.event),
+                    agent=get_sender_name(ev.event),
                     state=ev.event.state.model_dump(mode="json"),
                     timestamp=ev.timestamp.isoformat(),
                 )

@@ -123,6 +123,7 @@ class TestWrapSentMessageUser:
     def test_sent_user_message_extracts_inner_content(self) -> None:
         """AC #1: SentMessage with inner UserMessage extracts content."""
         inner = UserMessage(content="routed user msg")
+        inner.sender = _make_sender("@Human")
         recipient = _make_sender("@Worker")
         sent = SentMessage(message=inner, recipient=recipient)
         sent.sender = _make_sender("@Router")
@@ -130,6 +131,8 @@ class TestWrapSentMessageUser:
         result = wrap_event(event)
         assert result.payload["type"] == "message"
         assert result.payload["content"] == "routed user msg"
+        assert result.payload["sender"] == "@Human"
+        assert result.payload["id"] == str(inner.id)
 
     def test_sent_user_message_type_is_user(self) -> None:
         """SentMessage wrapping UserMessage has message_type: 'user'."""
@@ -153,13 +156,16 @@ class TestWrapSentMessageResult:
     def test_sent_result_message_type_is_agent(self) -> None:
         """AC #2: SentMessage wrapping ResultMessage has message_type: 'agent'."""
         inner = ResultMessage(content="agent reply")
+        inner.sender = _make_sender("@Agent")
         recipient = _make_sender("@User")
         sent = SentMessage(message=inner, recipient=recipient)
-        sent.sender = _make_sender("@Agent")
+        sent.sender = _make_sender("@Router")
         event = _make_persisted_event(sent)
         result = wrap_event(event)
         assert result.payload["message_type"] == "agent"
         assert result.payload["content"] == "agent reply"
+        assert result.payload["sender"] == "@Agent"
+        assert result.payload["id"] == str(inner.id)
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +276,29 @@ class TestWrapNonContentEvents:
         result = wrap_event(event)
         assert result.payload["type"] == "message"
         assert result.payload["message_type"] == "system"
+
+
+# ---------------------------------------------------------------------------
+# Review fix: SentMessage wrapping non-content message
+# ---------------------------------------------------------------------------
+
+
+class TestWrapSentMessageNonContent:
+    """Test SentMessage wrapping a message without displayable content."""
+
+    def test_sent_start_message_produces_valid_envelope(self) -> None:
+        """SentMessage wrapping StartMessage produces valid envelope with empty content."""
+        inner = StartMessage(config=BaseConfig())
+        inner.sender = _make_sender("@Orchestrator")
+        recipient = _make_sender("@Worker")
+        sent = SentMessage(message=inner, recipient=recipient)
+        sent.sender = _make_sender("@Router")
+        event = _make_persisted_event(sent)
+        result = wrap_event(event)
+        assert result.payload["type"] == "message"
+        assert result.payload["message_type"] == "system"
+        assert result.payload["sender"] == "@Orchestrator"
+        assert result.payload["content"] == ""
 
 
 # ---------------------------------------------------------------------------

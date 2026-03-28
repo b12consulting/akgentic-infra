@@ -69,8 +69,8 @@ def _build_message_envelope(event: Message, timestamp: str) -> dict[str, Any]:
 
     return {
         "type": "message",
-        "id": str(event.id),
-        "sender": get_sender_name(event),
+        "id": str(inner.id),
+        "sender": get_sender_name(inner),
         "content": content,
         "timestamp": timestamp,
         "message_type": message_type,
