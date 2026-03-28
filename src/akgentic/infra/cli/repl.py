@@ -10,6 +10,7 @@ from typing import Any
 import websockets.exceptions
 
 from akgentic.infra.cli.client import ApiClient
+from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.ws_client import WsClient
 
@@ -26,31 +27,39 @@ class ChatSession:
         ws_client: WsClient,
         team_id: str,
         fmt: OutputFormat,
+        *,
+        server_url: str = "http://localhost:8000",
+        api_key: str | None = None,
     ) -> None:
-        self._client = client
-        self._ws = ws_client
-        self._team_id = team_id
-        self._fmt = fmt
+        self.client = client
+        self.ws_client = ws_client
+        self.team_id = team_id
+        self.fmt = fmt
+        self.server_url = server_url
+        self.api_key = api_key
+        self.command_registry: CommandRegistry = build_default_registry()
         self._running = True
+        self._receive_task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
         """Main REPL loop: connect WS, replay history, read input, stream events."""
-        async with self._ws:
+        async with self.ws_client:
             self._replay_history()
-            print(f"Connected to team {self._team_id}. Type /quit or Ctrl+C to exit.")
+            print(f"Connected to team {self.team_id}. Type /quit or Ctrl+C to exit.")
 
-            receive_task = asyncio.create_task(self._receive_loop())
+            self._receive_task = asyncio.create_task(self._receive_loop())
             try:
                 await self._input_loop()
             except KeyboardInterrupt:
                 pass
             finally:
                 self._running = False
-                receive_task.cancel()
-                try:
-                    await receive_task
-                except asyncio.CancelledError:
-                    pass
+                if self._receive_task is not None:
+                    self._receive_task.cancel()
+                    try:
+                        await self._receive_task
+                    except asyncio.CancelledError:
+                        pass
                 print("Session closed.")
 
     async def _input_loop(self) -> None:
@@ -68,9 +77,13 @@ class ChatSession:
             if line.strip() == "/quit":
                 break
 
+            # Try dispatching as a slash command
+            if await self.command_registry.dispatch(line, self):
+                continue
+
             # Send message via REST API (run in executor to avoid blocking)
             try:
-                await loop.run_in_executor(None, self._client.send_message, self._team_id, line)
+                await loop.run_in_executor(None, self.client.send_message, self.team_id, line)
             except SystemExit:
                 print("Error sending message.", file=sys.stderr)
 
@@ -78,7 +91,7 @@ class ChatSession:
         """Background coroutine: read WebSocket events and print them."""
         while self._running:
             try:
-                event = await self._ws.receive_event()
+                event = await self.ws_client.receive_event()
                 _print_event(event)
             except asyncio.CancelledError:
                 raise
@@ -95,9 +108,24 @@ class ChatSession:
     def _replay_history(self) -> None:
         """Fetch and display past events before starting the REPL."""
         try:
-            events = self._client.get_events(self._team_id)
+            events = self.client.get_events(self.team_id)
         except SystemExit:
             return
+        self._display_events(events)
+
+    async def replay_history_async(self) -> None:
+        """Async version of _replay_history — uses run_in_executor to avoid blocking."""
+        loop = asyncio.get_running_loop()
+        try:
+            events = await loop.run_in_executor(
+                None, self.client.get_events, self.team_id
+            )
+        except SystemExit:
+            return
+        self._display_events(events)
+
+    def _display_events(self, events: list[dict[str, Any]]) -> None:
+        """Print a list of events, adding a history separator if any were displayed."""
         displayed = False
         for evt in events:
             if _print_event(evt):
