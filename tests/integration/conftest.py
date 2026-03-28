@@ -165,3 +165,65 @@ def integration_app(
 def integration_client(integration_app: FastAPI) -> TestClient:
     """Sync HTTP test client hitting a real FastAPI app."""
     return TestClient(integration_app)
+
+
+# ---------------------------------------------------------------------------
+# V1 Adapter Fixtures
+# ---------------------------------------------------------------------------
+
+V1_ADAPTER_FQDN = (
+    "akgentic.infra.server.routes.frontend_adapter.angular_v1.AngularV1Adapter"
+)
+
+
+@pytest.fixture()
+def v1_adapter_settings(tmp_path: Path) -> ServerSettings:
+    """ServerSettings with V1 frontend adapter enabled."""
+    settings = ServerSettings(
+        workspaces_root=tmp_path / "workspaces",
+        frontend_adapter=V1_ADAPTER_FQDN,
+    )
+    _seed_integration_catalog(settings.workspaces_root / "catalog")
+    return settings
+
+
+@pytest.fixture()
+def v1_adapter_services(
+    v1_adapter_settings: ServerSettings,
+) -> Generator[CommunityServices, None, None]:
+    """Wired community services for V1 adapter tests — shuts down on teardown."""
+    services = wire_community(v1_adapter_settings)
+    yield services
+    services.actor_system.shutdown()
+
+
+@pytest.fixture()
+def v1_adapter_team_service(
+    v1_adapter_services: CommunityServices,
+) -> TeamService:
+    """TeamService wired to V1 adapter services."""
+    return TeamService(
+        services=v1_adapter_services,
+        team_catalog=v1_adapter_services.team_catalog,
+        agent_catalog=v1_adapter_services.agent_catalog,
+        tool_catalog=v1_adapter_services.tool_catalog,
+        template_catalog=v1_adapter_services.template_catalog,
+    )
+
+
+@pytest.fixture()
+def v1_adapter_app(
+    v1_adapter_services: CommunityServices,
+    v1_adapter_team_service: TeamService,
+    v1_adapter_settings: ServerSettings,
+) -> FastAPI:
+    """FastAPI app with V1 frontend adapter loaded."""
+    return create_app(
+        v1_adapter_services, v1_adapter_team_service, settings=v1_adapter_settings,
+    )
+
+
+@pytest.fixture()
+def v1_adapter_client(v1_adapter_app: FastAPI) -> TestClient:
+    """Sync HTTP test client hitting a V1-adapter-enabled FastAPI app."""
+    return TestClient(v1_adapter_app)
