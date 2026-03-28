@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import types
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from akgentic.infra.server.routes.frontend_adapter import (
     FrontendAdapter,
+    WrappedWsEvent,
     load_frontend_adapter,
 )
 from akgentic.infra.server.settings import ServerSettings
@@ -33,8 +33,8 @@ class _StubAdapter:
         self.registered = True
         self.routes_app = app
 
-    def wrap_ws_event(self, event: PersistedEvent) -> dict[str, Any]:
-        return {"wrapped": True, "sequence": event.sequence}
+    def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
+        return WrappedWsEvent(payload={"wrapped": True, "sequence": event.sequence})
 
 
 class _NotAnAdapter:
@@ -277,7 +277,8 @@ class TestWebSocketAdapterIntegration:
             _trigger_subscriber_event(client_with_adapter, team_id)
             data = ws.receive_json(mode="text")
             assert isinstance(data, dict)
-            assert data.get("wrapped") is True
+            assert "payload" in data
+            assert data["payload"].get("wrapped") is True
 
     @pytest.fixture()
     def client_with_adapter(

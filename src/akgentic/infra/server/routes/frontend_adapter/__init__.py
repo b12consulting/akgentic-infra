@@ -12,10 +12,24 @@ import importlib
 from typing import Any, Protocol, runtime_checkable
 
 from fastapi import FastAPI
+from pydantic import BaseModel, Field
 
 from akgentic.team.models import PersistedEvent
 
-__all__ = ["FrontendAdapter", "load_frontend_adapter"]
+__all__ = ["FrontendAdapter", "WrappedWsEvent", "load_frontend_adapter"]
+
+
+class WrappedWsEvent(BaseModel):
+    """WebSocket event wrapped by a frontend adapter for client delivery.
+
+    Encapsulates the adapter-transformed payload so that the return type
+    crossing the adapter → WebSocket boundary is a proper Pydantic model
+    rather than a raw dict.
+    """
+
+    payload: dict[str, Any] = Field(
+        description="Adapter-transformed event data in the frontend's expected format",
+    )
 
 
 @runtime_checkable
@@ -34,14 +48,14 @@ class FrontendAdapter(Protocol):
         """
         ...
 
-    def wrap_ws_event(self, event: PersistedEvent) -> dict[str, Any]:
-        """Translate a persisted event into a frontend-specific JSON payload.
+    def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
+        """Translate a persisted event into a frontend-specific payload.
 
         Args:
             event: The V2 persisted event to translate.
 
         Returns:
-            A dictionary representing the event in the frontend's expected format.
+            A WrappedWsEvent containing the event in the frontend's expected format.
         """
         ...
 

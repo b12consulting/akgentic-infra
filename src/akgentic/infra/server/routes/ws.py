@@ -162,7 +162,7 @@ async def _send_loop(
             })
             seq += 1
             wrapped = adapter.wrap_ws_event(event)
-            await websocket.send_text(json.dumps(wrapped))
+            await websocket.send_text(wrapped.model_dump_json())
         else:
             await websocket.send_text(item)
 
