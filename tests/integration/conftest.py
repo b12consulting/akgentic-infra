@@ -153,9 +153,12 @@ def integration_team_service(
 def integration_app(
     integration_services: CommunityServices,
     integration_team_service: TeamService,
+    integration_settings: ServerSettings,
 ) -> FastAPI:
     """FastAPI app backed by real actors and real LLM."""
-    return create_app(integration_services, integration_team_service)
+    return create_app(
+        integration_services, integration_team_service, settings=integration_settings,
+    )
 
 
 @pytest.fixture()
