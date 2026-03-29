@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
+import warnings
 
 import pytest
-from akgentic.team.models import TeamStatus
+from akgentic.team.models import TeamRuntime, TeamStatus
 
 from akgentic.infra.server.services.team_service import TeamService
 
@@ -101,32 +102,56 @@ def test_process_human_input_invalid_message(team_service: TeamService) -> None:
         team_service.process_human_input(process.team_id, "yes", "nonexistent")
 
 
-def test_create_team_caches_runtime(team_service: TeamService) -> None:
-    """create_team caches the TeamRuntime for subsequent action methods."""
+def test_create_team_caches_handle(team_service: TeamService) -> None:
+    """create_team caches a TeamHandle for subsequent action methods."""
     process = team_service.create_team("test-team", user_id="anonymous")
-    assert process.team_id in team_service._runtimes
+    assert team_service.get_handle(process.team_id) is not None
 
 
-def test_stop_team_removes_runtime_cache(team_service: TeamService) -> None:
-    """stop_team removes runtime from cache."""
+def test_stop_team_removes_handle_cache(team_service: TeamService) -> None:
+    """stop_team removes handle from cache."""
     process = team_service.create_team("test-team", user_id="anonymous")
     team_service.stop_team(process.team_id)
-    assert process.team_id not in team_service._runtimes
+    assert team_service.get_handle(process.team_id) is None
 
 
-def test_restore_team_caches_runtime(team_service: TeamService) -> None:
-    """restore_team caches the new runtime."""
+def test_restore_team_caches_handle(team_service: TeamService) -> None:
+    """restore_team caches the new handle."""
     process = team_service.create_team("test-team", user_id="anonymous")
     team_service.stop_team(process.team_id)
     team_service.restore_team(process.team_id)
-    assert process.team_id in team_service._runtimes
+    assert team_service.get_handle(process.team_id) is not None
 
 
-def test_delete_team_removes_runtime_cache(team_service: TeamService) -> None:
-    """delete_team removes runtime from cache."""
+def test_delete_team_removes_handle_cache(team_service: TeamService) -> None:
+    """delete_team removes handle from cache."""
     process = team_service.create_team("test-team", user_id="anonymous")
     team_service.delete_team(process.team_id)
-    assert process.team_id not in team_service._runtimes
+    assert team_service.get_handle(process.team_id) is None
+
+
+def test_get_handle_unknown_team_returns_none(team_service: TeamService) -> None:
+    """get_handle returns None for a team_id that was never cached."""
+    assert team_service.get_handle(uuid.uuid4()) is None
+
+
+def test_get_runtime_returns_team_runtime(team_service: TeamService) -> None:
+    """Deprecated get_runtime returns the underlying TeamRuntime for a cached team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        runtime = team_service.get_runtime(process.team_id)
+    assert isinstance(runtime, TeamRuntime)
+    assert len(caught) == 1
+    assert issubclass(caught[0].category, DeprecationWarning)
+    assert "get_runtime()" in str(caught[0].message)
+
+
+def test_get_runtime_unknown_team_returns_none(team_service: TeamService) -> None:
+    """Deprecated get_runtime returns None for an unknown team."""
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        assert team_service.get_runtime(uuid.uuid4()) is None
 
 
 def test_stop_team_deleted_raises(team_service: TeamService) -> None:
