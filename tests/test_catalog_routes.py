@@ -82,6 +82,10 @@ def test_catalog_team_crud_create_and_delete(client: TestClient) -> None:
     resp = client.delete("/catalog/api/teams/crud-test-team")
     assert resp.status_code == 204
 
+    # Verify entry is gone
+    resp = client.get("/catalog/api/teams/crud-test-team")
+    assert resp.status_code == 404
+
 
 def test_catalog_exception_handler_404(client: TestClient) -> None:
     """GET /catalog/api/teams/{id} returns 404 for missing entry via exception handler."""
@@ -90,6 +94,22 @@ def test_catalog_exception_handler_404(client: TestClient) -> None:
     body = resp.json()
     assert "detail" in body
     assert "not found" in body["detail"].lower()
+
+
+def test_catalog_exception_handler_409(client: TestClient) -> None:
+    """POST duplicate entry returns 409 via CatalogValidationError exception handler."""
+    entry = {
+        "id": "test-team",
+        "name": "Duplicate Team",
+        "entry_point": "human-proxy",
+        "message_types": ["akgentic.core.messages.UserMessage"],
+        "members": [{"agent_id": "human-proxy"}],
+    }
+    resp = client.post("/catalog/api/teams/", json=entry)
+    assert resp.status_code == 409
+    body = resp.json()
+    assert "detail" in body
+    assert "already exists" in body["detail"].lower()
 
 
 def test_catalog_exception_handler_registered(app: FastAPI) -> None:
@@ -106,13 +126,7 @@ def test_old_catalog_routes_removed(client: TestClient) -> None:
     assert resp.status_code == 404 or resp.status_code == 405
 
 
-def test_v1_adapter_config_coexists(client: TestClient) -> None:
-    """V1 adapter config endpoints still work alongside catalog routes.
-
-    The client fixture uses seeded_settings which has no frontend_adapter
-    configured, so V1 adapter routes won't be mounted. This test verifies
-    that the catalog routes don't interfere with the core app routes.
-    """
-    # Core teams endpoint still works
+def test_core_routes_coexist_with_catalog(client: TestClient) -> None:
+    """Core app routes still work after mounting catalog routers."""
     resp = client.get("/teams/")
     assert resp.status_code == 200
