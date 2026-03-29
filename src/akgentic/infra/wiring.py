@@ -42,12 +42,13 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
         Fully wired CommunityServices container
     """
     event_store = YamlEventStore(data_dir=settings.workspaces_root)
-    actor_system, team_manager = _build_actor_layer(event_store)
+    service_registry = LocalServiceRegistry()
+    actor_system, team_manager = _build_actor_layer(event_store, service_registry)
     catalogs = _build_catalogs(settings)
 
     return CommunityServices(
         placement=[LocalPlacement()],
-        service_registry=LocalServiceRegistry(),
+        service_registry=service_registry,
         auth=NoAuth(),
         event_store=event_store,
         runtime_cache=LocalRuntimeCache(),
@@ -67,9 +68,9 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
 
 def _build_actor_layer(
     event_store: YamlEventStore,
+    service_registry: LocalServiceRegistry,
 ) -> tuple[ActorSystem, TeamManager]:
     """Build ActorSystem and TeamManager."""
-    service_registry = LocalServiceRegistry()
     shared_subscribers: list[EventSubscriber] = [TelemetrySubscriber()]
     actor_system = ActorSystem()
     team_manager = TeamManager(

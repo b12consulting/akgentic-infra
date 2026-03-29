@@ -62,3 +62,23 @@ class TestWireCommunity:
             assert isinstance(services.event_store, YamlEventStore)
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_shared_service_registry(self, services: CommunityServices) -> None:
+        """TeamManager and CommunityServices share the same service registry."""
+        assert services.service_registry is services.team_manager._service_registry
+
+    def test_catalog_path_override(self, tmp_path: Path) -> None:
+        """wire_community uses settings.catalog_path when set."""
+        custom_catalog = tmp_path / "custom-catalog"
+        custom_catalog.mkdir()
+        for sub in ("teams", "agents", "tools", "templates"):
+            (custom_catalog / sub).mkdir()
+        settings = ServerSettings(
+            workspaces_root=tmp_path,
+            catalog_path=custom_catalog,
+        )
+        services = wire_community(settings)
+        try:
+            assert services.team_catalog is not None
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)

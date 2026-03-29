@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.settings import ServerSettings
+
+
+def test_create_app_defaults_settings_when_none(tmp_path: Path) -> None:
+    """create_app(None) defaults to ServerSettings() and returns a working app."""
+    import os
+
+    os.environ["AKGENTIC_WORKSPACES_ROOT"] = str(tmp_path / "ws")
+    try:
+        app = create_app(None)
+        assert app.title == "Akgentic Platform API"
+        app.state.services.actor_system.shutdown()
+    finally:
+        os.environ.pop("AKGENTIC_WORKSPACES_ROOT", None)
 
 
 def test_create_app_returns_fastapi(seeded_settings: ServerSettings) -> None:
