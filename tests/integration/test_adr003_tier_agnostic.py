@@ -69,19 +69,20 @@ class TestTierAgnosticFixturePattern:
 
     def test_inline_fixture_pattern(self, tmp_path: Path) -> None:
         """AC #2: Full inline pattern in one test."""
-        from tests.integration.conftest import _seed_integration_catalog
+        from ._helpers import seed_integration_catalog
 
         settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
-        _seed_integration_catalog(settings.workspaces_root / "catalog")
+        seed_integration_catalog(settings.workspaces_root / "catalog")
         services = wire_community(settings)
-        app = create_app(services, settings)
-        client = TestClient(app)
+        try:
+            app = create_app(services, settings)
+            client = TestClient(app)
 
-        resp = client.get("/teams/")
-        assert resp.status_code == 200
-        assert "teams" in resp.json()
-
-        services.actor_system.shutdown()
+            resp = client.get("/teams/")
+            assert resp.status_code == 200
+            assert "teams" in resp.json()
+        finally:
+            services.actor_system.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +257,11 @@ class TestTeamServiceProtocolRouting:
         assert resp.status_code == 200
         events = resp.json()["events"]
         assert len(events) >= 1
+        # Verify at least one event contains the sent message content
+        event_strs = [str(ev) for ev in events]
+        assert any(
+            "Hello from integration test" in s for s in event_strs
+        ), f"Expected sent message content in events, got: {events}"
 
         # Cleanup
         integration_client.post(f"/teams/{team_id}/stop")
@@ -357,23 +363,25 @@ class TestSettingsHierarchy:
 
     def test_community_settings_wires_functional_app(self, tmp_path: Path) -> None:
         """AC #4: End-to-end: CommunitySettings -> wire -> create_app -> team works."""
-        from tests.integration.conftest import _seed_integration_catalog
+        from ._helpers import seed_integration_catalog
 
         settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
-        _seed_integration_catalog(settings.workspaces_root / "catalog")
+        seed_integration_catalog(settings.workspaces_root / "catalog")
         services = wire_community(settings)
-        app = create_app(services, settings)
-        client = TestClient(app)
+        try:
+            app = create_app(services, settings)
+            client = TestClient(app)
 
-        team_id = create_team(client)
-        resp = client.get(f"/teams/{team_id}")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
+            team_id = create_team(client)
+            resp = client.get(f"/teams/{team_id}")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
 
-        # Cleanup
-        client.post(f"/teams/{team_id}/stop")
-        time.sleep(0.5)
-        services.actor_system.shutdown()
+            # Cleanup
+            client.post(f"/teams/{team_id}/stop")
+            time.sleep(0.5)
+        finally:
+            services.actor_system.shutdown()
 
 
 # ---------------------------------------------------------------------------
