@@ -426,6 +426,201 @@ def test_channel_message_with_all_fields() -> None:
     assert msg.message_id == "msg-123"
 
 
+# --- TeamHandle ---
+
+
+def test_team_handle_is_protocol() -> None:
+    """TeamHandle uses typing.Protocol base."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert Protocol in inspect.getmro(TeamHandle)
+
+
+def test_team_handle_is_runtime_checkable() -> None:
+    """TeamHandle has @runtime_checkable decorator."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert getattr(TeamHandle, "__protocol_attrs__", None) is not None or hasattr(
+        TeamHandle, "_is_runtime_protocol"
+    )
+    # Verify isinstance works (runtime_checkable requirement)
+    class FakeHandle:
+        def send(self, content: str) -> None:
+            pass
+
+        def send_to(self, agent_name: str, content: str) -> None:
+            pass
+
+        def process_human_input(self, content: str, message: object) -> None:
+            pass
+
+        def subscribe(self, subscriber: object) -> None:
+            pass
+
+        def unsubscribe(self, subscriber: object) -> None:
+            pass
+
+    assert isinstance(FakeHandle(), TeamHandle)
+
+
+def test_team_handle_has_send() -> None:
+    """TeamHandle defines send with content parameter."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert hasattr(TeamHandle, "send")
+    sig = inspect.signature(TeamHandle.send)
+    assert "content" in sig.parameters
+
+
+def test_team_handle_has_send_to() -> None:
+    """TeamHandle defines send_to with agent_name and content parameters."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert hasattr(TeamHandle, "send_to")
+    sig = inspect.signature(TeamHandle.send_to)
+    assert "agent_name" in sig.parameters
+    assert "content" in sig.parameters
+
+
+def test_team_handle_has_process_human_input() -> None:
+    """TeamHandle defines process_human_input with content and message parameters."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert hasattr(TeamHandle, "process_human_input")
+    sig = inspect.signature(TeamHandle.process_human_input)
+    assert "content" in sig.parameters
+    assert "message" in sig.parameters
+
+
+def test_team_handle_has_subscribe() -> None:
+    """TeamHandle defines subscribe with subscriber parameter."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert hasattr(TeamHandle, "subscribe")
+    sig = inspect.signature(TeamHandle.subscribe)
+    assert "subscriber" in sig.parameters
+
+
+def test_team_handle_has_unsubscribe() -> None:
+    """TeamHandle defines unsubscribe with subscriber parameter."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert hasattr(TeamHandle, "unsubscribe")
+    sig = inspect.signature(TeamHandle.unsubscribe)
+    assert "subscriber" in sig.parameters
+
+
+def test_team_handle_method_count() -> None:
+    """TeamHandle has exactly 5 public methods."""
+    from akgentic.infra.protocols import TeamHandle
+
+    public_methods = [
+        m
+        for m in dir(TeamHandle)
+        if not m.startswith("_") and callable(getattr(TeamHandle, m))
+    ]
+    assert len(public_methods) == 5
+
+
+def test_team_handle_send_returns_none() -> None:
+    """TeamHandle.send returns None."""
+    from akgentic.infra.protocols import TeamHandle
+
+    hints = get_type_hints(TeamHandle.send)
+    assert hints["return"] is type(None)
+
+
+def test_team_handle_send_to_returns_none() -> None:
+    """TeamHandle.send_to returns None."""
+    from akgentic.infra.protocols import TeamHandle
+
+    hints = get_type_hints(TeamHandle.send_to)
+    assert hints["return"] is type(None)
+
+
+# --- RuntimeCache ---
+
+
+def test_runtime_cache_is_protocol() -> None:
+    """RuntimeCache uses typing.Protocol base."""
+    from akgentic.infra.protocols import RuntimeCache
+
+    assert Protocol in inspect.getmro(RuntimeCache)
+
+
+def test_runtime_cache_is_runtime_checkable() -> None:
+    """RuntimeCache has @runtime_checkable decorator and isinstance works."""
+    from akgentic.infra.protocols import RuntimeCache
+
+    class FakeCache:
+        def store(self, team_id: uuid.UUID, handle: object) -> None:
+            pass
+
+        def get(self, team_id: uuid.UUID) -> object:
+            return None
+
+        def remove(self, team_id: uuid.UUID) -> None:
+            pass
+
+    assert isinstance(FakeCache(), RuntimeCache)
+
+
+def test_runtime_cache_has_store() -> None:
+    """RuntimeCache defines store with team_id and handle parameters."""
+    from akgentic.infra.protocols import RuntimeCache
+
+    assert hasattr(RuntimeCache, "store")
+    sig = inspect.signature(RuntimeCache.store)
+    assert "team_id" in sig.parameters
+    assert "handle" in sig.parameters
+
+
+def test_runtime_cache_has_get() -> None:
+    """RuntimeCache defines get with team_id parameter."""
+    from akgentic.infra.protocols import RuntimeCache
+
+    assert hasattr(RuntimeCache, "get")
+    sig = inspect.signature(RuntimeCache.get)
+    assert "team_id" in sig.parameters
+
+
+def test_runtime_cache_has_remove() -> None:
+    """RuntimeCache defines remove with team_id parameter."""
+    from akgentic.infra.protocols import RuntimeCache
+
+    assert hasattr(RuntimeCache, "remove")
+    sig = inspect.signature(RuntimeCache.remove)
+    assert "team_id" in sig.parameters
+
+
+def test_runtime_cache_store_returns_none() -> None:
+    """RuntimeCache.store returns None."""
+    from akgentic.infra.protocols import RuntimeCache
+
+    hints = get_type_hints(RuntimeCache.store)
+    assert hints["return"] is type(None)
+
+
+def test_runtime_cache_remove_returns_none() -> None:
+    """RuntimeCache.remove returns None."""
+    from akgentic.infra.protocols import RuntimeCache
+
+    hints = get_type_hints(RuntimeCache.remove)
+    assert hints["return"] is type(None)
+
+
+def test_runtime_cache_method_count() -> None:
+    """RuntimeCache has exactly 3 public methods."""
+    from akgentic.infra.protocols import RuntimeCache
+
+    public_methods = [
+        m
+        for m in dir(RuntimeCache)
+        if not m.startswith("_") and callable(getattr(RuntimeCache, m))
+    ]
+    assert len(public_methods) == 3
+
+
 # --- Non-channel protocols (unchanged) ---
 
 
