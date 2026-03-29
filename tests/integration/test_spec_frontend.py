@@ -20,7 +20,8 @@ def _create_v1_team(client: TestClient) -> str:
     resp = client.post(f"/process/{CATALOG_ENTRY_ID}")
     assert resp.status_code == 200
     data = resp.json()
-    return data["id"]
+    team_id: str = data["id"]
+    return team_id
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +134,15 @@ class TestV1Story68Endpoints:
         existing = resp.json()[0]
 
         # Create a new entry via PUT /config/{config_type} (ADR-004 path shape)
-        put_body = {
+        config: dict[str, object] = {
+            **existing["data"],
             "id": "v1-put-test",
             "name": "V1 PUT Test",
-            "config": {**existing["data"], "id": "v1-put-test", "name": "V1 PUT Test"},
+        }
+        put_body: dict[str, object] = {
+            "id": "v1-put-test",
+            "name": "V1 PUT Test",
+            "config": config,
             "dry_run": False,
         }
         resp = v1_adapter_client.put("/config/team", json=put_body)
@@ -144,7 +150,7 @@ class TestV1Story68Endpoints:
         assert resp.json()["status"] == "ok"
 
         # Update the entry via PUT
-        put_body["config"]["name"] = "V1 PUT Updated"
+        config["name"] = "V1 PUT Updated"
         resp = v1_adapter_client.put("/config/team", json=put_body)
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"

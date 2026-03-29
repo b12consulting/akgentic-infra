@@ -34,7 +34,11 @@ def _create_v1_team(client: TestClient) -> str:
     resp = client.post(f"/process/{CATALOG_ENTRY_ID}")
     assert resp.status_code == 200
     data = resp.json()
-    return data["id"]
+    assert "id" in data
+    assert "status" in data
+    assert "params" in data
+    team_id: str = data["id"]
+    return team_id
 
 
 def _wait_for_v1_messages(
