@@ -117,7 +117,7 @@ class ChatSession:
             events = self.client.get_events(self.team_id)
         except SystemExit:
             return
-        self._display_events(events)
+        self._display_events([e.model_dump() for e in events])
 
     async def replay_history_async(self) -> None:
         """Async version of _replay_history — uses run_in_executor to avoid blocking."""
@@ -126,7 +126,7 @@ class ChatSession:
             events = await loop.run_in_executor(None, self.client.get_events, self.team_id)
         except SystemExit:
             return
-        self._display_events(events)
+        self._display_events([e.model_dump() for e in events])
 
     def _display_events(self, events: list[dict[str, Any]]) -> None:
         """Render a list of events, adding a history separator if any were displayed."""

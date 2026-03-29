@@ -11,6 +11,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.console import Console
 
+from akgentic.infra.cli.client import (
+    EventInfo,
+    TeamInfo,
+    WorkspaceEntry,
+    WorkspaceTreeInfo,
+    WorkspaceUploadInfo,
+)
 from akgentic.infra.cli.commands import (
     CommandRegistry,
     _agents_handler,
@@ -37,25 +44,34 @@ def _mock_client(**overrides: Any) -> MagicMock:
     mock = MagicMock()
     mock.get_events.return_value = []
     mock.send_message.return_value = None
-    mock.get_team.return_value = {
-        "team_id": "t1",
-        "name": "Test Team",
-        "status": "running",
-        "agents": [
-            {"name": "agent-a", "role": "researcher", "state": "idle"},
-            {"name": "agent-b", "role": "writer", "state": "busy"},
+    mock.get_team.return_value = TeamInfo(
+        team_id="t1",
+        name="Test Team",
+        status="running",
+        user_id="user-1",
+        created_at="2026-01-01T00:00:00",
+        updated_at="2026-01-01T00:00:00",
+    )
+    mock.workspace_tree.return_value = WorkspaceTreeInfo(
+        team_id="t1",
+        path="/",
+        entries=[
+            WorkspaceEntry(name="docs", is_dir=True, size=0),
+            WorkspaceEntry(name="readme.md", is_dir=False, size=42),
         ],
-    }
-    mock.workspace_tree.return_value = {
-        "entries": [
-            {"name": "docs", "is_dir": True, "size": 0},
-            {"name": "readme.md", "is_dir": False, "size": 42},
-        ]
-    }
+    )
     mock.workspace_read.return_value = b"file content here"
-    mock.workspace_upload.return_value = {"path": "test.txt", "size": 5}
+    mock.workspace_upload.return_value = WorkspaceUploadInfo(path="test.txt", size=5)
+    mock.stop_team.return_value = None
     mock.delete_team.return_value = None
-    mock.restore_team.return_value = {"team_id": "t1", "status": "running"}
+    mock.restore_team.return_value = TeamInfo(
+        team_id="t1",
+        name="Test Team",
+        status="running",
+        user_id="user-1",
+        created_at="2026-01-01T00:00:00",
+        updated_at="2026-01-01T00:00:00",
+    )
     for k, v in overrides.items():
         setattr(mock, k, v)
     return mock
@@ -202,7 +218,6 @@ class TestStatusHandler:
         out = capsys.readouterr().out
         assert "Test Team" in out
         assert "running" in out
-        assert "2" in out  # 2 agents
 
     async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
@@ -216,29 +231,15 @@ class TestStatusHandler:
 
 
 class TestAgentsHandler:
-    async def test_lists_agents(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_shows_team_info(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
         session = _make_session(client=client)
 
         await _agents_handler("", session)
 
         out = capsys.readouterr().out
-        assert "agent-a" in out
-        assert "researcher" in out
-        assert "idle" in out
-        assert "agent-b" in out
-        assert "writer" in out
-        assert "busy" in out
-
-    async def test_no_agents(self, capsys: pytest.CaptureFixture[str]) -> None:
-        client = _mock_client()
-        client.get_team.return_value = {"agents": []}
-        session = _make_session(client=client)
-
-        await _agents_handler("", session)
-
-        out = capsys.readouterr().out
-        assert "No agents" in out
+        assert "Test Team" in out
+        assert "not available" in out
 
     async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
@@ -254,7 +255,12 @@ class TestAgentsHandler:
 class TestHistoryHandler:
     async def test_shows_history_default_limit(self) -> None:
         events = [
-            {"event": {"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"}}
+            EventInfo(
+                team_id="t1",
+                sequence=i,
+                event={"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"},
+                timestamp="2026-01-01T00:00:00",
+            )
             for i in range(25)
         ]
         client = _mock_client()
@@ -273,7 +279,12 @@ class TestHistoryHandler:
 
     async def test_custom_limit(self) -> None:
         events = [
-            {"event": {"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"}}
+            EventInfo(
+                team_id="t1",
+                sequence=i,
+                event={"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"},
+                timestamp="2026-01-01T00:00:00",
+            )
             for i in range(25)
         ]
         client = _mock_client()
@@ -314,8 +325,18 @@ class TestHistoryHandler:
 
     async def test_filters_non_displayable(self) -> None:
         events = [
-            {"event": {"__model__": "StateChangedMessage", "state": "running"}},
-            {"event": {"__model__": "SentMessage", "sender": "bot", "content": "visible"}},
+            EventInfo(
+                team_id="t1",
+                sequence=1,
+                event={"__model__": "StateChangedMessage", "state": "running"},
+                timestamp="2026-01-01T00:00:00",
+            ),
+            EventInfo(
+                team_id="t1",
+                sequence=2,
+                event={"__model__": "SentMessage", "sender": "bot", "content": "visible"},
+                timestamp="2026-01-01T00:00:00",
+            ),
         ]
         client = _mock_client()
         client.get_events.return_value = events
@@ -353,7 +374,9 @@ class TestFilesHandler:
 
     async def test_empty_workspace(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
-        client.workspace_tree.return_value = {"entries": []}
+        client.workspace_tree.return_value = WorkspaceTreeInfo(
+            team_id="t1", path="/", entries=[]
+        )
         session = _make_session(client=client)
 
         await _files_handler("", session)
@@ -464,11 +487,11 @@ class TestStopHandler:
 
         out = capsys.readouterr().out
         assert "Team t1 stopped." in out
-        client.delete_team.assert_called_once_with("t1")
+        client.stop_team.assert_called_once_with("t1")
 
     async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
-        client.delete_team.side_effect = SystemExit(1)
+        client.stop_team.side_effect = SystemExit(1)
         session = _make_session(client=client)
 
         await _stop_handler("", session)

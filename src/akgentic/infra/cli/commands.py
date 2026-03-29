@@ -99,12 +99,8 @@ async def _status_handler(args: str, session: ChatSession) -> None:
         print("Error fetching team status.", file=sys.stderr)
         return
 
-    name = team.get("name", session.team_id)
-    status = team.get("status", "unknown")
-    agents: list[dict[str, Any]] = team.get("agents", [])
-    print(f"Team: {name}")
-    print(f"Status: {status}")
-    print(f"Agents: {len(agents)}")
+    print(f"Team: {team.name}")
+    print(f"Status: {team.status}")
 
 
 async def _agents_handler(args: str, session: ChatSession) -> None:
@@ -116,19 +112,9 @@ async def _agents_handler(args: str, session: ChatSession) -> None:
         print("Error fetching agents.", file=sys.stderr)
         return
 
-    agents: list[dict[str, Any]] = team.get("agents", [])
-    if not agents:
-        print("No agents in team.")
-        return
-
-    # Print header
-    print(f"{'NAME':<20s} {'ROLE':<20s} {'STATE':<15s}")
-    print(f"{'-' * 20:<20s} {'-' * 20:<20s} {'-' * 15:<15s}")
-    for agent in agents:
-        name = agent.get("name", "unknown")
-        role = agent.get("role", "unknown")
-        state = agent.get("state", "unknown")
-        print(f"{name:<20s} {role:<20s} {state:<15s}")
+    print(f"Team: {team.name}")
+    print(f"Status: {team.status}")
+    print("(Agent listing not available from this endpoint)")
 
 
 # -- History command --
@@ -154,8 +140,9 @@ async def _history_handler(args: str, session: ChatSession) -> None:
         print("Error fetching history.", file=sys.stderr)
         return
 
-    # Filter to displayable events and take last N
-    displayable = [e for e in events if _is_displayable(e)]
+    # Convert EventInfo models to dicts for the rendering pipeline
+    event_dicts = [e.model_dump() for e in events]
+    displayable = [e for e in event_dicts if _is_displayable(e)]
     for evt in displayable[-limit:]:
         session._render_event(evt)
 
@@ -184,16 +171,13 @@ async def _files_handler(args: str, session: ChatSession) -> None:
         print("Error fetching file tree.", file=sys.stderr)
         return
 
-    entries: list[dict[str, Any]] = tree.get("entries", [])
-    if not entries:
+    if not tree.entries:
         print("(empty workspace)")
         return
-    for entry in entries:
-        prefix = "D " if entry.get("is_dir") else "  "
-        name = entry.get("name", "")
-        size = entry.get("size", 0)
-        suffix = f"  ({size} bytes)" if not entry.get("is_dir") else ""
-        print(f"{prefix}{name}{suffix}")
+    for entry in tree.entries:
+        prefix = "D " if entry.is_dir else "  "
+        suffix = f"  ({entry.size} bytes)" if not entry.is_dir else ""
+        print(f"{prefix}{entry.name}{suffix}")
 
 
 async def _read_handler(args: str, session: ChatSession) -> None:
@@ -242,9 +226,7 @@ async def _upload_handler(args: str, session: ChatSession) -> None:
         print(f"Error uploading file: {local_path}", file=sys.stderr)
         return
 
-    uploaded_path = result.get("path", p.name)
-    size = result.get("size", len(file_data))
-    print(f"Uploaded {uploaded_path} ({size} bytes)")
+    print(f"Uploaded {result.path} ({result.size} bytes)")
 
 
 # -- Lifecycle commands --
@@ -254,7 +236,7 @@ async def _stop_handler(args: str, session: ChatSession) -> None:
     """Stop the team."""
     loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(None, session.client.delete_team, session.team_id)
+        await loop.run_in_executor(None, session.client.stop_team, session.team_id)
     except SystemExit:
         print("Error stopping team.", file=sys.stderr)
         return

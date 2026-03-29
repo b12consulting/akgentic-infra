@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 
@@ -37,9 +37,20 @@ class _State:
 _state = _State()
 
 
+def _to_serializable(data: object) -> object:
+    """Convert Pydantic models (or lists of them) to dicts for formatting."""
+    from pydantic import BaseModel
+
+    if isinstance(data, list):
+        return [item.model_dump() if isinstance(item, BaseModel) else item for item in data]
+    if isinstance(data, BaseModel):
+        return data.model_dump()
+    return data
+
+
 def _print(data: object, columns: list[str] | None = None) -> None:
     """Print formatted output using the current output format."""
-    typer.echo(format_output(data, _state.fmt, columns))
+    typer.echo(format_output(_to_serializable(data), _state.fmt, columns))
 
 
 # -- global callback --
@@ -155,7 +166,7 @@ def chat(
     """Interactive chat REPL — connect to a team via WebSocket."""
     if create is not None:
         team = _state.client.create_team(create)
-        team_id = str(team["team_id"])
+        team_id = team.team_id
         typer.echo(f"Created team {team_id}")
 
     if team_id is None:
@@ -186,20 +197,17 @@ def chat(
 @workspace_app.command("tree")
 def workspace_tree(team_id: str) -> None:
     """Show workspace file tree."""
-    tree: dict[str, Any] = _state.client.workspace_tree(team_id)
+    tree = _state.client.workspace_tree(team_id)
     if _state.fmt != OutputFormat.table:
-        _print(tree)
+        _print(tree.model_dump())
         return
-    entries: list[dict[str, Any]] = tree.get("entries", [])
-    if not entries:
+    if not tree.entries:
         typer.echo("(empty workspace)")
         return
-    for entry in entries:
-        prefix = "📁 " if entry.get("is_dir") else "   "
-        name = entry.get("name", "")
-        size = entry.get("size", 0)
-        suffix = f"  ({size} bytes)" if not entry.get("is_dir") else ""
-        typer.echo(f"{prefix}{name}{suffix}")
+    for entry in tree.entries:
+        prefix = "📁 " if entry.is_dir else "   "
+        suffix = f"  ({entry.size} bytes)" if not entry.is_dir else ""
+        typer.echo(f"{prefix}{entry.name}{suffix}")
 
 
 @workspace_app.command("read")
@@ -220,7 +228,5 @@ def workspace_upload(team_id: str, local_path: str) -> None:
         typer.echo(f"Error: {local_path} is not a file", err=True)
         raise typer.Exit(code=1)
     file_data = p.read_bytes()
-    result: dict[str, Any] = _state.client.workspace_upload(team_id, p.name, file_data)
-    path = result.get("path", p.name)
-    size = result.get("size", len(file_data))
-    typer.echo(f"Uploaded {path} ({size} bytes)")
+    result = _state.client.workspace_upload(team_id, p.name, file_data)
+    typer.echo(f"Uploaded {result.path} ({result.size} bytes)")
