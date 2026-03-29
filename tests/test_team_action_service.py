@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import uuid
-import warnings
 
 import pytest
-from akgentic.team.models import TeamRuntime, TeamStatus
+from akgentic.team.models import TeamStatus
 
 from akgentic.infra.server.services.team_service import TeamService
 
@@ -133,25 +132,6 @@ def test_delete_team_removes_handle_cache(team_service: TeamService) -> None:
 def test_get_handle_unknown_team_returns_none(team_service: TeamService) -> None:
     """get_handle returns None for a team_id that was never cached."""
     assert team_service.get_handle(uuid.uuid4()) is None
-
-
-def test_get_runtime_returns_team_runtime(team_service: TeamService) -> None:
-    """Deprecated get_runtime returns the underlying TeamRuntime for a cached team."""
-    process = team_service.create_team("test-team", user_id="anonymous")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        runtime = team_service.get_runtime(process.team_id)
-    assert isinstance(runtime, TeamRuntime)
-    assert len(caught) == 1
-    assert issubclass(caught[0].category, DeprecationWarning)
-    assert "get_runtime()" in str(caught[0].message)
-
-
-def test_get_runtime_unknown_team_returns_none(team_service: TeamService) -> None:
-    """Deprecated get_runtime returns None for an unknown team."""
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter("always")
-        assert team_service.get_runtime(uuid.uuid4()) is None
 
 
 def test_stop_team_deleted_raises(team_service: TeamService) -> None:
