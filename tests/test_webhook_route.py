@@ -287,6 +287,48 @@ class TestWebhookFormData:
         assert call[1] == "form-user"
 
 
+class TestWebhookContentTypeEdgeCases:
+    """AC #4: content-type edge cases."""
+
+    def test_missing_content_type_returns_415(self, tmp_path: Path) -> None:
+        """Request with no content-type header returns 415."""
+        parser = StubParser()
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post(
+            "/webhook/test-channel",
+            content=b"some data",
+            headers={"content-type": ""},
+        )
+
+        assert resp.status_code == 415
+
+    def test_json_with_charset_param(self, tmp_path: Path) -> None:
+        """application/json; charset=utf-8 is handled as JSON."""
+        parser = StubParser()
+        parser.set_next_message(
+            ChannelMessage(
+                content="charset msg",
+                channel_user_id="u-charset",
+                team_id=uuid.uuid4(),
+            )
+        )
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post(
+            "/webhook/test-channel",
+            json={"text": "hi"},
+            headers={"content-type": "application/json; charset=utf-8"},
+        )
+
+        assert resp.status_code == 204
+        assert len(ingestion.route_reply_calls) == 1
+
+
 class TestWebhookUnsupportedContentType:
     """AC #4: unsupported content-type returns 415."""
 

@@ -87,11 +87,11 @@ TEAM_ID = uuid.uuid4()
 
 
 # ---------------------------------------------------------------------------
-# AC #1: matches() then deliver() on first matching adapter
+# AC #1: matches() then deliver() on matching adapter
 # ---------------------------------------------------------------------------
 
 class TestDispatchToMatchingAdapter:
-    """AC #1: Dispatcher calls matches() then deliver() on first match."""
+    """AC #1: Dispatcher calls matches() then deliver() on matching adapters."""
 
     def test_calls_matches_then_deliver(self) -> None:
         adapter = _MatchingAdapter()

@@ -320,3 +320,4 @@ def test_channel_config_is_pydantic_model() -> None:
     fields = ChannelConfig.model_fields
     assert "parser_fqcn" in fields
     assert "adapter_fqcn" in fields
+    assert "config" in fields
