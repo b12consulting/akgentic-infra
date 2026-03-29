@@ -1,0 +1,183 @@
+"""Integration tests — V1 frontend adapter spec compliance for story 6.8 endpoints.
+
+Validates all V1 endpoints added in story 6.8 and the llm_context WS envelope type.
+"""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+
+pytestmark = pytest.mark.integration
+
+CATALOG_ENTRY_ID = "test-team"
+
+
+def _create_v1_team(client: TestClient) -> str:
+    """POST /process/{type} (V1) and return the team_id."""
+    resp = client.post(f"/process/{CATALOG_ENTRY_ID}")
+    assert resp.status_code == 200
+    data = resp.json()
+    return data["id"]
+
+
+# ---------------------------------------------------------------------------
+# AC #5 — V1 story-6.8 endpoint translations
+# ---------------------------------------------------------------------------
+
+
+class TestV1Story68Endpoints:
+    """Integration tests for V1 endpoints added in story 6.8."""
+
+    def test_patch_description(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: PATCH /process/{id}/description returns ok."""
+        team_id = _create_v1_team(v1_adapter_client)
+
+        resp = v1_adapter_client.patch(
+            f"/process/{team_id}/description",
+            json={"description": "Updated description"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+        v1_adapter_client.delete(f"/process/{team_id}/archive")
+        time.sleep(0.5)
+
+    def test_relaunch_message_not_found(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: POST /relaunch/{id}/message/{msgId} returns 404 for unknown msg."""
+        team_id = _create_v1_team(v1_adapter_client)
+
+        resp = v1_adapter_client.post(
+            f"/relaunch/{team_id}/message/00000000-0000-0000-0000-000000000000",
+        )
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+        v1_adapter_client.delete(f"/process/{team_id}/archive")
+        time.sleep(0.5)
+
+    def test_patch_state_not_running(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: PATCH /state/{id}/of/{agent} returns 404 for stopped team."""
+        team_id = _create_v1_team(v1_adapter_client)
+
+        # Stop the team first
+        v1_adapter_client.delete(f"/process/{team_id}/archive")
+        time.sleep(0.5)
+
+        resp = v1_adapter_client.patch(
+            f"/state/{team_id}/of/@Manager",
+            json={"content": "state update"},
+        )
+        assert resp.status_code == 404
+
+    def test_get_config_team(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: GET /config/team returns catalog entries."""
+        resp = v1_adapter_client.get("/config/team")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        entry = data[0]
+        assert "id" in entry
+        assert "type" in entry
+        assert entry["type"] == "team"
+        assert "data" in entry
+
+    def test_get_config_agent(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: GET /config/agent returns catalog entries."""
+        resp = v1_adapter_client.get("/config/agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) >= 1
+
+    def test_get_config_unknown_type(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: GET /config/unknown returns 400."""
+        resp = v1_adapter_client.get("/config/unknown")
+        assert resp.status_code == 400
+
+    def test_get_team_configs(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: GET /team-configs returns team catalog entries."""
+        resp = v1_adapter_client.get("/team-configs/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        assert data[0]["type"] == "team"
+
+    def test_get_feedback_empty(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: GET /get-feedback returns empty list (stub)."""
+        resp = v1_adapter_client.get("/get-feedback")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_set_feedback_ok(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: POST /set-feedback returns ok (stub)."""
+        resp = v1_adapter_client.post(
+            "/set-feedback",
+            json={"id": "fb-1", "content": "Great!", "rating": 5},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_delete_config_not_found(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: DELETE /config for nonexistent entry returns 404."""
+        resp = v1_adapter_client.request(
+            "DELETE",
+            "/config/",
+            json={"id": "nonexistent", "type": "team", "data": {}},
+        )
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# AC #5 — llm_context WS envelope type
+# ---------------------------------------------------------------------------
+
+
+class TestLlmContextEnvelope:
+    """Verify the V1 WS handler emits llm_context envelope type."""
+
+    def test_classify_envelope_type_for_context_changed(self) -> None:
+        """AC #5: _classify_envelope_type returns 'llm_context' for ContextChangedMessage."""
+        from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import (
+            _classify_envelope_type,
+        )
+
+        # Create a mock ContextChangedMessage-like object
+        class FakeContextChangedMessage:
+            __name__ = "ContextChangedMessage"
+
+            def __init__(self) -> None:
+                self.id = "test-id"
+                self.sender = None
+
+        # The function checks type(event).__name__ == "ContextChangedMessage"
+        fake = FakeContextChangedMessage()
+        type(fake).__name__ = "ContextChangedMessage"  # type: ignore[attr-defined]
+        # This won't work because __name__ is read-only on classes.
+        # Instead, rename the class itself.
+
+        class ContextChangedMessage:  # noqa: N801
+            """Fake message that has the right class name."""
+
+            def __init__(self) -> None:
+                self.id = "test-id"
+                self.sender = None
+
+        result = _classify_envelope_type(ContextChangedMessage())  # type: ignore[arg-type]
+        assert result == "llm_context"
+
+    def test_classify_envelope_returns_message_for_user_message(self) -> None:
+        """AC #5: _classify_envelope_type returns 'message' for UserMessage."""
+        from akgentic.core.messages.message import UserMessage
+
+        from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import (
+            _classify_envelope_type,
+        )
+
+        msg = UserMessage(content="hello")
+        result = _classify_envelope_type(msg)
+        assert result == "message"

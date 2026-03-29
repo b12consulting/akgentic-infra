@@ -386,30 +386,44 @@ class TestCliChat:
             renderer=renderer,
         )
 
-        # Mock stdin: send a message, wait for LLM to respond, then /quit
-        inputs = iter(["Say hello in one word", "/quit"])
+        # Mock stdin: send a message, wait for LLM to respond, then /quit.
+        # After /quit the mock must block (not StopIteration) so the session
+        # exits cleanly through the /quit break rather than an exception.
+        def _mock_read_input(_prompt: str) -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return "Say hello in one word"
+            if call_count == 2:
+                return "/quit"
+            # After /quit: block until cancelled (session should have exited)
+            import threading
+            threading.Event().wait(timeout=30)
+            return "/quit"
+
+        call_count = 0
 
         async def _run_session() -> None:
             with patch(
                 "akgentic.infra.cli.repl._read_input",
-                side_effect=lambda _prompt: next(inputs),
+                side_effect=_mock_read_input,
             ):
-                await asyncio.wait_for(session.run(), timeout=POLL_TIMEOUT_S)
+                await asyncio.wait_for(session.run(), timeout=30)
 
         try:
             asyncio.run(_run_session())
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             pass  # session may not exit instantly after /quit
+
+        # Cleanup — MUST run before assertion to avoid actor system hang
+        api_client.close()
+        integration_client.post(f"/teams/{team_id}/stop")
+        time.sleep(0.5)
 
         # Verify at least one WebSocket event was rendered (AC #2)
         assert len(rendered_events) > 0, (
             "ChatSession received no WebSocket events — expected at least one agent message"
         )
-
-        api_client.close()
-        # Cleanup
-        integration_client.post(f"/teams/{team_id}/stop")
-        time.sleep(0.3)
 
     def test_cli_chat_create_shortcut(
         self,
