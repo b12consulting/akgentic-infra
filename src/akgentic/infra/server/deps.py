@@ -16,6 +16,7 @@ from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.team_handle import RuntimeCache
+from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
@@ -34,18 +35,10 @@ class TierServices(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    placement: list[PlacementStrategy] = Field(
-        description="Strategies for placing teams on workers"
-    )
-    service_registry: ServiceRegistry = Field(
-        description="Service discovery registry for worker instances"
-    )
-    auth: AuthStrategy = Field(
-        description="Authentication strategy for incoming requests"
-    )
-    event_store: YamlEventStore = Field(
-        description="Persistence backend for team event sourcing"
-    )
+    placement: PlacementStrategy = Field(description="Strategy for placing teams on workers")
+    worker_handle: WorkerHandle = Field(description="Worker-level team lifecycle operations")
+    auth: AuthStrategy = Field(description="Authentication strategy for incoming requests")
+    event_store: YamlEventStore = Field(description="Persistence backend for team event sourcing")
     runtime_cache: RuntimeCache = Field(
         description="Cache mapping team IDs to live TeamHandle instances"
     )
@@ -64,21 +57,14 @@ class CommunityServices(TierServices):
     catalogs for single-process deployment.
     """
 
-    actor_system: ActorSystem = Field(
-        description="Actor system for managing agent lifecycle"
+    service_registry: ServiceRegistry = Field(
+        description="Service discovery registry (community-specific, used by wiring)"
     )
-    team_manager: TeamManager = Field(
-        description="Team lifecycle manager (embedded, in-process)"
-    )
-    team_catalog: TeamCatalog = Field(
-        description="Catalog service for team entry resolution"
-    )
-    agent_catalog: AgentCatalog = Field(
-        description="Catalog service for agent entry resolution"
-    )
-    tool_catalog: ToolCatalog = Field(
-        description="Catalog service for tool entry resolution"
-    )
+    actor_system: ActorSystem = Field(description="Actor system for managing agent lifecycle")
+    team_manager: TeamManager = Field(description="Team lifecycle manager (embedded, in-process)")
+    team_catalog: TeamCatalog = Field(description="Catalog service for team entry resolution")
+    agent_catalog: AgentCatalog = Field(description="Catalog service for agent entry resolution")
+    tool_catalog: ToolCatalog = Field(description="Catalog service for tool entry resolution")
     template_catalog: TemplateCatalog = Field(
         description="Catalog service for template entry resolution"
     )

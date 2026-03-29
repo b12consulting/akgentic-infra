@@ -15,6 +15,7 @@ from akgentic.infra.protocols.health import HealthMonitor
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.recovery import RecoveryPolicy
 from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
+from akgentic.infra.protocols.worker_handle import WorkerHandle
 
 __all__ = [
     "AuthStrategy",
@@ -29,4 +30,5 @@ __all__ = [
     "RecoveryPolicy",
     "RuntimeCache",
     "TeamHandle",
+    "WorkerHandle",
 ]

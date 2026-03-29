@@ -13,6 +13,7 @@ from akgentic.infra.adapters import (
     LocalRuntimeCache,
     LocalServiceRegistry,
     LocalTeamHandle,
+    LocalWorkerHandle,
     NoAuth,
     TelemetrySubscriber,
     WebSocketEventSubscriber,
@@ -31,6 +32,7 @@ from akgentic.infra.protocols import (
     RecoveryPolicy,
     RuntimeCache,
     TeamHandle,
+    WorkerHandle,
 )
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
@@ -66,6 +68,7 @@ __all__ = [
     "RecoveryPolicy",
     "RuntimeCache",
     "TeamHandle",
+    "WorkerHandle",
     # Adapters
     "ChannelConfig",
     "ChannelParserRegistry",
@@ -75,6 +78,7 @@ __all__ = [
     "LocalRuntimeCache",
     "LocalServiceRegistry",
     "LocalTeamHandle",
+    "LocalWorkerHandle",
     "NoAuth",
     "TelemetrySubscriber",
     "WebSocketEventSubscriber",

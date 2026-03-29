@@ -20,6 +20,7 @@ from akgentic.infra.adapters.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.local_placement import LocalPlacement
 from akgentic.infra.adapters.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
+from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
@@ -46,8 +47,13 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
     actor_system, team_manager = _build_actor_layer(event_store, service_registry)
     catalogs = _build_catalogs(settings)
 
+    local_placement = LocalPlacement(team_manager, service_registry)
+    local_worker_handle = LocalWorkerHandle(team_manager, service_registry)
+    service_registry.register_instance(local_placement.instance_id)
+
     return CommunityServices(
-        placement=[LocalPlacement()],
+        placement=local_placement,
+        worker_handle=local_worker_handle,
         service_registry=service_registry,
         auth=NoAuth(),
         event_store=event_store,

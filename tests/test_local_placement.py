@@ -4,60 +4,72 @@ from __future__ import annotations
 
 import inspect
 import uuid
+from unittest.mock import MagicMock
 
 from akgentic.infra.adapters.local_placement import LocalPlacement
+from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
 from akgentic.infra.protocols.placement import PlacementStrategy
 
 
+def _make_adapter() -> LocalPlacement:
+    """Create a LocalPlacement with mock dependencies."""
+    team_manager = MagicMock()
+    service_registry = MagicMock()
+    return LocalPlacement(team_manager, service_registry)
+
+
 class TestLocalPlacementProtocolCompliance:
-    """AC1: LocalPlacement implements PlacementStrategy protocol."""
+    """AC5: LocalPlacement implements PlacementStrategy protocol."""
 
     def test_satisfies_placement_strategy_protocol(self) -> None:
         """LocalPlacement structurally satisfies PlacementStrategy."""
-        adapter = LocalPlacement()
+        adapter = _make_adapter()
         assert isinstance(adapter, PlacementStrategy)
 
-    def test_has_select_worker_method(self) -> None:
-        """LocalPlacement exposes select_worker with correct signature."""
-        adapter = LocalPlacement()
-        assert callable(adapter.select_worker)
+    def test_has_create_team_method(self) -> None:
+        """LocalPlacement exposes create_team with correct signature."""
+        adapter = _make_adapter()
+        assert callable(adapter.create_team)
 
-    def test_select_worker_signature_matches_protocol(self) -> None:
-        """select_worker has team_id parameter matching PlacementStrategy."""
-        sig = inspect.signature(LocalPlacement.select_worker)
-        assert "team_id" in sig.parameters
+    def test_create_team_signature_matches_protocol(self) -> None:
+        """create_team has team_card and user_id parameters matching PlacementStrategy."""
+        sig = inspect.signature(LocalPlacement.create_team)
+        assert "team_card" in sig.parameters
+        assert "user_id" in sig.parameters
 
 
 class TestLocalPlacementBehavior:
-    """AC1: LocalPlacement returns instance_id for all teams."""
+    """AC5: LocalPlacement delegates to TeamManager and returns LocalTeamHandle."""
 
-    def test_select_worker_returns_instance_id(self) -> None:
-        """select_worker always returns the adapter's instance_id."""
-        adapter = LocalPlacement()
-        team_id = uuid.uuid4()
-        result = adapter.select_worker(team_id)
-        assert result == adapter.instance_id
+    def test_create_team_delegates_to_team_manager(self) -> None:
+        """create_team calls TeamManager.create_team with correct args."""
+        team_manager = MagicMock()
+        service_registry = MagicMock()
+        adapter = LocalPlacement(team_manager, service_registry)
+        team_card = MagicMock()
+        adapter.create_team(team_card, "user-1")
+        team_manager.create_team.assert_called_once_with(team_card, "user-1")
 
-    def test_select_worker_returns_uuid(self) -> None:
-        """select_worker returns a uuid.UUID."""
-        adapter = LocalPlacement()
-        result = adapter.select_worker(uuid.uuid4())
-        assert isinstance(result, uuid.UUID)
+    def test_create_team_returns_local_team_handle(self) -> None:
+        """create_team wraps TeamManager result in LocalTeamHandle."""
+        team_manager = MagicMock()
+        service_registry = MagicMock()
+        adapter = LocalPlacement(team_manager, service_registry)
+        result = adapter.create_team(MagicMock(), "user-1")
+        assert isinstance(result, LocalTeamHandle)
 
     def test_instance_id_is_stable(self) -> None:
         """instance_id does not change between calls."""
-        adapter = LocalPlacement()
+        adapter = _make_adapter()
         assert adapter.instance_id == adapter.instance_id
 
-    def test_select_worker_same_for_different_teams(self) -> None:
-        """All teams get placed on the same instance."""
-        adapter = LocalPlacement()
-        team1 = uuid.uuid4()
-        team2 = uuid.uuid4()
-        assert adapter.select_worker(team1) == adapter.select_worker(team2)
+    def test_instance_id_is_uuid(self) -> None:
+        """instance_id is a uuid.UUID."""
+        adapter = _make_adapter()
+        assert isinstance(adapter.instance_id, uuid.UUID)
 
     def test_different_instances_have_different_ids(self) -> None:
         """Two LocalPlacement instances have different instance_ids."""
-        a = LocalPlacement()
-        b = LocalPlacement()
+        a = _make_adapter()
+        b = _make_adapter()
         assert a.instance_id != b.instance_id

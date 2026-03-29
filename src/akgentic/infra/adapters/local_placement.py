@@ -1,32 +1,50 @@
-"""LocalPlacement — community-tier placement that keeps all teams in the current process."""
+"""LocalPlacement — community-tier placement that creates teams in the current process."""
 
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
+
+from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
+from akgentic.team.manager import TeamManager
+from akgentic.team.ports import ServiceRegistry
+
+if TYPE_CHECKING:
+    from akgentic.infra.protocols.team_handle import TeamHandle
+    from akgentic.team.models import TeamCard
 
 
 class LocalPlacement:
-    """Places all teams in the current process instance.
+    """Creates teams in the current process instance.
 
     Satisfies the PlacementStrategy protocol via structural subtyping.
-    Always returns the same instance_id (the local process).
+    Delegates team creation to ``TeamManager`` and wraps the result
+    in a ``LocalTeamHandle``.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        team_manager: TeamManager,
+        service_registry: ServiceRegistry,
+    ) -> None:
         self._instance_id = uuid.uuid4()
+        self._team_manager = team_manager
+        self._service_registry = service_registry
 
     @property
     def instance_id(self) -> uuid.UUID:
         """The worker instance ID representing this process."""
         return self._instance_id
 
-    def select_worker(self, team_id: uuid.UUID) -> uuid.UUID:
-        """Select the local process for team placement.
+    def create_team(self, team_card: TeamCard, user_id: str) -> TeamHandle:
+        """Create a team in the local process and return a handle.
 
         Args:
-            team_id: ID of the team being placed (unused — always local)
+            team_card: Team configuration card.
+            user_id: ID of the user creating the team.
 
         Returns:
-            The local worker instance ID
+            A LocalTeamHandle for interacting with the newly created team.
         """
-        return self._instance_id
+        runtime = self._team_manager.create_team(team_card, user_id)
+        return LocalTeamHandle(runtime)
