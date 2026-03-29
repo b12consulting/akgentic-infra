@@ -63,35 +63,6 @@ class EventListResponse(BaseModel):
     events: list[EventResponse] = Field(description="List of persisted events")
 
 
-# --- Catalog response models ---
-
-
-class CatalogTeamMember(BaseModel):
-    """Simplified view of a team member in a catalog template."""
-
-    agent_id: str = Field(description="Agent identifier")
-    children: list[CatalogTeamMember] = Field(
-        default_factory=list, description="Nested child members"
-    )
-
-
-class CatalogTeamResponse(BaseModel):
-    """Serialized team template from the catalog."""
-
-    id: str = Field(description="Template identifier")
-    name: str = Field(description="Human-readable template name")
-    description: str = Field(description="Template description")
-    entry_point: str = Field(description="Entry-point agent identifier")
-    members: list[CatalogTeamMember] = Field(description="Team member hierarchy")
-    profiles: list[str] = Field(description="Available runtime profiles")
-
-
-class CatalogTeamListResponse(BaseModel):
-    """Response body for GET /catalog/teams."""
-
-    teams: list[CatalogTeamResponse] = Field(description="List of team templates")
-
-
 # --- Workspace response models ---
 
 
