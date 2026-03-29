@@ -755,6 +755,18 @@ def test_worker_handle_resume_team_returns_team_handle() -> None:
     assert hints["return"] is TeamHandle
 
 
+def test_worker_handle_get_team_returns_process_or_none() -> None:
+    """WorkerHandle.get_team returns Process | None."""
+    from akgentic.infra.protocols import WorkerHandle
+    from akgentic.team.models import Process
+
+    hints = get_type_hints(
+        WorkerHandle.get_team,
+        localns={"Process": Process},
+    )
+    assert hints["return"] == Process | None
+
+
 def test_worker_handle_method_count() -> None:
     """WorkerHandle has exactly 4 public methods."""
     from akgentic.infra.protocols import WorkerHandle

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Generator
 from pathlib import Path
 
@@ -77,9 +76,8 @@ class TestWireCommunity:
         """LocalPlacement's instance_id is registered with ServiceRegistry."""
         placement = services.placement
         assert isinstance(placement, LocalPlacement)
-        found = services.service_registry.find_team(uuid.uuid4())
-        # instance is registered — find_team returns None for unknown team but no error
-        assert found is None or isinstance(found, uuid.UUID)
+        active = services.service_registry.get_active_instances()
+        assert placement.instance_id in active
 
     def test_catalog_path_override(self, tmp_path: Path) -> None:
         """wire_community uses settings.catalog_path when set."""
