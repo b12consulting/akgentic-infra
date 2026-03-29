@@ -311,7 +311,7 @@ class TestWrapSentMessageNonContent:
 
 
 # ---------------------------------------------------------------------------
-# Task 4.9: ErrorMessage → type: "message", message_type: "system"
+# Task 4.9: ErrorMessage → type: "error" (Story 8.2 AC #7)
 # ---------------------------------------------------------------------------
 
 
@@ -319,25 +319,24 @@ class TestWrapErrorMessage:
     """Test ErrorMessage event wrapping."""
 
     def test_error_message_type(self) -> None:
-        """ErrorMessage produces type: 'message' envelope."""
+        """ErrorMessage produces type: 'error' envelope."""
         msg = ErrorMessage(
             exception_type="ValueError",
             exception_value="something went wrong",
         )
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload.type == "message"
+        assert result.payload.type == "error"
 
-    def test_error_message_classified_as_system(self) -> None:
-        """ErrorMessage message_type is 'system'."""
+    def test_error_message_has_message_field(self) -> None:
+        """ErrorMessage envelope has message field with exception_value."""
         msg = ErrorMessage(
             exception_type="ValueError",
             exception_value="something went wrong",
         )
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload.message_type == "system"
-        assert result.payload.content == "something went wrong"
+        assert result.payload.message == "something went wrong"
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +411,7 @@ class TestWrappedEventSerialization:
         event = _make_persisted_event(msg)
         result = wrap_event(event)
         json_str = result.model_dump_json()
-        assert '"type":"message"' in json_str
+        assert '"type":"error"' in json_str
         assert '"oops"' in json_str
 
     def test_tool_update_json_serializable(self) -> None:
