@@ -14,13 +14,14 @@ def test_placement_strategy_is_protocol() -> None:
     assert Protocol in inspect.getmro(PlacementStrategy)
 
 
-def test_placement_strategy_has_select_worker() -> None:
-    """PlacementStrategy defines select_worker with team_id parameter."""
+def test_placement_strategy_has_create_team() -> None:
+    """PlacementStrategy defines create_team with team_card and user_id parameters."""
     from akgentic.infra.protocols import PlacementStrategy
 
-    assert hasattr(PlacementStrategy, "select_worker")
-    sig = inspect.signature(PlacementStrategy.select_worker)
-    assert "team_id" in sig.parameters
+    assert hasattr(PlacementStrategy, "create_team")
+    sig = inspect.signature(PlacementStrategy.create_team)
+    assert "team_card" in sig.parameters
+    assert "user_id" in sig.parameters
 
 
 def test_auth_strategy_is_protocol() -> None:
@@ -625,11 +626,15 @@ def test_runtime_cache_method_count() -> None:
 
 
 def test_placement_strategy_return_type() -> None:
-    """PlacementStrategy.select_worker returns uuid.UUID."""
-    from akgentic.infra.protocols import PlacementStrategy
+    """PlacementStrategy.create_team returns TeamHandle."""
+    from akgentic.infra.protocols import PlacementStrategy, TeamHandle
+    from akgentic.team.models import TeamCard
 
-    hints = get_type_hints(PlacementStrategy.select_worker)
-    assert hints["return"] is uuid.UUID
+    hints = get_type_hints(
+        PlacementStrategy.create_team,
+        localns={"TeamCard": TeamCard, "TeamHandle": TeamHandle},
+    )
+    assert hints["return"] is TeamHandle
 
 
 def test_auth_strategy_return_type() -> None:
@@ -654,3 +659,109 @@ def test_health_monitor_return_type() -> None:
 
     hints = get_type_hints(HealthMonitor.check_health)
     assert hints["return"] == list[uuid.UUID]
+
+
+# --- WorkerHandle ---
+
+
+def test_worker_handle_is_protocol() -> None:
+    """WorkerHandle uses typing.Protocol base."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    assert Protocol in inspect.getmro(WorkerHandle)
+
+
+def test_worker_handle_is_runtime_checkable() -> None:
+    """WorkerHandle has @runtime_checkable decorator and isinstance works."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    class FakeWorkerHandle:
+        def stop_team(self, team_id: uuid.UUID) -> None:
+            pass
+
+        def delete_team(self, team_id: uuid.UUID) -> None:
+            pass
+
+        def resume_team(self, team_id: uuid.UUID) -> object:
+            return None
+
+        def get_team(self, team_id: uuid.UUID) -> object:
+            return None
+
+    assert isinstance(FakeWorkerHandle(), WorkerHandle)
+
+
+def test_worker_handle_has_stop_team() -> None:
+    """WorkerHandle defines stop_team with team_id parameter."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    assert hasattr(WorkerHandle, "stop_team")
+    sig = inspect.signature(WorkerHandle.stop_team)
+    assert "team_id" in sig.parameters
+
+
+def test_worker_handle_has_delete_team() -> None:
+    """WorkerHandle defines delete_team with team_id parameter."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    assert hasattr(WorkerHandle, "delete_team")
+    sig = inspect.signature(WorkerHandle.delete_team)
+    assert "team_id" in sig.parameters
+
+
+def test_worker_handle_has_resume_team() -> None:
+    """WorkerHandle defines resume_team with team_id parameter."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    assert hasattr(WorkerHandle, "resume_team")
+    sig = inspect.signature(WorkerHandle.resume_team)
+    assert "team_id" in sig.parameters
+
+
+def test_worker_handle_has_get_team() -> None:
+    """WorkerHandle defines get_team with team_id parameter."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    assert hasattr(WorkerHandle, "get_team")
+    sig = inspect.signature(WorkerHandle.get_team)
+    assert "team_id" in sig.parameters
+
+
+def test_worker_handle_stop_team_returns_none() -> None:
+    """WorkerHandle.stop_team returns None."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    hints = get_type_hints(WorkerHandle.stop_team)
+    assert hints["return"] is type(None)
+
+
+def test_worker_handle_delete_team_returns_none() -> None:
+    """WorkerHandle.delete_team returns None."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    hints = get_type_hints(WorkerHandle.delete_team)
+    assert hints["return"] is type(None)
+
+
+def test_worker_handle_resume_team_returns_team_handle() -> None:
+    """WorkerHandle.resume_team returns TeamHandle."""
+    from akgentic.infra.protocols import TeamHandle, WorkerHandle
+    from akgentic.team.models import Process
+
+    hints = get_type_hints(
+        WorkerHandle.resume_team,
+        localns={"TeamHandle": TeamHandle, "Process": Process},
+    )
+    assert hints["return"] is TeamHandle
+
+
+def test_worker_handle_method_count() -> None:
+    """WorkerHandle has exactly 4 public methods."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    public_methods = [
+        m
+        for m in dir(WorkerHandle)
+        if not m.startswith("_") and callable(getattr(WorkerHandle, m))
+    ]
+    assert len(public_methods) == 4
