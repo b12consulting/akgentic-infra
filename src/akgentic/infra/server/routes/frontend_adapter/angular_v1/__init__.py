@@ -11,6 +11,7 @@ from fastapi import FastAPI
 
 from akgentic.infra.server.routes.frontend_adapter import WrappedWsEvent
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.router import (
+    auth_router,
     config_router,
     feedback_router,
     human_input_router,
@@ -49,6 +50,7 @@ class AngularV1Adapter:
         app.include_router(feedback_router)
         app.include_router(relaunch_router)
         app.include_router(state_update_router)
+        app.include_router(auth_router)
 
     def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
         """Translate a V2 persisted event into a V1 WebSocket envelope."""

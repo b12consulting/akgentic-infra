@@ -5,6 +5,7 @@ Every route delegates to TeamService — zero business logic in the adapter.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, NoReturn, cast
 
@@ -25,10 +26,8 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
     V1ConfigPutBody,
     V1DescriptionBody,
     V1FeedbackEntry,
-    V1LlmContextEntry,
     V1MessageEntry,
     V1ProcessContext,
-    V1StateEntry,
     V1StateUpdateBody,
     V1StatusResponse,
 )
@@ -46,6 +45,7 @@ team_configs_router = APIRouter(prefix="/team-configs", tags=["v1-compat"])
 feedback_router = APIRouter(tags=["v1-compat"])
 relaunch_router = APIRouter(prefix="/relaunch", tags=["v1-compat"])
 state_update_router = APIRouter(prefix="/state", tags=["v1-compat"])
+auth_router = APIRouter(prefix="/auth", tags=["v1-compat"])
 
 
 class V1MessageBody(BaseModel):
@@ -272,57 +272,55 @@ def get_messages(
 # --- LLM context route ---
 
 
-@llm_context_router.get("/{id}", response_model=list[V1LlmContextEntry])
+@llm_context_router.get("/{id}", response_model=dict[str, object])
 def get_llm_context(
     id: str,
     service: TeamService = Depends(get_team_service),
-) -> list[V1LlmContextEntry]:
-    """GET /llm_context/{id} -> LLM context events in V1 format."""
+) -> dict[str, object]:
+    """GET /llm_context/{id} -> LLM context grouped by agent ID."""
     team_id = _parse_uuid(id)
     try:
         events = service.get_events(team_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
-    result: list[V1LlmContextEntry] = []
+    grouped: dict[str, list[dict[str, str]]] = {}
     for ev in events:
         content = extract_message_content(ev.event)
         if content is None:
             continue
-        result.append(
-            V1LlmContextEntry(
-                role=classify_message_type(ev.event),
-                content=content,
-                timestamp=ev.timestamp.isoformat(),
-            )
-        )
-    return result
+        agent_id = get_sender_name(ev.event)
+        grouped.setdefault(agent_id, [])
+        grouped[agent_id].append({
+            "role": classify_message_type(ev.event),
+            "content": content,
+            "timestamp": ev.timestamp.isoformat(),
+        })
+    return {agent_id: {"context": entries} for agent_id, entries in grouped.items()}
 
 
 # --- States route ---
 
 
-@states_router.get("/{id}", response_model=list[V1StateEntry])
+@states_router.get("/{id}", response_model=dict[str, object])
 def get_states(
     id: str,
     service: TeamService = Depends(get_team_service),
-) -> list[V1StateEntry]:
-    """GET /states/{id} -> state change events in V1 format."""
+) -> dict[str, object]:
+    """GET /states/{id} -> agent states grouped by agent ID, latest per agent."""
     team_id = _parse_uuid(id)
     try:
         events = service.get_events(team_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
-    result: list[V1StateEntry] = []
+    latest: dict[str, object] = {}
     for ev in events:
         if isinstance(ev.event, StateChangedMessage):
-            result.append(
-                V1StateEntry(
-                    agent=get_sender_name(ev.event),
-                    state=ev.event.state.model_dump(mode="json"),
-                    timestamp=ev.timestamp.isoformat(),
-                )
-            )
-    return result
+            agent_name = get_sender_name(ev.event)
+            latest[agent_name] = {
+                "schema": {},
+                "state": ev.event.state.model_dump(mode="json"),
+            }
+    return latest
 
 
 # --- Description route (extends process_router) ---
@@ -467,19 +465,18 @@ def delete_config(
 # --- Team configs route ---
 
 
-@team_configs_router.get("/", response_model=list[V1ConfigEntry])
-def get_team_configs(request: Request) -> list[V1ConfigEntry]:
-    """GET /team-configs -> list all team catalog entries."""
+@team_configs_router.get("/", response_model=dict[str, object])
+def get_team_configs(request: Request) -> dict[str, object]:
+    """GET /team-configs -> dict keyed by team name for V1 frontend."""
     catalog = request.app.state.services.team_catalog
     entries = catalog.list()
-    return [
-        V1ConfigEntry(
-            id=entry.id,
-            type="team",
-            data=entry.model_dump(mode="json"),
-        )
+    return {
+        entry.id: {
+            "module": entry.id,
+            "setup": json.dumps(entry.model_dump(mode="json")),
+        }
         for entry in entries
-    ]
+    }
 
 
 # --- Feedback routes (stubs — no V2 feedback system) ---
@@ -495,3 +492,24 @@ def get_feedback() -> list[V1FeedbackEntry]:
 def set_feedback(body: V1FeedbackEntry) -> V1StatusResponse:
     """POST /set-feedback -> stub returning ok."""
     return V1StatusResponse(status="ok")
+
+
+# --- Auth stub routes (Community tier NoAuth) ---
+
+
+@auth_router.get("/me")
+def auth_me() -> dict[str, str]:
+    """GET /auth/me -> anonymous user stub for Community tier."""
+    return {"user_id": "anonymous", "email": "", "name": "Anonymous"}
+
+
+@auth_router.get("/ws-ticket")
+def auth_ws_ticket() -> dict[str, str]:
+    """GET /auth/ws-ticket -> noauth ticket stub for Community tier."""
+    return {"ticket": "noauth"}
+
+
+@auth_router.get("/logout")
+def auth_logout() -> dict[str, str]:
+    """GET /auth/logout -> no-op logout stub for Community tier."""
+    return {"auth_type": "none"}

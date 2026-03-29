@@ -561,10 +561,10 @@ class TestV1MessagesRoute:
 class TestV1LlmContextRoute:
     """Test V1 LLM context endpoint translation."""
 
-    def test_get_llm_context(
+    def test_get_llm_context_grouped(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC #4: GET /llm_context/{id} returns LLM context in V1 format."""
+        """AC #5: GET /llm_context/{id} returns context grouped by agent ID."""
         user_msg = UserMessage(content="hello")
         mock_service.get_events.return_value = [
             _make_persisted_event(user_msg, sequence=1),
@@ -572,9 +572,13 @@ class TestV1LlmContextRoute:
         resp = v1_client.get(f"/llm_context/{_TEAM_ID}")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 1
-        assert data[0]["role"] == "user"
-        assert data[0]["content"] == "hello"
+        assert isinstance(data, dict)
+        # UserMessage has no sender -> "system"
+        assert "system" in data
+        assert "context" in data["system"]
+        assert len(data["system"]["context"]) == 1
+        assert data["system"]["context"][0]["role"] == "user"
+        assert data["system"]["context"][0]["content"] == "hello"
 
     def test_get_llm_context_not_found(
         self, v1_client: TestClient, mock_service: MagicMock,
@@ -591,7 +595,7 @@ class TestV1StatesRoute:
     def test_get_states_not_found(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC #5: GET /states/{id} returns 404 for unknown team."""
+        """AC #6: GET /states/{id} returns 404 for unknown team."""
         mock_service.get_events.side_effect = ValueError("not found")
         resp = v1_client.get(f"/states/{_TEAM_ID}")
         assert resp.status_code == 404
@@ -599,19 +603,19 @@ class TestV1StatesRoute:
     def test_get_states_empty(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """GET /states/{id} returns empty list when no state events."""
+        """GET /states/{id} returns empty dict when no state events."""
         user_msg = UserMessage(content="hello")
         mock_service.get_events.return_value = [
             _make_persisted_event(user_msg, sequence=1),
         ]
         resp = v1_client.get(f"/states/{_TEAM_ID}")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json() == {}
 
-    def test_get_states_with_state_events(
+    def test_get_states_grouped(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC #5: GET /states/{id} returns state changes in V1 format."""
+        """AC #6: GET /states/{id} returns states grouped by agent, latest wins."""
         sender = MagicMock()
         sender.name = "@Manager"
         state_msg = StateChangedMessage(state=BaseState())
@@ -622,10 +626,10 @@ class TestV1StatesRoute:
         resp = v1_client.get(f"/states/{_TEAM_ID}")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 1
-        assert data[0]["agent"] == "@Manager"
-        assert isinstance(data[0]["state"], dict)
-        assert data[0]["timestamp"] == _NOW.isoformat()
+        assert isinstance(data, dict)
+        assert "@Manager" in data
+        assert data["@Manager"]["schema"] == {}
+        assert isinstance(data["@Manager"]["state"], dict)
 
 
 class TestV1MessageExtraction:
@@ -674,8 +678,10 @@ class TestV1MessageExtraction:
         resp = v1_client.get(f"/llm_context/{_TEAM_ID}")
         assert resp.status_code == 200
         data = resp.json()
+        # Only 1 agent group (system) with 1 context entry
         assert len(data) == 1
-        assert data[0]["content"] == "hello"
+        assert "system" in data
+        assert data["system"]["context"][0]["content"] == "hello"
 
 
 class TestV1StatusResponseModel:
@@ -1033,10 +1039,10 @@ class TestV1FeedbackEndpoints:
 class TestV1TeamConfigsEndpoint:
     """Test GET /team-configs endpoint."""
 
-    def test_get_team_configs(
+    def test_get_team_configs_dict(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC3: GET /team-configs returns team catalog entries."""
+        """AC4: GET /team-configs returns dict keyed by team name."""
         mock_entry = MagicMock()
         mock_entry.id = "team-1"
         mock_entry.model_dump.return_value = {"id": "team-1", "name": "My Team"}
@@ -1044,18 +1050,23 @@ class TestV1TeamConfigsEndpoint:
         resp = v1_client.get("/team-configs/")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 1
-        assert data[0]["id"] == "team-1"
-        assert data[0]["type"] == "team"
+        assert isinstance(data, dict)
+        assert "team-1" in data
+        assert data["team-1"]["module"] == "team-1"
+        assert isinstance(data["team-1"]["setup"], str)
+        import json
+
+        setup_parsed = json.loads(data["team-1"]["setup"])
+        assert setup_parsed["id"] == "team-1"
 
     def test_get_team_configs_empty(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """GET /team-configs returns empty list when no entries."""
+        """GET /team-configs returns empty dict when no entries."""
         v1_client.app.state.services.team_catalog.list.return_value = []  # type: ignore[union-attr]
         resp = v1_client.get("/team-configs/")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json() == {}
 
 
 class TestV1ConfigEndpoints:
@@ -1167,3 +1178,177 @@ class TestV1AdapterNewRoutes:
         assert "/relaunch/{id}/message/{msg_id}" in paths
         assert "/state/{id}/of/{agent}" in paths
         assert "/process/{id}/description" in paths
+        assert "/auth/me" in paths
+        assert "/auth/ws-ticket" in paths
+        assert "/auth/logout" in paths
+
+
+# ---------------------------------------------------------------------------
+# Story 8.2: Auth stub endpoints (AC #1, #2, #3)
+# ---------------------------------------------------------------------------
+
+
+class TestV1AuthStubs:
+    """Test auth stub endpoints for Community tier NoAuth."""
+
+    def test_auth_me(self, v1_client: TestClient) -> None:
+        """AC1: GET /auth/me returns anonymous user stub."""
+        resp = v1_client.get("/auth/me")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"user_id": "anonymous", "email": "", "name": "Anonymous"}
+
+    def test_auth_ws_ticket(self, v1_client: TestClient) -> None:
+        """AC2: GET /auth/ws-ticket returns noauth ticket stub."""
+        resp = v1_client.get("/auth/ws-ticket")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"ticket": "noauth"}
+
+    def test_auth_logout(self, v1_client: TestClient) -> None:
+        """AC3: GET /auth/logout returns none auth_type stub."""
+        resp = v1_client.get("/auth/logout")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data == {"auth_type": "none"}
+
+
+# ---------------------------------------------------------------------------
+# Story 8.2: Grouped response shapes (AC #4, #5, #6)
+# ---------------------------------------------------------------------------
+
+
+class TestV1GroupedResponses:
+    """Test grouped dict response shapes for team-configs, llm_context, states."""
+
+    def test_llm_context_multi_agent_grouping(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC5: llm_context groups entries by agent ID."""
+        sender_a = MagicMock()
+        sender_a.name = "@AgentA"
+        sender_b = MagicMock()
+        sender_b.name = "@AgentB"
+        msg_a = UserMessage(content="hello from A")
+        msg_a.sender = sender_a
+        msg_b = ResultMessage(content="hello from B")
+        msg_b.sender = sender_b
+        mock_service.get_events.return_value = [
+            _make_persisted_event(msg_a, sequence=1),
+            _make_persisted_event(msg_b, sequence=2),
+        ]
+        resp = v1_client.get(f"/llm_context/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "@AgentA" in data
+        assert "@AgentB" in data
+        assert len(data["@AgentA"]["context"]) == 1
+        assert len(data["@AgentB"]["context"]) == 1
+        assert data["@AgentA"]["context"][0]["content"] == "hello from A"
+        assert data["@AgentB"]["context"][0]["content"] == "hello from B"
+        # Verify timestamp is present in context entries (AC5 shape requirement)
+        assert "timestamp" in data["@AgentA"]["context"][0]
+        assert "timestamp" in data["@AgentB"]["context"][0]
+
+    def test_states_latest_wins(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC6: states returns only latest state per agent."""
+        sender = MagicMock()
+        sender.name = "@Manager"
+        state1 = StateChangedMessage(state=BaseState())
+        state1.sender = sender
+        state2 = StateChangedMessage(state=BaseState())
+        state2.sender = sender
+        mock_service.get_events.return_value = [
+            _make_persisted_event(state1, sequence=1),
+            _make_persisted_event(state2, sequence=2),
+        ]
+        resp = v1_client.get(f"/states/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, dict)
+        assert "@Manager" in data
+        # Only one entry per agent (latest wins)
+        assert data["@Manager"]["schema"] == {}
+        assert isinstance(data["@Manager"]["state"], dict)
+
+    def test_states_multi_agent_grouping(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC6: states groups by agent ID with multiple agents."""
+        sender_a = MagicMock()
+        sender_a.name = "@AgentA"
+        sender_b = MagicMock()
+        sender_b.name = "@AgentB"
+        state_a = StateChangedMessage(state=BaseState())
+        state_a.sender = sender_a
+        state_b = StateChangedMessage(state=BaseState())
+        state_b.sender = sender_b
+        mock_service.get_events.return_value = [
+            _make_persisted_event(state_a, sequence=1),
+            _make_persisted_event(state_b, sequence=2),
+        ]
+        resp = v1_client.get(f"/states/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "@AgentA" in data
+        assert "@AgentB" in data
+        assert data["@AgentA"]["schema"] == {}
+        assert data["@AgentB"]["schema"] == {}
+        assert isinstance(data["@AgentA"]["state"], dict)
+        assert isinstance(data["@AgentB"]["state"], dict)
+
+    def test_team_configs_multiple_entries(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC4: team-configs dict has entry per team."""
+        entry_a = MagicMock()
+        entry_a.id = "alpha"
+        entry_a.model_dump.return_value = {"id": "alpha", "name": "Alpha Team"}
+        entry_b = MagicMock()
+        entry_b.id = "beta"
+        entry_b.model_dump.return_value = {"id": "beta", "name": "Beta Team"}
+        v1_client.app.state.services.team_catalog.list.return_value = [entry_a, entry_b]  # type: ignore[union-attr]
+        resp = v1_client.get("/team-configs/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "alpha" in data
+        assert "beta" in data
+        assert data["alpha"]["module"] == "alpha"
+        assert data["beta"]["module"] == "beta"
+
+
+# ---------------------------------------------------------------------------
+# Story 8.2: WebSocket error envelope (AC #7)
+# ---------------------------------------------------------------------------
+
+
+class TestV1WsErrorEnvelope:
+    """Test WebSocket error envelope classification and wrapping."""
+
+    def test_classify_error_message(self) -> None:
+        """AC7: _classify_envelope_type returns 'error' for ErrorMessage."""
+        from akgentic.core.messages.orchestrator import ErrorMessage
+
+        from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import (
+            _classify_envelope_type,
+        )
+
+        err = ErrorMessage(exception_type="RuntimeError", exception_value="something broke")
+        assert _classify_envelope_type(err) == "error"
+
+    def test_wrap_event_error_envelope(self) -> None:
+        """AC7: wrap_event produces ErrorPayload with message field."""
+        from akgentic.core.messages.orchestrator import ErrorMessage
+
+        from akgentic.infra.server.routes.frontend_adapter import ErrorPayload
+        from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import wrap_event
+
+        err = ErrorMessage(exception_type="RuntimeError", exception_value="something broke")
+        event = _make_persisted_event(err)
+        result = wrap_event(event)
+        assert isinstance(result.payload, ErrorPayload)
+        assert result.payload.type == "error"
+        assert result.payload.message == "something broke"
+        assert result.payload.timestamp == _NOW.isoformat()

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Discriminator, Field, Tag
 from akgentic.team.models import PersistedEvent
 
 __all__ = [
+    "ErrorPayload",
     "FrontendAdapter",
     "LlmContextPayload",
     "MessagePayload",
@@ -29,7 +30,7 @@ __all__ = [
 ]
 
 # Keep in sync with WsEventPayload Tag annotations and payload Literal types below.
-_KNOWN_TYPES = {"message", "state", "tool_update", "llm_context"}
+_KNOWN_TYPES = {"message", "state", "tool_update", "llm_context", "error"}
 
 
 class MessagePayload(BaseModel):
@@ -68,6 +69,14 @@ class LlmContextPayload(BaseModel):
     timestamp: str
 
 
+class ErrorPayload(BaseModel):
+    """V1 ``type: "error"`` envelope payload."""
+
+    type: Literal["error"] = "error"
+    message: str
+    timestamp: str
+
+
 class UnknownPayload(BaseModel):
     """Catch-all payload for unrecognised event types."""
 
@@ -89,6 +98,7 @@ WsEventPayload = Annotated[
     | Annotated[StatePayload, Tag("state")]
     | Annotated[ToolUpdatePayload, Tag("tool_update")]
     | Annotated[LlmContextPayload, Tag("llm_context")]
+    | Annotated[ErrorPayload, Tag("error")]
     | Annotated[UnknownPayload, Tag("unknown")],
     Discriminator(_ws_event_discriminator),
 ]

@@ -16,6 +16,7 @@ from akgentic.core.messages.orchestrator import (
     StateChangedMessage,
 )
 from akgentic.infra.server.routes.frontend_adapter import (
+    ErrorPayload,
     LlmContextPayload,
     MessagePayload,
     StatePayload,
@@ -37,7 +38,8 @@ def _classify_envelope_type(event: Message) -> str:
         event: The V2 message from a persisted event.
 
     Returns:
-        One of ``"message"``, ``"state"``, ``"tool_update"``, or ``"llm_context"``.
+        One of ``"message"``, ``"state"``, ``"tool_update"``, ``"llm_context"``,
+        or ``"error"``.
     """
     if isinstance(event, StateChangedMessage):
         return "state"
@@ -45,6 +47,8 @@ def _classify_envelope_type(event: Message) -> str:
         return "tool_update"
     if type(event).__name__ == "ContextChangedMessage":
         return "llm_context"
+    if isinstance(event, ErrorMessage):
+        return "error"
     return "message"
 
 
@@ -160,6 +164,22 @@ def _build_llm_context_envelope(event: Message, timestamp: str) -> LlmContextPay
     )
 
 
+def _build_error_envelope(event: ErrorMessage, timestamp: str) -> ErrorPayload:
+    """Build a V1 ``type: "error"`` envelope.
+
+    Args:
+        event: The error message.
+        timestamp: ISO-formatted event timestamp.
+
+    Returns:
+        ErrorPayload with V1 error envelope fields.
+    """
+    return ErrorPayload(
+        message=event.exception_value,
+        timestamp=timestamp,
+    )
+
+
 def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
     """Translate a V2 persisted event into a V1 WebSocket envelope.
 
@@ -175,13 +195,15 @@ def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
     timestamp = event.timestamp.isoformat()
     envelope_type = _classify_envelope_type(msg)
 
-    payload: MessagePayload | StatePayload | ToolUpdatePayload | LlmContextPayload
+    payload: MessagePayload | StatePayload | ToolUpdatePayload | LlmContextPayload | ErrorPayload
     if envelope_type == "state" and isinstance(msg, StateChangedMessage):
         payload = _build_state_envelope(msg, timestamp)
     elif envelope_type == "tool_update" and isinstance(msg, EventMessage):
         payload = _build_tool_update_envelope(msg, timestamp)
     elif envelope_type == "llm_context":
         payload = _build_llm_context_envelope(msg, timestamp)
+    elif envelope_type == "error" and isinstance(msg, ErrorMessage):
+        payload = _build_error_envelope(msg, timestamp)
     else:
         payload = _build_message_envelope(msg, timestamp)
 
