@@ -17,6 +17,7 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1.router import (
     llm_context_router,
     messages_router,
     process_router,
+    processes_router,
     relaunch_router,
     state_update_router,
     states_router,
@@ -38,6 +39,7 @@ class AngularV1Adapter:
     def register_routes(self, app: FastAPI) -> None:
         """Mount V1 REST routes onto the FastAPI application."""
         app.include_router(process_router)
+        app.include_router(processes_router)
         app.include_router(human_input_router)
         app.include_router(messages_router)
         app.include_router(llm_context_router)

@@ -26,12 +26,12 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1 import AngularV1Ad
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
     V1ActorAddress,
     V1ConfigEntry,
+    V1ConfigPutBody,
     V1DescriptionBody,
     V1FeedbackEntry,
     V1LlmContextEntry,
     V1MessageEntry,
     V1ProcessContext,
-    V1ProcessList,
     V1ProcessParams,
     V1StateEntry,
     V1StateUpdateBody,
@@ -59,6 +59,7 @@ def _make_team_card(name: str = "Test Team") -> MagicMock:
     """Create a minimal TeamCard mock with entry_point for V1 translation."""
     entry_point = MagicMock()
     entry_point.card.config.name = "@Orchestrator"
+    entry_point.card.role = "orchestrator"
     card = MagicMock(spec=TeamCard)
     card.name = name
     card.entry_point = entry_point
@@ -199,20 +200,23 @@ class TestV1Models:
         restored = V1ProcessParams.model_validate(data)
         assert restored == params
 
-    def test_v1_process_list_serialization(self) -> None:
-        """V1ProcessList serializes correctly."""
-        ctx = V1ProcessContext(
-            id=str(_TEAM_ID),
-            type="Test Team",
-            status="running",
-            created_at=_NOW.isoformat(),
-            updated_at=_NOW.isoformat(),
+    def test_v1_config_put_body_serialization(self) -> None:
+        """V1ConfigPutBody serializes correctly."""
+        body = V1ConfigPutBody(
+            id="cfg-1", name="my-config",
+            config={"key": "value"}, dry_run=True,
         )
-        pl = V1ProcessList(processes=[ctx])
-        data = pl.model_dump()
-        restored = V1ProcessList.model_validate(data)
-        assert len(restored.processes) == 1
-        assert restored.processes[0].id == str(_TEAM_ID)
+        data = body.model_dump()
+        restored = V1ConfigPutBody.model_validate(data)
+        assert restored == body
+        assert restored.dry_run is True
+
+    def test_v1_config_put_body_defaults(self) -> None:
+        """V1ConfigPutBody has sensible defaults."""
+        body = V1ConfigPutBody(id="cfg-1")
+        assert body.name == ""
+        assert body.config == {}
+        assert body.dry_run is False
 
     def test_v1_llm_context_entry_serialization(self) -> None:
         """V1LlmContextEntry serializes correctly."""
@@ -302,7 +306,7 @@ class TestV1ProcessRoutes:
         assert data["id"] == str(_TEAM_ID)
         assert data["type"] == "Test Team"
         assert data["status"] == "running"
-        assert data["params"] == {}
+        assert data["params"] == {"workspace": "false", "knowledge_graph": "false"}
         mock_service.create_team.assert_called_once_with(
             catalog_entry_id="test-team", user_id="anonymous",
         )
@@ -320,22 +324,35 @@ class TestV1ProcessRoutes:
     def test_list_processes(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC #7: GET /process lists teams with V1 response shape."""
+        """AC #2: GET /process/ returns flat list of V1ProcessContext."""
         mock_service.list_teams.return_value = [_make_process()]
         resp = v1_client.get("/process/")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["processes"]) == 1
-        assert data["processes"][0]["type"] == "Test Team"
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["type"] == "Test Team"
 
     def test_list_processes_empty(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """GET /process returns empty list when no teams."""
+        """GET /process/ returns empty flat list when no teams."""
         mock_service.list_teams.return_value = []
         resp = v1_client.get("/process/")
         assert resp.status_code == 200
-        assert resp.json()["processes"] == []
+        assert resp.json() == []
+
+    def test_list_processes_alias(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC #1: GET /processes returns same flat list as GET /process/."""
+        mock_service.list_teams.return_value = [_make_process()]
+        resp = v1_client.get("/processes/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["type"] == "Test Team"
 
     def test_get_process(
         self, v1_client: TestClient, mock_service: MagicMock,
@@ -464,11 +481,11 @@ class TestV1HumanInputRoute:
     def test_process_human_input(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC #7: POST /process_human_input/{id}/human/{proxy} routes human input."""
+        """AC #6: POST /process_human_input/{id}/human/{proxy} routes human input."""
         mock_service.process_human_input.return_value = None
         resp = v1_client.post(
             f"/process_human_input/{_TEAM_ID}/human/some-proxy",
-            json={"content": "yes", "message_id": "msg-123"},
+            json={"content": "yes", "message": {"id": "msg-123", "type": "user"}},
         )
         assert resp.status_code == 200
         mock_service.process_human_input.assert_called_once_with(
@@ -482,7 +499,7 @@ class TestV1HumanInputRoute:
         mock_service.process_human_input.side_effect = ValueError("not found")
         resp = v1_client.post(
             f"/process_human_input/{_TEAM_ID}/human/proxy",
-            json={"content": "yes", "message_id": "msg-123"},
+            json={"content": "yes", "message": {"id": "msg-123"}},
         )
         assert resp.status_code == 404
 
@@ -703,7 +720,7 @@ class TestV1ProcessContextNewFields:
             created_at=_NOW.isoformat(),
             updated_at=_NOW.isoformat(),
         )
-        assert ctx.orchestrator == ""
+        assert ctx.orchestrator == V1ActorAddress(name="", role="")
         assert ctx.running is False
         assert ctx.config_name == ""
         assert ctx.user_id == ""
@@ -711,19 +728,21 @@ class TestV1ProcessContextNewFields:
 
     def test_new_fields_populated(self) -> None:
         """New fields can be explicitly populated."""
+        orch = V1ActorAddress(name="@Manager", role="manager")
         ctx = V1ProcessContext(
             id=str(_TEAM_ID),
             type="Test Team",
             status="running",
             created_at=_NOW.isoformat(),
             updated_at=_NOW.isoformat(),
-            orchestrator="@Manager",
+            orchestrator=orch,
             running=True,
             config_name="my-team",
             user_id="user-1",
             user_email="user@example.com",
         )
-        assert ctx.orchestrator == "@Manager"
+        assert ctx.orchestrator.name == "@Manager"
+        assert ctx.orchestrator.role == "manager"
         assert ctx.running is True
         assert ctx.config_name == "my-team"
         assert ctx.user_id == "user-1"
@@ -731,13 +750,14 @@ class TestV1ProcessContextNewFields:
 
     def test_new_fields_serialization_roundtrip(self) -> None:
         """V1ProcessContext with new fields survives roundtrip."""
+        orch = V1ActorAddress(name="@Bot", role="bot")
         ctx = V1ProcessContext(
             id=str(_TEAM_ID),
             type="Test",
             status="running",
             created_at=_NOW.isoformat(),
             updated_at=_NOW.isoformat(),
-            orchestrator="@Bot",
+            orchestrator=orch,
             running=True,
             config_name="team-cfg",
             user_id="u1",
@@ -750,17 +770,31 @@ class TestV1ProcessContextNewFields:
     def test_to_v1_process_context_populates_new_fields(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """GET /process/{id} response includes new fields from Process."""
+        """AC #3: GET /process/{id} orchestrator is V1ActorAddress."""
         process = _make_process()
         mock_service.get_team.return_value = process
         resp = v1_client.get(f"/process/{_TEAM_ID}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["orchestrator"] == "@Orchestrator"
+        orch = data["orchestrator"]
+        assert isinstance(orch, dict)
+        assert orch["name"] == "@Orchestrator"
+        assert orch["role"] == "orchestrator"
         assert data["running"] is True
         assert data["config_name"] == "Test Team"
         assert data["user_id"] == "anonymous"
         assert data["user_email"] == ""
+
+    def test_to_v1_process_context_populates_params(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC #7: GET /process/{id} params has workspace and knowledge_graph."""
+        process = _make_process()
+        mock_service.get_team.return_value = process
+        resp = v1_client.get(f"/process/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["params"] == {"workspace": "false", "knowledge_graph": "false"}
 
     def test_running_false_when_stopped(
         self, v1_client: TestClient, mock_service: MagicMock,
@@ -1039,25 +1073,19 @@ class TestV1ConfigEndpoints:
     def test_delete_config_ok(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC3: DELETE /config deletes catalog entry."""
+        """AC #5: DELETE /config/{type}/{id} deletes catalog entry."""
         mock_entry = MagicMock()
         v1_client.app.state.services.tool_catalog.get.return_value = mock_entry  # type: ignore[union-attr]
-        resp = v1_client.request(
-            "DELETE", "/config/",
-            json={"id": "tool-1", "type": "tool", "data": {}},
-        )
+        resp = v1_client.delete("/config/tool/tool-1")
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
     def test_delete_config_not_found(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """DELETE /config returns 404 for missing entry."""
+        """DELETE /config/{type}/{id} returns 404 for missing entry."""
         v1_client.app.state.services.tool_catalog.get.return_value = None  # type: ignore[union-attr]
-        resp = v1_client.request(
-            "DELETE", "/config/",
-            json={"id": "missing", "type": "tool", "data": {}},
-        )
+        resp = v1_client.delete("/config/tool/missing")
         assert resp.status_code == 404
 
 
@@ -1067,14 +1095,14 @@ class TestV1PutConfigEndpoint:
     def test_put_config_update_existing(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC3: PUT /config updates existing catalog entry."""
+        """AC #4: PUT /config/{type} updates existing catalog entry."""
         mock_existing = MagicMock()
         mock_existing.__class__ = type(mock_existing)
         mock_existing.__class__.model_validate = MagicMock(return_value=mock_existing)
         v1_client.app.state.services.agent_catalog.get.return_value = mock_existing  # type: ignore[union-attr]
         resp = v1_client.put(
-            "/config/",
-            json={"id": "agent-1", "type": "agent", "data": {"name": "Bot"}},
+            "/config/agent",
+            json={"id": "agent-1", "name": "Bot", "config": {"name": "Bot"}},
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -1083,15 +1111,15 @@ class TestV1PutConfigEndpoint:
     def test_put_config_create_new(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """AC3: PUT /config creates new catalog entry when not found."""
+        """AC #4: PUT /config/{type} creates new catalog entry when not found."""
         mock_entry = MagicMock()
         mock_entry_cls = type(mock_entry)
         mock_entry_cls.model_validate = MagicMock(return_value=mock_entry)
         v1_client.app.state.services.agent_catalog.get.return_value = None  # type: ignore[union-attr]
         v1_client.app.state.services.agent_catalog.list.return_value = [mock_entry]  # type: ignore[union-attr]
         resp = v1_client.put(
-            "/config/",
-            json={"id": "new-1", "type": "agent", "data": {"name": "New"}},
+            "/config/agent",
+            json={"id": "new-1", "name": "New", "config": {"name": "New"}},
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
@@ -1100,12 +1128,12 @@ class TestV1PutConfigEndpoint:
     def test_put_config_empty_catalog_returns_400(
         self, v1_client: TestClient, mock_service: MagicMock,
     ) -> None:
-        """PUT /config returns 400 when catalog is empty and entry type cannot be inferred."""
+        """PUT /config/{type} returns 400 when catalog is empty."""
         v1_client.app.state.services.agent_catalog.get.return_value = None  # type: ignore[union-attr]
         v1_client.app.state.services.agent_catalog.list.return_value = []  # type: ignore[union-attr]
         resp = v1_client.put(
-            "/config/",
-            json={"id": "new-1", "type": "agent", "data": {}},
+            "/config/agent",
+            json={"id": "new-1", "config": {}},
         )
         assert resp.status_code == 400
 
@@ -1120,6 +1148,8 @@ class TestV1AdapterNewRoutes:
         adapter.register_routes(app)
         paths = {r.path for r in app.routes if hasattr(r, "path")}
         assert "/config/{config_type}" in paths
+        assert "/config/{config_type}/{config_id}" in paths
+        assert "/processes/" in paths or "/processes" in paths
         assert "/team-configs/" in paths
         assert "/get-feedback" in paths
         assert "/set-feedback" in paths
