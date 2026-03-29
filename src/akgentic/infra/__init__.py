@@ -49,7 +49,7 @@ from akgentic.infra.server.models import (
     WorkspaceTreeResponse,
 )
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 from akgentic.infra.wiring import wire_community
 
 __path__ = extend_path(__path__, __name__)
@@ -84,6 +84,7 @@ __all__ = [
     "WebSocketEventSubscriber",
     "YamlChannelRegistry",
     # Server
+    "CommunitySettings",
     "CommunityServices",
     "CreateTeamRequest",
     "EventListResponse",

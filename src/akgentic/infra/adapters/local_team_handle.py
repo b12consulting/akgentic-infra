@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 from akgentic.agent import HumanProxy
@@ -22,6 +23,11 @@ class LocalTeamHandle:
 
     def __init__(self, runtime: TeamRuntime) -> None:
         self._runtime = runtime
+
+    @property
+    def team_id(self) -> uuid.UUID:
+        """The unique identifier of the team this handle points to."""
+        return self._runtime.id
 
     def send(self, content: str) -> None:
         """Send a message to the team's default entry point."""
@@ -55,13 +61,15 @@ class LocalTeamHandle:
     def subscribe(self, subscriber: EventSubscriber) -> None:
         """Register an event subscriber with the team's orchestrator."""
         orch_proxy = self._runtime.actor_system.proxy_ask(
-            self._runtime.orchestrator_addr, Orchestrator,
+            self._runtime.orchestrator_addr,
+            Orchestrator,
         )
         orch_proxy.subscribe(subscriber)
 
     def unsubscribe(self, subscriber: EventSubscriber) -> None:
         """Remove an event subscriber from the team's orchestrator."""
         orch_proxy = self._runtime.actor_system.proxy_ask(
-            self._runtime.orchestrator_addr, Orchestrator,
+            self._runtime.orchestrator_addr,
+            Orchestrator,
         )
         orch_proxy.unsubscribe(subscriber)

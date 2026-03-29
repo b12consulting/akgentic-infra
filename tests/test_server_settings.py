@@ -1,15 +1,15 @@
-"""Tests for ServerSettings model."""
+"""Tests for ServerSettings and CommunitySettings models."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 
 class TestServerSettingsDefaults:
-    """AC4: ServerSettings provides typed configuration with defaults."""
+    """ServerSettings provides tier-agnostic configuration with defaults."""
 
     def test_default_host(self) -> None:
         """Default host is 0.0.0.0."""
@@ -26,14 +26,13 @@ class TestServerSettingsDefaults:
         settings = ServerSettings()
         assert settings.frontend_adapter is None
 
-    def test_default_workspaces_root(self) -> None:
-        """Default workspaces_root is Path('workspaces')."""
-        settings = ServerSettings()
-        assert settings.workspaces_root == Path("workspaces")
+    def test_no_workspaces_root_on_base(self) -> None:
+        """ServerSettings does not have workspaces_root (community-specific)."""
+        assert "workspaces_root" not in ServerSettings.model_fields
 
 
 class TestServerSettingsEnvOverride:
-    """AC4: ServerSettings loads from AKGENTIC_ prefixed env vars."""
+    """ServerSettings loads from AKGENTIC_ prefixed env vars."""
 
     def test_host_from_env(self) -> None:
         """AKGENTIC_HOST overrides host field."""
@@ -62,18 +61,9 @@ class TestServerSettingsEnvOverride:
         finally:
             del os.environ["AKGENTIC_FRONTEND_ADAPTER"]
 
-    def test_workspaces_root_from_env(self) -> None:
-        """AKGENTIC_WORKSPACES_ROOT overrides workspaces_root field."""
-        os.environ["AKGENTIC_WORKSPACES_ROOT"] = "/tmp/ws"
-        try:
-            settings = ServerSettings()
-            assert settings.workspaces_root == Path("/tmp/ws")
-        finally:
-            del os.environ["AKGENTIC_WORKSPACES_ROOT"]
-
 
 class TestServerSettingsModel:
-    """AC4: ServerSettings extends BaseSettings."""
+    """ServerSettings extends BaseSettings."""
 
     def test_is_base_settings_subclass(self) -> None:
         """ServerSettings is a pydantic_settings BaseSettings subclass."""
@@ -84,4 +74,43 @@ class TestServerSettingsModel:
     def test_field_descriptions_present(self) -> None:
         """All fields have descriptions."""
         for name, field_info in ServerSettings.model_fields.items():
+            assert field_info.description is not None, f"Field {name} missing description"
+
+
+class TestCommunitySettingsDefaults:
+    """CommunitySettings extends ServerSettings with community-specific fields."""
+
+    def test_inherits_server_settings(self) -> None:
+        """CommunitySettings is a subclass of ServerSettings."""
+        assert issubclass(CommunitySettings, ServerSettings)
+
+    def test_default_workspaces_root(self) -> None:
+        """Default workspaces_root is Path('workspaces')."""
+        settings = CommunitySettings()
+        assert settings.workspaces_root == Path("workspaces")
+
+    def test_default_catalog_path(self) -> None:
+        """Default catalog_path is None."""
+        settings = CommunitySettings()
+        assert settings.catalog_path is None
+
+    def test_inherits_base_fields(self) -> None:
+        """CommunitySettings inherits host, port, cors_origins from ServerSettings."""
+        settings = CommunitySettings()
+        assert settings.host == "0.0.0.0"
+        assert settings.port == 8000
+        assert settings.cors_origins == ["*"]
+
+    def test_workspaces_root_from_env(self) -> None:
+        """AKGENTIC_WORKSPACES_ROOT overrides workspaces_root field."""
+        os.environ["AKGENTIC_WORKSPACES_ROOT"] = "/tmp/ws"
+        try:
+            settings = CommunitySettings()
+            assert settings.workspaces_root == Path("/tmp/ws")
+        finally:
+            del os.environ["AKGENTIC_WORKSPACES_ROOT"]
+
+    def test_field_descriptions_present(self) -> None:
+        """All CommunitySettings fields have descriptions."""
+        for name, field_info in CommunitySettings.model_fields.items():
             assert field_info.description is not None, f"Field {name} missing description"

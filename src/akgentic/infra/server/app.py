@@ -16,7 +16,7 @@ from akgentic.catalog.api.agent_router import set_catalog as set_agent_catalog
 from akgentic.catalog.api.team_router import set_catalog as set_team_catalog
 from akgentic.catalog.api.template_router import set_catalog as set_template_catalog
 from akgentic.catalog.api.tool_router import set_catalog as set_tool_catalog
-from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.routes.frontend_adapter import load_frontend_adapter
 from akgentic.infra.server.routes.teams import router as teams_router
 from akgentic.infra.server.routes.webhook import router as webhook_router
@@ -25,41 +25,31 @@ from akgentic.infra.server.routes.ws import ConnectionManager
 from akgentic.infra.server.routes.ws import router as ws_router
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
-from akgentic.infra.wiring import wire_community
 
 
-def create_app(settings: ServerSettings | None = None) -> FastAPI:
+def create_app(
+    services: TierServices,
+    settings: ServerSettings | None = None,
+) -> FastAPI:
     """Create and configure the FastAPI application.
 
-    Single entry-point factory: wires community services, constructs
-    ``TeamService``, completes deferred ``LocalIngestion`` wiring, and
-    mounts all routes.
+    Entry-point factory: constructs ``TeamService``, completes deferred
+    ``LocalIngestion`` wiring, and mounts all routes.
 
     Args:
+        services: Pre-wired tier services container.
         settings: Server settings. Defaults to ``ServerSettings()``.
 
     Returns:
         Configured FastAPI application instance.
     """
     settings = settings or ServerSettings()
-    services = wire_community(settings)
-    team_service = _build_team_service(services)
+    team_service = TeamService(services)
     _wire_ingestion(services, team_service)
     return _build_app(services, team_service, settings)
 
 
-def _build_team_service(services: CommunityServices) -> TeamService:
-    """Construct TeamService from wired community services."""
-    return TeamService(
-        services=services,
-        team_catalog=services.team_catalog,
-        agent_catalog=services.agent_catalog,
-        tool_catalog=services.tool_catalog,
-        template_catalog=services.template_catalog,
-    )
-
-
-def _wire_ingestion(services: CommunityServices, team_service: TeamService) -> None:
+def _wire_ingestion(services: TierServices, team_service: TeamService) -> None:
     """Complete deferred LocalIngestion wiring with the constructed TeamService."""
     from akgentic.infra.adapters.local_ingestion import LocalIngestion
 
@@ -68,14 +58,14 @@ def _wire_ingestion(services: CommunityServices, team_service: TeamService) -> N
 
 
 def _build_app(
-    services: CommunityServices,
+    services: TierServices,
     team_service: TeamService,
     settings: ServerSettings,
 ) -> FastAPI:
     """Assemble the FastAPI app from pre-built services (shared by create_app and tests).
 
     Args:
-        services: Wired community services container.
+        services: Wired tier services container.
         team_service: Pre-built team service.
         settings: Server settings.
 
@@ -104,7 +94,7 @@ def _add_cors(app: FastAPI, cors_origins: list[str]) -> None:
 
 def _store_state(
     app: FastAPI,
-    services: CommunityServices,
+    services: TierServices,
     team_service: TeamService,
     settings: ServerSettings,
 ) -> None:
@@ -113,12 +103,12 @@ def _store_state(
     app.state.team_service = team_service
     app.state.settings = settings
     app.state.connection_manager = ConnectionManager()
-    app.state.channel_parser_registry = services.channel_parser_registry
+    app.state.channel_parser_registry = getattr(services, "channel_parser_registry", None)
     app.state.channel_registry = services.channel_registry
     app.state.ingestion = services.ingestion
 
 
-def _inject_catalogs(services: CommunityServices) -> None:
+def _inject_catalogs(services: TierServices) -> None:
     """Inject catalog service instances into akgentic-catalog router modules."""
     set_agent_catalog(services.agent_catalog)
     set_team_catalog(services.team_catalog)

@@ -21,6 +21,11 @@ class TeamHandle(Protocol):
     Implementations: LocalTeamHandle (community), RemoteTeamHandle (enterprise).
     """
 
+    @property
+    def team_id(self) -> uuid.UUID:
+        """The unique identifier of the team this handle points to."""
+        ...
+
     def send(self, content: str) -> None:
         """Send a message to the team's default entry point.
 

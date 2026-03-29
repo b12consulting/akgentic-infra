@@ -14,7 +14,7 @@ from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.server.deps import CommunityServices
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 
 
@@ -24,7 +24,7 @@ class TestWireCommunity:
     @pytest.fixture()
     def services(self, tmp_path: Path) -> Generator[CommunityServices, None, None]:
         """Wire community services with a temp workspace root and cleanup ActorSystem."""
-        settings = ServerSettings(workspaces_root=tmp_path)
+        settings = CommunitySettings(workspaces_root=tmp_path)
         svc = wire_community(settings)
         yield svc
         svc.team_manager._actor_system.shutdown(timeout=5)
@@ -59,7 +59,7 @@ class TestWireCommunity:
 
     def test_uses_settings_workspaces_root(self, tmp_path: Path) -> None:
         """wire_community passes settings.workspaces_root to YamlEventStore."""
-        settings = ServerSettings(workspaces_root=tmp_path)
+        settings = CommunitySettings(workspaces_root=tmp_path)
         services = wire_community(settings)
         try:
             assert isinstance(services.event_store, YamlEventStore)
@@ -85,7 +85,7 @@ class TestWireCommunity:
         custom_catalog.mkdir()
         for sub in ("teams", "agents", "tools", "templates"):
             (custom_catalog / sub).mkdir()
-        settings = ServerSettings(
+        settings = CommunitySettings(
             workspaces_root=tmp_path,
             catalog_path=custom_catalog,
         )

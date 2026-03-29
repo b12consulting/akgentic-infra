@@ -25,19 +25,19 @@ from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.server.deps import CommunityServices
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager
 from akgentic.team.repositories.yaml import YamlEventStore
 
 
-def wire_community(settings: ServerSettings) -> CommunityServices:
+def wire_community(settings: CommunitySettings) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
 
     ``LocalIngestion`` is created with deferred ``team_service`` wiring —
     callers must set ``ingestion.team_service`` after constructing ``TeamService``.
 
     Args:
-        settings: Server configuration
+        settings: Community-tier configuration
 
     Returns:
         Fully wired CommunityServices container
@@ -89,7 +89,7 @@ def _build_actor_layer(
 
 
 def _build_catalogs(
-    settings: ServerSettings,
+    settings: CommunitySettings,
 ) -> tuple[TeamCatalog, AgentCatalog, ToolCatalog, TemplateCatalog]:
     """Build YAML-backed catalog services."""
     catalog_root = settings.catalog_path or settings.workspaces_root / "catalog"

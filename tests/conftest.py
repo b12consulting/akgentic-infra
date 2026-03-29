@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 
 
@@ -83,22 +83,22 @@ def _ensure_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture()
-def server_settings(tmp_path: Path) -> ServerSettings:
+def server_settings(tmp_path: Path) -> CommunitySettings:
     """Server settings with tmp_path-based workspaces."""
-    return ServerSettings(workspaces_root=tmp_path / "workspaces")
+    return CommunitySettings(workspaces_root=tmp_path / "workspaces")
 
 
 @pytest.fixture()
-def seeded_settings(tmp_path: Path) -> ServerSettings:
+def seeded_settings(tmp_path: Path) -> CommunitySettings:
     """Server settings with pre-seeded catalog YAML files."""
-    settings = ServerSettings(workspaces_root=tmp_path / "workspaces")
+    settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
     _seed_catalog(settings.workspaces_root / "catalog")
     return settings
 
 
 @pytest.fixture()
 def community_services(
-    seeded_settings: ServerSettings,
+    seeded_settings: CommunitySettings,
 ) -> Generator[CommunityServices, None, None]:
     """Wired community services with seeded catalog data."""
     services = wire_community(seeded_settings)
@@ -109,19 +109,16 @@ def community_services(
 @pytest.fixture()
 def team_service(community_services: CommunityServices) -> TeamService:
     """TeamService wired to community services."""
-    return TeamService(
-        services=community_services,
-        team_catalog=community_services.team_catalog,
-        agent_catalog=community_services.agent_catalog,
-        tool_catalog=community_services.tool_catalog,
-        template_catalog=community_services.template_catalog,
-    )
+    return TeamService(services=community_services)
 
 
 @pytest.fixture()
-def app(seeded_settings: ServerSettings) -> Generator[FastAPI, None, None]:
-    """FastAPI app via the single-arg factory."""
-    application = create_app(seeded_settings)
+def app(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+) -> Generator[FastAPI, None, None]:
+    """FastAPI app via the two-arg factory."""
+    application = create_app(community_services, seeded_settings)
     yield application
     application.state.services.actor_system.shutdown()
 

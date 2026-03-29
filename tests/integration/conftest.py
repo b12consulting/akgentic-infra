@@ -19,7 +19,7 @@ from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.server.app import _build_app, create_app
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 
 if TYPE_CHECKING:
@@ -125,16 +125,16 @@ def openai_api_key() -> str:
 
 
 @pytest.fixture()
-def integration_settings(tmp_path: Path) -> ServerSettings:
-    """ServerSettings backed by tmp_path with a seeded integration catalog."""
-    settings = ServerSettings(workspaces_root=tmp_path / "workspaces")
+def integration_settings(tmp_path: Path) -> CommunitySettings:
+    """CommunitySettings backed by tmp_path with a seeded integration catalog."""
+    settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
     _seed_integration_catalog(settings.workspaces_root / "catalog")
     return settings
 
 
 @pytest.fixture()
 def integration_services(
-    integration_settings: ServerSettings,
+    integration_settings: CommunitySettings,
 ) -> Generator[CommunityServices, None, None]:
     """Wired community services with real actor system — shuts down on teardown."""
     services = wire_community(integration_settings)
@@ -147,23 +147,17 @@ def integration_team_service(
     integration_services: CommunityServices,
 ) -> TeamService:
     """TeamService wired to integration services."""
-    return TeamService(
-        services=integration_services,
-        team_catalog=integration_services.team_catalog,
-        agent_catalog=integration_services.agent_catalog,
-        tool_catalog=integration_services.tool_catalog,
-        template_catalog=integration_services.template_catalog,
-    )
+    return TeamService(services=integration_services)
 
 
 @pytest.fixture()
 def integration_app(
-    integration_settings: ServerSettings,
+    integration_settings: CommunitySettings,
+    integration_services: CommunityServices,
 ) -> Generator[FastAPI, None, None]:
     """FastAPI app backed by real actors and real LLM."""
-    application = create_app(integration_settings)
+    application = create_app(integration_services, integration_settings)
     yield application
-    application.state.services.actor_system.shutdown()
 
 
 @pytest.fixture()
@@ -182,9 +176,9 @@ V1_ADAPTER_FQDN = (
 
 
 @pytest.fixture()
-def v1_adapter_settings(tmp_path: Path) -> ServerSettings:
-    """ServerSettings with V1 frontend adapter enabled."""
-    settings = ServerSettings(
+def v1_adapter_settings(tmp_path: Path) -> CommunitySettings:
+    """CommunitySettings with V1 frontend adapter enabled."""
+    settings = CommunitySettings(
         workspaces_root=tmp_path / "workspaces",
         frontend_adapter=V1_ADAPTER_FQDN,
     )
@@ -194,12 +188,13 @@ def v1_adapter_settings(tmp_path: Path) -> ServerSettings:
 
 @pytest.fixture()
 def v1_adapter_app(
-    v1_adapter_settings: ServerSettings,
+    v1_adapter_settings: CommunitySettings,
 ) -> Generator[FastAPI, None, None]:
     """FastAPI app with V1 frontend adapter loaded."""
-    application = create_app(v1_adapter_settings)
+    services = wire_community(v1_adapter_settings)
+    application = create_app(services, v1_adapter_settings)
     yield application
-    application.state.services.actor_system.shutdown()
+    services.actor_system.shutdown()
 
 
 @pytest.fixture()
@@ -253,7 +248,7 @@ def channel_ingestion(
 def channel_app(
     integration_services: CommunityServices,
     integration_team_service: TeamService,
-    integration_settings: ServerSettings,
+    integration_settings: CommunitySettings,
     channel_parser_registry: ChannelParserRegistry,
     channel_registry_instance: YamlChannelRegistry,
     channel_ingestion: LocalIngestion,
