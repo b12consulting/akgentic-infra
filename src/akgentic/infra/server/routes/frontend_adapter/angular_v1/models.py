@@ -6,14 +6,25 @@ These are independent from V2 models — no shared response models.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class V1ActorAddress(BaseModel):
     """V1 actor address representation."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     name: str = Field(description="Actor display name")
     role: str = Field(description="Actor role from AgentCard")
+    actor_address: str = Field(
+        default="",
+        alias="__actor_address__",
+        description="String-serialized actor address",
+    )
+    address: str = Field(default="", description="Actor address string")
+    agent_id: str = Field(default="", description="Agent unique ID")
+    squad_id: str = Field(default="", description="Team ID string")
+    user_message: str = Field(default="", description="User message, populated when applicable")
 
 
 class V1ProcessParams(BaseModel):
@@ -38,6 +49,11 @@ class V1ProcessContext(BaseModel):
         default_factory=dict,
         description="Empty dict for V2 compat",
     )
+    orchestrator: str = Field(default="", description="Team entry point agent name")
+    running: bool = Field(default=False, description="Derived from status == running")
+    config_name: str = Field(default="", description="Team card name / catalog entry ID")
+    user_id: str = Field(default="", description="User who owns this team")
+    user_email: str = Field(default="", description="Email of the user who owns this team")
 
 
 class V1MessageEntry(BaseModel):
@@ -79,3 +95,34 @@ class V1StatusResponse(BaseModel):
     """V1 simple status response for action endpoints."""
 
     status: str = Field(description="Operation status, e.g. 'ok'")
+
+
+class V1DescriptionBody(BaseModel):
+    """Request body for PATCH /process/{id}/description."""
+
+    description: str = Field(description="New description for the process")
+
+
+class V1StateUpdateBody(BaseModel):
+    """Request body for PATCH /state/{id}/of/{agent}."""
+
+    content: str = Field(description="State update content to send to agent")
+
+
+class V1ConfigEntry(BaseModel):
+    """V1 catalog configuration entry for GET/PUT/DELETE /config."""
+
+    id: str = Field(description="Configuration entry ID")
+    type: str = Field(description="Configuration type: team, agent, tool, template")
+    data: dict[str, object] = Field(
+        default_factory=dict,
+        description="Configuration data",
+    )
+
+
+class V1FeedbackEntry(BaseModel):
+    """V1 feedback entry for GET/POST /feedback."""
+
+    id: str = Field(default="", description="Feedback entry ID")
+    content: str = Field(default="", description="Feedback content")
+    rating: int = Field(default=0, description="Feedback rating")

@@ -25,12 +25,16 @@ from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter, Wrapp
 from akgentic.infra.server.routes.frontend_adapter.angular_v1 import AngularV1Adapter
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
     V1ActorAddress,
+    V1ConfigEntry,
+    V1DescriptionBody,
+    V1FeedbackEntry,
     V1LlmContextEntry,
     V1MessageEntry,
     V1ProcessContext,
     V1ProcessList,
     V1ProcessParams,
     V1StateEntry,
+    V1StateUpdateBody,
     V1StatusResponse,
 )
 from akgentic.infra.server.settings import ServerSettings
@@ -52,9 +56,12 @@ def _make_agent_card(name: str = "@Human", role: str = "Human") -> Any:
 
 
 def _make_team_card(name: str = "Test Team") -> MagicMock:
-    """Create a minimal TeamCard mock."""
+    """Create a minimal TeamCard mock with entry_point for V1 translation."""
+    entry_point = MagicMock()
+    entry_point.card.config.name = "@Orchestrator"
     card = MagicMock(spec=TeamCard)
     card.name = name
+    card.entry_point = entry_point
     return card
 
 
@@ -170,10 +177,15 @@ class TestV1Models:
         assert restored == entry
 
     def test_v1_actor_address_serialization(self) -> None:
-        """V1ActorAddress serializes correctly."""
+        """V1ActorAddress serializes correctly with all fields."""
         addr = V1ActorAddress(name="@Human", role="Human")
         data = addr.model_dump()
-        assert data == {"name": "@Human", "role": "Human"}
+        assert data["name"] == "@Human"
+        assert data["role"] == "Human"
+        assert data["address"] == ""
+        assert data["agent_id"] == ""
+        assert data["squad_id"] == ""
+        assert data["user_message"] == ""
         restored = V1ActorAddress.model_validate(data)
         assert restored == addr
 
@@ -672,3 +684,396 @@ class TestV1ErrorCases:
         """Invalid UUID in states path returns 422."""
         resp = v1_client.get("/states/not-a-uuid")
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Story 6.8: V1ProcessContext new fields (AC #1)
+# ---------------------------------------------------------------------------
+
+
+class TestV1ProcessContextNewFields:
+    """Test V1ProcessContext new fields: orchestrator, running, config_name, user_id, user_email."""
+
+    def test_new_fields_default_values(self) -> None:
+        """New fields have sensible defaults."""
+        ctx = V1ProcessContext(
+            id=str(_TEAM_ID),
+            type="Test",
+            status="running",
+            created_at=_NOW.isoformat(),
+            updated_at=_NOW.isoformat(),
+        )
+        assert ctx.orchestrator == ""
+        assert ctx.running is False
+        assert ctx.config_name == ""
+        assert ctx.user_id == ""
+        assert ctx.user_email == ""
+
+    def test_new_fields_populated(self) -> None:
+        """New fields can be explicitly populated."""
+        ctx = V1ProcessContext(
+            id=str(_TEAM_ID),
+            type="Test Team",
+            status="running",
+            created_at=_NOW.isoformat(),
+            updated_at=_NOW.isoformat(),
+            orchestrator="@Manager",
+            running=True,
+            config_name="my-team",
+            user_id="user-1",
+            user_email="user@example.com",
+        )
+        assert ctx.orchestrator == "@Manager"
+        assert ctx.running is True
+        assert ctx.config_name == "my-team"
+        assert ctx.user_id == "user-1"
+        assert ctx.user_email == "user@example.com"
+
+    def test_new_fields_serialization_roundtrip(self) -> None:
+        """V1ProcessContext with new fields survives roundtrip."""
+        ctx = V1ProcessContext(
+            id=str(_TEAM_ID),
+            type="Test",
+            status="running",
+            created_at=_NOW.isoformat(),
+            updated_at=_NOW.isoformat(),
+            orchestrator="@Bot",
+            running=True,
+            config_name="team-cfg",
+            user_id="u1",
+            user_email="e@e.com",
+        )
+        data = ctx.model_dump()
+        restored = V1ProcessContext.model_validate(data)
+        assert restored == ctx
+
+    def test_to_v1_process_context_populates_new_fields(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """GET /process/{id} response includes new fields from Process."""
+        process = _make_process()
+        mock_service.get_team.return_value = process
+        resp = v1_client.get(f"/process/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["orchestrator"] == "@Orchestrator"
+        assert data["running"] is True
+        assert data["config_name"] == "Test Team"
+        assert data["user_id"] == "anonymous"
+        assert data["user_email"] == ""
+
+    def test_running_false_when_stopped(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """Running field is False when team is stopped."""
+        process = _make_process(status=TeamStatus.STOPPED)
+        mock_service.get_team.return_value = process
+        resp = v1_client.get(f"/process/{_TEAM_ID}")
+        assert resp.status_code == 200
+        assert resp.json()["running"] is False
+
+
+# ---------------------------------------------------------------------------
+# Story 6.8: V1ActorAddress new fields (AC #2)
+# ---------------------------------------------------------------------------
+
+
+class TestV1ActorAddressNewFields:
+    """Test V1ActorAddress new fields."""
+
+    def test_new_fields_default_values(self) -> None:
+        """New fields default to empty strings."""
+        addr = V1ActorAddress(name="@Agent", role="Worker")
+        assert addr.actor_address == ""
+        assert addr.address == ""
+        assert addr.agent_id == ""
+        assert addr.squad_id == ""
+        assert addr.user_message == ""
+
+    def test_new_fields_populated(self) -> None:
+        """New fields can be explicitly populated."""
+        addr = V1ActorAddress(
+            name="@Agent",
+            role="Worker",
+            actor_address="agent-addr-1",
+            address="agent-addr-1",
+            agent_id="agent-1",
+            squad_id=str(_TEAM_ID),
+            user_message="hello",
+        )
+        assert addr.actor_address == "agent-addr-1"
+        assert addr.address == "agent-addr-1"
+        assert addr.agent_id == "agent-1"
+        assert addr.squad_id == str(_TEAM_ID)
+        assert addr.user_message == "hello"
+
+    def test_alias_serialization(self) -> None:
+        """V1ActorAddress serializes actor_address with alias __actor_address__."""
+        addr = V1ActorAddress(name="@A", role="R", actor_address="addr-1")
+        data = addr.model_dump(by_alias=True)
+        assert "__actor_address__" in data
+        assert data["__actor_address__"] == "addr-1"
+
+    def test_alias_deserialization(self) -> None:
+        """V1ActorAddress can be deserialized from __actor_address__ alias."""
+        data = {
+            "name": "@A",
+            "role": "R",
+            "__actor_address__": "addr-from-alias",
+            "address": "",
+            "agent_id": "",
+            "squad_id": "",
+            "user_message": "",
+        }
+        addr = V1ActorAddress.model_validate(data)
+        assert addr.actor_address == "addr-from-alias"
+
+
+# ---------------------------------------------------------------------------
+# Story 6.8: New request/response models (AC #1, #2)
+# ---------------------------------------------------------------------------
+
+
+class TestNewRequestModels:
+    """Test new request/response models added for story 6.8."""
+
+    def test_v1_description_body(self) -> None:
+        """V1DescriptionBody serializes correctly."""
+        body = V1DescriptionBody(description="new desc")
+        assert body.description == "new desc"
+        data = body.model_dump()
+        assert V1DescriptionBody.model_validate(data) == body
+
+    def test_v1_state_update_body(self) -> None:
+        """V1StateUpdateBody serializes correctly."""
+        body = V1StateUpdateBody(content="new state")
+        assert body.content == "new state"
+
+    def test_v1_config_entry(self) -> None:
+        """V1ConfigEntry serializes correctly."""
+        entry = V1ConfigEntry(id="cfg-1", type="team", data={"name": "x"})
+        data = entry.model_dump()
+        restored = V1ConfigEntry.model_validate(data)
+        assert restored == entry
+
+    def test_v1_feedback_entry(self) -> None:
+        """V1FeedbackEntry serializes correctly."""
+        entry = V1FeedbackEntry(id="fb-1", content="great", rating=5)
+        data = entry.model_dump()
+        restored = V1FeedbackEntry.model_validate(data)
+        assert restored == entry
+
+    def test_v1_feedback_entry_defaults(self) -> None:
+        """V1FeedbackEntry has sensible defaults."""
+        entry = V1FeedbackEntry()
+        assert entry.id == ""
+        assert entry.content == ""
+        assert entry.rating == 0
+
+
+# ---------------------------------------------------------------------------
+# Story 6.8: New REST endpoints (AC #3)
+# ---------------------------------------------------------------------------
+
+
+class TestV1DescriptionEndpoint:
+    """Test PATCH /process/{id}/description endpoint."""
+
+    def test_update_description_ok(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC3: PATCH /process/{id}/description returns ok."""
+        mock_service.get_team.return_value = _make_process()
+        resp = v1_client.patch(
+            f"/process/{_TEAM_ID}/description",
+            json={"description": "new desc"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_update_description_not_found(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """PATCH /process/{id}/description returns 404 for missing team."""
+        mock_service.get_team.return_value = None
+        resp = v1_client.patch(
+            f"/process/{_TEAM_ID}/description",
+            json={"description": "new desc"},
+        )
+        assert resp.status_code == 404
+
+
+class TestV1RelaunchEndpoint:
+    """Test POST /relaunch/{id}/message/{msgId} endpoint."""
+
+    def test_relaunch_message_ok(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC3: POST /relaunch/{id}/message/{msgId} re-sends message."""
+        msg = UserMessage(content="original message")
+        mock_service.get_events.return_value = [
+            _make_persisted_event(msg, sequence=1),
+        ]
+        mock_service.send_message.return_value = None
+        resp = v1_client.post(f"/relaunch/{_TEAM_ID}/message/{msg.id}")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        mock_service.send_message.assert_called_once_with(_TEAM_ID, "original message")
+
+    def test_relaunch_message_not_found_team(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """POST /relaunch/{id}/message/{msgId} returns 404 for unknown team."""
+        mock_service.get_events.side_effect = ValueError("not found")
+        resp = v1_client.post(f"/relaunch/{_TEAM_ID}/message/some-msg-id")
+        assert resp.status_code == 404
+
+    def test_relaunch_message_not_found_msg(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """POST /relaunch/{id}/message/{msgId} returns 404 for unknown msg."""
+        mock_service.get_events.return_value = []
+        resp = v1_client.post(f"/relaunch/{_TEAM_ID}/message/nonexistent")
+        assert resp.status_code == 404
+
+
+class TestV1StateUpdateEndpoint:
+    """Test PATCH /state/{id}/of/{agent} endpoint."""
+
+    def test_update_agent_state_ok(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC3: PATCH /state/{id}/of/{agent} sends to agent."""
+        mock_handle = MagicMock()
+        mock_service.get_handle.return_value = mock_handle
+        resp = v1_client.patch(
+            f"/state/{_TEAM_ID}/of/@Worker",
+            json={"content": "update state"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        mock_handle.send_to.assert_called_once_with("@Worker", "update state")
+
+    def test_update_agent_state_not_found(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """PATCH /state/{id}/of/{agent} returns 404 when no handle."""
+        mock_service.get_handle.return_value = None
+        resp = v1_client.patch(
+            f"/state/{_TEAM_ID}/of/@Worker",
+            json={"content": "update"},
+        )
+        assert resp.status_code == 404
+
+
+class TestV1FeedbackEndpoints:
+    """Test feedback stub endpoints."""
+
+    def test_get_feedback_returns_empty(self, v1_client: TestClient) -> None:
+        """AC3: GET /get-feedback returns empty list."""
+        resp = v1_client.get("/get-feedback")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_set_feedback_returns_ok(self, v1_client: TestClient) -> None:
+        """AC3: POST /set-feedback returns ok."""
+        resp = v1_client.post(
+            "/set-feedback",
+            json={"id": "fb-1", "content": "great", "rating": 5},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+
+class TestV1TeamConfigsEndpoint:
+    """Test GET /team-configs endpoint."""
+
+    def test_get_team_configs(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC3: GET /team-configs returns team catalog entries."""
+        mock_entry = MagicMock()
+        mock_entry.id = "team-1"
+        mock_entry.model_dump.return_value = {"id": "team-1", "name": "My Team"}
+        v1_client.app.state.services.team_catalog.list.return_value = [mock_entry]  # type: ignore[union-attr]
+        resp = v1_client.get("/team-configs/")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["id"] == "team-1"
+        assert data[0]["type"] == "team"
+
+    def test_get_team_configs_empty(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """GET /team-configs returns empty list when no entries."""
+        v1_client.app.state.services.team_catalog.list.return_value = []  # type: ignore[union-attr]
+        resp = v1_client.get("/team-configs/")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+
+class TestV1ConfigEndpoints:
+    """Test config CRUD endpoints."""
+
+    def test_get_config_by_type(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC3: GET /config/{type} returns catalog entries."""
+        mock_entry = MagicMock()
+        mock_entry.id = "agent-1"
+        mock_entry.model_dump.return_value = {"id": "agent-1", "name": "Bot"}
+        v1_client.app.state.services.agent_catalog.list.return_value = [mock_entry]  # type: ignore[union-attr]
+        resp = v1_client.get("/config/agent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["id"] == "agent-1"
+        assert data[0]["type"] == "agent"
+
+    def test_get_config_unknown_type(self, v1_client: TestClient) -> None:
+        """GET /config/{type} returns 400 for unknown type."""
+        resp = v1_client.get("/config/unknown")
+        assert resp.status_code == 400
+
+    def test_delete_config_ok(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC3: DELETE /config deletes catalog entry."""
+        mock_entry = MagicMock()
+        v1_client.app.state.services.tool_catalog.get.return_value = mock_entry  # type: ignore[union-attr]
+        resp = v1_client.request(
+            "DELETE", "/config/",
+            json={"id": "tool-1", "type": "tool", "data": {}},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+    def test_delete_config_not_found(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """DELETE /config returns 404 for missing entry."""
+        v1_client.app.state.services.tool_catalog.get.return_value = None  # type: ignore[union-attr]
+        resp = v1_client.request(
+            "DELETE", "/config/",
+            json={"id": "missing", "type": "tool", "data": {}},
+        )
+        assert resp.status_code == 404
+
+
+class TestV1AdapterNewRoutes:
+    """Test that new routes are registered by AngularV1Adapter."""
+
+    def test_new_routes_registered(self) -> None:
+        """AngularV1Adapter registers all new route paths."""
+        adapter = AngularV1Adapter()
+        app = FastAPI()
+        adapter.register_routes(app)
+        paths = {r.path for r in app.routes if hasattr(r, "path")}
+        assert "/config/{config_type}" in paths
+        assert "/team-configs/" in paths
+        assert "/get-feedback" in paths
+        assert "/set-feedback" in paths
+        assert "/relaunch/{id}/message/{msg_id}" in paths
+        assert "/state/{id}/of/{agent}" in paths
+        assert "/process/{id}/description" in paths
