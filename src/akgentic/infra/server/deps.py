@@ -11,7 +11,9 @@ from akgentic.catalog.services import (
     ToolCatalog,
 )
 from akgentic.core import ActorSystem
+from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.auth import AuthStrategy
+from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.team_handle import RuntimeCache
 from akgentic.team.manager import TeamManager
@@ -32,8 +34,8 @@ class TierServices(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    placement: PlacementStrategy = Field(
-        description="Strategy for placing teams on workers"
+    placement: list[PlacementStrategy] = Field(
+        description="Strategies for placing teams on workers"
     )
     service_registry: ServiceRegistry = Field(
         description="Service discovery registry for worker instances"
@@ -46,6 +48,12 @@ class TierServices(BaseModel):
     )
     runtime_cache: RuntimeCache = Field(
         description="Cache mapping team IDs to live TeamHandle instances"
+    )
+    ingestion: InteractionChannelIngestion = Field(
+        description="Inbound channel message ingestion handler"
+    )
+    channel_registry: ChannelRegistry = Field(
+        description="Registry mapping channel IDs to team IDs"
     )
 
 
@@ -73,4 +81,7 @@ class CommunityServices(TierServices):
     )
     template_catalog: TemplateCatalog = Field(
         description="Catalog service for template entry resolution"
+    )
+    channel_parser_registry: ChannelParserRegistry = Field(
+        description="Registry of channel message parsers"
     )

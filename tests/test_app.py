@@ -2,27 +2,20 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock
-
-import pytest
 from fastapi.testclient import TestClient
 
 from akgentic.infra.server.app import create_app
-from akgentic.infra.server.deps import CommunityServices
-from akgentic.infra.server.services.team_service import TeamService
+from akgentic.infra.server.settings import ServerSettings
 
 
-def test_create_app_returns_fastapi(
-    community_services: CommunityServices,
-    team_service: TeamService,
-) -> None:
+def test_create_app_returns_fastapi(seeded_settings: ServerSettings) -> None:
     """create_app returns a FastAPI instance with routes mounted."""
-    app = create_app(community_services, team_service)
+    app = create_app(seeded_settings)
     assert app.title == "Akgentic Platform API"
     route_paths = [r.path for r in app.routes]  # type: ignore[union-attr]
     assert "/teams/" in route_paths
     assert "/teams/{team_id}" in route_paths
+    app.state.services.actor_system.shutdown()
 
 
 def test_cors_headers_present(client: TestClient) -> None:
@@ -38,12 +31,13 @@ def test_cors_headers_present(client: TestClient) -> None:
     assert "access-control-allow-origin" in resp.headers
 
 
-def test_custom_cors_origins(
-    community_services: CommunityServices,
-    team_service: TeamService,
-) -> None:
-    """create_app respects custom cors_origins."""
-    app = create_app(community_services, team_service, cors_origins=["http://example.com"])
+def test_custom_cors_origins(seeded_settings: ServerSettings) -> None:
+    """create_app respects custom cors_origins from settings."""
+    settings = ServerSettings(
+        workspaces_root=seeded_settings.workspaces_root,
+        cors_origins=["http://example.com"],
+    )
+    app = create_app(settings)
     test_client = TestClient(app)
     resp = test_client.options(
         "/teams/",
@@ -53,6 +47,7 @@ def test_custom_cors_origins(
         },
     )
     assert resp.headers.get("access-control-allow-origin") == "http://example.com"
+    app.state.services.actor_system.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -60,56 +55,9 @@ def test_custom_cors_origins(
 # ---------------------------------------------------------------------------
 
 
-def test_create_app_includes_webhook_routes_when_channel_deps_provided(
-    community_services: CommunityServices,
-    team_service: TeamService,
-    tmp_path: Path,
-) -> None:
-    """create_app includes /webhook routes when channel deps are provided."""
-    from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
-    from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
-
-    parser_registry = ChannelParserRegistry.__new__(ChannelParserRegistry)
-    parser_registry._parsers = {}  # noqa: SLF001
-    parser_registry._adapters = []  # noqa: SLF001
-    channel_registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-    ingestion = MagicMock()
-
-    app = create_app(
-        community_services,
-        team_service,
-        channel_parser_registry=parser_registry,
-        channel_registry=channel_registry,
-        ingestion=ingestion,
-    )
+def test_create_app_includes_webhook_routes(seeded_settings: ServerSettings) -> None:
+    """create_app always includes /webhook routes (channel deps are auto-wired)."""
+    app = create_app(seeded_settings)
     route_paths = [r.path for r in app.routes]  # type: ignore[union-attr]
     assert "/webhook/{channel}" in route_paths
-
-
-def test_create_app_excludes_webhook_routes_by_default(
-    community_services: CommunityServices,
-    team_service: TeamService,
-) -> None:
-    """create_app excludes /webhook routes when channel deps are not provided."""
-    app = create_app(community_services, team_service)
-    route_paths = [r.path for r in app.routes]  # type: ignore[union-attr]
-    assert "/webhook/{channel}" not in route_paths
-
-
-def test_create_app_raises_when_channel_deps_incomplete(
-    community_services: CommunityServices,
-    team_service: TeamService,
-) -> None:
-    """create_app raises ValueError when channel_parser_registry provided without others."""
-    from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
-
-    parser_registry = ChannelParserRegistry.__new__(ChannelParserRegistry)
-    parser_registry._parsers = {}  # noqa: SLF001
-    parser_registry._adapters = []  # noqa: SLF001
-
-    with pytest.raises(ValueError, match="channel_registry and ingestion are required"):
-        create_app(
-            community_services,
-            team_service,
-            channel_parser_registry=parser_registry,
-        )
+    app.state.services.actor_system.shutdown()

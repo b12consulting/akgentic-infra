@@ -15,11 +15,14 @@ from akgentic.catalog.services import (
     ToolCatalog,
 )
 from akgentic.core import ActorSystem, EventSubscriber
+from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.local_placement import LocalPlacement
 from akgentic.infra.adapters.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
+from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import ServerSettings
 from akgentic.team.manager import TeamManager
@@ -29,16 +32,8 @@ from akgentic.team.repositories.yaml import YamlEventStore
 def wire_community(settings: ServerSettings) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
 
-    Assembly order:
-    1. EventStore (YamlEventStore)
-    2. ServiceRegistry (LocalServiceRegistry)
-    3. Shared subscribers ([TelemetrySubscriber])
-    4. ActorSystem
-    5. TeamManager
-    6. PlacementStrategy (LocalPlacement)
-    7. AuthStrategy (NoAuth)
-    8. RuntimeCache (LocalRuntimeCache)
-    9. Catalogs: Template + Tool → Agent → Team
+    ``LocalIngestion`` is created with deferred ``team_service`` wiring —
+    callers must set ``ingestion.team_service`` after constructing ``TeamService``.
 
     Args:
         settings: Server configuration
@@ -47,6 +42,33 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
         Fully wired CommunityServices container
     """
     event_store = YamlEventStore(data_dir=settings.workspaces_root)
+    actor_system, team_manager = _build_actor_layer(event_store)
+    catalogs = _build_catalogs(settings)
+
+    return CommunityServices(
+        placement=[LocalPlacement()],
+        service_registry=LocalServiceRegistry(),
+        auth=NoAuth(),
+        event_store=event_store,
+        runtime_cache=LocalRuntimeCache(),
+        ingestion=LocalIngestion(),
+        channel_registry=YamlChannelRegistry(
+            registry_path=settings.workspaces_root / "channel-registry.yaml",
+        ),
+        actor_system=actor_system,
+        team_manager=team_manager,
+        channel_parser_registry=ChannelParserRegistry(channels_config={}),
+        team_catalog=catalogs[0],
+        agent_catalog=catalogs[1],
+        tool_catalog=catalogs[2],
+        template_catalog=catalogs[3],
+    )
+
+
+def _build_actor_layer(
+    event_store: YamlEventStore,
+) -> tuple[ActorSystem, TeamManager]:
+    """Build ActorSystem and TeamManager."""
     service_registry = LocalServiceRegistry()
     shared_subscribers: list[EventSubscriber] = [TelemetrySubscriber()]
     actor_system = ActorSystem()
@@ -56,11 +78,14 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
         service_registry=service_registry,
         subscribers=shared_subscribers,
     )
-    placement = LocalPlacement()
-    auth = NoAuth()
-    runtime_cache = LocalRuntimeCache()
+    return actor_system, team_manager
 
-    catalog_root = settings.workspaces_root / "catalog"
+
+def _build_catalogs(
+    settings: ServerSettings,
+) -> tuple[TeamCatalog, AgentCatalog, ToolCatalog, TemplateCatalog]:
+    """Build YAML-backed catalog services."""
+    catalog_root = settings.catalog_path or settings.workspaces_root / "catalog"
     template_catalog = TemplateCatalog(
         repository=YamlTemplateCatalogRepository(catalog_dir=catalog_root / "templates"),
     )
@@ -76,17 +101,4 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
         repository=YamlTeamCatalogRepository(catalog_dir=catalog_root / "teams"),
         agent_catalog=agent_catalog,
     )
-
-    return CommunityServices(
-        placement=placement,
-        service_registry=service_registry,
-        auth=auth,
-        event_store=event_store,
-        runtime_cache=runtime_cache,
-        actor_system=actor_system,
-        team_manager=team_manager,
-        team_catalog=team_catalog,
-        agent_catalog=agent_catalog,
-        tool_catalog=tool_catalog,
-        template_catalog=template_catalog,
-    )
+    return team_catalog, agent_catalog, tool_catalog, template_catalog

@@ -37,3 +37,15 @@ class ServerSettings(BaseSettings):
         default=["*"],
         description="Allowed CORS origins for the HTTP server",
     )
+    event_store: str = Field(
+        default="yaml",
+        description="Event store backend: 'yaml' or 'memory'",
+    )
+    catalog_backend: str = Field(
+        default="yaml",
+        description="Catalog backend: 'yaml'",
+    )
+    catalog_path: Path | None = Field(
+        default=None,
+        description="Catalog directory; defaults to workspaces_root / 'catalog'",
+    )

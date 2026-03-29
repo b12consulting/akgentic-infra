@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.server.app import create_app
+from akgentic.infra.server.app import _build_app, create_app
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
@@ -158,14 +158,12 @@ def integration_team_service(
 
 @pytest.fixture()
 def integration_app(
-    integration_services: CommunityServices,
-    integration_team_service: TeamService,
     integration_settings: ServerSettings,
-) -> FastAPI:
+) -> Generator[FastAPI, None, None]:
     """FastAPI app backed by real actors and real LLM."""
-    return create_app(
-        integration_services, integration_team_service, settings=integration_settings,
-    )
+    application = create_app(integration_settings)
+    yield application
+    application.state.services.actor_system.shutdown()
 
 
 @pytest.fixture()
@@ -195,39 +193,13 @@ def v1_adapter_settings(tmp_path: Path) -> ServerSettings:
 
 
 @pytest.fixture()
-def v1_adapter_services(
-    v1_adapter_settings: ServerSettings,
-) -> Generator[CommunityServices, None, None]:
-    """Wired community services for V1 adapter tests — shuts down on teardown."""
-    services = wire_community(v1_adapter_settings)
-    yield services
-    services.actor_system.shutdown()
-
-
-@pytest.fixture()
-def v1_adapter_team_service(
-    v1_adapter_services: CommunityServices,
-) -> TeamService:
-    """TeamService wired to V1 adapter services."""
-    return TeamService(
-        services=v1_adapter_services,
-        team_catalog=v1_adapter_services.team_catalog,
-        agent_catalog=v1_adapter_services.agent_catalog,
-        tool_catalog=v1_adapter_services.tool_catalog,
-        template_catalog=v1_adapter_services.template_catalog,
-    )
-
-
-@pytest.fixture()
 def v1_adapter_app(
-    v1_adapter_services: CommunityServices,
-    v1_adapter_team_service: TeamService,
     v1_adapter_settings: ServerSettings,
-) -> FastAPI:
+) -> Generator[FastAPI, None, None]:
     """FastAPI app with V1 frontend adapter loaded."""
-    return create_app(
-        v1_adapter_services, v1_adapter_team_service, settings=v1_adapter_settings,
-    )
+    application = create_app(v1_adapter_settings)
+    yield application
+    application.state.services.actor_system.shutdown()
 
 
 @pytest.fixture()
@@ -286,14 +258,17 @@ def channel_app(
     channel_registry_instance: YamlChannelRegistry,
     channel_ingestion: LocalIngestion,
 ) -> FastAPI:
-    """FastAPI app with webhook wiring for channel integration tests."""
-    return create_app(
+    """FastAPI app with webhook wiring for channel integration tests.
+
+    Uses _build_app with overridden channel deps on the services container.
+    """
+    integration_services.channel_parser_registry = channel_parser_registry
+    integration_services.channel_registry = channel_registry_instance
+    integration_services.ingestion = channel_ingestion
+    return _build_app(
         integration_services,
         integration_team_service,
-        settings=integration_settings,
-        channel_parser_registry=channel_parser_registry,
-        channel_registry=channel_registry_instance,
-        ingestion=channel_ingestion,
+        integration_settings,
     )
 
 
