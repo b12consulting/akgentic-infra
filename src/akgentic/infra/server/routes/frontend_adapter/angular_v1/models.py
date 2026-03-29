@@ -47,9 +47,12 @@ class V1ProcessContext(BaseModel):
     updated_at: str = Field(description="ISO datetime string")
     params: dict[str, str] = Field(
         default_factory=dict,
-        description="Empty dict for V2 compat",
+        description="Feature flags: workspace, knowledge_graph",
     )
-    orchestrator: str = Field(default="", description="Team entry point agent name")
+    orchestrator: V1ActorAddress = Field(
+        default_factory=lambda: V1ActorAddress(name="", role=""),
+        description="Team entry point agent as V1ActorAddress",
+    )
     running: bool = Field(default=False, description="Derived from status == running")
     config_name: str = Field(default="", description="Team card name / catalog entry ID")
     user_id: str = Field(default="", description="User who owns this team")
@@ -82,13 +85,13 @@ class V1StateEntry(BaseModel):
     timestamp: str = Field(description="ISO datetime string")
 
 
-class V1ProcessList(BaseModel):
-    """V1 list of processes."""
+class V1ConfigPutBody(BaseModel):
+    """Request body for PUT /config/{config_type}."""
 
-    processes: list[V1ProcessContext] = Field(
-        default_factory=list,
-        description="List of V1 process contexts",
-    )
+    id: str = Field(description="Config entry ID")
+    name: str = Field(default="", description="Config entry name")
+    config: dict[str, object] = Field(default_factory=dict, description="Config data")
+    dry_run: bool = Field(default=False, description="Dry run flag")
 
 
 class V1StatusResponse(BaseModel):

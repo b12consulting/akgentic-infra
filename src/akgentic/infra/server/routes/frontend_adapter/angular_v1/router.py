@@ -20,13 +20,14 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1._helpers import (
     get_sender_name,
 )
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
+    V1ActorAddress,
     V1ConfigEntry,
+    V1ConfigPutBody,
     V1DescriptionBody,
     V1FeedbackEntry,
     V1LlmContextEntry,
     V1MessageEntry,
     V1ProcessContext,
-    V1ProcessList,
     V1StateEntry,
     V1StateUpdateBody,
     V1StatusResponse,
@@ -35,6 +36,7 @@ from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.models import PersistedEvent, Process, TeamStatus
 
 process_router = APIRouter(prefix="/process", tags=["v1-compat"])
+processes_router = APIRouter(prefix="/processes", tags=["v1-compat"])
 human_input_router = APIRouter(prefix="/process_human_input", tags=["v1-compat"])
 messages_router = APIRouter(prefix="/messages", tags=["v1-compat"])
 llm_context_router = APIRouter(prefix="/llm_context", tags=["v1-compat"])
@@ -56,7 +58,7 @@ class V1HumanInputBody(BaseModel):
     """Request body for POST /process_human_input/{id}/human/{proxy}."""
 
     content: str = Field(description="Human input content")
-    message_id: str = Field(description="ID of the original message being answered")
+    message: dict[str, object] = Field(description="Full BaseMessage object from frontend")
 
 
 def get_team_service(request: Request) -> TeamService:
@@ -66,14 +68,18 @@ def get_team_service(request: Request) -> TeamService:
 
 def _to_v1_process_context(process: Process) -> V1ProcessContext:
     """Convert a V2 Process to a V1ProcessContext."""
+    entry_point = process.team_card.entry_point
     return V1ProcessContext(
         id=str(process.team_id),
         type=process.team_card.name,
         status=process.status.value,
         created_at=process.created_at.isoformat(),
         updated_at=process.updated_at.isoformat(),
-        params={},
-        orchestrator=process.team_card.entry_point.card.config.name,
+        params={"workspace": "false", "knowledge_graph": "false"},
+        orchestrator=V1ActorAddress(
+            name=entry_point.card.config.name,
+            role=entry_point.card.role,
+        ),
         running=process.status == TeamStatus.RUNNING,
         config_name=process.team_card.name,
         user_id=process.user_id,
@@ -134,13 +140,21 @@ def create_process(
     return _to_v1_process_context(process)
 
 
-@process_router.get("/", response_model=V1ProcessList)
+@process_router.get("/", response_model=list[V1ProcessContext])
 def list_processes(
     service: TeamService = Depends(get_team_service),
-) -> V1ProcessList:
-    """GET /process -> list teams with V1 response shape."""
+) -> list[V1ProcessContext]:
+    """GET /process/ -> list teams as flat list."""
     processes = service.list_teams(user_id="anonymous")
-    return V1ProcessList(processes=[_to_v1_process_context(p) for p in processes])
+    return [_to_v1_process_context(p) for p in processes]
+
+
+@processes_router.get("/", response_model=list[V1ProcessContext])
+def list_processes_alias(
+    service: TeamService = Depends(get_team_service),
+) -> list[V1ProcessContext]:
+    """GET /processes -> alias for GET /process/, returns flat list."""
+    return list_processes(service)
 
 
 @process_router.get("/{id}", response_model=V1ProcessContext)
@@ -228,8 +242,11 @@ def process_human_input(
     V1 had `proxy` in path but V2 finds HumanProxy automatically — ignore proxy param.
     """
     team_id = _parse_uuid(id)
+    if "id" not in body.message:
+        raise HTTPException(status_code=422, detail="message must contain 'id' field")
+    message_id = str(body.message["id"])
     try:
-        service.process_human_input(team_id, body.content, body.message_id)
+        service.process_human_input(team_id, body.content, message_id)
     except ValueError as exc:
         _raise_action_error(exc)
     return V1StatusResponse(status="ok")
@@ -414,30 +431,36 @@ def get_config(config_type: str, request: Request) -> list[V1ConfigEntry]:
     ]
 
 
-@config_router.put("/", status_code=200, response_model=V1StatusResponse)
-def put_config(body: V1ConfigEntry, request: Request) -> V1StatusResponse:
-    """PUT /config -> create or update a catalog entry."""
-    catalog = _get_catalog_for_type(request, body.type)
+@config_router.put("/{config_type}", status_code=200, response_model=V1StatusResponse)
+def put_config(
+    config_type: str, body: V1ConfigPutBody, request: Request,
+) -> V1StatusResponse:
+    """PUT /config/{config_type} -> create or update a catalog entry."""
+    catalog = _get_catalog_for_type(request, config_type)
     existing = catalog.get(body.id)
     if existing is not None:
-        catalog.update(body.id, existing.__class__.model_validate(body.data))
+        catalog.update(body.id, existing.__class__.model_validate(body.config))
     else:
         existing_entries = catalog.list()
         entry_cls = type(existing_entries[0]) if existing_entries else None
         if entry_cls is None:
             raise HTTPException(status_code=400, detail="Cannot determine entry type")
-        catalog.create(entry_cls.model_validate(body.data))
+        catalog.create(entry_cls.model_validate(body.config))
     return V1StatusResponse(status="ok")
 
 
-@config_router.delete("/", status_code=200, response_model=V1StatusResponse)
-def delete_config(body: V1ConfigEntry, request: Request) -> V1StatusResponse:
-    """DELETE /config -> delete a catalog entry."""
-    catalog = _get_catalog_for_type(request, body.type)
-    existing = catalog.get(body.id)
+@config_router.delete(
+    "/{config_type}/{config_id}", status_code=200, response_model=V1StatusResponse,
+)
+def delete_config(
+    config_type: str, config_id: str, request: Request,
+) -> V1StatusResponse:
+    """DELETE /config/{config_type}/{config_id} -> delete a catalog entry."""
+    catalog = _get_catalog_for_type(request, config_type)
+    existing = catalog.get(config_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Config entry not found")
-    catalog.delete(body.id)
+    catalog.delete(config_id)
     return V1StatusResponse(status="ok")
 
 
