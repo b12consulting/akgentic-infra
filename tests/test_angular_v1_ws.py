@@ -1,4 +1,4 @@
-"""Tests for Angular V1 adapter — WebSocket event wrapping (Story 3.2b)."""
+"""Tests for Angular V1 adapter — WebSocket event wrapping."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
+import pydantic
+import pytest
 from akgentic.core.actor_address import ActorAddress
 from akgentic.core.agent_config import BaseConfig
 from akgentic.core.agent_state import BaseState
@@ -562,6 +564,18 @@ class TestUnknownPayloadFallback:
         event = WrappedWsEvent.model_validate_json(json_str)
         assert isinstance(event.payload, UnknownPayload)
         assert event.payload.data == {}
+
+    def test_missing_type_key_raises_validation_error(self) -> None:
+        """Payload JSON with no 'type' key raises ValidationError."""
+        json_str = '{"payload":{"data":{"x":1}}}'
+        with pytest.raises(pydantic.ValidationError):
+            WrappedWsEvent.model_validate_json(json_str)
+
+    def test_null_type_raises_validation_error(self) -> None:
+        """Payload JSON with null 'type' raises ValidationError."""
+        json_str = '{"payload":{"type":null,"data":{}}}'
+        with pytest.raises(pydantic.ValidationError):
+            WrappedWsEvent.model_validate_json(json_str)
 
 
 class TestSerializationRoundTrip:

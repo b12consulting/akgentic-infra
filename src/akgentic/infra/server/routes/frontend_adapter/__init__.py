@@ -28,6 +28,7 @@ __all__ = [
     "load_frontend_adapter",
 ]
 
+# Keep in sync with WsEventPayload Tag annotations and payload Literal types below.
 _KNOWN_TYPES = {"message", "state", "tool_update", "llm_context"}
 
 
