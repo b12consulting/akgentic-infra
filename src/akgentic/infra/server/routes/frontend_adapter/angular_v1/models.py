@@ -47,7 +47,7 @@ class V1ProcessContext(BaseModel):
     updated_at: str = Field(description="ISO datetime string")
     params: dict[str, str] = Field(
         default_factory=dict,
-        description="Empty dict for V2 compat",
+        description="Feature flags: workspace, knowledge_graph",
     )
     orchestrator: V1ActorAddress = Field(
         default_factory=lambda: V1ActorAddress(name="", role=""),

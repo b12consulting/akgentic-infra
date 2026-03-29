@@ -504,6 +504,17 @@ class TestV1HumanInputRoute:
         assert resp.status_code == 404
 
 
+    def test_process_human_input_missing_message_id(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """POST /process_human_input returns 422 when message has no 'id' field."""
+        resp = v1_client.post(
+            f"/process_human_input/{_TEAM_ID}/human/proxy",
+            json={"content": "yes", "message": {"type": "user"}},
+        )
+        assert resp.status_code == 422
+
+
 class TestV1MessagesRoute:
     """Test V1 messages endpoint translation."""
 

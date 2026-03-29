@@ -154,8 +154,7 @@ def list_processes_alias(
     service: TeamService = Depends(get_team_service),
 ) -> list[V1ProcessContext]:
     """GET /processes -> alias for GET /process/, returns flat list."""
-    processes = service.list_teams(user_id="anonymous")
-    return [_to_v1_process_context(p) for p in processes]
+    return list_processes(service)
 
 
 @process_router.get("/{id}", response_model=V1ProcessContext)
@@ -243,6 +242,8 @@ def process_human_input(
     V1 had `proxy` in path but V2 finds HumanProxy automatically — ignore proxy param.
     """
     team_id = _parse_uuid(id)
+    if "id" not in body.message:
+        raise HTTPException(status_code=422, detail="message must contain 'id' field")
     message_id = str(body.message["id"])
     try:
         service.process_human_input(team_id, body.content, message_id)
