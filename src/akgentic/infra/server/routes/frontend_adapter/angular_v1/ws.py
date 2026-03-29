@@ -15,7 +15,13 @@ from akgentic.core.messages.orchestrator import (
     SentMessage,
     StateChangedMessage,
 )
-from akgentic.infra.server.routes.frontend_adapter import WrappedWsEvent
+from akgentic.infra.server.routes.frontend_adapter import (
+    LlmContextPayload,
+    MessagePayload,
+    StatePayload,
+    ToolUpdatePayload,
+    WrappedWsEvent,
+)
 from akgentic.infra.server.routes.frontend_adapter.angular_v1._helpers import (
     classify_message_type,
     extract_message_content,
@@ -42,7 +48,7 @@ def _classify_envelope_type(event: Message) -> str:
     return "message"
 
 
-def _build_message_envelope(event: Message, timestamp: str) -> dict[str, Any]:
+def _build_message_envelope(event: Message, timestamp: str) -> MessagePayload:
     """Build a V1 ``type: "message"`` envelope.
 
     For ``SentMessage`` events the inner message is inspected to extract
@@ -53,7 +59,7 @@ def _build_message_envelope(event: Message, timestamp: str) -> dict[str, Any]:
         timestamp: ISO-formatted event timestamp.
 
     Returns:
-        Dict with V1 message envelope fields.
+        MessagePayload with V1 message envelope fields.
     """
     inner = event.message if isinstance(event, SentMessage) else event
 
@@ -69,14 +75,13 @@ def _build_message_envelope(event: Message, timestamp: str) -> dict[str, Any]:
     else:
         message_type = classify_message_type(event)
 
-    return {
-        "type": "message",
-        "id": str(inner.id),
-        "sender": get_sender_name(inner),
-        "content": content,
-        "timestamp": timestamp,
-        "message_type": message_type,
-    }
+    return MessagePayload(
+        id=str(inner.id),
+        sender=get_sender_name(inner),
+        content=content,
+        timestamp=timestamp,
+        message_type=message_type,
+    )
 
 
 def _classify_inner_message_type(inner: Message) -> str:
@@ -93,7 +98,7 @@ def _classify_inner_message_type(inner: Message) -> str:
     return classify_message_type(inner)
 
 
-def _build_state_envelope(event: StateChangedMessage, timestamp: str) -> dict[str, Any]:
+def _build_state_envelope(event: StateChangedMessage, timestamp: str) -> StatePayload:
     """Build a V1 ``type: "state"`` envelope.
 
     Args:
@@ -101,17 +106,16 @@ def _build_state_envelope(event: StateChangedMessage, timestamp: str) -> dict[st
         timestamp: ISO-formatted event timestamp.
 
     Returns:
-        Dict with V1 state envelope fields.
+        StatePayload with V1 state envelope fields.
     """
-    return {
-        "type": "state",
-        "agent": get_sender_name(event),
-        "state": event.state.model_dump(mode="json"),
-        "timestamp": timestamp,
-    }
+    return StatePayload(
+        agent=get_sender_name(event),
+        state=event.state.model_dump(mode="json"),
+        timestamp=timestamp,
+    )
 
 
-def _build_tool_update_envelope(event: EventMessage, timestamp: str) -> dict[str, Any]:
+def _build_tool_update_envelope(event: EventMessage, timestamp: str) -> ToolUpdatePayload:
     """Build a V1 ``type: "tool_update"`` envelope.
 
     Args:
@@ -119,7 +123,7 @@ def _build_tool_update_envelope(event: EventMessage, timestamp: str) -> dict[str
         timestamp: ISO-formatted event timestamp.
 
     Returns:
-        Dict with V1 tool_update envelope fields.
+        ToolUpdatePayload with V1 tool_update envelope fields.
     """
     if hasattr(event.event, "model_dump"):
         serialized: Any = event.event.model_dump(mode="json")
@@ -127,14 +131,13 @@ def _build_tool_update_envelope(event: EventMessage, timestamp: str) -> dict[str
         serialized = event.event
     else:
         serialized = str(event.event)
-    return {
-        "type": "tool_update",
-        "event": serialized,
-        "timestamp": timestamp,
-    }
+    return ToolUpdatePayload(
+        event=serialized,
+        timestamp=timestamp,
+    )
 
 
-def _build_llm_context_envelope(event: Message, timestamp: str) -> dict[str, Any]:
+def _build_llm_context_envelope(event: Message, timestamp: str) -> LlmContextPayload:
     """Build a V1 ``type: "llm_context"`` envelope.
 
     Args:
@@ -142,7 +145,7 @@ def _build_llm_context_envelope(event: Message, timestamp: str) -> dict[str, Any
         timestamp: ISO-formatted event timestamp.
 
     Returns:
-        Dict with V1 llm_context envelope fields.
+        LlmContextPayload with V1 llm_context envelope fields.
     """
     context_data: Any = {}
     if hasattr(event, "context") and hasattr(event.context, "model_dump"):
@@ -151,11 +154,10 @@ def _build_llm_context_envelope(event: Message, timestamp: str) -> dict[str, Any
         context_data = event.context
     elif hasattr(event, "context"):
         context_data = str(event.context)
-    return {
-        "type": "llm_context",
-        "context": context_data,
-        "timestamp": timestamp,
-    }
+    return LlmContextPayload(
+        context=context_data,
+        timestamp=timestamp,
+    )
 
 
 def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
@@ -173,6 +175,7 @@ def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
     timestamp = event.timestamp.isoformat()
     envelope_type = _classify_envelope_type(msg)
 
+    payload: MessagePayload | StatePayload | ToolUpdatePayload | LlmContextPayload
     if envelope_type == "state" and isinstance(msg, StateChangedMessage):
         payload = _build_state_envelope(msg, timestamp)
     elif envelope_type == "tool_update" and isinstance(msg, EventMessage):

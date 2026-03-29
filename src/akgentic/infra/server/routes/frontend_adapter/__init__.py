@@ -9,14 +9,88 @@ translations and WebSocket event wrappers without modifying server code.
 from __future__ import annotations
 
 import importlib
-from typing import Any, Protocol, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
 from akgentic.team.models import PersistedEvent
 
-__all__ = ["FrontendAdapter", "WrappedWsEvent", "load_frontend_adapter"]
+__all__ = [
+    "FrontendAdapter",
+    "LlmContextPayload",
+    "MessagePayload",
+    "StatePayload",
+    "ToolUpdatePayload",
+    "UnknownPayload",
+    "WrappedWsEvent",
+    "WsEventPayload",
+    "load_frontend_adapter",
+]
+
+_KNOWN_TYPES = {"message", "state", "tool_update", "llm_context"}
+
+
+class MessagePayload(BaseModel):
+    """V1 ``type: "message"`` envelope payload."""
+
+    type: Literal["message"] = "message"
+    id: str
+    sender: str
+    content: str
+    timestamp: str
+    message_type: str
+
+
+class StatePayload(BaseModel):
+    """V1 ``type: "state"`` envelope payload."""
+
+    type: Literal["state"] = "state"
+    agent: str
+    state: dict[str, Any]
+    timestamp: str
+
+
+class ToolUpdatePayload(BaseModel):
+    """V1 ``type: "tool_update"`` envelope payload."""
+
+    type: Literal["tool_update"] = "tool_update"
+    event: Any
+    timestamp: str
+
+
+class LlmContextPayload(BaseModel):
+    """V1 ``type: "llm_context"`` envelope payload."""
+
+    type: Literal["llm_context"] = "llm_context"
+    context: dict[str, Any]
+    timestamp: str
+
+
+class UnknownPayload(BaseModel):
+    """Catch-all payload for unrecognised event types."""
+
+    type: str
+    data: dict[str, Any] = {}
+
+
+def _ws_event_discriminator(v: Any) -> str:  # noqa: ANN401
+    """Route to the correct payload model based on ``type``, with fallback."""
+    if isinstance(v, dict):
+        t = v.get("type", "")
+    else:
+        t = getattr(v, "type", "")
+    return t if t in _KNOWN_TYPES else "unknown"
+
+
+WsEventPayload = Annotated[
+    Annotated[MessagePayload, Tag("message")]
+    | Annotated[StatePayload, Tag("state")]
+    | Annotated[ToolUpdatePayload, Tag("tool_update")]
+    | Annotated[LlmContextPayload, Tag("llm_context")]
+    | Annotated[UnknownPayload, Tag("unknown")],
+    Discriminator(_ws_event_discriminator),
+]
 
 
 class WrappedWsEvent(BaseModel):
@@ -27,7 +101,7 @@ class WrappedWsEvent(BaseModel):
     rather than a raw dict.
     """
 
-    payload: dict[str, Any] = Field(
+    payload: WsEventPayload = Field(
         description="Adapter-transformed event data in the frontend's expected format",
     )
 

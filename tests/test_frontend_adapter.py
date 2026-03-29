@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from akgentic.infra.server.routes.frontend_adapter import (
     FrontendAdapter,
+    UnknownPayload,
     WrappedWsEvent,
     load_frontend_adapter,
 )
@@ -34,7 +35,11 @@ class _StubAdapter:
         self.routes_app = app
 
     def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
-        return WrappedWsEvent(payload={"wrapped": True, "sequence": event.sequence})
+        return WrappedWsEvent(
+            payload=UnknownPayload(
+                type="stub", data={"wrapped": True, "sequence": event.sequence},
+            ),
+        )
 
 
 class _NotAnAdapter:
@@ -144,7 +149,9 @@ class TestLoadFrontendAdapter:
                 pass
 
             def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
-                return WrappedWsEvent(payload={})
+                return WrappedWsEvent(
+                    payload=UnknownPayload(type="stub", data={}),
+                )
 
         mod._NeedsArgs = _NeedsArgs  # type: ignore[attr-defined]
         with patch(
@@ -300,7 +307,8 @@ class TestWebSocketAdapterIntegration:
             data = ws.receive_json(mode="text")
             assert isinstance(data, dict)
             assert "payload" in data
-            assert data["payload"].get("wrapped") is True
+            assert data["payload"].get("type") == "stub"
+            assert data["payload"]["data"].get("wrapped") is True
 
     @pytest.fixture()
     def client_with_adapter(
