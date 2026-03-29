@@ -113,7 +113,7 @@ class TestFormEncodedWebhook:
 class StubParserWithConfig:
     """Parser stub that captures constructor config args."""
 
-    received_config: dict[str, str] = {}
+    received_config: dict[str, str]
 
     def __init__(self, **kwargs: str) -> None:
         StubParserWithConfig.received_config = dict(kwargs)
@@ -133,7 +133,7 @@ class StubParserWithConfig:
 class StubAdapterWithConfig:
     """Adapter stub that captures constructor config args."""
 
-    received_config: dict[str, str] = {}
+    received_config: dict[str, str]
 
     def __init__(self, **kwargs: str) -> None:
         StubAdapterWithConfig.received_config = dict(kwargs)

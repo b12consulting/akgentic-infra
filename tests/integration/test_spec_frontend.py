@@ -122,6 +122,35 @@ class TestV1Story68Endpoints:
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
+    def test_put_config_create_and_update(self, v1_adapter_client: TestClient) -> None:
+        """AC #5: PUT /config creates a new entry and updates an existing one."""
+        # Get an existing entry to know the data shape
+        resp = v1_adapter_client.get("/config/team")
+        assert resp.status_code == 200
+        existing = resp.json()[0]
+
+        # Create a new entry via PUT
+        new_entry = {
+            "id": "v1-put-test",
+            "type": "team",
+            "data": {**existing["data"], "id": "v1-put-test", "name": "V1 PUT Test"},
+        }
+        resp = v1_adapter_client.put("/config/", json=new_entry)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+        # Update the entry via PUT
+        new_entry["data"]["name"] = "V1 PUT Updated"
+        resp = v1_adapter_client.put("/config/", json=new_entry)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+
+        # Clean up
+        resp = v1_adapter_client.request(
+            "DELETE", "/config/", json=new_entry,
+        )
+        assert resp.status_code == 200
+
     def test_delete_config_not_found(self, v1_adapter_client: TestClient) -> None:
         """AC #5: DELETE /config for nonexistent entry returns 404."""
         resp = v1_adapter_client.request(
@@ -146,22 +175,9 @@ class TestLlmContextEnvelope:
             _classify_envelope_type,
         )
 
-        # Create a mock ContextChangedMessage-like object
-        class FakeContextChangedMessage:
-            __name__ = "ContextChangedMessage"
-
-            def __init__(self) -> None:
-                self.id = "test-id"
-                self.sender = None
-
-        # The function checks type(event).__name__ == "ContextChangedMessage"
-        fake = FakeContextChangedMessage()
-        type(fake).__name__ = "ContextChangedMessage"  # type: ignore[attr-defined]
-        # This won't work because __name__ is read-only on classes.
-        # Instead, rename the class itself.
-
+        # _classify_envelope_type checks type(event).__name__ == "ContextChangedMessage"
         class ContextChangedMessage:  # noqa: N801
-            """Fake message that has the right class name."""
+            """Fake message whose class name matches the real ContextChangedMessage."""
 
             def __init__(self) -> None:
                 self.id = "test-id"
