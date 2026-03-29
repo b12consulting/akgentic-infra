@@ -15,7 +15,7 @@ from akgentic.infra.server.models import (
     WorkspaceTreeResponse,
 )
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings
 from akgentic.tool.workspace import Filesystem
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
@@ -23,7 +23,7 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 _MAX_FILE_SIZE = 10_485_760  # 10 MB
 
 
-def _get_workspace(team_id: uuid.UUID, settings: ServerSettings) -> Filesystem:
+def _get_workspace(team_id: uuid.UUID, settings: CommunitySettings) -> Filesystem:
     """Instantiate a Filesystem scoped to a team's workspace directory."""
     return Filesystem(base_path=str(settings.workspaces_root), workspace_name=str(team_id))
 
@@ -43,7 +43,7 @@ def list_workspace_tree(
 ) -> WorkspaceTreeResponse:
     """List files in a team's workspace directory."""
     _validate_team(team_id, request)
-    settings = cast(ServerSettings, request.app.state.settings)
+    settings = cast(CommunitySettings, request.app.state.settings)
     ws = _get_workspace(team_id, settings)
     try:
         entries = ws.list(path)
@@ -66,7 +66,7 @@ def read_workspace_file(
 ) -> Response:
     """Read a file from a team's workspace."""
     _validate_team(team_id, request)
-    settings = cast(ServerSettings, request.app.state.settings)
+    settings = cast(CommunitySettings, request.app.state.settings)
     ws = _get_workspace(team_id, settings)
     try:
         data = ws.read(path)
@@ -93,7 +93,7 @@ async def upload_workspace_file(
 ) -> WorkspaceFileUploadResponse:
     """Upload a file to a team's workspace."""
     _validate_team(team_id, request)
-    settings = cast(ServerSettings, request.app.state.settings)
+    settings = cast(CommunitySettings, request.app.state.settings)
     ws = _get_workspace(team_id, settings)
     data = await file.read()
     if len(data) > _MAX_FILE_SIZE:

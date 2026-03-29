@@ -446,6 +446,11 @@ def test_team_handle_is_runtime_checkable() -> None:
     )
     # Verify isinstance works (runtime_checkable requirement)
     class FakeHandle:
+        @property
+        def team_id(self) -> object:
+            import uuid
+            return uuid.uuid4()
+
         def send(self, content: str) -> None:
             pass
 

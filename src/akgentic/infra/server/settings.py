@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ServerSettings(BaseSettings):
-    """Typed server configuration loaded from environment variables.
+    """Tier-agnostic server configuration loaded from environment variables.
 
+    Contains only settings common to all deployment tiers.
     All fields can be overridden via environment variables prefixed with ``AKGENTIC_``.
-    For example, ``AKGENTIC_HOST=127.0.0.1`` overrides the ``host`` field.
     """
 
     model_config = SettingsConfigDict(env_prefix="AKGENTIC_")
@@ -30,21 +29,22 @@ class ServerSettings(BaseSettings):
         default=None,
         description="FQDN for frontend adapter plugin class",
     )
-    workspaces_root: Path = Field(
-        default=Path("workspaces"),
-        description="Root directory for team workspace storage",
-    )
     cors_origins: list[str] = Field(
         default=["*"],
         description="Allowed CORS origins for the HTTP server",
     )
-    event_store: Literal["yaml"] = Field(
-        default="yaml",
-        description="Event store backend (only 'yaml' supported; 'memory' requires akgentic-team)",
-    )
-    catalog_backend: Literal["yaml"] = Field(
-        default="yaml",
-        description="Catalog backend: 'yaml'",
+
+
+class CommunitySettings(ServerSettings):
+    """Community-tier settings extending base ServerSettings.
+
+    Adds filesystem-backed workspace and catalog configuration
+    specific to the community (single-process) deployment tier.
+    """
+
+    workspaces_root: Path = Field(
+        default=Path("workspaces"),
+        description="Root directory for team workspace storage",
     )
     catalog_path: Path | None = Field(
         default=None,

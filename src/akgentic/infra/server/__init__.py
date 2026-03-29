@@ -14,9 +14,10 @@ from akgentic.infra.server.models import (
     TeamResponse,
 )
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 __all__ = [
+    "CommunitySettings",
     "CommunityServices",
     "CreateTeamRequest",
     "EventListResponse",

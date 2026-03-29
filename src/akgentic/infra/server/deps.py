@@ -48,6 +48,12 @@ class TierServices(BaseModel):
     channel_registry: ChannelRegistry = Field(
         description="Registry mapping channel IDs to team IDs"
     )
+    team_catalog: TeamCatalog = Field(description="Catalog service for team entry resolution")
+    agent_catalog: AgentCatalog = Field(description="Catalog service for agent entry resolution")
+    tool_catalog: ToolCatalog = Field(description="Catalog service for tool entry resolution")
+    template_catalog: TemplateCatalog = Field(
+        description="Catalog service for template entry resolution"
+    )
 
 
 class CommunityServices(TierServices):
@@ -62,12 +68,6 @@ class CommunityServices(TierServices):
     )
     actor_system: ActorSystem = Field(description="Actor system for managing agent lifecycle")
     team_manager: TeamManager = Field(description="Team lifecycle manager (embedded, in-process)")
-    team_catalog: TeamCatalog = Field(description="Catalog service for team entry resolution")
-    agent_catalog: AgentCatalog = Field(description="Catalog service for agent entry resolution")
-    tool_catalog: ToolCatalog = Field(description="Catalog service for tool entry resolution")
-    template_catalog: TemplateCatalog = Field(
-        description="Catalog service for template entry resolution"
-    )
     channel_parser_registry: ChannelParserRegistry = Field(
         description="Registry of channel message parsers"
     )

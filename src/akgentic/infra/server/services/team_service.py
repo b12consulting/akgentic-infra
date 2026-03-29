@@ -1,20 +1,13 @@
-"""TeamService — orchestrates catalog resolution and TeamManager delegation."""
+"""TeamService — orchestrates catalog resolution and team lifecycle via protocols."""
 
 from __future__ import annotations
 
 import uuid
 
 from akgentic.catalog.models.errors import EntryNotFoundError
-from akgentic.catalog.services import (
-    AgentCatalog,
-    TeamCatalog,
-    TemplateCatalog,
-    ToolCatalog,
-)
 from akgentic.core.messages.message import Message
-from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
 from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
-from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.deps import TierServices
 from akgentic.team.models import PersistedEvent, Process, TeamStatus
 
 
@@ -22,23 +15,13 @@ class TeamService:
     """Service layer bridging catalog resolution with team lifecycle management.
 
     Resolves catalog entry IDs to TeamCards, delegates lifecycle operations
-    to TeamManager, and queries EventStore for listing. Delegates runtime
-    interaction through RuntimeCache/TeamHandle protocols.
+    through PlacementStrategy and WorkerHandle protocols, and queries
+    EventStore for listing. Delegates runtime interaction through
+    RuntimeCache/TeamHandle protocols.
     """
 
-    def __init__(
-        self,
-        services: CommunityServices,
-        team_catalog: TeamCatalog,
-        agent_catalog: AgentCatalog,
-        tool_catalog: ToolCatalog | None = None,
-        template_catalog: TemplateCatalog | None = None,
-    ) -> None:
+    def __init__(self, services: TierServices) -> None:
         self._services = services
-        self._team_catalog = team_catalog
-        self._agent_catalog = agent_catalog
-        self._tool_catalog = tool_catalog
-        self._template_catalog = template_catalog
         self._cache: RuntimeCache = services.runtime_cache
 
     def create_team(self, catalog_entry_id: str, user_id: str) -> Process:
@@ -47,17 +30,19 @@ class TeamService:
         Raises:
             EntryNotFoundError: If catalog_entry_id is not found.
         """
-        entry = self._team_catalog.get(catalog_entry_id)
+        entry = self._services.team_catalog.get(catalog_entry_id)
         if entry is None:
             raise EntryNotFoundError(catalog_entry_id)
         team_card = entry.to_team_card(
-            self._agent_catalog, self._tool_catalog, self._template_catalog
+            self._services.agent_catalog,
+            self._services.tool_catalog,
+            self._services.template_catalog,
         )
-        runtime = self._services.team_manager.create_team(team_card, user_id)
-        self._cache.store(runtime.id, LocalTeamHandle(runtime))
-        process = self._services.team_manager.get_team(runtime.id)
+        handle = self._services.placement.create_team(team_card, user_id)
+        self._cache.store(handle.team_id, handle)
+        process = self._services.worker_handle.get_team(handle.team_id)
         if process is None:  # pragma: no cover
-            msg = f"Team {runtime.id} was created but not found in event store"
+            msg = f"Team {handle.team_id} was created but not found in event store"
             raise RuntimeError(msg)
         return process
 
@@ -68,7 +53,7 @@ class TeamService:
 
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         """Get a single team by ID."""
-        return self._services.team_manager.get_team(team_id)
+        return self._services.worker_handle.get_team(team_id)
 
     def delete_team(self, team_id: uuid.UUID) -> None:
         """Stop (if running) and delete a team.
@@ -76,14 +61,14 @@ class TeamService:
         Raises:
             ValueError: If team not found or already deleted.
         """
-        process = self._services.team_manager.get_team(team_id)
+        process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
             raise ValueError(msg)
         if process.status == TeamStatus.RUNNING:
-            self._services.team_manager.stop_team(team_id)
+            self._services.worker_handle.stop_team(team_id)
         self._cache.remove(team_id)
-        self._services.team_manager.delete_team(team_id)
+        self._services.worker_handle.delete_team(team_id)
 
     def send_message(self, team_id: uuid.UUID, content: str) -> None:
         """Send a message to a running team.
@@ -95,7 +80,10 @@ class TeamService:
         handle.send(content)
 
     def process_human_input(
-        self, team_id: uuid.UUID, content: str, message_id: str,
+        self,
+        team_id: uuid.UUID,
+        content: str,
+        message_id: str,
     ) -> None:
         """Route human input to HumanProxy for a specific message.
 
@@ -112,7 +100,7 @@ class TeamService:
         Raises:
             ValueError: If team not found or not in a stoppable state.
         """
-        process = self._services.team_manager.get_team(team_id)
+        process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
             raise ValueError(msg)
@@ -122,7 +110,7 @@ class TeamService:
         if process.status == TeamStatus.DELETED:
             msg = f"Team {team_id} has been deleted"
             raise ValueError(msg)
-        self._services.team_manager.stop_team(team_id)
+        self._services.worker_handle.stop_team(team_id)
         self._cache.remove(team_id)
 
     def restore_team(self, team_id: uuid.UUID) -> Process:
@@ -131,7 +119,7 @@ class TeamService:
         Raises:
             ValueError: If team not found or not in a restorable state.
         """
-        process = self._services.team_manager.get_team(team_id)
+        process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
             raise ValueError(msg)
@@ -141,9 +129,9 @@ class TeamService:
         if process.status == TeamStatus.DELETED:
             msg = f"Team {team_id} has been deleted"
             raise ValueError(msg)
-        runtime = self._services.team_manager.resume_team(team_id)
-        self._cache.store(runtime.id, LocalTeamHandle(runtime))
-        updated = self._services.team_manager.get_team(team_id)
+        handle = self._services.worker_handle.resume_team(team_id)
+        self._cache.store(handle.team_id, handle)
+        updated = self._services.worker_handle.get_team(team_id)
         if updated is None:  # pragma: no cover
             msg = f"Team {team_id} was restored but not found in event store"
             raise RuntimeError(msg)
@@ -155,7 +143,7 @@ class TeamService:
         Raises:
             ValueError: If team not found.
         """
-        process = self._services.team_manager.get_team(team_id)
+        process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
             raise ValueError(msg)
@@ -178,7 +166,7 @@ class TeamService:
         Raises:
             ValueError: If team not found, not running, or handle not cached.
         """
-        process = self._services.team_manager.get_team(team_id)
+        process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
             raise ValueError(msg)

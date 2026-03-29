@@ -2,35 +2,23 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 from akgentic.infra.server.app import create_app
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.settings import CommunitySettings
 
 
-def test_create_app_defaults_settings_when_none(tmp_path: Path) -> None:
-    """create_app(None) defaults to ServerSettings() and returns a working app."""
-    import os
-
-    os.environ["AKGENTIC_WORKSPACES_ROOT"] = str(tmp_path / "ws")
-    try:
-        app = create_app(None)
-        assert app.title == "Akgentic Platform API"
-        app.state.services.actor_system.shutdown()
-    finally:
-        os.environ.pop("AKGENTIC_WORKSPACES_ROOT", None)
-
-
-def test_create_app_returns_fastapi(seeded_settings: ServerSettings) -> None:
+def test_create_app_returns_fastapi(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+) -> None:
     """create_app returns a FastAPI instance with routes mounted."""
-    app = create_app(seeded_settings)
+    app = create_app(community_services, seeded_settings)
     assert app.title == "Akgentic Platform API"
     route_paths = [r.path for r in app.routes]  # type: ignore[union-attr]
     assert "/teams/" in route_paths
     assert "/teams/{team_id}" in route_paths
-    app.state.services.actor_system.shutdown()
 
 
 def test_cors_headers_present(client: TestClient) -> None:
@@ -46,13 +34,16 @@ def test_cors_headers_present(client: TestClient) -> None:
     assert "access-control-allow-origin" in resp.headers
 
 
-def test_custom_cors_origins(seeded_settings: ServerSettings) -> None:
+def test_custom_cors_origins(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+) -> None:
     """create_app respects custom cors_origins from settings."""
-    settings = ServerSettings(
+    settings = CommunitySettings(
         workspaces_root=seeded_settings.workspaces_root,
         cors_origins=["http://example.com"],
     )
-    app = create_app(settings)
+    app = create_app(community_services, settings)
     test_client = TestClient(app)
     resp = test_client.options(
         "/teams/",
@@ -62,7 +53,6 @@ def test_custom_cors_origins(seeded_settings: ServerSettings) -> None:
         },
     )
     assert resp.headers.get("access-control-allow-origin") == "http://example.com"
-    app.state.services.actor_system.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -70,9 +60,11 @@ def test_custom_cors_origins(seeded_settings: ServerSettings) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_create_app_includes_webhook_routes(seeded_settings: ServerSettings) -> None:
+def test_create_app_includes_webhook_routes(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+) -> None:
     """create_app always includes /webhook routes (channel deps are auto-wired)."""
-    app = create_app(seeded_settings)
+    app = create_app(community_services, seeded_settings)
     route_paths = [r.path for r in app.routes]  # type: ignore[union-attr]
     assert "/webhook/{channel}" in route_paths
-    app.state.services.actor_system.shutdown()

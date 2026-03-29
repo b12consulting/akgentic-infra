@@ -14,7 +14,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from akgentic.infra.server.app import create_app
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings
+from akgentic.infra.wiring import wire_community
 
 from ._helpers import create_team
 
@@ -37,19 +38,20 @@ class TestAppFactory:
         assert resp.status_code == 200
 
     def test_two_line_fixture_pattern(self, tmp_path: Path) -> None:
-        """AC #1: Demonstrate the 2-line fixture pattern works end-to-end."""
+        """AC #1: Demonstrate the fixture pattern works end-to-end."""
         from tests.integration.conftest import _seed_integration_catalog
 
-        settings = ServerSettings(workspaces_root=tmp_path / "workspaces")
+        settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
         _seed_integration_catalog(settings.workspaces_root / "catalog")
-        app = create_app(settings)
+        services = wire_community(settings)
+        app = create_app(services, settings)
         client = TestClient(app)
 
         resp = client.get("/teams/")
         assert resp.status_code == 200
         assert "teams" in resp.json()
 
-        app.state.services.actor_system.shutdown()
+        services.actor_system.shutdown()
 
     def test_team_create_get_delete_via_test_client(
         self, integration_client: TestClient, integration_app: FastAPI,
