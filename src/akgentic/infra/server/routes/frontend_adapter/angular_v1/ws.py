@@ -38,7 +38,8 @@ def _classify_envelope_type(event: Message) -> str:
         event: The V2 message from a persisted event.
 
     Returns:
-        One of ``"message"``, ``"state"``, ``"tool_update"``, or ``"llm_context"``.
+        One of ``"message"``, ``"state"``, ``"tool_update"``, ``"llm_context"``,
+        or ``"error"``.
     """
     if isinstance(event, StateChangedMessage):
         return "state"

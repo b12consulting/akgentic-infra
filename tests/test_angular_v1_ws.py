@@ -25,6 +25,7 @@ from akgentic.core.messages.orchestrator import (
 from akgentic.team.models import PersistedEvent
 
 from akgentic.infra.server.routes.frontend_adapter import (
+    ErrorPayload,
     LlmContextPayload,
     MessagePayload,
     StatePayload,
@@ -545,6 +546,16 @@ class TestDiscriminatedUnionDeserialization:
         assert isinstance(event.payload, LlmContextPayload)
         assert event.payload.context == {"tokens": 42}
 
+    def test_error_payload_from_json(self) -> None:
+        """JSON with type 'error' deserializes to ErrorPayload."""
+        json_str = (
+            '{"payload":{"type":"error","message":"something broke",'
+            '"timestamp":"2026-01-01T00:00:00"}}'
+        )
+        event = WrappedWsEvent.model_validate_json(json_str)
+        assert isinstance(event.payload, ErrorPayload)
+        assert event.payload.message == "something broke"
+
 
 class TestUnknownPayloadFallback:
     """Test UnknownPayload catch-all for unrecognised event types."""
@@ -632,6 +643,18 @@ class TestSerializationRoundTrip:
         restored = WrappedWsEvent.model_validate_json(original.model_dump_json())
         assert isinstance(restored.payload, LlmContextPayload)
         assert restored.payload.context == {"tokens": 99}
+
+    def test_error_round_trip(self) -> None:
+        """ErrorPayload survives serialization round-trip."""
+        original = WrappedWsEvent(
+            payload=ErrorPayload(
+                message="something broke",
+                timestamp="2026-01-01T00:00:00",
+            ),
+        )
+        restored = WrappedWsEvent.model_validate_json(original.model_dump_json())
+        assert isinstance(restored.payload, ErrorPayload)
+        assert restored.payload.message == "something broke"
 
     def test_unknown_round_trip(self) -> None:
         """UnknownPayload survives serialization round-trip."""

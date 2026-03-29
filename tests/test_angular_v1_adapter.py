@@ -1246,6 +1246,9 @@ class TestV1GroupedResponses:
         assert len(data["@AgentB"]["context"]) == 1
         assert data["@AgentA"]["context"][0]["content"] == "hello from A"
         assert data["@AgentB"]["context"][0]["content"] == "hello from B"
+        # Verify timestamp is present in context entries (AC5 shape requirement)
+        assert "timestamp" in data["@AgentA"]["context"][0]
+        assert "timestamp" in data["@AgentB"]["context"][0]
 
     def test_states_latest_wins(
         self, v1_client: TestClient, mock_service: MagicMock,
@@ -1269,6 +1272,32 @@ class TestV1GroupedResponses:
         # Only one entry per agent (latest wins)
         assert data["@Manager"]["schema"] == {}
         assert isinstance(data["@Manager"]["state"], dict)
+
+    def test_states_multi_agent_grouping(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC6: states groups by agent ID with multiple agents."""
+        sender_a = MagicMock()
+        sender_a.name = "@AgentA"
+        sender_b = MagicMock()
+        sender_b.name = "@AgentB"
+        state_a = StateChangedMessage(state=BaseState())
+        state_a.sender = sender_a
+        state_b = StateChangedMessage(state=BaseState())
+        state_b.sender = sender_b
+        mock_service.get_events.return_value = [
+            _make_persisted_event(state_a, sequence=1),
+            _make_persisted_event(state_b, sequence=2),
+        ]
+        resp = v1_client.get(f"/states/{_TEAM_ID}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "@AgentA" in data
+        assert "@AgentB" in data
+        assert data["@AgentA"]["schema"] == {}
+        assert data["@AgentB"]["schema"] == {}
+        assert isinstance(data["@AgentA"]["state"], dict)
+        assert isinstance(data["@AgentB"]["state"], dict)
 
     def test_team_configs_multiple_entries(
         self, v1_client: TestClient, mock_service: MagicMock,
