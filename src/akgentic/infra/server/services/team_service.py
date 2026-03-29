@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import warnings
 
 from akgentic.catalog.models.errors import EntryNotFoundError
 from akgentic.catalog.services import (
@@ -180,6 +181,11 @@ class TeamService:
             compatibility with ``ws.py`` until story 6.6 refactors WebSocket
             handling to use ``TeamHandle.subscribe()/unsubscribe()``.
         """
+        warnings.warn(
+            "get_runtime() is deprecated, use get_handle() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         handle = self._cache.get(team_id)
         if handle is not None and isinstance(handle, LocalTeamHandle):
             return handle._runtime  # noqa: SLF001
