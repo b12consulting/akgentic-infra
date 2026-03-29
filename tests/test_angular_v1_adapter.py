@@ -20,7 +20,7 @@ from akgentic.team.models import PersistedEvent, Process, TeamCard, TeamStatus
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from akgentic.infra.server.app import create_app
+from akgentic.infra.server.app import _build_app
 from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter, WrappedWsEvent
 from akgentic.infra.server.routes.frontend_adapter.angular_v1 import AngularV1Adapter
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
@@ -97,7 +97,7 @@ def v1_client() -> TestClient:
     settings = ServerSettings(
         frontend_adapter="akgentic.infra.server.routes.frontend_adapter.angular_v1.AngularV1Adapter",
     )
-    app = create_app(mock_services, mock_team_service, settings=settings)
+    app = _build_app(mock_services, mock_team_service, settings)
     return TestClient(app)
 
 

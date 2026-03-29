@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
-from akgentic.infra.server.services.team_service import TeamService
+if TYPE_CHECKING:
+    from akgentic.infra.server.services.team_service import TeamService
 
 
 class LocalIngestion:
@@ -13,10 +15,31 @@ class LocalIngestion:
     Community-tier implementation of InteractionChannelIngestion.
     Delegates all operations to TeamService, which already encapsulates
     catalog resolution, TeamManager lifecycle, and runtime caching.
+
+    Supports deferred wiring: ``team_service`` can be ``None`` at construction
+    time and set later via the property, allowing ``wire_community`` to build
+    the ingestion instance before ``TeamService`` exists.
     """
 
-    def __init__(self, team_service: TeamService) -> None:
+    def __init__(self, team_service: TeamService | None = None) -> None:
         self._team_service = team_service
+
+    @property
+    def team_service(self) -> TeamService | None:
+        """Return the wired TeamService, or None if not yet wired."""
+        return self._team_service
+
+    @team_service.setter
+    def team_service(self, value: TeamService) -> None:
+        """Set the TeamService for deferred wiring."""
+        self._team_service = value
+
+    def _require_team_service(self) -> TeamService:
+        """Return the wired TeamService or raise if not yet wired."""
+        if self._team_service is None:
+            msg = "LocalIngestion.team_service has not been wired yet"
+            raise RuntimeError(msg)
+        return self._team_service
 
     async def route_reply(
         self,
@@ -31,7 +54,7 @@ class LocalIngestion:
             content: Message content from the human.
             original_message_id: Optional ID of the message being replied to.
         """
-        self._team_service.send_message(team_id, content)
+        self._require_team_service().send_message(team_id, content)
 
     async def initiate_team(
         self,
@@ -49,8 +72,7 @@ class LocalIngestion:
         Returns:
             The newly created team's ID.
         """
-        process = self._team_service.create_team(
-            catalog_entry_id, user_id=channel_user_id
-        )
-        self._team_service.send_message(process.team_id, content)
+        ts = self._require_team_service()
+        process = ts.create_team(catalog_entry_id, user_id=channel_user_id)
+        ts.send_message(process.team_id, content)
         return process.team_id

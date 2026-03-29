@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,4 +37,16 @@ class ServerSettings(BaseSettings):
     cors_origins: list[str] = Field(
         default=["*"],
         description="Allowed CORS origins for the HTTP server",
+    )
+    event_store: Literal["yaml"] = Field(
+        default="yaml",
+        description="Event store backend (only 'yaml' supported; 'memory' requires akgentic-team)",
+    )
+    catalog_backend: Literal["yaml"] = Field(
+        default="yaml",
+        description="Catalog backend: 'yaml'",
+    )
+    catalog_path: Path | None = Field(
+        default=None,
+        description="Catalog directory; defaults to workspaces_root / 'catalog'",
     )

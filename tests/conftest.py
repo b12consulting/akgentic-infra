@@ -119,13 +119,11 @@ def team_service(community_services: CommunityServices) -> TeamService:
 
 
 @pytest.fixture()
-def app(
-    community_services: CommunityServices,
-    team_service: TeamService,
-    seeded_settings: ServerSettings,
-) -> FastAPI:
-    """FastAPI app with wired services."""
-    return create_app(community_services, team_service, settings=seeded_settings)
+def app(seeded_settings: ServerSettings) -> Generator[FastAPI, None, None]:
+    """FastAPI app via the single-arg factory."""
+    application = create_app(seeded_settings)
+    yield application
+    application.state.services.actor_system.shutdown()
 
 
 @pytest.fixture()

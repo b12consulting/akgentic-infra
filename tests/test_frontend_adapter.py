@@ -252,9 +252,9 @@ class TestCreateAppAdapterIntegration:
         team_service: MagicMock,
         settings: ServerSettings,
     ) -> FastAPI:
-        from akgentic.infra.server.app import create_app
+        from akgentic.infra.server.app import _build_app
 
-        return create_app(services, team_service, settings=settings)
+        return _build_app(services, team_service, settings)
 
     @pytest.fixture()
     def community_services(self) -> MagicMock:
@@ -305,14 +305,9 @@ class TestWebSocketAdapterIntegration:
     @pytest.fixture()
     def client_with_adapter(
         self,
-        community_services: object,
-        team_service: object,
-        seeded_settings: ServerSettings,
+        app: FastAPI,
     ) -> TestClient:
         """TestClient with a stub adapter set on app.state."""
-        from akgentic.infra.server.app import create_app
-
-        app = create_app(community_services, team_service, settings=seeded_settings)
         app.state.frontend_adapter = _StubAdapter()
         return TestClient(app)
 
