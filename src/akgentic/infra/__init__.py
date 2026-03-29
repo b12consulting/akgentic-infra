@@ -27,6 +27,8 @@ from akgentic.infra.protocols import (
     JsonValue,
     PlacementStrategy,
     RecoveryPolicy,
+    RuntimeCache,
+    TeamHandle,
 )
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
@@ -63,6 +65,8 @@ __all__ = [
     "JsonValue",
     "PlacementStrategy",
     "RecoveryPolicy",
+    "RuntimeCache",
+    "TeamHandle",
     # Adapters
     "ChannelConfig",
     "ChannelParserRegistry",

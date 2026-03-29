@@ -14,6 +14,7 @@ from akgentic.infra.protocols.channels import (
 from akgentic.infra.protocols.health import HealthMonitor
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.recovery import RecoveryPolicy
+from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
 
 __all__ = [
     "AuthStrategy",
@@ -26,4 +27,6 @@ __all__ = [
     "JsonValue",
     "PlacementStrategy",
     "RecoveryPolicy",
+    "RuntimeCache",
+    "TeamHandle",
 ]
