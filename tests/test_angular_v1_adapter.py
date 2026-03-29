@@ -1061,6 +1061,55 @@ class TestV1ConfigEndpoints:
         assert resp.status_code == 404
 
 
+class TestV1PutConfigEndpoint:
+    """Test PUT /config endpoint."""
+
+    def test_put_config_update_existing(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC3: PUT /config updates existing catalog entry."""
+        mock_existing = MagicMock()
+        mock_existing.__class__ = type(mock_existing)
+        mock_existing.__class__.model_validate = MagicMock(return_value=mock_existing)
+        v1_client.app.state.services.agent_catalog.get.return_value = mock_existing  # type: ignore[union-attr]
+        resp = v1_client.put(
+            "/config/",
+            json={"id": "agent-1", "type": "agent", "data": {"name": "Bot"}},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        v1_client.app.state.services.agent_catalog.update.assert_called_once()  # type: ignore[union-attr]
+
+    def test_put_config_create_new(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """AC3: PUT /config creates new catalog entry when not found."""
+        mock_entry = MagicMock()
+        mock_entry_cls = type(mock_entry)
+        mock_entry_cls.model_validate = MagicMock(return_value=mock_entry)
+        v1_client.app.state.services.agent_catalog.get.return_value = None  # type: ignore[union-attr]
+        v1_client.app.state.services.agent_catalog.list.return_value = [mock_entry]  # type: ignore[union-attr]
+        resp = v1_client.put(
+            "/config/",
+            json={"id": "new-1", "type": "agent", "data": {"name": "New"}},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        v1_client.app.state.services.agent_catalog.create.assert_called_once()  # type: ignore[union-attr]
+
+    def test_put_config_empty_catalog_returns_400(
+        self, v1_client: TestClient, mock_service: MagicMock,
+    ) -> None:
+        """PUT /config returns 400 when catalog is empty and entry type cannot be inferred."""
+        v1_client.app.state.services.agent_catalog.get.return_value = None  # type: ignore[union-attr]
+        v1_client.app.state.services.agent_catalog.list.return_value = []  # type: ignore[union-attr]
+        resp = v1_client.put(
+            "/config/",
+            json={"id": "new-1", "type": "agent", "data": {}},
+        )
+        assert resp.status_code == 400
+
+
 class TestV1AdapterNewRoutes:
     """Test that new routes are registered by AngularV1Adapter."""
 

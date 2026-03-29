@@ -422,7 +422,8 @@ def put_config(body: V1ConfigEntry, request: Request) -> V1StatusResponse:
     if existing is not None:
         catalog.update(body.id, existing.__class__.model_validate(body.data))
     else:
-        entry_cls = type(catalog.list()[0]) if catalog.list() else None
+        existing_entries = catalog.list()
+        entry_cls = type(existing_entries[0]) if existing_entries else None
         if entry_cls is None:
             raise HTTPException(status_code=400, detail="Cannot determine entry type")
         catalog.create(entry_cls.model_validate(body.data))
