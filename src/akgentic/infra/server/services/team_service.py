@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 
-from akgentic.agent import HumanProxy
 from akgentic.catalog.models.errors import EntryNotFoundError
 from akgentic.catalog.services import (
     AgentCatalog,
@@ -12,8 +11,9 @@ from akgentic.catalog.services import (
     TemplateCatalog,
     ToolCatalog,
 )
-from akgentic.core.actor_address import ActorAddress
 from akgentic.core.messages.message import Message
+from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
+from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.team.models import PersistedEvent, Process, TeamRuntime, TeamStatus
 
@@ -22,8 +22,8 @@ class TeamService:
     """Service layer bridging catalog resolution with team lifecycle management.
 
     Resolves catalog entry IDs to TeamCards, delegates lifecycle operations
-    to TeamManager, and queries EventStore for listing. Caches TeamRuntime
-    instances for action endpoints that require a live runtime handle.
+    to TeamManager, and queries EventStore for listing. Delegates runtime
+    interaction through RuntimeCache/TeamHandle protocols.
     """
 
     def __init__(
@@ -39,7 +39,7 @@ class TeamService:
         self._agent_catalog = agent_catalog
         self._tool_catalog = tool_catalog
         self._template_catalog = template_catalog
-        self._runtimes: dict[uuid.UUID, TeamRuntime] = {}
+        self._cache: RuntimeCache = services.runtime_cache
 
     def create_team(self, catalog_entry_id: str, user_id: str) -> Process:
         """Resolve catalog entry and create a running team.
@@ -54,7 +54,7 @@ class TeamService:
             self._agent_catalog, self._tool_catalog, self._template_catalog
         )
         runtime = self._services.team_manager.create_team(team_card, user_id)
-        self._runtimes[runtime.id] = runtime
+        self._cache.store(runtime.id, LocalTeamHandle(runtime))
         process = self._services.team_manager.get_team(runtime.id)
         if process is None:  # pragma: no cover
             msg = f"Team {runtime.id} was created but not found in event store"
@@ -82,7 +82,7 @@ class TeamService:
             raise ValueError(msg)
         if process.status == TeamStatus.RUNNING:
             self._services.team_manager.stop_team(team_id)
-        self._runtimes.pop(team_id, None)
+        self._cache.remove(team_id)
         self._services.team_manager.delete_team(team_id)
 
     def send_message(self, team_id: uuid.UUID, content: str) -> None:
@@ -91,8 +91,8 @@ class TeamService:
         Raises:
             ValueError: If team not found or not running.
         """
-        runtime = self._get_running_runtime(team_id)
-        runtime.send(content)
+        handle = self._get_running_handle(team_id)
+        handle.send(content)
 
     def process_human_input(
         self, team_id: uuid.UUID, content: str, message_id: str,
@@ -102,11 +102,9 @@ class TeamService:
         Raises:
             ValueError: If team not found, not running, or message not found.
         """
-        runtime = self._get_running_runtime(team_id)
+        handle = self._get_running_handle(team_id)
         original_message = self._find_message(team_id, message_id)
-        human_addr = self._find_human_proxy_addr(runtime)
-        proxy = runtime.actor_system.proxy_ask(human_addr, HumanProxy)
-        proxy.process_human_input(content, original_message)
+        handle.process_human_input(content, original_message)
 
     def stop_team(self, team_id: uuid.UUID) -> None:
         """Stop a running team without deleting persisted data.
@@ -125,7 +123,7 @@ class TeamService:
             msg = f"Team {team_id} has been deleted"
             raise ValueError(msg)
         self._services.team_manager.stop_team(team_id)
-        self._runtimes.pop(team_id, None)
+        self._cache.remove(team_id)
 
     def restore_team(self, team_id: uuid.UUID) -> Process:
         """Restore a stopped team.
@@ -144,7 +142,7 @@ class TeamService:
             msg = f"Team {team_id} has been deleted"
             raise ValueError(msg)
         runtime = self._services.team_manager.resume_team(team_id)
-        self._runtimes[runtime.id] = runtime
+        self._cache.store(runtime.id, LocalTeamHandle(runtime))
         updated = self._services.team_manager.get_team(team_id)
         if updated is None:  # pragma: no cover
             msg = f"Team {team_id} was restored but not found in event store"
@@ -163,22 +161,35 @@ class TeamService:
             raise ValueError(msg)
         return self._services.event_store.load_events(team_id)
 
-    def get_runtime(self, team_id: uuid.UUID) -> TeamRuntime | None:
-        """Return the cached runtime for a team, or None if not cached.
+    def get_handle(self, team_id: uuid.UUID) -> TeamHandle | None:
+        """Return the cached TeamHandle for a team, or None if not cached.
 
         Args:
             team_id: Team UUID.
 
         Returns:
-            TeamRuntime if cached, else None.
+            TeamHandle if cached, else None.
         """
-        return self._runtimes.get(team_id)
+        return self._cache.get(team_id)
 
-    def _get_running_runtime(self, team_id: uuid.UUID) -> TeamRuntime:
-        """Look up a cached runtime, verifying the team is running.
+    def get_runtime(self, team_id: uuid.UUID) -> TeamRuntime | None:
+        """Return the underlying TeamRuntime for a cached team.
+
+        .. deprecated::
+            Use ``get_handle()`` instead. This method exists only for backward
+            compatibility with ``ws.py`` until story 6.6 refactors WebSocket
+            handling to use ``TeamHandle.subscribe()/unsubscribe()``.
+        """
+        handle = self._cache.get(team_id)
+        if handle is not None and isinstance(handle, LocalTeamHandle):
+            return handle._runtime  # noqa: SLF001
+        return None
+
+    def _get_running_handle(self, team_id: uuid.UUID) -> TeamHandle:
+        """Look up a cached handle, verifying the team is running.
 
         Raises:
-            ValueError: If team not found or not running.
+            ValueError: If team not found, not running, or handle not cached.
         """
         process = self._services.team_manager.get_team(team_id)
         if process is None:
@@ -187,11 +198,11 @@ class TeamService:
         if process.status != TeamStatus.RUNNING:
             msg = f"Team {team_id} is not running"
             raise ValueError(msg)
-        runtime = self._runtimes.get(team_id)
-        if runtime is None:
-            msg = f"Team {team_id} runtime not cached"
+        handle = self._cache.get(team_id)
+        if handle is None:
+            msg = f"Team {team_id} handle not cached"
             raise ValueError(msg)
-        return runtime
+        return handle
 
     def _find_message(self, team_id: uuid.UUID, message_id: str) -> Message:
         """Find a message by ID in persisted events.
@@ -204,21 +215,4 @@ class TeamService:
             if str(ev.event.id) == message_id:
                 return ev.event
         msg = f"Message {message_id} not found"
-        raise ValueError(msg)
-
-    def _find_human_proxy_addr(self, runtime: TeamRuntime) -> ActorAddress:
-        """Find the HumanProxy actor address in a runtime.
-
-        Walks the team card members to find the agent whose class is
-        HumanProxy, then looks up its address in runtime.addrs.
-
-        Raises:
-            ValueError: If no HumanProxy found in team.
-        """
-        for name, card in runtime.team.agent_cards.items():
-            if card.get_agent_class() is HumanProxy:
-                addr = runtime.addrs.get(name)
-                if addr is not None:
-                    return addr
-        msg = "No HumanProxy found in team"
         raise ValueError(msg)
