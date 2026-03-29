@@ -31,12 +31,14 @@ def _classify_envelope_type(event: Message) -> str:
         event: The V2 message from a persisted event.
 
     Returns:
-        One of ``"message"``, ``"state"``, or ``"tool_update"``.
+        One of ``"message"``, ``"state"``, ``"tool_update"``, or ``"llm_context"``.
     """
     if isinstance(event, StateChangedMessage):
         return "state"
     if isinstance(event, EventMessage):
         return "tool_update"
+    if type(event).__name__ == "ContextChangedMessage":
+        return "llm_context"
     return "message"
 
 
@@ -132,6 +134,30 @@ def _build_tool_update_envelope(event: EventMessage, timestamp: str) -> dict[str
     }
 
 
+def _build_llm_context_envelope(event: Message, timestamp: str) -> dict[str, Any]:
+    """Build a V1 ``type: "llm_context"`` envelope.
+
+    Args:
+        event: The context-changed message.
+        timestamp: ISO-formatted event timestamp.
+
+    Returns:
+        Dict with V1 llm_context envelope fields.
+    """
+    context_data: Any = {}
+    if hasattr(event, "context") and hasattr(event.context, "model_dump"):
+        context_data = event.context.model_dump(mode="json")
+    elif hasattr(event, "context") and isinstance(event.context, dict):
+        context_data = event.context
+    elif hasattr(event, "context"):
+        context_data = str(event.context)
+    return {
+        "type": "llm_context",
+        "context": context_data,
+        "timestamp": timestamp,
+    }
+
+
 def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
     """Translate a V2 persisted event into a V1 WebSocket envelope.
 
@@ -151,6 +177,8 @@ def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
         payload = _build_state_envelope(msg, timestamp)
     elif envelope_type == "tool_update" and isinstance(msg, EventMessage):
         payload = _build_tool_update_envelope(msg, timestamp)
+    elif envelope_type == "llm_context":
+        payload = _build_llm_context_envelope(msg, timestamp)
     else:
         payload = _build_message_envelope(msg, timestamp)
 

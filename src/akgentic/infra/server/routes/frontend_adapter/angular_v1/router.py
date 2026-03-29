@@ -6,7 +6,7 @@ Every route delegates to TeamService — zero business logic in the adapter.
 from __future__ import annotations
 
 import uuid
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -20,21 +20,30 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1._helpers import (
     get_sender_name,
 )
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
+    V1ConfigEntry,
+    V1DescriptionBody,
+    V1FeedbackEntry,
     V1LlmContextEntry,
     V1MessageEntry,
     V1ProcessContext,
     V1ProcessList,
     V1StateEntry,
+    V1StateUpdateBody,
     V1StatusResponse,
 )
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.team.models import PersistedEvent, Process
+from akgentic.team.models import PersistedEvent, Process, TeamStatus
 
 process_router = APIRouter(prefix="/process", tags=["v1-compat"])
 human_input_router = APIRouter(prefix="/process_human_input", tags=["v1-compat"])
 messages_router = APIRouter(prefix="/messages", tags=["v1-compat"])
 llm_context_router = APIRouter(prefix="/llm_context", tags=["v1-compat"])
 states_router = APIRouter(prefix="/states", tags=["v1-compat"])
+config_router = APIRouter(prefix="/config", tags=["v1-compat"])
+team_configs_router = APIRouter(prefix="/team-configs", tags=["v1-compat"])
+feedback_router = APIRouter(tags=["v1-compat"])
+relaunch_router = APIRouter(prefix="/relaunch", tags=["v1-compat"])
+state_update_router = APIRouter(prefix="/state", tags=["v1-compat"])
 
 
 class V1MessageBody(BaseModel):
@@ -64,6 +73,11 @@ def _to_v1_process_context(process: Process) -> V1ProcessContext:
         created_at=process.created_at.isoformat(),
         updated_at=process.updated_at.isoformat(),
         params={},
+        orchestrator=process.team_card.entry_point.card.config.name,
+        running=process.status == TeamStatus.RUNNING,
+        config_name=process.team_card.name,
+        user_id=process.user_id,
+        user_email=process.user_email,
     )
 
 
@@ -292,3 +306,169 @@ def get_states(
                 )
             )
     return result
+
+
+# --- Description route (extends process_router) ---
+
+
+@process_router.patch(
+    "/{id}/description", status_code=200, response_model=V1StatusResponse,
+)
+def update_description(
+    id: str,
+    body: V1DescriptionBody,
+    service: TeamService = Depends(get_team_service),
+) -> V1StatusResponse:
+    """PATCH /process/{id}/description -> no-op, V2 descriptions are immutable."""
+    team_id = _parse_uuid(id)
+    process = service.get_team(team_id)
+    if process is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+    return V1StatusResponse(status="ok")
+
+
+# --- Relaunch route (extends process_router) ---
+
+
+@relaunch_router.post(
+    "/{id}/message/{msg_id}", status_code=200, response_model=V1StatusResponse,
+)
+def relaunch_message(
+    id: str,
+    msg_id: str,
+    service: TeamService = Depends(get_team_service),
+) -> V1StatusResponse:
+    """POST /relaunch/{id}/message/{msgId} -> re-send original message to team."""
+    team_id = _parse_uuid(id)
+    try:
+        events = service.get_events(team_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Team not found") from None
+    original_content: str | None = None
+    for ev in events:
+        if str(ev.event.id) == msg_id:
+            original_content = extract_message_content(ev.event)
+            break
+    if original_content is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    try:
+        service.send_message(team_id, original_content)
+    except ValueError as exc:
+        _raise_action_error(exc)
+    return V1StatusResponse(status="ok")
+
+
+# --- State update route ---
+
+
+@state_update_router.patch(
+    "/{id}/of/{agent}", status_code=200, response_model=V1StatusResponse,
+)
+def update_agent_state(
+    id: str,
+    agent: str,
+    body: V1StateUpdateBody,
+    service: TeamService = Depends(get_team_service),
+) -> V1StatusResponse:
+    """PATCH /state/{id}/of/{agent} -> send content to specific agent."""
+    team_id = _parse_uuid(id)
+    handle = service.get_handle(team_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="Team not found or not running")
+    handle.send_to(agent, body.content)
+    return V1StatusResponse(status="ok")
+
+
+# --- Config routes ---
+
+
+def _get_catalog_for_type(request: Request, config_type: str) -> Any:
+    """Look up the catalog service for a given config type."""
+    services = request.app.state.services
+    catalogs: dict[str, Any] = {
+        "team": services.team_catalog,
+        "agent": services.agent_catalog,
+        "tool": services.tool_catalog,
+        "template": services.template_catalog,
+    }
+    catalog = catalogs.get(config_type)
+    if catalog is None:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown config type: {config_type}",
+        )
+    return catalog
+
+
+@config_router.get("/{config_type}", response_model=list[V1ConfigEntry])
+def get_config(config_type: str, request: Request) -> list[V1ConfigEntry]:
+    """GET /config/{type} -> list catalog entries by type."""
+    catalog = _get_catalog_for_type(request, config_type)
+    entries = catalog.list()
+    return [
+        V1ConfigEntry(
+            id=entry.id,
+            type=config_type,
+            data=entry.model_dump(mode="json"),
+        )
+        for entry in entries
+    ]
+
+
+@config_router.put("/", status_code=200, response_model=V1StatusResponse)
+def put_config(body: V1ConfigEntry, request: Request) -> V1StatusResponse:
+    """PUT /config -> create or update a catalog entry."""
+    catalog = _get_catalog_for_type(request, body.type)
+    existing = catalog.get(body.id)
+    if existing is not None:
+        catalog.update(body.id, existing.__class__.model_validate(body.data))
+    else:
+        existing_entries = catalog.list()
+        entry_cls = type(existing_entries[0]) if existing_entries else None
+        if entry_cls is None:
+            raise HTTPException(status_code=400, detail="Cannot determine entry type")
+        catalog.create(entry_cls.model_validate(body.data))
+    return V1StatusResponse(status="ok")
+
+
+@config_router.delete("/", status_code=200, response_model=V1StatusResponse)
+def delete_config(body: V1ConfigEntry, request: Request) -> V1StatusResponse:
+    """DELETE /config -> delete a catalog entry."""
+    catalog = _get_catalog_for_type(request, body.type)
+    existing = catalog.get(body.id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Config entry not found")
+    catalog.delete(body.id)
+    return V1StatusResponse(status="ok")
+
+
+# --- Team configs route ---
+
+
+@team_configs_router.get("/", response_model=list[V1ConfigEntry])
+def get_team_configs(request: Request) -> list[V1ConfigEntry]:
+    """GET /team-configs -> list all team catalog entries."""
+    catalog = request.app.state.services.team_catalog
+    entries = catalog.list()
+    return [
+        V1ConfigEntry(
+            id=entry.id,
+            type="team",
+            data=entry.model_dump(mode="json"),
+        )
+        for entry in entries
+    ]
+
+
+# --- Feedback routes (stubs — no V2 feedback system) ---
+
+
+@feedback_router.get("/get-feedback", response_model=list[V1FeedbackEntry])
+def get_feedback() -> list[V1FeedbackEntry]:
+    """GET /get-feedback -> stub returning empty list."""
+    return []
+
+
+@feedback_router.post("/set-feedback", status_code=200, response_model=V1StatusResponse)
+def set_feedback(body: V1FeedbackEntry) -> V1StatusResponse:
+    """POST /set-feedback -> stub returning ok."""
+    return V1StatusResponse(status="ok")
