@@ -65,7 +65,7 @@ def _build_app(
     """Assemble the FastAPI app from pre-built services (shared by create_app and tests).
 
     Args:
-        services: Wired community services container.
+        services: Wired tier services container.
         team_service: Pre-built team service.
         settings: Server settings.
 

@@ -437,6 +437,15 @@ def test_team_handle_is_protocol() -> None:
     assert Protocol in inspect.getmro(TeamHandle)
 
 
+def test_team_handle_has_team_id_property() -> None:
+    """TeamHandle defines team_id property returning uuid.UUID."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert hasattr(TeamHandle, "team_id")
+    hints = get_type_hints(TeamHandle.team_id.fget)  # type: ignore[union-attr]
+    assert hints["return"] is uuid.UUID
+
+
 def test_team_handle_is_runtime_checkable() -> None:
     """TeamHandle has @runtime_checkable decorator."""
     from akgentic.infra.protocols import TeamHandle
