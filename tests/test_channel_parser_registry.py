@@ -235,6 +235,83 @@ def test_registry_rejects_non_adapter_protocol() -> None:
         ChannelParserRegistry(config)
 
 
+# --- Config passthrough stubs ---
+
+
+class StubConfigParser:
+    """Parser stub that accepts config kwargs."""
+
+    def __init__(self, api_key: str = "") -> None:
+        self.api_key = api_key
+
+    @property
+    def channel_name(self) -> str:
+        return "configurable"
+
+    @property
+    def default_catalog_entry(self) -> str:
+        return "default-configurable"
+
+    async def parse(self, payload: dict[str, JsonValue]) -> ChannelMessage:
+        return ChannelMessage(content="", channel_user_id="")
+
+
+class StubConfigAdapter:
+    """Adapter stub that accepts config kwargs."""
+
+    def __init__(self, api_key: str = "") -> None:
+        self.api_key = api_key
+
+    def matches(self, msg: object) -> bool:
+        return False
+
+    def deliver(self, msg: object) -> None:
+        pass
+
+    def on_stop(self, team_id: uuid.UUID) -> None:
+        pass
+
+
+# --- Config passthrough tests ---
+
+
+def test_channel_config_has_config_field() -> None:
+    """ChannelConfig has a config dict field with empty dict default."""
+    cfg = ChannelConfig(
+        parser_fqcn="tests.test_channel_parser_registry.StubWhatsAppParser",
+        adapter_fqcn="tests.test_channel_parser_registry.StubWhatsAppAdapter",
+    )
+    assert cfg.config == {}
+
+
+def test_config_passthrough_to_constructors() -> None:
+    """Config values are passed to parser and adapter constructors."""
+    this_module = "tests.test_channel_parser_registry"
+    config = {
+        "configurable": ChannelConfig(
+            parser_fqcn=f"{this_module}.StubConfigParser",
+            adapter_fqcn=f"{this_module}.StubConfigAdapter",
+            config={"api_key": "test-secret-123"},
+        ),
+    }
+    registry = ChannelParserRegistry(config)
+
+    parser = registry.get_parser("configurable")
+    assert parser is not None
+    assert parser.api_key == "test-secret-123"  # type: ignore[attr-defined]
+
+    adapters = registry.get_adapters()
+    assert len(adapters) == 1
+    assert adapters[0].api_key == "test-secret-123"  # type: ignore[attr-defined]
+
+
+def test_empty_config_works_with_existing_stubs() -> None:
+    """Existing stubs with no config params still work with empty config dict."""
+    registry = ChannelParserRegistry(_make_config())
+    assert len(registry.channel_names()) == 2
+    assert len(registry.get_adapters()) == 2
+
+
 def test_channel_config_is_pydantic_model() -> None:
     """ChannelConfig is a Pydantic model with correct fields."""
     from pydantic import BaseModel
@@ -243,3 +320,4 @@ def test_channel_config_is_pydantic_model() -> None:
     fields = ChannelConfig.model_fields
     assert "parser_fqcn" in fields
     assert "adapter_fqcn" in fields
+    assert "config" in fields

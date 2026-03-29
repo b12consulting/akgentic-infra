@@ -19,6 +19,10 @@ class ChannelConfig(BaseModel):
     adapter_fqcn: str = Field(
         description="Fully-qualified class name of the InteractionChannelAdapter"
     )
+    config: dict[str, str] = Field(
+        default_factory=dict,
+        description="Extra kwargs passed to parser and adapter constructors",
+    )
 
 
 def import_class(fqcn: str) -> type:
@@ -68,14 +72,14 @@ class ChannelParserRegistry:
             parser_cls = import_class(cfg.parser_fqcn)
             adapter_cls = import_class(cfg.adapter_fqcn)
 
-            parser = parser_cls()
+            parser = parser_cls(**cfg.config)
             if not isinstance(parser, ChannelParser):
                 msg = (
                     f"Class '{cfg.parser_fqcn}' does not satisfy ChannelParser protocol"
                 )
                 raise TypeError(msg)
 
-            adapter = adapter_cls()
+            adapter = adapter_cls(**cfg.config)
             if not isinstance(adapter, InteractionChannelAdapter):
                 msg = (
                     f"Class '{cfg.adapter_fqcn}' does not satisfy "
