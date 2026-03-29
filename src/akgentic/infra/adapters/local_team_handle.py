@@ -43,10 +43,12 @@ class LocalTeamHandle:
         for name, card in self._runtime.team.agent_cards.items():
             if card.get_agent_class() is HumanProxy:
                 addr = self._runtime.addrs.get(name)
-                if addr is not None:
-                    proxy = self._runtime.actor_system.proxy_ask(addr, HumanProxy)
-                    proxy.process_human_input(content, message)
-                    return
+                if addr is None:
+                    msg = f"HumanProxy '{name}' found but has no resolved address"
+                    raise ValueError(msg)
+                proxy = self._runtime.actor_system.proxy_ask(addr, HumanProxy)
+                proxy.process_human_input(content, message)
+                return
         msg = "No HumanProxy found in team"
         raise ValueError(msg)
 

@@ -37,7 +37,8 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
     5. TeamManager
     6. PlacementStrategy (LocalPlacement)
     7. AuthStrategy (NoAuth)
-    8. Catalogs: Template + Tool → Agent → Team
+    8. RuntimeCache (LocalRuntimeCache)
+    9. Catalogs: Template + Tool → Agent → Team
 
     Args:
         settings: Server configuration
