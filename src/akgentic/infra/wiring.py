@@ -16,6 +16,7 @@ from akgentic.catalog.services import (
 )
 from akgentic.core import ActorSystem, EventSubscriber
 from akgentic.infra.adapters.local_placement import LocalPlacement
+from akgentic.infra.adapters.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
@@ -36,7 +37,8 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
     5. TeamManager
     6. PlacementStrategy (LocalPlacement)
     7. AuthStrategy (NoAuth)
-    8. Catalogs: Template + Tool → Agent → Team
+    8. RuntimeCache (LocalRuntimeCache)
+    9. Catalogs: Template + Tool → Agent → Team
 
     Args:
         settings: Server configuration
@@ -56,6 +58,7 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
     )
     placement = LocalPlacement()
     auth = NoAuth()
+    runtime_cache = LocalRuntimeCache()
 
     catalog_root = settings.workspaces_root / "catalog"
     template_catalog = TemplateCatalog(
@@ -79,6 +82,7 @@ def wire_community(settings: ServerSettings) -> CommunityServices:
         service_registry=service_registry,
         auth=auth,
         event_store=event_store,
+        runtime_cache=runtime_cache,
         actor_system=actor_system,
         team_manager=team_manager,
         team_catalog=team_catalog,

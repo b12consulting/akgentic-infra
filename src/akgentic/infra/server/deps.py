@@ -13,6 +13,7 @@ from akgentic.catalog.services import (
 from akgentic.core import ActorSystem
 from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.placement import PlacementStrategy
+from akgentic.infra.protocols.team_handle import RuntimeCache
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
@@ -42,6 +43,9 @@ class TierServices(BaseModel):
     )
     event_store: YamlEventStore = Field(
         description="Persistence backend for team event sourcing"
+    )
+    runtime_cache: RuntimeCache = Field(
+        description="Cache mapping team IDs to live TeamHandle instances"
     )
 
 
