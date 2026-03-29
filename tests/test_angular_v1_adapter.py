@@ -271,7 +271,7 @@ class TestAngularV1Adapter:
         event = _make_persisted_event(msg)
         result = adapter.wrap_ws_event(event)
         assert isinstance(result, WrappedWsEvent)
-        assert isinstance(result.payload, dict)
+        assert hasattr(result.payload, "type")
 
     def test_adapter_fqdn_loading(self) -> None:
         """Adapter can be loaded via FQDN through load_frontend_adapter."""

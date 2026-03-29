@@ -1,4 +1,4 @@
-"""Tests for Angular V1 adapter — WebSocket event wrapping (Story 3.2b)."""
+"""Tests for Angular V1 adapter — WebSocket event wrapping."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
+import pydantic
+import pytest
 from akgentic.core.actor_address import ActorAddress
 from akgentic.core.agent_config import BaseConfig
 from akgentic.core.agent_state import BaseState
@@ -22,7 +24,14 @@ from akgentic.core.messages.orchestrator import (
 )
 from akgentic.team.models import PersistedEvent
 
-from akgentic.infra.server.routes.frontend_adapter import WrappedWsEvent
+from akgentic.infra.server.routes.frontend_adapter import (
+    LlmContextPayload,
+    MessagePayload,
+    StatePayload,
+    ToolUpdatePayload,
+    UnknownPayload,
+    WrappedWsEvent,
+)
 from akgentic.infra.server.routes.frontend_adapter.angular_v1 import AngularV1Adapter
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import wrap_event
 
@@ -69,7 +78,7 @@ class TestWrapUserMessage:
         msg.sender = _make_sender("@Human")
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
+        assert result.payload.type == "message"
 
     def test_user_message_fields(self) -> None:
         """AC #1: UserMessage envelope has V1-compatible fields."""
@@ -77,12 +86,12 @@ class TestWrapUserMessage:
         msg.sender = _make_sender("@Human")
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        payload = result.payload
-        assert payload["message_type"] == "user"
-        assert payload["content"] == "hello world"
-        assert payload["sender"] == "@Human"
-        assert payload["timestamp"] == _NOW.isoformat()
-        assert "id" in payload
+        assert isinstance(result.payload, MessagePayload)
+        assert result.payload.message_type == "user"
+        assert result.payload.content == "hello world"
+        assert result.payload.sender == "@Human"
+        assert result.payload.timestamp == _NOW.isoformat()
+        assert result.payload.id
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +108,7 @@ class TestWrapResultMessage:
         msg.sender = _make_sender("@Manager")
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
+        assert result.payload.type == "message"
 
     def test_result_message_classified_as_agent(self) -> None:
         """AC #2: ResultMessage message_type is 'agent'."""
@@ -107,9 +116,9 @@ class TestWrapResultMessage:
         msg.sender = _make_sender("@Manager")
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["message_type"] == "agent"
-        assert result.payload["content"] == "AI response"
-        assert result.payload["sender"] == "@Manager"
+        assert result.payload.message_type == "agent"
+        assert result.payload.content == "AI response"
+        assert result.payload.sender == "@Manager"
 
 
 # ---------------------------------------------------------------------------
@@ -129,10 +138,10 @@ class TestWrapSentMessageUser:
         sent.sender = _make_sender("@Router")
         event = _make_persisted_event(sent)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
-        assert result.payload["content"] == "routed user msg"
-        assert result.payload["sender"] == "@Human"
-        assert result.payload["id"] == str(inner.id)
+        assert result.payload.type == "message"
+        assert result.payload.content == "routed user msg"
+        assert result.payload.sender == "@Human"
+        assert result.payload.id == str(inner.id)
 
     def test_sent_user_message_type_is_user(self) -> None:
         """SentMessage wrapping UserMessage has message_type: 'user'."""
@@ -142,7 +151,7 @@ class TestWrapSentMessageUser:
         sent.sender = _make_sender("@Router")
         event = _make_persisted_event(sent)
         result = wrap_event(event)
-        assert result.payload["message_type"] == "user"
+        assert result.payload.message_type == "user"
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +171,10 @@ class TestWrapSentMessageResult:
         sent.sender = _make_sender("@Router")
         event = _make_persisted_event(sent)
         result = wrap_event(event)
-        assert result.payload["message_type"] == "agent"
-        assert result.payload["content"] == "agent reply"
-        assert result.payload["sender"] == "@Agent"
-        assert result.payload["id"] == str(inner.id)
+        assert result.payload.message_type == "agent"
+        assert result.payload.content == "agent reply"
+        assert result.payload.sender == "@Agent"
+        assert result.payload.id == str(inner.id)
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +191,7 @@ class TestWrapStateChanged:
         msg.sender = _make_sender("@Manager")
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "state"
+        assert result.payload.type == "state"
 
     def test_state_envelope_fields(self) -> None:
         """AC #3: State envelope has V1-compatible fields."""
@@ -190,10 +199,10 @@ class TestWrapStateChanged:
         msg.sender = _make_sender("@Manager")
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        payload = result.payload
-        assert payload["agent"] == "@Manager"
-        assert isinstance(payload["state"], dict)
-        assert payload["timestamp"] == _NOW.isoformat()
+        assert isinstance(result.payload, StatePayload)
+        assert result.payload.agent == "@Manager"
+        assert isinstance(result.payload.state, dict)
+        assert result.payload.timestamp == _NOW.isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -209,16 +218,16 @@ class TestWrapEventMessage:
         msg = EventMessage(event={"tool_name": "search", "result": "found"})
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "tool_update"
+        assert result.payload.type == "tool_update"
 
     def test_tool_update_envelope_fields(self) -> None:
         """EventMessage envelope has event and timestamp fields."""
         msg = EventMessage(event={"tool_name": "search", "result": "found"})
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        payload = result.payload
-        assert payload["timestamp"] == _NOW.isoformat()
-        assert "event" in payload
+        assert isinstance(result.payload, ToolUpdatePayload)
+        assert result.payload.timestamp == _NOW.isoformat()
+        assert result.payload.event is not None
 
     def test_tool_update_with_pydantic_event(self) -> None:
         """EventMessage with a Pydantic model event serializes via model_dump."""
@@ -226,14 +235,14 @@ class TestWrapEventMessage:
         msg = EventMessage(event=state)
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert isinstance(result.payload["event"], dict)
+        assert isinstance(result.payload.event, dict)
 
     def test_tool_update_with_string_event(self) -> None:
         """EventMessage with a plain string event falls back to str()."""
         msg = EventMessage(event="simple event")
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["event"] == "simple event"
+        assert result.payload.event == "simple event"
 
 
 # ---------------------------------------------------------------------------
@@ -249,33 +258,33 @@ class TestWrapNonContentEvents:
         msg = ReceivedMessage(message_id=uuid.uuid4())
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
-        assert result.payload["message_type"] == "system"
-        assert "content" in result.payload
+        assert isinstance(result.payload, MessagePayload)
+        assert result.payload.message_type == "system"
+        assert result.payload.content is not None
 
     def test_processed_message_fallback(self) -> None:
         """ProcessedMessage produces valid message envelope."""
         msg = ProcessedMessage(message_id=uuid.uuid4())
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
-        assert result.payload["message_type"] == "system"
+        assert result.payload.type == "message"
+        assert result.payload.message_type == "system"
 
     def test_start_message_fallback(self) -> None:
         """StartMessage produces valid message envelope with system type."""
         msg = StartMessage(config=BaseConfig())
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
-        assert result.payload["message_type"] == "system"
+        assert result.payload.type == "message"
+        assert result.payload.message_type == "system"
 
     def test_stop_message_fallback(self) -> None:
         """StopMessage produces valid message envelope with system type."""
         msg = StopMessage()
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
-        assert result.payload["message_type"] == "system"
+        assert result.payload.type == "message"
+        assert result.payload.message_type == "system"
 
 
 # ---------------------------------------------------------------------------
@@ -295,10 +304,10 @@ class TestWrapSentMessageNonContent:
         sent.sender = _make_sender("@Router")
         event = _make_persisted_event(sent)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
-        assert result.payload["message_type"] == "system"
-        assert result.payload["sender"] == "@Orchestrator"
-        assert result.payload["content"] == ""
+        assert result.payload.type == "message"
+        assert result.payload.message_type == "system"
+        assert result.payload.sender == "@Orchestrator"
+        assert result.payload.content == ""
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +326,7 @@ class TestWrapErrorMessage:
         )
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
+        assert result.payload.type == "message"
 
     def test_error_message_classified_as_system(self) -> None:
         """ErrorMessage message_type is 'system'."""
@@ -327,8 +336,8 @@ class TestWrapErrorMessage:
         )
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["message_type"] == "system"
-        assert result.payload["content"] == "something went wrong"
+        assert result.payload.message_type == "system"
+        assert result.payload.content == "something went wrong"
 
 
 # ---------------------------------------------------------------------------
@@ -353,9 +362,9 @@ class TestAdapterWrapWsEvent:
         msg = UserMessage(content="test content")
         event = _make_persisted_event(msg)
         result = adapter.wrap_ws_event(event)
-        assert result.payload["type"] == "message"
-        assert result.payload["content"] == "test content"
-        assert result.payload["message_type"] == "user"
+        assert result.payload.type == "message"
+        assert result.payload.content == "test content"
+        assert result.payload.message_type == "user"
 
     def test_adapter_state_event(self) -> None:
         """wrap_ws_event produces state envelope for StateChangedMessage."""
@@ -364,8 +373,8 @@ class TestAdapterWrapWsEvent:
         msg.sender = _make_sender("@Agent")
         event = _make_persisted_event(msg)
         result = adapter.wrap_ws_event(event)
-        assert result.payload["type"] == "state"
-        assert result.payload["agent"] == "@Agent"
+        assert isinstance(result.payload, StatePayload)
+        assert result.payload.agent == "@Agent"
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +428,7 @@ class TestWrappedEventSerialization:
         msg = UserMessage(content="orphan")
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["sender"] == "system"
+        assert result.payload.sender == "system"
 
 
 # ---------------------------------------------------------------------------
@@ -441,17 +450,16 @@ class TestWrapContextChangedMessage:
         msg = ContextChangedMessage(context={"key": "value"})
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "llm_context"
+        assert result.payload.type == "llm_context"
 
     def test_llm_context_envelope_fields(self) -> None:
         """AC4: llm_context envelope has context and timestamp fields."""
         msg = ContextChangedMessage(context={"agent": "bot", "tokens": 100})
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        payload = result.payload
-        assert payload["type"] == "llm_context"
-        assert payload["context"] == {"agent": "bot", "tokens": 100}
-        assert payload["timestamp"] == _NOW.isoformat()
+        assert isinstance(result.payload, LlmContextPayload)
+        assert result.payload.context == {"agent": "bot", "tokens": 100}
+        assert result.payload.timestamp == _NOW.isoformat()
 
     def test_llm_context_json_serializable(self) -> None:
         """WrappedWsEvent from ContextChangedMessage serializes to valid JSON."""
@@ -466,23 +474,187 @@ class TestWrapContextChangedMessage:
         user_msg = UserMessage(content="hello")
         event = _make_persisted_event(user_msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "message"
+        assert result.payload.type == "message"
 
         state_msg = StateChangedMessage(state=BaseState())
         state_msg.sender = _make_sender("@Bot")
         event2 = _make_persisted_event(state_msg)
         result2 = wrap_event(event2)
-        assert result2.payload["type"] == "state"
+        assert result2.payload.type == "state"
 
         tool_msg = EventMessage(event={"tool": "test"})
         event3 = _make_persisted_event(tool_msg)
         result3 = wrap_event(event3)
-        assert result3.payload["type"] == "tool_update"
+        assert result3.payload.type == "tool_update"
 
     def test_llm_context_empty_context(self) -> None:
         """ContextChangedMessage with empty context produces valid envelope."""
         msg = ContextChangedMessage()
         event = _make_persisted_event(msg)
         result = wrap_event(event)
-        assert result.payload["type"] == "llm_context"
-        assert result.payload["context"] == {}
+        assert isinstance(result.payload, LlmContextPayload)
+        assert result.payload.context == {}
+
+
+# ---------------------------------------------------------------------------
+# Story 6.10: Discriminated union deserialization & round-trip (AC #2, #4, #6)
+# ---------------------------------------------------------------------------
+
+
+class TestDiscriminatedUnionDeserialization:
+    """Test that JSON with each type value deserializes to the correct payload subtype."""
+
+    def test_message_payload_from_json(self) -> None:
+        """JSON with type 'message' deserializes to MessagePayload."""
+        json_str = (
+            '{"payload":{"type":"message","id":"abc","sender":"@Bot",'
+            '"content":"hi","timestamp":"2026-01-01T00:00:00","message_type":"user"}}'
+        )
+        event = WrappedWsEvent.model_validate_json(json_str)
+        assert isinstance(event.payload, MessagePayload)
+        assert event.payload.content == "hi"
+        assert event.payload.sender == "@Bot"
+
+    def test_state_payload_from_json(self) -> None:
+        """JSON with type 'state' deserializes to StatePayload."""
+        json_str = (
+            '{"payload":{"type":"state","agent":"@Manager",'
+            '"state":{"key":"val"},"timestamp":"2026-01-01T00:00:00"}}'
+        )
+        event = WrappedWsEvent.model_validate_json(json_str)
+        assert isinstance(event.payload, StatePayload)
+        assert event.payload.agent == "@Manager"
+        assert event.payload.state == {"key": "val"}
+
+    def test_tool_update_payload_from_json(self) -> None:
+        """JSON with type 'tool_update' deserializes to ToolUpdatePayload."""
+        json_str = (
+            '{"payload":{"type":"tool_update","event":{"tool":"search"},'
+            '"timestamp":"2026-01-01T00:00:00"}}'
+        )
+        event = WrappedWsEvent.model_validate_json(json_str)
+        assert isinstance(event.payload, ToolUpdatePayload)
+        assert event.payload.event == {"tool": "search"}
+
+    def test_llm_context_payload_from_json(self) -> None:
+        """JSON with type 'llm_context' deserializes to LlmContextPayload."""
+        json_str = (
+            '{"payload":{"type":"llm_context","context":{"tokens":42},'
+            '"timestamp":"2026-01-01T00:00:00"}}'
+        )
+        event = WrappedWsEvent.model_validate_json(json_str)
+        assert isinstance(event.payload, LlmContextPayload)
+        assert event.payload.context == {"tokens": 42}
+
+
+class TestUnknownPayloadFallback:
+    """Test UnknownPayload catch-all for unrecognised event types."""
+
+    def test_unknown_type_deserializes_to_unknown_payload(self) -> None:
+        """JSON with an unrecognised type falls back to UnknownPayload."""
+        json_str = '{"payload":{"type":"custom_extension","data":{"x":1}}}'
+        event = WrappedWsEvent.model_validate_json(json_str)
+        assert isinstance(event.payload, UnknownPayload)
+        assert event.payload.type == "custom_extension"
+        assert event.payload.data == {"x": 1}
+
+    def test_unknown_type_with_empty_data(self) -> None:
+        """UnknownPayload defaults data to empty dict."""
+        json_str = '{"payload":{"type":"future_event"}}'
+        event = WrappedWsEvent.model_validate_json(json_str)
+        assert isinstance(event.payload, UnknownPayload)
+        assert event.payload.data == {}
+
+    def test_missing_type_key_raises_validation_error(self) -> None:
+        """Payload JSON with no 'type' key raises ValidationError."""
+        json_str = '{"payload":{"data":{"x":1}}}'
+        with pytest.raises(pydantic.ValidationError):
+            WrappedWsEvent.model_validate_json(json_str)
+
+    def test_null_type_raises_validation_error(self) -> None:
+        """Payload JSON with null 'type' raises ValidationError."""
+        json_str = '{"payload":{"type":null,"data":{}}}'
+        with pytest.raises(pydantic.ValidationError):
+            WrappedWsEvent.model_validate_json(json_str)
+
+
+class TestSerializationRoundTrip:
+    """Test model_dump_json -> model_validate_json preserves payload type and fields."""
+
+    def test_message_round_trip(self) -> None:
+        """MessagePayload survives serialization round-trip."""
+        original = WrappedWsEvent(
+            payload=MessagePayload(
+                id="123",
+                sender="@Bot",
+                content="hello",
+                timestamp="2026-01-01T00:00:00",
+                message_type="agent",
+            ),
+        )
+        restored = WrappedWsEvent.model_validate_json(original.model_dump_json())
+        assert isinstance(restored.payload, MessagePayload)
+        assert restored.payload.id == "123"
+        assert restored.payload.content == "hello"
+
+    def test_state_round_trip(self) -> None:
+        """StatePayload survives serialization round-trip."""
+        original = WrappedWsEvent(
+            payload=StatePayload(
+                agent="@Manager",
+                state={"status": "idle"},
+                timestamp="2026-01-01T00:00:00",
+            ),
+        )
+        restored = WrappedWsEvent.model_validate_json(original.model_dump_json())
+        assert isinstance(restored.payload, StatePayload)
+        assert restored.payload.agent == "@Manager"
+
+    def test_tool_update_round_trip(self) -> None:
+        """ToolUpdatePayload survives serialization round-trip."""
+        original = WrappedWsEvent(
+            payload=ToolUpdatePayload(
+                event={"tool": "calc"},
+                timestamp="2026-01-01T00:00:00",
+            ),
+        )
+        restored = WrappedWsEvent.model_validate_json(original.model_dump_json())
+        assert isinstance(restored.payload, ToolUpdatePayload)
+        assert restored.payload.event == {"tool": "calc"}
+
+    def test_llm_context_round_trip(self) -> None:
+        """LlmContextPayload survives serialization round-trip."""
+        original = WrappedWsEvent(
+            payload=LlmContextPayload(
+                context={"tokens": 99},
+                timestamp="2026-01-01T00:00:00",
+            ),
+        )
+        restored = WrappedWsEvent.model_validate_json(original.model_dump_json())
+        assert isinstance(restored.payload, LlmContextPayload)
+        assert restored.payload.context == {"tokens": 99}
+
+    def test_unknown_round_trip(self) -> None:
+        """UnknownPayload survives serialization round-trip."""
+        original = WrappedWsEvent(
+            payload=UnknownPayload(type="custom", data={"a": "b"}),
+        )
+        restored = WrappedWsEvent.model_validate_json(original.model_dump_json())
+        assert isinstance(restored.payload, UnknownPayload)
+        assert restored.payload.type == "custom"
+        assert restored.payload.data == {"a": "b"}
+
+    def test_wire_format_matches_old_dict_shape(self) -> None:
+        """model_dump(mode='json') produces the same structure as the old dicts."""
+        msg = UserMessage(content="wire test")
+        msg.sender = _make_sender("@Human")
+        event = _make_persisted_event(msg)
+        result = wrap_event(event)
+        dumped = result.model_dump(mode="json")
+        payload = dumped["payload"]
+        assert payload["type"] == "message"
+        assert payload["content"] == "wire test"
+        assert payload["sender"] == "@Human"
+        assert "id" in payload
+        assert "timestamp" in payload
+        assert "message_type" in payload
