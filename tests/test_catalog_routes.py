@@ -1,24 +1,50 @@
-"""Tests for catalog browsing endpoints (GET /catalog/teams, GET /catalog/teams/{name})."""
+"""Tests for mounted akgentic-catalog routers at /catalog/api/<type>."""
 
 from __future__ import annotations
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def test_list_team_templates(client: TestClient) -> None:
-    """GET /catalog/teams returns seeded team templates."""
-    resp = client.get("/catalog/teams")
+def test_catalog_team_router_mounted(client: TestClient) -> None:
+    """GET /catalog/api/teams returns list of team entries."""
+    resp = client.get("/catalog/api/teams")
     assert resp.status_code == 200
     body = resp.json()
-    assert "teams" in body
-    assert len(body["teams"]) >= 1
-    ids = [t["id"] for t in body["teams"]]
+    assert isinstance(body, list)
+    assert len(body) >= 1
+    ids = [t["id"] for t in body]
     assert "test-team" in ids
 
 
-def test_get_team_template(client: TestClient) -> None:
-    """GET /catalog/teams/{name} returns specific team details."""
-    resp = client.get("/catalog/teams/test-team")
+def test_catalog_agent_router_mounted(client: TestClient) -> None:
+    """GET /catalog/api/agents returns list of agent entries."""
+    resp = client.get("/catalog/api/agents")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, list)
+    assert len(body) >= 1
+    ids = [a["id"] for a in body]
+    assert "human-proxy" in ids
+
+
+def test_catalog_template_router_mounted(client: TestClient) -> None:
+    """GET /catalog/api/templates returns list (may be empty)."""
+    resp = client.get("/catalog/api/templates")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+def test_catalog_tool_router_mounted(client: TestClient) -> None:
+    """GET /catalog/api/tools returns list (may be empty)."""
+    resp = client.get("/catalog/api/tools")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+def test_catalog_team_get_by_id(client: TestClient) -> None:
+    """GET /catalog/api/teams/{id} returns specific team entry."""
+    resp = client.get("/catalog/api/teams/test-team")
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == "test-team"
@@ -28,28 +54,65 @@ def test_get_team_template(client: TestClient) -> None:
     assert len(body["members"]) == 2
 
 
-def test_get_team_template_members_have_expected_fields(client: TestClient) -> None:
-    """GET /catalog/teams/{name} members contain agent_id and children fields."""
-    resp = client.get("/catalog/teams/test-team")
+def test_catalog_team_crud_create_and_delete(client: TestClient) -> None:
+    """POST then DELETE /catalog/api/teams/{id} works through mounted routers."""
+    entry = {
+        "id": "crud-test-team",
+        "name": "CRUD Test",
+        "entry_point": "human-proxy",
+        "message_types": ["akgentic.core.messages.UserMessage"],
+        "members": [{"agent_id": "human-proxy"}],
+    }
+    # Create
+    resp = client.post("/catalog/api/teams/", json=entry)
+    assert resp.status_code == 201
+    assert resp.json()["id"] == "crud-test-team"
+
+    # Verify it exists
+    resp = client.get("/catalog/api/teams/crud-test-team")
     assert resp.status_code == 200
-    body = resp.json()
-    for member in body["members"]:
-        assert "agent_id" in member
-        assert "children" in member
-        assert isinstance(member["children"], list)
+    assert resp.json()["name"] == "CRUD Test"
+
+    # List should include it
+    resp = client.get("/catalog/api/teams")
+    ids = [t["id"] for t in resp.json()]
+    assert "crud-test-team" in ids
+
+    # Delete
+    resp = client.delete("/catalog/api/teams/crud-test-team")
+    assert resp.status_code == 204
 
 
-def test_get_team_template_not_found(client: TestClient) -> None:
-    """GET /catalog/teams/{name} returns 404 for non-existent template."""
-    resp = client.get("/catalog/teams/nonexistent-template")
+def test_catalog_exception_handler_404(client: TestClient) -> None:
+    """GET /catalog/api/teams/{id} returns 404 for missing entry via exception handler."""
+    resp = client.get("/catalog/api/teams/nonexistent-entry")
     assert resp.status_code == 404
-    assert "not found" in resp.json()["detail"].lower()
+    body = resp.json()
+    assert "detail" in body
+    assert "not found" in body["detail"].lower()
 
 
-def test_list_team_templates_response_shape(client: TestClient) -> None:
-    """GET /catalog/teams response has all expected fields per CatalogTeamResponse."""
+def test_catalog_exception_handler_registered(app: FastAPI) -> None:
+    """Exception handlers for EntryNotFoundError and CatalogValidationError are registered."""
+    from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
+
+    assert EntryNotFoundError in app.exception_handlers
+    assert CatalogValidationError in app.exception_handlers
+
+
+def test_old_catalog_routes_removed(client: TestClient) -> None:
+    """Old hand-rolled /catalog/teams endpoint no longer exists."""
     resp = client.get("/catalog/teams")
+    assert resp.status_code == 404 or resp.status_code == 405
+
+
+def test_v1_adapter_config_coexists(client: TestClient) -> None:
+    """V1 adapter config endpoints still work alongside catalog routes.
+
+    The client fixture uses seeded_settings which has no frontend_adapter
+    configured, so V1 adapter routes won't be mounted. This test verifies
+    that the catalog routes don't interfere with the core app routes.
+    """
+    # Core teams endpoint still works
+    resp = client.get("/teams/")
     assert resp.status_code == 200
-    team = resp.json()["teams"][0]
-    expected_fields = {"id", "name", "description", "entry_point", "members", "profiles"}
-    assert expected_fields.issubset(set(team.keys()))

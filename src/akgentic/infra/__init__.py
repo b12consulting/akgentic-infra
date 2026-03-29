@@ -35,9 +35,6 @@ from akgentic.infra.protocols import (
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
 from akgentic.infra.server.models import (
-    CatalogTeamListResponse,
-    CatalogTeamMember,
-    CatalogTeamResponse,
     CreateTeamRequest,
     EventListResponse,
     EventResponse,
@@ -83,9 +80,6 @@ __all__ = [
     "WebSocketEventSubscriber",
     "YamlChannelRegistry",
     # Server
-    "CatalogTeamListResponse",
-    "CatalogTeamMember",
-    "CatalogTeamResponse",
     "CommunityServices",
     "CreateTeamRequest",
     "EventListResponse",
