@@ -11,6 +11,13 @@ import typer
 import yaml
 from typer.testing import CliRunner
 
+from akgentic.infra.cli.client import (
+    EventInfo,
+    TeamInfo,
+    WorkspaceEntry,
+    WorkspaceTreeInfo,
+    WorkspaceUploadInfo,
+)
 from akgentic.infra.cli.main import app
 
 runner = CliRunner()
@@ -27,48 +34,42 @@ def _mock_client(**overrides: Any) -> MagicMock:
     """Build a mock ApiClient with sensible defaults."""
     mock = MagicMock()
     mock.list_teams.return_value = [
-        {"team_id": "t1", "name": "Team 1", "status": "running", "created_at": "2025-01-01"},
+        TeamInfo(
+            team_id="t1", name="Team 1", status="running",
+            user_id="u1", created_at="2025-01-01", updated_at="2025-01-01",
+        ),
     ]
-    mock.get_team.return_value = {
-        "team_id": "t1",
-        "name": "Team 1",
-        "status": "running",
-        "user_id": "u1",
-        "created_at": "2025-01-01",
-        "updated_at": "2025-01-02",
-    }
-    mock.create_team.return_value = {
-        "team_id": "new",
-        "name": "New Team",
-        "status": "created",
-        "user_id": "u1",
-        "created_at": "2025-01-01",
-        "updated_at": "2025-01-01",
-    }
+    mock.get_team.return_value = TeamInfo(
+        team_id="t1", name="Team 1", status="running",
+        user_id="u1", created_at="2025-01-01", updated_at="2025-01-02",
+    )
+    mock.create_team.return_value = TeamInfo(
+        team_id="new", name="New Team", status="created",
+        user_id="u1", created_at="2025-01-01", updated_at="2025-01-01",
+    )
     mock.delete_team.return_value = None
-    mock.restore_team.return_value = {
-        "team_id": "t1",
-        "name": "Team 1",
-        "status": "running",
-        "user_id": "u1",
-        "created_at": "2025-01-01",
-        "updated_at": "2025-01-03",
-    }
+    mock.restore_team.return_value = TeamInfo(
+        team_id="t1", name="Team 1", status="running",
+        user_id="u1", created_at="2025-01-01", updated_at="2025-01-03",
+    )
     mock.get_events.return_value = [
-        {"sequence": 1, "timestamp": "2025-01-01T00:00:00", "event": {"type": "started"}},
+        EventInfo(
+            team_id="t1", sequence=1, timestamp="2025-01-01T00:00:00",
+            event={"type": "started"},
+        ),
     ]
     mock.send_message.return_value = None
     mock.human_input.return_value = None
-    mock.workspace_tree.return_value = {
-        "team_id": "t1",
-        "path": "/",
-        "entries": [
-            {"name": "docs", "is_dir": True, "size": 0},
-            {"name": "readme.md", "is_dir": False, "size": 42},
+    mock.workspace_tree.return_value = WorkspaceTreeInfo(
+        team_id="t1",
+        path="/",
+        entries=[
+            WorkspaceEntry(name="docs", is_dir=True, size=0),
+            WorkspaceEntry(name="readme.md", is_dir=False, size=42),
         ],
-    }
+    )
     mock.workspace_read.return_value = b"file content"
-    mock.workspace_upload.return_value = {"path": "readme.md", "size": 12}
+    mock.workspace_upload.return_value = WorkspaceUploadInfo(path="readme.md", size=12)
     for k, v in overrides.items():
         setattr(mock, k, v)
     return mock

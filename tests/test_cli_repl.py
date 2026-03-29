@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import websockets.exceptions
 from rich.console import Console
 
+from akgentic.infra.cli.client import EventInfo
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession, _print_event
@@ -60,19 +61,25 @@ class TestReplayHistory:
         client = _mock_client(
             get_events=MagicMock(
                 return_value=[
-                    {
-                        "event": {
+                    EventInfo(
+                        team_id="t1",
+                        sequence=1,
+                        event={
                             "__model__": "SentMessage",
                             "sender": "bot",
                             "content": "hello",
-                        }
-                    },
-                    {
-                        "event": {
+                        },
+                        timestamp="2026-01-01T00:00:00",
+                    ),
+                    EventInfo(
+                        team_id="t1",
+                        sequence=2,
+                        event={
                             "__model__": "StateChangedMessage",
                             "state": "running",
-                        }
-                    },
+                        },
+                        timestamp="2026-01-01T00:00:00",
+                    ),
                 ]
             )
         )

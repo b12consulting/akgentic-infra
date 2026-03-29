@@ -7,6 +7,64 @@ from typing import Any
 
 import httpx
 import typer
+from pydantic import BaseModel
+
+# -- CLI-side response models (independent of server models) --
+
+
+class TeamInfo(BaseModel):
+    """Team response from GET/POST /teams endpoints."""
+
+    team_id: str
+    name: str
+    status: str
+    user_id: str
+    created_at: str
+    updated_at: str
+
+
+class TeamListInfo(BaseModel):
+    """Wrapper for GET /teams list response."""
+
+    teams: list[TeamInfo]
+
+
+class EventInfo(BaseModel):
+    """Single event from GET /teams/{team_id}/events."""
+
+    team_id: str
+    sequence: int
+    event: dict[str, object]
+    timestamp: str
+
+
+class EventListInfo(BaseModel):
+    """Wrapper for GET /teams/{team_id}/events list response."""
+
+    events: list[EventInfo]
+
+
+class WorkspaceEntry(BaseModel):
+    """Single entry in workspace tree."""
+
+    name: str
+    is_dir: bool
+    size: int
+
+
+class WorkspaceTreeInfo(BaseModel):
+    """Response from GET /workspace/{team_id}/tree."""
+
+    team_id: str
+    path: str
+    entries: list[WorkspaceEntry]
+
+
+class WorkspaceUploadInfo(BaseModel):
+    """Response from POST /workspace/{team_id}/file."""
+
+    path: str
+    size: int
 
 
 class ApiClient:
@@ -64,32 +122,38 @@ class ApiClient:
 
     # -- team endpoints --
 
-    def list_teams(self) -> list[dict[str, Any]]:
-        """GET /teams → list of team dicts."""
+    def list_teams(self) -> list[TeamInfo]:
+        """GET /teams → list of TeamInfo models."""
         resp = self._request("GET", "/teams")
-        return resp.json()["teams"]  # type: ignore[no-any-return]
+        return TeamListInfo.model_validate(resp.json()).teams
 
-    def get_team(self, team_id: str) -> dict[str, Any]:
-        """GET /teams/{team_id} → team dict."""
-        return self._request("GET", f"/teams/{team_id}").json()  # type: ignore[no-any-return]
+    def get_team(self, team_id: str) -> TeamInfo:
+        """GET /teams/{team_id} → TeamInfo model."""
+        return TeamInfo.model_validate(self._request("GET", f"/teams/{team_id}").json())
 
-    def create_team(self, catalog_entry_id: str) -> dict[str, Any]:
-        """POST /teams → created team dict."""
+    def create_team(self, catalog_entry_id: str) -> TeamInfo:
+        """POST /teams → created TeamInfo model."""
         resp = self._request("POST", "/teams", json={"catalog_entry_id": catalog_entry_id})
-        return resp.json()  # type: ignore[no-any-return]
+        return TeamInfo.model_validate(resp.json())
+
+    def stop_team(self, team_id: str) -> None:
+        """POST /teams/{team_id}/stop — stop actors but preserve event store data."""
+        self._request("POST", f"/teams/{team_id}/stop")
 
     def delete_team(self, team_id: str) -> None:
         """DELETE /teams/{team_id}."""
         self._request("DELETE", f"/teams/{team_id}")
 
-    def restore_team(self, team_id: str) -> dict[str, Any]:
-        """POST /teams/{team_id}/restore → restored team dict."""
-        return self._request("POST", f"/teams/{team_id}/restore").json()  # type: ignore[no-any-return]
+    def restore_team(self, team_id: str) -> TeamInfo:
+        """POST /teams/{team_id}/restore → restored TeamInfo model."""
+        return TeamInfo.model_validate(
+            self._request("POST", f"/teams/{team_id}/restore").json()
+        )
 
-    def get_events(self, team_id: str) -> list[dict[str, Any]]:
-        """GET /teams/{team_id}/events → list of event dicts."""
+    def get_events(self, team_id: str) -> list[EventInfo]:
+        """GET /teams/{team_id}/events → list of EventInfo models."""
         resp = self._request("GET", f"/teams/{team_id}/events")
-        return resp.json()["events"]  # type: ignore[no-any-return]
+        return EventListInfo.model_validate(resp.json()).events
 
     # -- messaging --
 
@@ -107,21 +171,23 @@ class ApiClient:
 
     # -- workspace --
 
-    def workspace_tree(self, team_id: str) -> dict[str, Any]:
-        """GET /workspace/{team_id}/tree → tree dict."""
-        return self._request("GET", f"/workspace/{team_id}/tree").json()  # type: ignore[no-any-return]
+    def workspace_tree(self, team_id: str) -> WorkspaceTreeInfo:
+        """GET /workspace/{team_id}/tree → WorkspaceTreeInfo model."""
+        return WorkspaceTreeInfo.model_validate(
+            self._request("GET", f"/workspace/{team_id}/tree").json()
+        )
 
     def workspace_read(self, team_id: str, path: str) -> bytes:
         """GET /workspace/{team_id}/file → raw file bytes."""
         resp = self._request("GET", f"/workspace/{team_id}/file", params={"path": path})
         return resp.content
 
-    def workspace_upload(self, team_id: str, path: str, file_data: bytes) -> dict[str, Any]:
-        """POST /workspace/{team_id}/file → upload response dict."""
+    def workspace_upload(self, team_id: str, path: str, file_data: bytes) -> WorkspaceUploadInfo:
+        """POST /workspace/{team_id}/file → WorkspaceUploadInfo model."""
         resp = self._request(
             "POST",
             f"/workspace/{team_id}/file",
             data={"path": path},
             files={"file": ("upload", file_data)},
         )
-        return resp.json()  # type: ignore[no-any-return]
+        return WorkspaceUploadInfo.model_validate(resp.json())

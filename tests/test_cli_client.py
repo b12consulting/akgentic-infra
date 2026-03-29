@@ -7,8 +7,15 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
-from akgentic.infra.cli.client import ApiClient
+from akgentic.infra.cli.client import (
+    ApiClient,
+    EventInfo,
+    TeamInfo,
+    WorkspaceTreeInfo,
+    WorkspaceUploadInfo,
+)
 
 
 def _transport(
@@ -42,12 +49,33 @@ def _client(
 # -- team endpoints --
 
 
+# -- Complete test data fixtures --
+
+_TEAM_DICT: dict[str, Any] = {
+    "team_id": "abc",
+    "name": "t1",
+    "status": "running",
+    "user_id": "user-1",
+    "created_at": "2026-01-01T00:00:00",
+    "updated_at": "2026-01-01T00:00:00",
+}
+
+_EVENT_DICT: dict[str, Any] = {
+    "team_id": "abc",
+    "sequence": 1,
+    "event": {"type": "msg"},
+    "timestamp": "2026-01-01T00:00:00",
+}
+
+
 class TestListTeams:
     def test_returns_team_list(self) -> None:
-        teams = [{"team_id": "abc", "name": "t1", "status": "running"}]
-        client = _client(_transport(json_body={"teams": teams}))
+        client = _client(_transport(json_body={"teams": [_TEAM_DICT]}))
         result = client.list_teams()
-        assert result == teams
+        assert len(result) == 1
+        assert isinstance(result[0], TeamInfo)
+        assert result[0].team_id == "abc"
+        assert result[0].name == "t1"
 
     def test_empty_list(self) -> None:
         client = _client(_transport(json_body={"teams": []}))
@@ -55,46 +83,69 @@ class TestListTeams:
 
 
 class TestGetTeam:
-    def test_returns_team_dict(self) -> None:
-        team = {"team_id": "abc", "name": "t1"}
-        client = _client(_transport(json_body=team))
-        assert client.get_team("abc") == team
+    def test_returns_team_info(self) -> None:
+        client = _client(_transport(json_body=_TEAM_DICT))
+        result = client.get_team("abc")
+        assert isinstance(result, TeamInfo)
+        assert result.team_id == "abc"
+        assert result.name == "t1"
 
 
 class TestCreateTeam:
     def test_sends_catalog_entry(self) -> None:
-        created = {"team_id": "new-id", "name": "new"}
         sent_bodies: list[dict[str, Any]] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             sent_bodies.append(json.loads(request.content))
-            return httpx.Response(200, json=created)
+            return httpx.Response(200, json=_TEAM_DICT)
 
         client = _client(httpx.MockTransport(handler))
         result = client.create_team("my-entry")
-        assert result == created
+        assert isinstance(result, TeamInfo)
+        assert result.team_id == "abc"
         assert sent_bodies[0] == {"catalog_entry_id": "my-entry"}
+
+
+class TestStopTeam:
+    def test_no_return(self) -> None:
+        client = _client(_transport(status=204, content=b""))
+        client.stop_team("abc")
+
+    def test_sends_post_to_stop_endpoint(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(204, content=b"")
+
+        client = _client(httpx.MockTransport(handler))
+        client.stop_team("abc")
+        assert len(requests) == 1
+        assert requests[0].method == "POST"
+        assert "/teams/abc/stop" in str(requests[0].url)
 
 
 class TestDeleteTeam:
     def test_no_return(self) -> None:
         client = _client(_transport(status=204, content=b""))
-        # Should not raise
         client.delete_team("abc")
 
 
 class TestRestoreTeam:
     def test_returns_restored(self) -> None:
-        team = {"team_id": "abc", "status": "running"}
-        client = _client(_transport(json_body=team))
-        assert client.restore_team("abc") == team
+        client = _client(_transport(json_body=_TEAM_DICT))
+        result = client.restore_team("abc")
+        assert isinstance(result, TeamInfo)
+        assert result.status == "running"
 
 
 class TestGetEvents:
     def test_returns_event_list(self) -> None:
-        events = [{"sequence": 1, "event": {"type": "msg"}}]
-        client = _client(_transport(json_body={"events": events}))
-        assert client.get_events("abc") == events
+        client = _client(_transport(json_body={"events": [_EVENT_DICT]}))
+        result = client.get_events("abc")
+        assert len(result) == 1
+        assert isinstance(result[0], EventInfo)
+        assert result[0].sequence == 1
 
 
 # -- messaging --
@@ -133,7 +184,10 @@ class TestWorkspaceTree:
     def test_returns_tree(self) -> None:
         tree = {"team_id": "t1", "path": "/", "entries": []}
         client = _client(_transport(json_body=tree))
-        assert client.workspace_tree("t1") == tree
+        result = client.workspace_tree("t1")
+        assert isinstance(result, WorkspaceTreeInfo)
+        assert result.team_id == "t1"
+        assert result.entries == []
 
 
 class TestWorkspaceRead:
@@ -144,16 +198,18 @@ class TestWorkspaceRead:
 
 class TestWorkspaceUpload:
     def test_sends_multipart(self) -> None:
-        result = {"path": "readme.md", "size": 5}
+        result_json = {"path": "readme.md", "size": 5}
         urls: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             urls.append(str(request.url))
-            return httpx.Response(200, json=result)
+            return httpx.Response(200, json=result_json)
 
         client = _client(httpx.MockTransport(handler))
-        resp = client.workspace_upload("t1", "readme.md", b"hello")
-        assert resp == result
+        result = client.workspace_upload("t1", "readme.md", b"hello")
+        assert isinstance(result, WorkspaceUploadInfo)
+        assert result.path == "readme.md"
+        assert result.size == 5
         assert "/workspace/t1/file" in urls[0]
 
 
@@ -181,6 +237,26 @@ class TestErrorHandling:
         with pytest.raises(RuntimeError):
             client.get_team("missing")
         assert "Not found" in capsys.readouterr().err
+
+
+class TestValidationErrors:
+    def test_get_team_malformed_response(self) -> None:
+        """Server returns JSON missing required fields → ValidationError."""
+        client = _client(_transport(json_body={"team_id": "abc"}))
+        with pytest.raises(ValidationError):
+            client.get_team("abc")
+
+    def test_list_teams_malformed_response(self) -> None:
+        """Server returns teams with missing fields → ValidationError."""
+        client = _client(_transport(json_body={"teams": [{"team_id": "abc"}]}))
+        with pytest.raises(ValidationError):
+            client.list_teams()
+
+    def test_get_events_malformed_response(self) -> None:
+        """Server returns events with missing fields → ValidationError."""
+        client = _client(_transport(json_body={"events": [{"sequence": 1}]}))
+        with pytest.raises(ValidationError):
+            client.get_events("abc")
 
 
 class TestApiKey:
