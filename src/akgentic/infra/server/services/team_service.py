@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-import warnings
 
 from akgentic.catalog.models.errors import EntryNotFoundError
 from akgentic.catalog.services import (
@@ -16,7 +15,7 @@ from akgentic.core.messages.message import Message
 from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
 from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
 from akgentic.infra.server.deps import CommunityServices
-from akgentic.team.models import PersistedEvent, Process, TeamRuntime, TeamStatus
+from akgentic.team.models import PersistedEvent, Process, TeamStatus
 
 
 class TeamService:
@@ -172,24 +171,6 @@ class TeamService:
             TeamHandle if cached, else None.
         """
         return self._cache.get(team_id)
-
-    def get_runtime(self, team_id: uuid.UUID) -> TeamRuntime | None:
-        """Return the underlying TeamRuntime for a cached team.
-
-        .. deprecated::
-            Use ``get_handle()`` instead. This method exists only for backward
-            compatibility with ``ws.py`` until story 6.6 refactors WebSocket
-            handling to use ``TeamHandle.subscribe()/unsubscribe()``.
-        """
-        warnings.warn(
-            "get_runtime() is deprecated, use get_handle() instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        handle = self._cache.get(team_id)
-        if handle is not None and isinstance(handle, LocalTeamHandle):
-            return handle._runtime  # noqa: SLF001
-        return None
 
     def _get_running_handle(self, team_id: uuid.UUID) -> TeamHandle:
         """Look up a cached handle, verifying the team is running.

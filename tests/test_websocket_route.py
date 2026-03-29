@@ -130,8 +130,8 @@ class TestNotifyRestore:
         service = MagicMock()
         notify_restore(mgr, service, uuid.uuid4())
 
-    def test_notify_restore_no_runtime(self) -> None:
-        """No error when runtime is unavailable."""
+    def test_notify_restore_no_handle(self) -> None:
+        """No error when handle is unavailable."""
         from unittest.mock import MagicMock
 
         from akgentic.infra.server.routes.ws import notify_restore
@@ -142,11 +142,11 @@ class TestNotifyRestore:
         mgr.add_waiting(tid, ws)
 
         service = MagicMock()
-        service.get_runtime.return_value = None
+        service.get_handle.return_value = None
         notify_restore(mgr, service, tid)
 
     def test_notify_restore_activates_connections(self) -> None:
-        """notify_restore subscribes each waiting WS to the restored orchestrator."""
+        """notify_restore subscribes each waiting WS via TeamHandle."""
         from unittest.mock import MagicMock, PropertyMock
 
         from starlette.websockets import WebSocketState
@@ -159,16 +159,13 @@ class TestNotifyRestore:
         type(ws).client_state = PropertyMock(return_value=WebSocketState.CONNECTED)
         mgr.add_waiting(tid, ws)
 
-        runtime = MagicMock()
-        orch_proxy = MagicMock()
-        runtime.actor_system.proxy_ask.return_value = orch_proxy
-
+        handle = MagicMock()
         service = MagicMock()
-        service.get_runtime.return_value = runtime
+        service.get_handle.return_value = handle
 
         notify_restore(mgr, service, tid)
 
-        orch_proxy.subscribe.assert_called_once()
+        handle.subscribe.assert_called_once()
 
     def test_notify_restore_skips_disconnected(self) -> None:
         """notify_restore skips WebSocket connections that are no longer connected."""
@@ -184,16 +181,13 @@ class TestNotifyRestore:
         type(ws).client_state = PropertyMock(return_value=WebSocketState.DISCONNECTED)
         mgr.add_waiting(tid, ws)
 
-        runtime = MagicMock()
-        orch_proxy = MagicMock()
-        runtime.actor_system.proxy_ask.return_value = orch_proxy
-
+        handle = MagicMock()
         service = MagicMock()
-        service.get_runtime.return_value = runtime
+        service.get_handle.return_value = handle
 
         notify_restore(mgr, service, tid)
 
-        orch_proxy.subscribe.assert_not_called()
+        handle.subscribe.assert_not_called()
 
 
 def _trigger_subscriber_event(client: TestClient, team_id: str) -> None:

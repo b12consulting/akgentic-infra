@@ -14,7 +14,6 @@ from typing import cast
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from akgentic.core.orchestrator import Orchestrator
 from akgentic.infra.adapters.websocket_subscriber import WebSocketEventSubscriber
 from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter
 from akgentic.infra.server.services.team_service import TeamService
@@ -110,14 +109,13 @@ async def _run_streaming_loop(
     adapter: FrontendAdapter | None = None,
 ) -> None:
     """Subscribe to orchestrator events and forward them over WebSocket."""
-    runtime = service.get_runtime(team_id)
-    if runtime is None:
+    handle = service.get_handle(team_id)
+    if handle is None:
         await websocket.close(code=1011, reason="Runtime not available")
         return
 
     subscriber = WebSocketEventSubscriber()
-    orch_proxy = runtime.actor_system.proxy_ask(runtime.orchestrator_addr, Orchestrator)
-    orch_proxy.subscribe(subscriber)
+    handle.subscribe(subscriber)
 
     try:
         await _send_loop(websocket, subscriber, team_id, adapter)
@@ -125,7 +123,7 @@ async def _run_streaming_loop(
         pass
     finally:
         try:
-            orch_proxy.unsubscribe(subscriber)
+            handle.unsubscribe(subscriber)
         except Exception:  # noqa: BLE001
             logger.debug("Failed to unsubscribe (orchestrator may be stopped)")
 
@@ -210,16 +208,15 @@ def notify_restore(
     if not waiting:
         return
 
-    runtime = service.get_runtime(team_id)
-    if runtime is None:
+    handle = service.get_handle(team_id)
+    if handle is None:
         return
 
     for ws in waiting:
         if ws.client_state != WebSocketState.CONNECTED:
             continue
         subscriber = WebSocketEventSubscriber()
-        orch_proxy = runtime.actor_system.proxy_ask(runtime.orchestrator_addr, Orchestrator)
-        orch_proxy.subscribe(subscriber)
+        handle.subscribe(subscriber)
         conn_mgr.set_subscriber(ws, subscriber)
 
 
