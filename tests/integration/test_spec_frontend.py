@@ -20,7 +20,8 @@ def _create_v1_team(client: TestClient) -> str:
     resp = client.post(f"/process/{CATALOG_ENTRY_ID}")
     assert resp.status_code == 200
     data = resp.json()
-    return data["id"]
+    team_id: str = data["id"]
+    return team_id
 
 
 # ---------------------------------------------------------------------------
@@ -99,13 +100,16 @@ class TestV1Story68Endpoints:
         assert resp.status_code == 400
 
     def test_get_team_configs(self, v1_adapter_client: TestClient) -> None:
-        """AC #5: GET /team-configs returns team catalog entries."""
+        """AC #5: GET /team-configs returns team catalog entries as dict."""
         resp = v1_adapter_client.get("/team-configs/")
         assert resp.status_code == 200
         data = resp.json()
-        assert isinstance(data, list)
+        # ADR-004 (8.2) changed response from list to dict keyed by team name
+        assert isinstance(data, dict)
         assert len(data) >= 1
-        assert data[0]["type"] == "team"
+        for _name, entry in data.items():
+            assert "module" in entry
+            assert "setup" in entry
 
     def test_get_feedback_empty(self, v1_adapter_client: TestClient) -> None:
         """AC #5: GET /get-feedback returns empty list (stub)."""
@@ -123,41 +127,42 @@ class TestV1Story68Endpoints:
         assert resp.json()["status"] == "ok"
 
     def test_put_config_create_and_update(self, v1_adapter_client: TestClient) -> None:
-        """AC #5: PUT /config creates a new entry and updates an existing one."""
+        """AC #5: PUT /config/{config_type} creates a new entry and updates an existing one."""
         # Get an existing entry to know the data shape
         resp = v1_adapter_client.get("/config/team")
         assert resp.status_code == 200
         existing = resp.json()[0]
 
-        # Create a new entry via PUT
-        new_entry = {
+        # Create a new entry via PUT /config/{config_type} (ADR-004 path shape)
+        config: dict[str, object] = {
+            **existing["data"],
             "id": "v1-put-test",
-            "type": "team",
-            "data": {**existing["data"], "id": "v1-put-test", "name": "V1 PUT Test"},
+            "name": "V1 PUT Test",
         }
-        resp = v1_adapter_client.put("/config/", json=new_entry)
+        put_body: dict[str, object] = {
+            "id": "v1-put-test",
+            "name": "V1 PUT Test",
+            "config": config,
+            "dry_run": False,
+        }
+        resp = v1_adapter_client.put("/config/team", json=put_body)
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
         # Update the entry via PUT
-        new_entry["data"]["name"] = "V1 PUT Updated"
-        resp = v1_adapter_client.put("/config/", json=new_entry)
+        config["name"] = "V1 PUT Updated"
+        resp = v1_adapter_client.put("/config/team", json=put_body)
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
-        # Clean up
-        resp = v1_adapter_client.request(
-            "DELETE", "/config/", json=new_entry,
-        )
+        # Clean up via DELETE /config/{config_type}/{config_id} (ADR-004 path shape)
+        resp = v1_adapter_client.delete("/config/team/v1-put-test")
         assert resp.status_code == 200
 
     def test_delete_config_not_found(self, v1_adapter_client: TestClient) -> None:
-        """AC #5: DELETE /config for nonexistent entry returns 404."""
-        resp = v1_adapter_client.request(
-            "DELETE",
-            "/config/",
-            json={"id": "nonexistent", "type": "team", "data": {}},
-        )
+        """AC #5: DELETE /config/{config_type}/{config_id} for nonexistent returns 404."""
+        # ADR-004 path shape: DELETE /config/{config_type}/{config_id}
+        resp = v1_adapter_client.delete("/config/team/nonexistent")
         assert resp.status_code == 404
 
 
