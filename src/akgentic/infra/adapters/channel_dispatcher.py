@@ -13,19 +13,19 @@ if TYPE_CHECKING:
 
 
 class InteractionChannelDispatcher:
-    """Routes outbound SentMessage events to the first matching channel adapter.
+    """Routes outbound SentMessage events to all matching channel adapters.
 
     Satisfies the EventSubscriber protocol from akgentic.core.orchestrator
     via structural subtyping. Each team gets its own dispatcher instance
     with its own ordered adapter list.
 
-    First-match dispatch: iterates adapters, calls matches() on each,
-    and delivers to the first match only. If no adapter matches, the
+    Multi-channel dispatch: iterates adapters, calls matches() on each,
+    and delivers to ALL matching adapters. If no adapter matches, the
     message is silently skipped (web channel handles it via WebSocket).
     """
 
     def __init__(
-        self, adapters: list[InteractionChannelAdapter], team_id: uuid.UUID
+        self, team_id: uuid.UUID, adapters: list[InteractionChannelAdapter]
     ) -> None:
         self._adapters = list(adapters)
         self._team_id = team_id
@@ -36,7 +36,7 @@ class InteractionChannelDispatcher:
         self._restoring = restoring
 
     def on_message(self, msg: Message) -> None:
-        """Dispatch a SentMessage to the first matching adapter.
+        """Dispatch a SentMessage to all matching adapters.
 
         Skips delivery entirely during restore mode. Ignores non-SentMessage
         events. Silently skips if no adapter matches.
@@ -51,7 +51,6 @@ class InteractionChannelDispatcher:
         for adapter in self._adapters:
             if adapter.matches(msg):
                 adapter.deliver(msg)
-                break
 
     def on_stop(self) -> None:
         """Clean up all registered adapters when the team stops."""

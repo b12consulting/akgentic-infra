@@ -50,7 +50,14 @@ async def webhook(
     if parser is None:
         raise HTTPException(status_code=404, detail=f"Unknown channel: {channel}")
 
-    payload: dict[str, JsonValue] = await request.json()
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        payload: dict[str, JsonValue] = await request.json()
+    elif "application/x-www-form-urlencoded" in content_type:
+        form_data = await request.form()
+        payload = {k: str(v) for k, v in form_data.items()}
+    else:
+        raise HTTPException(status_code=415, detail="Unsupported content type")
     message = await parser.parse(payload)
 
     if message.team_id is not None:

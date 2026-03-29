@@ -5,7 +5,9 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from akgentic.core.utils.serializer import SerializableBaseModel
 
 if TYPE_CHECKING:
     from akgentic.core.messages import SentMessage
@@ -14,7 +16,7 @@ if TYPE_CHECKING:
 JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 
 
-class ChannelMessage(BaseModel):
+class ChannelMessage(SerializableBaseModel):
     """Normalized message from an external interaction channel."""
 
     content: str = Field(description="Message content")
