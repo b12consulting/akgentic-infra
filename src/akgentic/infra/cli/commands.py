@@ -156,6 +156,7 @@ def _is_displayable(data: dict[str, Any]) -> bool:
         except (json_mod.JSONDecodeError, TypeError):
             return False
     model = event.get("__model__", "")
+    # Keep in sync with repl._DISPLAY_EVENTS
     return model in {"SentMessage", "ErrorMessage", "EventMessage"}
 
 

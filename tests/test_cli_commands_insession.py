@@ -488,6 +488,7 @@ class TestStopHandler:
         out = capsys.readouterr().out
         assert "Team t1 stopped." in out
         client.stop_team.assert_called_once_with("t1")
+        client.delete_team.assert_not_called()
 
     async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()

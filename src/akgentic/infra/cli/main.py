@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import BaseModel
 
 from akgentic.infra.cli.client import ApiClient
 from akgentic.infra.cli.formatters import OutputFormat, format_output
@@ -39,8 +40,6 @@ _state = _State()
 
 def _to_serializable(data: object) -> object:
     """Convert Pydantic models (or lists of them) to dicts for formatting."""
-    from pydantic import BaseModel
-
     if isinstance(data, list):
         return [item.model_dump() if isinstance(item, BaseModel) else item for item in data]
     if isinstance(data, BaseModel):

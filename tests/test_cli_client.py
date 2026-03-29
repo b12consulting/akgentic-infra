@@ -111,6 +111,19 @@ class TestStopTeam:
         client = _client(_transport(status=204, content=b""))
         client.stop_team("abc")
 
+    def test_sends_post_to_stop_endpoint(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(204, content=b"")
+
+        client = _client(httpx.MockTransport(handler))
+        client.stop_team("abc")
+        assert len(requests) == 1
+        assert requests[0].method == "POST"
+        assert "/teams/abc/stop" in str(requests[0].url)
+
 
 class TestDeleteTeam:
     def test_no_return(self) -> None:
