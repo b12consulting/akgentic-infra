@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -22,6 +21,8 @@ from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 
+from ._helpers import seed_integration_catalog
+
 if TYPE_CHECKING:
     from .test_channels import StubChannelAdapter
 
@@ -32,81 +33,8 @@ if TYPE_CHECKING:
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
-def _write_yaml(path: Path, data: dict[str, object]) -> None:
-    """Write a single YAML entry file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.dump(data, default_flow_style=False))
-
-
-def _seed_integration_catalog(catalog_root: Path) -> None:
-    """Seed YAML catalog with an LLM-capable agent for integration testing.
-
-    Uses gpt-4o-mini for fast, cheap LLM calls.
-    """
-    _write_yaml(
-        catalog_root / "agents" / "human-proxy.yaml",
-        {
-            "id": "human-proxy",
-            "tool_ids": [],
-            "card": {
-                "role": "Human",
-                "description": "Human user interface",
-                "skills": [],
-                "agent_class": "akgentic.agent.HumanProxy",
-                "config": {"name": "@Human", "role": "Human"},
-                "routes_to": ["@Manager"],
-            },
-        },
-    )
-    _write_yaml(
-        catalog_root / "agents" / "manager.yaml",
-        {
-            "id": "manager",
-            "tool_ids": [],
-            "card": {
-                "role": "Manager",
-                "description": "Integration test manager agent",
-                "skills": ["coordination"],
-                "agent_class": "akgentic.agent.BaseAgent",
-                "config": {
-                    "name": "@Manager",
-                    "role": "Manager",
-                    "prompt": {
-                        "template": (
-                            "You are a helpful assistant. "
-                            "Reply concisely in one or two sentences."
-                        ),
-                    },
-                    "model_cfg": {
-                        "provider": "openai",
-                        "model": "gpt-4o-mini",
-                        "temperature": 0.0,
-                    },
-                    "usage_limits": {
-                        "request_limit": 5,
-                        "total_tokens_limit": 10000,
-                    },
-                },
-                "routes_to": [],
-            },
-        },
-    )
-    _write_yaml(
-        catalog_root / "teams" / "test-team.yaml",
-        {
-            "id": "test-team",
-            "name": "Integration Test Team",
-            "entry_point": "human-proxy",
-            "message_types": ["akgentic.agent.AgentMessage"],
-            "members": [
-                {"agent_id": "human-proxy"},
-                {"agent_id": "manager"},
-            ],
-            "profiles": [],
-        },
-    )
-    (catalog_root / "templates").mkdir(parents=True, exist_ok=True)
-    (catalog_root / "tools").mkdir(parents=True, exist_ok=True)
+# Re-export for backward compat with existing test imports
+_seed_integration_catalog = seed_integration_catalog
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +56,7 @@ def openai_api_key() -> str:
 def integration_settings(tmp_path: Path) -> CommunitySettings:
     """CommunitySettings backed by tmp_path with a seeded integration catalog."""
     settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
-    _seed_integration_catalog(settings.workspaces_root / "catalog")
+    seed_integration_catalog(settings.workspaces_root / "catalog")
     return settings
 
 
@@ -182,7 +110,7 @@ def v1_adapter_settings(tmp_path: Path) -> CommunitySettings:
         workspaces_root=tmp_path / "workspaces",
         frontend_adapter=V1_ADAPTER_FQDN,
     )
-    _seed_integration_catalog(settings.workspaces_root / "catalog")
+    seed_integration_catalog(settings.workspaces_root / "catalog")
     return settings
 
 
