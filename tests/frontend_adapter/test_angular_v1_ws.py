@@ -433,67 +433,34 @@ class TestWrappedEventSerialization:
 
 # ---------------------------------------------------------------------------
 # Story 6.8: ContextChangedMessage → type: "llm_context" (AC #4)
+# Note: ContextChangedMessage does not exist in any akgentic package yet.
+# Local placeholder removed per Story 9.5 AC #4. Tests skipped until the
+# real class is available. See issue #105.
 # ---------------------------------------------------------------------------
 
 
-class ContextChangedMessage(Message):
-    """Local placeholder for ContextChangedMessage (forward-compatible)."""
-
-    context: dict[str, object] = {}
-
-
+@pytest.mark.skip(reason="ContextChangedMessage not yet available in any akgentic package")
 class TestWrapContextChangedMessage:
     """Test ContextChangedMessage event wrapping (AC #4)."""
 
     def test_llm_context_envelope_type(self) -> None:
         """AC4: ContextChangedMessage produces type: 'llm_context' envelope."""
-        msg = ContextChangedMessage(context={"key": "value"})
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
-        assert result.payload.type == "llm_context"
 
     def test_llm_context_envelope_fields(self) -> None:
         """AC4: llm_context envelope has context and timestamp fields."""
-        msg = ContextChangedMessage(context={"agent": "bot", "tokens": 100})
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
-        assert isinstance(result.payload, LlmContextPayload)
-        assert result.payload.context == {"agent": "bot", "tokens": 100}
-        assert result.payload.timestamp == _NOW.isoformat()
 
     def test_llm_context_json_serializable(self) -> None:
         """WrappedWsEvent from ContextChangedMessage serializes to valid JSON."""
-        msg = ContextChangedMessage(context={"key": "val"})
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
-        json_str = result.model_dump_json()
-        assert '"type":"llm_context"' in json_str
 
     def test_existing_envelope_types_unchanged(self) -> None:
-        """AC4: Existing envelope types continue to work unchanged."""
-        user_msg = UserMessage(content="hello")
-        event = _make_persisted_event(user_msg)
-        result = wrap_event(event)
-        assert result.payload.type == "message"
+        """AC4: Existing envelope types continue to work unchanged.
 
-        state_msg = StateChangedMessage(state=BaseState())
-        state_msg.sender = _make_sender("@Bot")
-        event2 = _make_persisted_event(state_msg)
-        result2 = wrap_event(event2)
-        assert result2.payload.type == "state"
-
-        tool_msg = EventMessage(event={"tool": "test"})
-        event3 = _make_persisted_event(tool_msg)
-        result3 = wrap_event(event3)
-        assert result3.payload.type == "tool_update"
+        Note: Non-ContextChangedMessage envelope types are thoroughly covered
+        by other test classes in this file.
+        """
 
     def test_llm_context_empty_context(self) -> None:
         """ContextChangedMessage with empty context produces valid envelope."""
-        msg = ContextChangedMessage()
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
-        assert isinstance(result.payload, LlmContextPayload)
-        assert result.payload.context == {}
 
 
 # ---------------------------------------------------------------------------
