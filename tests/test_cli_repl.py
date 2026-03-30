@@ -13,7 +13,7 @@ from rich.console import Console
 from akgentic.infra.cli.client import EventInfo
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.repl import ChatSession, _print_event
+from akgentic.infra.cli.repl import ChatSession, _print_event, _render_event_impl
 
 
 def _captured_renderer() -> tuple[RichRenderer, io.StringIO]:

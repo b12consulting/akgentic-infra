@@ -7,6 +7,9 @@ import json
 from typing import Any
 
 import websockets.exceptions
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.history import InMemoryHistory
 
 from akgentic.infra.cli.client import ApiClient
 from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
@@ -42,6 +45,10 @@ class ChatSession:
         self.command_registry: CommandRegistry = build_default_registry()
         self._running = True
         self._receive_task: asyncio.Task[None] | None = None
+        self._prompt_session: PromptSession[str] = PromptSession(
+            history=InMemoryHistory(),
+            completer=_SlashCompleter(self.command_registry),
+        )
 
     async def run(self) -> None:
         """Main REPL loop: connect WS, replay history, read input, stream events."""
@@ -71,7 +78,9 @@ class ChatSession:
         loop = asyncio.get_running_loop()
         while self._running:
             try:
-                line = await loop.run_in_executor(None, _read_input, "You: ")
+                line = await loop.run_in_executor(
+                    None, self._prompt_session.prompt, "You: "
+                )
             except (EOFError, KeyboardInterrupt):
                 break
 
@@ -142,9 +151,27 @@ class ChatSession:
         return _render_event_impl(data, self.renderer)
 
 
-def _read_input(prompt: str) -> str:
-    """Read a line from stdin (used via run_in_executor)."""
-    return input(prompt)
+class _SlashCompleter(Completer):
+    """Auto-complete slash commands from the command registry."""
+
+    def __init__(self, registry: CommandRegistry) -> None:
+        self._registry = registry
+
+    def get_completions(
+        self, document: Any, complete_event: Any
+    ) -> Any:  # noqa: ANN401
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+        partial = text[1:]  # strip leading /
+        for cmd in self._registry.commands.values():
+            if cmd.name.startswith(partial):
+                yield Completion(
+                    f"/{cmd.name}",
+                    start_position=-len(text),
+                    display=f"/{cmd.name}",
+                    display_meta=cmd.help_text,
+                )
 
 
 def _render_event_impl(data: dict[str, Any], renderer: RichRenderer) -> bool:
@@ -157,22 +184,26 @@ def _render_event_impl(data: dict[str, Any], renderer: RichRenderer) -> bool:
             return False
 
     model = event.get("__model__", "")
-    if model not in _DISPLAY_EVENTS:
+    # Match short suffix (e.g. "SentMessage") from fully qualified model names
+    short_model = model.rsplit(".", 1)[-1] if model else ""
+    if short_model not in _DISPLAY_EVENTS:
         return False
 
-    if model == "ErrorMessage":
+    if short_model == "ErrorMessage":
         content = event.get("content", event.get("error", ""))
         renderer.render_error(str(content))
         return True
 
-    if model == "EventMessage":
+    if short_model == "EventMessage":
         return _render_event_message_impl(event, renderer)
 
-    # SentMessage — agent response
-    sender = event.get("sender", "agent")
-    content = event.get("content", "")
+    # SentMessage — agent response; content lives inside nested "message"
+    raw_sender = event.get("sender", "agent")
+    sender = raw_sender.get("name", "agent") if isinstance(raw_sender, dict) else str(raw_sender)
+    message = event.get("message", {})
+    content = message.get("content", "") if isinstance(message, dict) else ""
     if content:
-        renderer.render_agent_message(str(sender), str(content))
+        renderer.render_agent_message(sender, str(content))
         return True
     return False
 
@@ -191,10 +222,10 @@ def _render_event_message_impl(event: dict[str, Any], renderer: RichRenderer) ->
 
     nested_model = nested.get("__model__", "")
 
-    # Tool call events
+    # Tool call events (ToolCallEvent uses "arguments", others use "args"/"input")
     if "tool_name" in nested:
         tool_name = str(nested["tool_name"])
-        raw_input = nested.get("args", nested.get("input", ""))
+        raw_input = nested.get("arguments", nested.get("args", nested.get("input", "")))
         if isinstance(raw_input, dict | list):
             tool_input = json.dumps(raw_input, indent=2)
         else:
