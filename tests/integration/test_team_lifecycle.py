@@ -45,7 +45,6 @@ def _has_llm_content(events: list[dict[str, object]]) -> bool:
         ev = ev_wrapper["event"]
         if not isinstance(ev, dict):
             continue
-        # SentMessage wraps a message with content
         msg = ev.get("message")
         if not isinstance(msg, dict):
             continue
@@ -81,10 +80,12 @@ class TestTeamLifecycle:
     ) -> None:
         """AC #1, #2: Create a team and verify it is running."""
         team_id = _create_team(integration_client)
-
-        resp = integration_client.get(f"/teams/{team_id}")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
+        try:
+            resp = integration_client.get(f"/teams/{team_id}")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
 
     def test_send_message_and_receive_llm_response(
         self,
@@ -92,15 +93,17 @@ class TestTeamLifecycle:
     ) -> None:
         """AC #5 (partial): Send a message and verify LLM responds."""
         team_id = _create_team(integration_client)
+        try:
+            resp = integration_client.post(
+                f"/teams/{team_id}/message",
+                json={"content": "Say hello in exactly three words."},
+            )
+            assert resp.status_code == 204
 
-        resp = integration_client.post(
-            f"/teams/{team_id}/message",
-            json={"content": "Say hello in exactly three words."},
-        )
-        assert resp.status_code == 204
-
-        events = _wait_for_llm_response(integration_client, team_id)
-        assert _has_llm_content(events)
+            events = _wait_for_llm_response(integration_client, team_id)
+            assert _has_llm_content(events)
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
 
     def test_stop_and_restore_team(
         self,
@@ -108,19 +111,19 @@ class TestTeamLifecycle:
     ) -> None:
         """AC #5 (partial): Stop and restore a team."""
         team_id = _create_team(integration_client)
+        try:
+            resp = integration_client.post(f"/teams/{team_id}/stop")
+            assert resp.status_code == 204
 
-        # Stop
-        resp = integration_client.post(f"/teams/{team_id}/stop")
-        assert resp.status_code == 204
+            resp = integration_client.get(f"/teams/{team_id}")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "stopped"
 
-        resp = integration_client.get(f"/teams/{team_id}")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "stopped"
-
-        # Restore
-        resp = integration_client.post(f"/teams/{team_id}/restore")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
+            resp = integration_client.post(f"/teams/{team_id}/restore")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
 
     def test_events_persisted_after_stop(
         self,
@@ -128,58 +131,52 @@ class TestTeamLifecycle:
     ) -> None:
         """AC #5 (partial): Events persist after stop."""
         team_id = _create_team(integration_client)
+        try:
+            integration_client.post(
+                f"/teams/{team_id}/message",
+                json={"content": "Respond with one word."},
+            )
+            _wait_for_llm_response(integration_client, team_id)
 
-        # Send a message and wait for LLM to respond
-        integration_client.post(
-            f"/teams/{team_id}/message",
-            json={"content": "Respond with one word."},
-        )
-        _wait_for_llm_response(integration_client, team_id)
+            resp = integration_client.post(f"/teams/{team_id}/stop")
+            assert resp.status_code == 204
 
-        # Stop the team
-        resp = integration_client.post(f"/teams/{team_id}/stop")
-        assert resp.status_code == 204
-
-        # Events should still be accessible after stop
-        resp = integration_client.get(f"/teams/{team_id}/events")
-        assert resp.status_code == 200
-        events = resp.json()["events"]
-        assert len(events) >= 3
+            resp = integration_client.get(f"/teams/{team_id}/events")
+            assert resp.status_code == 200
+            events = resp.json()["events"]
+            assert len(events) >= 3
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
 
     def test_full_lifecycle_round_trip(
         self,
         integration_client: TestClient,
     ) -> None:
-        """AC #5: Full round-trip — create, message, LLM, stop, restore."""
-        # 1. Create
+        """AC #5: Full round-trip -- create, message, LLM, stop, restore."""
         team_id = _create_team(integration_client)
+        try:
+            resp = integration_client.post(
+                f"/teams/{team_id}/message",
+                json={"content": "What is 2 + 2? Answer with the number."},
+            )
+            assert resp.status_code == 204
 
-        # 2. Send message
-        resp = integration_client.post(
-            f"/teams/{team_id}/message",
-            json={"content": "What is 2 + 2? Answer with the number."},
-        )
-        assert resp.status_code == 204
+            events = _wait_for_llm_response(integration_client, team_id)
+            assert _has_llm_content(events)
 
-        # 3. Wait for LLM response
-        events = _wait_for_llm_response(integration_client, team_id)
-        assert _has_llm_content(events)
+            resp = integration_client.post(f"/teams/{team_id}/stop")
+            assert resp.status_code == 204
+            resp = integration_client.get(f"/teams/{team_id}")
+            assert resp.json()["status"] == "stopped"
 
-        # 4. Stop
-        resp = integration_client.post(f"/teams/{team_id}/stop")
-        assert resp.status_code == 204
+            resp = integration_client.post(f"/teams/{team_id}/restore")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
 
-        resp = integration_client.get(f"/teams/{team_id}")
-        assert resp.json()["status"] == "stopped"
-
-        # 5. Restore
-        resp = integration_client.post(f"/teams/{team_id}/restore")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
-
-        # 6. Verify events persisted through stop/restore cycle
-        resp = integration_client.get(f"/teams/{team_id}/events")
-        assert resp.status_code == 200
-        final_events = resp.json()["events"]
-        assert len(final_events) >= 3
-        assert _has_llm_content(final_events)
+            resp = integration_client.get(f"/teams/{team_id}/events")
+            assert resp.status_code == 200
+            final_events = resp.json()["events"]
+            assert len(final_events) >= 3
+            assert _has_llm_content(final_events)
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")

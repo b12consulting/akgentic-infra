@@ -10,7 +10,7 @@ import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -134,7 +134,6 @@ class TestCliTeamLifecycle:
         cli_server: str,
     ) -> None:
         """Create a team via CLI, then list teams and verify it appears."""
-        # Create via JSON format for reliable team_id extraction
         result = cli_invoke(
             cli_runner,
             cli_server,
@@ -144,17 +143,16 @@ class TestCliTeamLifecycle:
         assert result.exit_code == 0, result.output
         team_data = json.loads(result.output)
         team_id = team_data["team_id"]
-        assert team_data["status"] == "running"
+        try:
+            assert team_data["status"] == "running"
 
-        # List teams and verify the created team appears
-        result_list = cli_invoke(cli_runner, cli_server, ["team", "list"])
-        assert result_list.exit_code == 0, result_list.output
-        assert team_id in result_list.output
-
-        # Cleanup: stop team to avoid LLM-in-flight hang
-        with httpx.Client(base_url=cli_server) as c:
-            c.post(f"/teams/{team_id}/stop")
-            time.sleep(0.3)
+            result_list = cli_invoke(cli_runner, cli_server, ["team", "list"])
+            assert result_list.exit_code == 0, result_list.output
+            assert team_id in result_list.output
+        finally:
+            with httpx.Client(base_url=cli_server) as c:
+                c.post(f"/teams/{team_id}/stop")
+                time.sleep(0.3)
 
     def test_cli_team_get(
         self,
@@ -162,7 +160,6 @@ class TestCliTeamLifecycle:
         cli_server: str,
     ) -> None:
         """Create a team, then get its detail via CLI."""
-        # Create team via JSON for reliable parsing
         result = cli_invoke(
             cli_runner,
             cli_server,
@@ -172,17 +169,15 @@ class TestCliTeamLifecycle:
         assert result.exit_code == 0
         team_data = json.loads(result.output)
         team_id = team_data["team_id"]
-
-        # Get team detail
-        result_get = cli_invoke(cli_runner, cli_server, ["team", "get", team_id])
-        assert result_get.exit_code == 0
-        assert team_id in result_get.output
-        assert "running" in result_get.output.lower()
-
-        # Cleanup
-        with httpx.Client(base_url=cli_server) as c:
-            c.post(f"/teams/{team_id}/stop")
-            time.sleep(0.3)
+        try:
+            result_get = cli_invoke(cli_runner, cli_server, ["team", "get", team_id])
+            assert result_get.exit_code == 0
+            assert team_id in result_get.output
+            assert "running" in result_get.output.lower()
+        finally:
+            with httpx.Client(base_url=cli_server) as c:
+                c.post(f"/teams/{team_id}/stop")
+                time.sleep(0.3)
 
     def test_cli_message_and_llm_response(
         self,
@@ -190,7 +185,6 @@ class TestCliTeamLifecycle:
         cli_server: str,
     ) -> None:
         """Create a team via CLI, send a message, verify LLM response in events."""
-        # Create team
         result = cli_invoke(
             cli_runner,
             cli_server,
@@ -199,34 +193,32 @@ class TestCliTeamLifecycle:
         )
         assert result.exit_code == 0
         team_id = json.loads(result.output)["team_id"]
+        try:
+            result_msg = cli_invoke(
+                cli_runner,
+                cli_server,
+                ["message", team_id, "Say hello in one word"],
+            )
+            assert result_msg.exit_code == 0
 
-        # Send message via CLI
-        result_msg = cli_invoke(
-            cli_runner,
-            cli_server,
-            ["message", team_id, "Say hello in one word"],
-        )
-        assert result_msg.exit_code == 0
+            with httpx.Client(base_url=cli_server) as c:
+                deadline = time.monotonic() + POLL_TIMEOUT_S
+                events: list[dict[str, object]] = []
+                while time.monotonic() < deadline:
+                    resp = c.get(f"/teams/{team_id}/events")
+                    assert resp.status_code == 200
+                    events = resp.json()["events"]
+                    if has_llm_content(events):
+                        break
+                    time.sleep(POLL_INTERVAL_S)
+                else:
+                    pytest.fail("Timed out waiting for LLM response via CLI message")
 
-        # Poll for LLM response using the REST client directly
-        with httpx.Client(base_url=cli_server) as c:
-            deadline = time.monotonic() + POLL_TIMEOUT_S
-            events: list[dict[str, object]] = []
-            while time.monotonic() < deadline:
-                resp = c.get(f"/teams/{team_id}/events")
-                assert resp.status_code == 200
-                events = resp.json()["events"]
-                if has_llm_content(events):
-                    break
-                time.sleep(POLL_INTERVAL_S)
-            else:
-                pytest.fail("Timed out waiting for LLM response via CLI message")
-
-            assert has_llm_content(events)
-
-            # Cleanup
-            c.post(f"/teams/{team_id}/stop")
-            time.sleep(0.3)
+                assert has_llm_content(events)
+        finally:
+            with httpx.Client(base_url=cli_server) as c:
+                c.post(f"/teams/{team_id}/stop")
+                time.sleep(0.3)
 
     def test_cli_team_delete(
         self,
@@ -261,21 +253,18 @@ class TestCliTeamLifecycle:
         )
         assert result.exit_code == 0
         team_id = json.loads(result.output)["team_id"]
+        try:
+            with httpx.Client(base_url=cli_server) as c:
+                resp = c.post(f"/teams/{team_id}/stop")
+                assert resp.status_code == 204
 
-        # Stop via REST
-        with httpx.Client(base_url=cli_server) as c:
-            resp = c.post(f"/teams/{team_id}/stop")
-            assert resp.status_code == 204
-
-        # Restore via CLI
-        result_restore = cli_invoke(cli_runner, cli_server, ["team", "restore", team_id])
-        assert result_restore.exit_code == 0
-        assert "running" in result_restore.output.lower()
-
-        # Cleanup
-        with httpx.Client(base_url=cli_server) as c:
-            c.post(f"/teams/{team_id}/stop")
-            time.sleep(0.3)
+            result_restore = cli_invoke(cli_runner, cli_server, ["team", "restore", team_id])
+            assert result_restore.exit_code == 0
+            assert "running" in result_restore.output.lower()
+        finally:
+            with httpx.Client(base_url=cli_server) as c:
+                c.post(f"/teams/{team_id}/stop")
+                time.sleep(0.3)
 
     def test_cli_team_events(
         self,
@@ -291,37 +280,33 @@ class TestCliTeamLifecycle:
         )
         assert result.exit_code == 0
         team_id = json.loads(result.output)["team_id"]
+        try:
+            with httpx.Client(base_url=cli_server) as c:
+                c.post(
+                    f"/teams/{team_id}/message",
+                    json={"content": "Say yes"},
+                )
+                deadline = time.monotonic() + POLL_TIMEOUT_S
+                while time.monotonic() < deadline:
+                    resp = c.get(f"/teams/{team_id}/events")
+                    events = resp.json()["events"]
+                    if has_llm_content(events):
+                        break
+                    time.sleep(POLL_INTERVAL_S)
 
-        # Send message and wait for LLM response
-        with httpx.Client(base_url=cli_server) as c:
-            c.post(
-                f"/teams/{team_id}/message",
-                json={"content": "Say yes"},
+            result_events = cli_invoke(cli_runner, cli_server, ["team", "events", team_id])
+            assert result_events.exit_code == 0
+            output = result_events.output.strip()
+            assert len(output) > 0
+            assert (
+                "sequence" in output.lower()
+                or "timestamp" in output.lower()
+                or "event" in output.lower()
             )
-            deadline = time.monotonic() + POLL_TIMEOUT_S
-            while time.monotonic() < deadline:
-                resp = c.get(f"/teams/{team_id}/events")
-                events = resp.json()["events"]
-                if has_llm_content(events):
-                    break
-                time.sleep(POLL_INTERVAL_S)
-
-        # Fetch events via CLI
-        result_events = cli_invoke(cli_runner, cli_server, ["team", "events", team_id])
-        assert result_events.exit_code == 0
-        # Events output should contain event data with sequence/timestamp columns
-        output = result_events.output.strip()
-        assert len(output) > 0
-        assert (
-            "sequence" in output.lower()
-            or "timestamp" in output.lower()
-            or "event" in output.lower()
-        )
-
-        # Cleanup
-        with httpx.Client(base_url=cli_server) as c:
-            c.post(f"/teams/{team_id}/stop")
-            time.sleep(0.3)
+        finally:
+            with httpx.Client(base_url=cli_server) as c:
+                c.post(f"/teams/{team_id}/stop")
+                time.sleep(0.3)
 
     def test_cli_json_format(
         self,
@@ -345,6 +330,31 @@ class TestCliTeamLifecycle:
 # ---------------------------------------------------------------------------
 
 
+class _StubRenderer:
+    """Lightweight renderer stub that captures agent messages without MagicMock."""
+
+    def __init__(self) -> None:
+        self.agent_messages: list[str] = []
+
+    def render_agent_message(self, sender: str, content: str) -> None:
+        self.agent_messages.append(f"{sender}: {content}")
+
+    def render_system_message(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_error(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_tool_call(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_human_input_request(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_history_separator(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
 class TestCliChat:
     """Integration tests for the interactive chat REPL."""
 
@@ -366,16 +376,7 @@ class TestCliChat:
         )
 
         # Track rendered events to verify WebSocket delivery
-        rendered_events: list[str] = []
-        renderer = MagicMock()
-        renderer.render_agent_message = lambda sender, content: rendered_events.append(
-            f"{sender}: {content}"
-        )
-        renderer.render_system_message = MagicMock()
-        renderer.render_error = MagicMock()
-        renderer.render_tool_call = MagicMock()
-        renderer.render_human_input_request = MagicMock()
-        renderer.render_history_separator = MagicMock()
+        renderer = _StubRenderer()
 
         session = ChatSession(
             api_client,
@@ -386,8 +387,8 @@ class TestCliChat:
             renderer=renderer,
         )
 
-        # Mock stdin: send a message, wait for LLM to respond, then /quit.
-        # After /quit the mock must block (not StopIteration) so the session
+        # Stub stdin: send a message, wait for LLM to respond, then /quit.
+        # After /quit the stub must block (not StopIteration) so the session
         # exits cleanly through the /quit break rather than an exception.
         def _mock_read_input(_prompt: str) -> str:
             nonlocal call_count
@@ -397,8 +398,6 @@ class TestCliChat:
             if call_count == 2:
                 return "/quit"
             # After /quit: block until cancelled (session should have exited)
-            import threading
-
             threading.Event().wait(timeout=30)
             return "/quit"
 
@@ -413,7 +412,7 @@ class TestCliChat:
 
         try:
             asyncio.run(_run_session())
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             pass  # session may not exit instantly after /quit
 
         # Cleanup — MUST run before assertion to avoid actor system hang
@@ -422,7 +421,7 @@ class TestCliChat:
         time.sleep(0.5)
 
         # Verify at least one WebSocket event was rendered (AC #2)
-        assert len(rendered_events) > 0, (
+        assert len(renderer.agent_messages) > 0, (
             "ChatSession received no WebSocket events — expected at least one agent message"
         )
 
@@ -491,39 +490,39 @@ class TestCliWorkspace:
         assert result.exit_code == 0
         team_id = json.loads(result.output)["team_id"]
 
-        # Write a temp file
-        test_file = tmp_path / "hello.txt"
-        test_content = "Hello from CLI integration test!"
-        test_file.write_text(test_content)
+        try:
+            # Write a temp file
+            test_file = tmp_path / "hello.txt"
+            test_content = "Hello from CLI integration test!"
+            test_file.write_text(test_content)
 
-        # Upload via CLI
-        result_upload = cli_invoke(
-            cli_runner,
-            cli_server,
-            ["workspace", "upload", team_id, str(test_file)],
-        )
-        assert result_upload.exit_code == 0
-        assert "Uploaded" in result_upload.output
+            # Upload via CLI
+            result_upload = cli_invoke(
+                cli_runner,
+                cli_server,
+                ["workspace", "upload", team_id, str(test_file)],
+            )
+            assert result_upload.exit_code == 0
+            assert "Uploaded" in result_upload.output
 
-        # Tree via CLI
-        result_tree = cli_invoke(
-            cli_runner,
-            cli_server,
-            ["workspace", "tree", team_id],
-        )
-        assert result_tree.exit_code == 0
-        assert "hello.txt" in result_tree.output
+            # Tree via CLI
+            result_tree = cli_invoke(
+                cli_runner,
+                cli_server,
+                ["workspace", "tree", team_id],
+            )
+            assert result_tree.exit_code == 0
+            assert "hello.txt" in result_tree.output
 
-        # Read via CLI
-        result_read = cli_invoke(
-            cli_runner,
-            cli_server,
-            ["workspace", "read", team_id, "hello.txt"],
-        )
-        assert result_read.exit_code == 0
-        assert test_content in result_read.output
-
-        # Cleanup
-        with httpx.Client(base_url=cli_server) as c:
-            c.post(f"/teams/{team_id}/stop")
-            time.sleep(0.3)
+            # Read via CLI
+            result_read = cli_invoke(
+                cli_runner,
+                cli_server,
+                ["workspace", "read", team_id, "hello.txt"],
+            )
+            assert result_read.exit_code == 0
+            assert test_content in result_read.output
+        finally:
+            with httpx.Client(base_url=cli_server) as c:
+                c.post(f"/teams/{team_id}/stop")
+                time.sleep(0.3)

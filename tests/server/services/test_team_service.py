@@ -82,6 +82,27 @@ def test_delete_team_not_found_raises(team_service: TeamService) -> None:
         team_service.delete_team(uuid.uuid4())
 
 
+# ---------------------------------------------------------------------------
+# Reclassified from integration/test_adr003_tier_agnostic.py
+# Source inspection; no real app needed.
+# ---------------------------------------------------------------------------
+
+
+class TestTeamServiceImports:
+    """Verify TeamService module does not import actor internals."""
+
+    def test_team_service_has_no_actor_internal_imports(self) -> None:
+        """TeamService module does not import actor internals."""
+        import inspect
+
+        from akgentic.infra.server.services import team_service as ts_module
+
+        source = inspect.getsource(ts_module)
+        forbidden = ["TeamManager", "ActorSystem", "LocalTeamHandle", "CommunityServices"]
+        for name in forbidden:
+            assert name not in source, f"TeamService module must not import {name}"
+
+
 class TestTeamServiceLogging:
     """TeamService emits expected log messages."""
 

@@ -45,14 +45,15 @@ class TestAppFactory:
         settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
         _seed_integration_catalog(settings.workspaces_root / "catalog")
         services = wire_community(settings)
-        app = create_app(services, settings)
-        client = TestClient(app)
+        try:
+            app = create_app(services, settings)
+            client = TestClient(app)
 
-        resp = client.get("/teams/")
-        assert resp.status_code == 200
-        assert "teams" in resp.json()
-
-        services.actor_system.shutdown()
+            resp = client.get("/teams/")
+            assert resp.status_code == 200
+            assert "teams" in resp.json()
+        finally:
+            services.actor_system.shutdown()
 
     def test_team_create_get_delete_via_test_client(
         self,
@@ -61,25 +62,24 @@ class TestAppFactory:
     ) -> None:
         """AC #1: Team create/get/delete work through TestClient."""
         team_id = create_team(integration_client)
+        try:
+            resp = integration_client.get(f"/teams/{team_id}")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
 
-        # GET returns the team
-        resp = integration_client.get(f"/teams/{team_id}")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
+            integration_client.post(f"/teams/{team_id}/stop")
+            time.sleep(0.5)
 
-        # Stop then delete
-        integration_client.post(f"/teams/{team_id}/stop")
-        time.sleep(0.5)
+            resp = integration_client.delete(f"/teams/{team_id}")
+            assert resp.status_code == 204
 
-        resp = integration_client.delete(f"/teams/{team_id}")
-        assert resp.status_code == 204
-
-        # GET after delete returns 404 or deleted status
-        resp = integration_client.get(f"/teams/{team_id}")
-        if resp.status_code == 200:
-            assert resp.json()["status"] == "deleted"
-        else:
-            assert resp.status_code == 404
+            resp = integration_client.get(f"/teams/{team_id}")
+            if resp.status_code == 200:
+                assert resp.json()["status"] == "deleted"
+            else:
+                assert resp.status_code == 404
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
 
 
 # ---------------------------------------------------------------------------
@@ -95,37 +95,34 @@ class TestRuntimeCacheLifecycle:
         integration_client: TestClient,
         integration_app: FastAPI,
     ) -> None:
-        """AC #2: Full RuntimeCache lifecycle — create, stop, restore, delete."""
+        """AC #2: Full RuntimeCache lifecycle -- create, stop, restore, delete."""
         cache = integration_app.state.services.runtime_cache
-
-        # 1. Create team -> cache.get(team_id) is not None
         team_id_str = create_team(integration_client)
-        team_id = uuid.UUID(team_id_str)
-        assert cache.get(team_id) is not None, "RuntimeCache should hold handle after create"
+        try:
+            team_id = uuid.UUID(team_id_str)
+            assert cache.get(team_id) is not None
 
-        # 2. Stop team -> cache.get(team_id) returns None
-        resp = integration_client.post(f"/teams/{team_id_str}/stop")
-        assert resp.status_code == 204
-        assert cache.get(team_id) is None, "RuntimeCache should be empty after stop"
+            resp = integration_client.post(f"/teams/{team_id_str}/stop")
+            assert resp.status_code == 204
+            assert cache.get(team_id) is None
 
-        # 3. Verify events still accessible (event store preserved)
-        resp = integration_client.get(f"/teams/{team_id_str}/events")
-        assert resp.status_code == 200
-        events = resp.json()["events"]
-        assert len(events) >= 1, "Events should be preserved after stop"
+            resp = integration_client.get(f"/teams/{team_id_str}/events")
+            assert resp.status_code == 200
+            events = resp.json()["events"]
+            assert len(events) >= 1
 
-        # 4. Restore team -> cache.get(team_id) is not None again
-        resp = integration_client.post(f"/teams/{team_id_str}/restore")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
-        assert cache.get(team_id) is not None, "RuntimeCache should hold handle after restore"
+            resp = integration_client.post(f"/teams/{team_id_str}/restore")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
+            assert cache.get(team_id) is not None
 
-        # 5. Delete team -> team gone
-        resp = integration_client.post(f"/teams/{team_id_str}/stop")
-        assert resp.status_code == 204
-        resp = integration_client.delete(f"/teams/{team_id_str}")
-        assert resp.status_code == 204
-        assert cache.get(team_id) is None, "RuntimeCache should be empty after delete"
+            resp = integration_client.post(f"/teams/{team_id_str}/stop")
+            assert resp.status_code == 204
+            resp = integration_client.delete(f"/teams/{team_id_str}")
+            assert resp.status_code == 204
+            assert cache.get(team_id) is None
+        finally:
+            integration_client.post(f"/teams/{team_id_str}/stop")
 
 
 # ---------------------------------------------------------------------------
@@ -142,25 +139,24 @@ class TestWebSocketTeamHandle:
     ) -> None:
         """AC #4: Create team, open WS, verify events arrive via TeamHandle."""
         team_id = create_team(integration_client)
+        try:
+            with integration_client.websocket_connect(f"/ws/{team_id}") as ws:
+                time.sleep(0.3)
+                integration_client.post(
+                    f"/teams/{team_id}/message",
+                    json={"content": "Say hello"},
+                )
 
-        with integration_client.websocket_connect(f"/ws/{team_id}") as ws:
-            time.sleep(0.3)
-            integration_client.post(
-                f"/teams/{team_id}/message",
-                json={"content": "Say hello"},
-            )
-
-            data = ws.receive_json(mode="text")
-            assert isinstance(data, dict)
-            assert "__model__" in data
-            model = str(data.get("__model__", ""))
-            assert "SentMessage" in model or "ReceivedMessage" in model, (
-                f"Expected SentMessage or ReceivedMessage, got: {model}"
-            )
-
-        # Stop team to avoid LLM-in-flight hang
-        integration_client.post(f"/teams/{team_id}/stop")
-        time.sleep(0.5)
+                data = ws.receive_json(mode="text")
+                assert isinstance(data, dict)
+                assert "__model__" in data
+                model = str(data.get("__model__", ""))
+                assert "SentMessage" in model or "ReceivedMessage" in model, (
+                    f"Expected SentMessage or ReceivedMessage, got: {model}"
+                )
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
+            time.sleep(0.5)
 
     def test_ws_send_message_via_rest_receive_via_ws(
         self,
@@ -168,22 +164,20 @@ class TestWebSocketTeamHandle:
     ) -> None:
         """AC #4: Send message via REST, verify WS receives events, close cleanly."""
         team_id = create_team(integration_client)
+        try:
+            with integration_client.websocket_connect(f"/ws/{team_id}") as ws:
+                time.sleep(0.3)
+                integration_client.post(
+                    f"/teams/{team_id}/message",
+                    json={"content": "Say yes"},
+                )
 
-        with integration_client.websocket_connect(f"/ws/{team_id}") as ws:
-            time.sleep(0.3)
-            integration_client.post(
-                f"/teams/{team_id}/message",
-                json={"content": "Say yes"},
-            )
+                data = ws.receive_json(mode="text")
+                assert isinstance(data, dict)
+                assert "__model__" in data
 
-            data = ws.receive_json(mode="text")
-            assert isinstance(data, dict)
-            assert "__model__" in data
-
-        # WS closed — verify no errors accessing team
-        resp = integration_client.get(f"/teams/{team_id}")
-        assert resp.status_code == 200
-
-        # Stop team
-        integration_client.post(f"/teams/{team_id}/stop")
-        time.sleep(0.5)
+            resp = integration_client.get(f"/teams/{team_id}")
+            assert resp.status_code == 200
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
+            time.sleep(0.5)

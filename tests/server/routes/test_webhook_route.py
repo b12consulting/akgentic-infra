@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -85,15 +86,30 @@ class StubIngestion:
 # ---------------------------------------------------------------------------
 
 
-def _build_parser_registry(parser: StubParser) -> ChannelParserRegistry:
+def _build_parser_registry(
+    parser: StubParser,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> ChannelParserRegistry:
     """Build a ChannelParserRegistry with a pre-registered stub parser.
 
-    Uses __new__ to bypass the constructor which requires importable FQCNs.
-    The webhook route only needs get_parser(), so adapter resolution is irrelevant.
+    Constructs via the public API with an empty config, then monkeypatches
+    get_parser to return the stub. This avoids __new__ hacks and private
+    attribute access.
     """
-    registry = ChannelParserRegistry.__new__(ChannelParserRegistry)
-    registry._parsers = {parser.channel_name: parser}  # noqa: SLF001
-    registry._adapters = []  # noqa: SLF001
+    registry = ChannelParserRegistry(channels_config={})
+
+    original_get_parser = registry.get_parser
+
+    def _patched_get_parser(channel_name: str) -> StubParser | None:
+        if channel_name == parser.channel_name:
+            return parser  # type: ignore[return-value]
+        return original_get_parser(channel_name)
+
+    if monkeypatch is not None:
+        monkeypatch.setattr(registry, "get_parser", _patched_get_parser)
+    else:
+        registry.get_parser = _patched_get_parser  # type: ignore[assignment]
+
     return registry
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -118,6 +119,21 @@ def seed_integration_catalog(catalog_root: Path) -> None:
     )
     (catalog_root / "templates").mkdir(parents=True, exist_ok=True)
     (catalog_root / "tools").mkdir(parents=True, exist_ok=True)
+
+
+def poll_until(
+    predicate: Callable[[], bool],
+    timeout: float = 5.0,
+    interval: float = 0.1,
+    message: str = "Condition not met within timeout",
+) -> None:
+    """Poll predicate until True or raise TimeoutError after timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(interval)
+    raise TimeoutError(message)
 
 
 def has_llm_content(events: list[dict[str, object]]) -> bool:
