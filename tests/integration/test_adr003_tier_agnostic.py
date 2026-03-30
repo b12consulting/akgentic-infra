@@ -107,6 +107,7 @@ class TestWorkerHandleLifecycle:
             assert cache.get(team_id) is not None
         finally:
             integration_client.post(f"/teams/{team_id_str}/stop")
+            # No pollable condition for teardown; sleep for actor cleanup
             time.sleep(0.5)
 
     def test_stop_team_via_worker_handle(
