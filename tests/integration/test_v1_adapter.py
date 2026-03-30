@@ -55,7 +55,7 @@ def _create_v1_team(client: TestClient) -> str:
     assert resp.status_code == 200
     data = resp.json()
     assert "id" in data
-    return data["id"]
+    return str(data["id"])
 
 
 def _wait_for_v1_messages(
@@ -356,13 +356,15 @@ class TestV1WebSocketEnvelopes:
                         break
                     attempts += 1
 
-                if found_message:
-                    assert payload["type"] == "message"
-                    assert "id" in payload
-                    assert "sender" in payload
-                    assert "content" in payload
-                    assert "timestamp" in payload
-                    assert "message_type" in payload
+                assert found_message, (
+                    "No 'message' envelope received from WS after 20 attempts"
+                )
+                assert payload["type"] == "message"
+                assert "id" in payload
+                assert "sender" in payload
+                assert "content" in payload
+                assert "timestamp" in payload
+                assert "message_type" in payload
         finally:
             v1_adapter_client.delete(f"/process/{team_id}/archive")
             time.sleep(0.5)
@@ -451,7 +453,7 @@ class TestV1WebSocketEnvelopes:
                 name="@TestAgent",
                 role="Tester",
                 team_id=str(uuid.uuid4()),
-                squad_id=None,
+                squad_id="",
                 user_message=False,
             )
         )
