@@ -2,44 +2,26 @@
 
 from __future__ import annotations
 
-import asyncio
-import io
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import websockets.exceptions
-from rich.console import Console
 
 from akgentic.infra.cli.client import EventInfo
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession, _print_event, _render_event_impl
 
-
-def _captured_renderer() -> tuple[RichRenderer, io.StringIO]:
-    """Build a RichRenderer that captures output to a StringIO buffer."""
-    buf = io.StringIO()
-    console = Console(file=buf, force_terminal=True, width=120, no_color=True)
-    return RichRenderer(console=console), buf
+from .conftest import captured_renderer as _captured_renderer
+from .conftest import mock_client as _shared_mock_client
+from .conftest import mock_ws as _mock_ws
 
 
 def _mock_client(**overrides: Any) -> MagicMock:
-    """Build a mock ApiClient."""
-    mock = MagicMock()
-    mock.get_events.return_value = []
-    mock.send_message.return_value = None
-    for k, v in overrides.items():
-        setattr(mock, k, v)
-    return mock
-
-
-def _mock_ws() -> AsyncMock:
-    """Build a mock WsClient."""
-    ws = AsyncMock()
-    ws.__aenter__ = AsyncMock(return_value=ws)
-    ws.__aexit__ = AsyncMock(return_value=None)
-    ws.receive_event = AsyncMock(side_effect=asyncio.CancelledError)
-    return ws
+    """Build a mock ApiClient with minimal defaults for REPL tests."""
+    defaults: dict[str, Any] = {"get_events": MagicMock(return_value=[])}
+    defaults.update(overrides)
+    return _shared_mock_client(**defaults)
 
 
 def _make_session(
