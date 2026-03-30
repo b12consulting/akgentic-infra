@@ -30,6 +30,7 @@ from akgentic.infra.cli.commands import (
     _upload_handler,
     build_default_registry,
 )
+from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession
 
