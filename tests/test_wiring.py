@@ -13,6 +13,8 @@ from akgentic.infra.adapters.local_placement import LocalPlacement
 from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
 from akgentic.team.ports import NullServiceRegistry, ServiceRegistry
 from akgentic.infra.adapters.no_auth import NoAuth
+from akgentic.infra.adapters.null_channel_registry import NullChannelRegistry
+from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
@@ -89,5 +91,24 @@ class TestWireCommunity:
         services = wire_community(settings)
         try:
             assert services.team_catalog is not None
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_default_channel_registry_is_null(
+        self, services: CommunityServices,
+    ) -> None:
+        """When channel_registry_path is None (default), uses NullChannelRegistry."""
+        assert isinstance(services.channel_registry, NullChannelRegistry)
+
+    def test_channel_registry_path_uses_yaml(self, tmp_path: Path) -> None:
+        """When channel_registry_path is set, uses YamlChannelRegistry."""
+        reg_path = tmp_path / "registry.yaml"
+        settings = CommunitySettings(
+            workspaces_root=tmp_path,
+            channel_registry_path=reg_path,
+        )
+        services = wire_community(settings)
+        try:
+            assert isinstance(services.channel_registry, YamlChannelRegistry)
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)

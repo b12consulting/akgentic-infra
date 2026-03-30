@@ -378,6 +378,7 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 |--------------------------------|----------------|------------------------------------|
 | `AKGENTIC_WORKSPACES_ROOT`     | `workspaces`   | Root directory for team storage    |
 | `AKGENTIC_CATALOG_PATH`        | `None`         | Catalog directory (auto-derived)   |
+| `AKGENTIC_CHANNEL_REGISTRY_PATH` | `None`      | Path to channel registry YAML; disabled when unset |
 
 ## Installation
 

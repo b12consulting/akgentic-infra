@@ -110,6 +110,20 @@ class TestCommunitySettingsDefaults:
         finally:
             del os.environ["AKGENTIC_WORKSPACES_ROOT"]
 
+    def test_default_channel_registry_path(self) -> None:
+        """Default channel_registry_path is None."""
+        settings = CommunitySettings()
+        assert settings.channel_registry_path is None
+
+    def test_channel_registry_path_from_env(self) -> None:
+        """AKGENTIC_CHANNEL_REGISTRY_PATH overrides channel_registry_path field."""
+        os.environ["AKGENTIC_CHANNEL_REGISTRY_PATH"] = "/tmp/reg.yaml"
+        try:
+            settings = CommunitySettings()
+            assert settings.channel_registry_path == Path("/tmp/reg.yaml")
+        finally:
+            del os.environ["AKGENTIC_CHANNEL_REGISTRY_PATH"]
+
     def test_field_descriptions_present(self) -> None:
         """All CommunitySettings fields have descriptions."""
         for name, field_info in CommunitySettings.model_fields.items():
