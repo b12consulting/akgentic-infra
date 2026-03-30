@@ -137,6 +137,10 @@ async def _send_loop(
     """Read from subscriber queue and send over WebSocket."""
     loop = asyncio.get_running_loop()
     q = subscriber.get_queue()
+    # Local sequence counter for frontend adapter framing, NOT the global
+    # persisted event sequence. Resets to 0 on each WebSocket (re)connect.
+    # This is intentional — the frontend uses it for frame ordering within
+    # a single connection, not for durable event ordering.
     seq = 0
     while True:
         try:
@@ -177,7 +181,14 @@ async def _run_idle_loop(
     service: TeamService,
     adapter: FrontendAdapter | None = None,
 ) -> None:
-    """Wait for team restore or client disconnect."""
+    """Wait for team restore or client disconnect.
+
+    The ``timeout=1.0`` polling loop is a signaling mechanism:
+    ``notify_restore()`` sets a subscriber on idle WebSockets via the
+    ConnectionManager, and this loop detects it on the next timeout
+    iteration. Direct signaling is not used because there is no safe
+    way to interrupt a blocking ``receive_text()`` from another thread.
+    """
     conn_mgr.add_waiting(team_id, websocket)
     try:
         while True:

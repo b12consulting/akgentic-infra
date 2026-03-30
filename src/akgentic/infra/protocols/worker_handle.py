@@ -17,7 +17,17 @@ class WorkerHandle(Protocol):
     Abstracts stop/delete/resume/get operations so that ``TeamService``
     can manage team lifecycle without knowing the underlying tier implementation.
 
-    Implementations: LocalWorkerHandle (community), RemoteWorkerHandle (enterprise).
+    Implementations: LocalWorkerHandle (community),
+    RemoteWorkerHandle (department / enterprise).
+
+    Error contract:
+        - ``stop_team()`` raises ``ValueError`` if the team is not running
+          or has been deleted.
+        - ``delete_team()`` raises ``ValueError`` if the team has already
+          been deleted.
+        - ``resume_team()`` raises ``ValueError`` if the team is not in a
+          stopped state (e.g. already running or deleted).
+        - ``get_team()`` returns ``None`` for unknown team IDs (never raises).
     """
 
     def stop_team(self, team_id: uuid.UUID) -> None:

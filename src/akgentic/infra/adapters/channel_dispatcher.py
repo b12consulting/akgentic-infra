@@ -39,7 +39,9 @@ class InteractionChannelDispatcher:
         """Dispatch a SentMessage to all matching adapters.
 
         Skips delivery entirely during restore mode. Ignores non-SentMessage
-        events. Silently skips if no adapter matches.
+        events. Silently skips if no adapter matches — unmatched messages are
+        handled by the web channel (WebSocket subscribers). Absence of an
+        adapter match is not an error.
 
         Args:
             msg: Orchestrator event message.

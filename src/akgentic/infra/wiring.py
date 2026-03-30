@@ -19,7 +19,6 @@ from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistr
 from akgentic.infra.adapters.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.local_placement import LocalPlacement
 from akgentic.infra.adapters.local_runtime_cache import LocalRuntimeCache
-from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
@@ -27,6 +26,7 @@ from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager
+from akgentic.team.ports import NullServiceRegistry, ServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
 
 
@@ -43,13 +43,12 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
         Fully wired CommunityServices container
     """
     event_store = YamlEventStore(data_dir=settings.workspaces_root)
-    service_registry = LocalServiceRegistry()
+    service_registry = NullServiceRegistry()
     actor_system, team_manager = _build_actor_layer(event_store, service_registry)
     catalogs = _build_catalogs(settings)
 
     local_placement = LocalPlacement(team_manager, service_registry)
     local_worker_handle = LocalWorkerHandle(team_manager, service_registry)
-    service_registry.register_instance(local_placement.instance_id)
 
     return CommunityServices(
         placement=local_placement,
@@ -74,7 +73,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
 
 def _build_actor_layer(
     event_store: YamlEventStore,
-    service_registry: LocalServiceRegistry,
+    service_registry: ServiceRegistry,
 ) -> tuple[ActorSystem, TeamManager]:
     """Build ActorSystem and TeamManager."""
     shared_subscribers: list[EventSubscriber] = [TelemetrySubscriber()]

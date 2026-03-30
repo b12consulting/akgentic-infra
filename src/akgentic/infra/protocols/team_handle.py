@@ -19,6 +19,14 @@ class TeamHandle(Protocol):
     event subscriptions without knowing the underlying tier implementation.
 
     Implementations: LocalTeamHandle (community), RemoteTeamHandle (enterprise).
+
+    Error contract:
+        - ``send()`` / ``send_to()`` raise ``ValueError`` if the team is no
+          longer running (handle points to a dead team).
+        - ``process_human_input()`` raises ``ValueError`` if the team's
+          HumanProxy agent cannot be found or the team is not running.
+        - ``subscribe()`` / ``unsubscribe()`` are best-effort — if the
+          orchestrator has already stopped, they may silently fail.
     """
 
     @property
@@ -78,6 +86,11 @@ class RuntimeCache(Protocol):
     interaction without managing the cache structure directly.
 
     Implementations: LocalRuntimeCache (community), RedisRuntimeCache (enterprise).
+
+    Behavioral contract:
+        - ``get()`` returns ``None`` for unknown team IDs (never raises).
+        - ``remove()`` is idempotent — removing an absent ID is a no-op.
+        - ``store()`` overwrites any existing entry for the same team ID.
     """
 
     def store(self, team_id: uuid.UUID, handle: TeamHandle) -> None:

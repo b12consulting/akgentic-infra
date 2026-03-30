@@ -10,8 +10,8 @@ from akgentic.team.manager import TeamManager
 from akgentic.team.repositories.yaml import YamlEventStore
 
 from akgentic.infra.adapters.local_placement import LocalPlacement
-from akgentic.infra.adapters.local_service_registry import LocalServiceRegistry
 from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
+from akgentic.team.ports import NullServiceRegistry, ServiceRegistry
 from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
@@ -45,9 +45,9 @@ class TestWireCommunity:
         """Worker handle is LocalWorkerHandle."""
         assert isinstance(services.worker_handle, LocalWorkerHandle)
 
-    def test_service_registry_is_local(self, services: CommunityServices) -> None:
-        """Service registry is LocalServiceRegistry (community-specific)."""
-        assert isinstance(services.service_registry, LocalServiceRegistry)
+    def test_service_registry_is_null(self, services: CommunityServices) -> None:
+        """Service registry is NullServiceRegistry (write-only, community-tier)."""
+        assert isinstance(services.service_registry, NullServiceRegistry)
 
     def test_event_store_is_yaml(self, services: CommunityServices) -> None:
         """Event store is YamlEventStore."""
@@ -70,14 +70,11 @@ class TestWireCommunity:
         """TeamManager and CommunityServices share the same service registry."""
         assert services.service_registry is services.team_manager._service_registry
 
-    def test_instance_registered_with_service_registry(
+    def test_service_registry_satisfies_protocol(
         self, services: CommunityServices,
     ) -> None:
-        """LocalPlacement's instance_id is registered with ServiceRegistry."""
-        placement = services.placement
-        assert isinstance(placement, LocalPlacement)
-        active = services.service_registry.get_active_instances()
-        assert placement.instance_id in active
+        """Service registry satisfies the ServiceRegistry protocol."""
+        assert isinstance(services.service_registry, ServiceRegistry)
 
     def test_catalog_path_override(self, tmp_path: Path) -> None:
         """wire_community uses settings.catalog_path when set."""

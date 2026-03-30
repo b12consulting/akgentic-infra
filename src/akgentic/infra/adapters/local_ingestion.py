@@ -19,6 +19,15 @@ class LocalIngestion:
     Supports deferred wiring: ``team_service`` can be ``None`` at construction
     time and set later via the property, allowing ``wire_community`` to build
     the ingestion instance before ``TeamService`` exists.
+
+    Deferred wiring pattern:
+        ``team_service`` is ``None`` at construction because
+        ``wire_community()`` must return ``CommunityServices`` before
+        ``TeamService`` exists (TeamService requires CommunityServices).
+        The setter is called later by ``_wire_ingestion`` in ``app.py``.
+        Enterprise implementations won't use this pattern — their ingestion
+        adapters communicate over the network and are fully wired at
+        construction time.
     """
 
     def __init__(self, team_service: TeamService | None = None) -> None:

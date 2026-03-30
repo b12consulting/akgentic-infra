@@ -30,7 +30,14 @@ class InteractionChannelAdapter(Protocol):
     """Delivers outbound messages to humans via an external channel.
 
     Implementations: WebAdapter, TwilioAdapter, SlackAdapter, etc.
-    Called synchronously within the actor thread (see threading model note in architecture).
+
+    Threading constraint:
+        ``deliver()`` runs inside a Pykka actor thread (called from
+        ``InteractionChannelDispatcher.on_message``). Implementations
+        must not block and must not perform unguarded async I/O.
+        If async delivery is needed, use a thread-safe bridge — see
+        ``WebSocketEventSubscriber`` for the correct pattern (enqueue
+        to a ``queue.Queue`` consumed by an asyncio task).
     """
 
     def matches(self, msg: SentMessage) -> bool:
@@ -63,7 +70,15 @@ class InteractionChannelAdapter(Protocol):
 
 @runtime_checkable
 class InteractionChannelIngestion(Protocol):
-    """Routes inbound human replies from external channels to the correct team's UserProxy."""
+    """Routes inbound human replies from external channels to the correct team's UserProxy.
+
+    Error contract:
+        - ``route_reply()`` raises ``ValueError`` if ``team_id`` does not
+          correspond to a running team.
+        - ``initiate_team()`` raises ``EntryNotFoundError`` (from
+          ``akgentic.catalog``) if ``catalog_entry_id`` is invalid.
+        Callers (webhook routes) should catch and map to HTTP 404.
+    """
 
     async def route_reply(
         self,
@@ -77,6 +92,9 @@ class InteractionChannelIngestion(Protocol):
             team_id: Target team ID.
             content: Message content from the human.
             original_message_id: Optional ID of the message being replied to.
+
+        Raises:
+            ValueError: If team_id does not correspond to a running team.
         """
         ...
 
@@ -95,6 +113,9 @@ class InteractionChannelIngestion(Protocol):
 
         Returns:
             The newly created team's ID.
+
+        Raises:
+            EntryNotFoundError: If catalog_entry_id is not found in catalog.
         """
         ...
 
@@ -113,7 +134,13 @@ class ChannelParser(Protocol):
 
     @property
     def default_catalog_entry(self) -> str:
-        """Default catalog entry ID to use when initiating a new team."""
+        """Default catalog entry ID to use when initiating a new team.
+
+        Used when ``ChannelRegistry.find_team()`` returns ``None`` (no
+        existing team for this channel user). The ingestion layer passes
+        this value to ``initiate_team(catalog_entry_id=...)`` to create
+        a new team from the channel's default template.
+        """
         ...
 
     async def parse(self, payload: dict[str, JsonValue]) -> ChannelMessage:
@@ -133,6 +160,12 @@ class ChannelRegistry(Protocol):
     """Maps external channel users to active teams.
 
     Runs in FastAPI async context — uses async signatures.
+
+    Implementations:
+
+    - **Community** (``YamlChannelRegistry``): YAML file on disk.
+    - **Department / Enterprise**: Redis or DB-backed registry for
+      multi-instance deployments.
     """
 
     async def register(

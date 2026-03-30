@@ -40,6 +40,9 @@ class TeamService:
         )
         handle = self._services.placement.create_team(team_card, user_id)
         self._cache.store(handle.team_id, handle)
+        # Consistency invariant: create_team() writes to event store, so
+        # get_team() must find it immediately. If this fires, there is a bug
+        # in placement or event store — not a transient race condition.
         process = self._services.worker_handle.get_team(handle.team_id)
         if process is None:  # pragma: no cover
             msg = f"Team {handle.team_id} was created but not found in event store"
