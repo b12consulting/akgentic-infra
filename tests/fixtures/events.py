@@ -21,7 +21,7 @@ from typing import Any
 
 from akgentic.core.actor_address_impl import ActorAddressProxy
 from akgentic.core.agent_config import BaseConfig
-from akgentic.core.messages.message import Message, UserMessage
+from akgentic.core.messages.message import UserMessage
 from akgentic.core.messages.orchestrator import (
     ErrorMessage,
     EventMessage,

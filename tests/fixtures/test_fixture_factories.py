@@ -7,10 +7,6 @@ direct dataclass construction (for frozen dataclasses).
 
 from __future__ import annotations
 
-import dataclasses
-
-import pytest
-
 from akgentic.core.messages.orchestrator import (
     ErrorMessage,
     EventMessage,
@@ -19,9 +15,9 @@ from akgentic.core.messages.orchestrator import (
     SentMessage,
     StartMessage,
 )
-from akgentic.infra.cli.client import EventInfo, TeamInfo
 from akgentic.llm.event import LlmUsageEvent, ToolCallEvent, ToolReturnEvent
 
+from akgentic.infra.cli.client import EventInfo, TeamInfo
 from tests.fixtures.events import (
     make_error_message,
     make_event_message,
@@ -34,7 +30,6 @@ from tests.fixtures.events import (
     make_tool_return_event,
 )
 from tests.fixtures.models import make_event_info, make_team_info
-
 
 # ---------------------------------------------------------------------------
 # Core event round-trip tests — zero overrides
@@ -115,6 +110,13 @@ class TestStartMessageFactory:
         model = StartMessage.model_validate(data)
         assert model.config.name == "custom-agent"
 
+    def test_override_appears_in_output(self) -> None:
+        from akgentic.core.agent_config import BaseConfig
+
+        custom_cfg = BaseConfig(name="overridden-agent", role="custom")
+        data = make_start_message(config=custom_cfg)
+        assert data["config"]["name"] == "overridden-agent"
+
 
 class TestReceivedMessageFactory:
     """Round-trip tests for make_received_message."""
@@ -155,6 +157,13 @@ class TestProcessedMessageFactory:
         data = make_processed_message(message_id=custom_id)
         model = ProcessedMessage.model_validate(data)
         assert model.message_id == custom_id
+
+    def test_override_appears_in_output(self) -> None:
+        import uuid
+
+        custom_id = uuid.uuid4()
+        data = make_processed_message(message_id=custom_id)
+        assert data["message_id"] == str(custom_id)
 
 
 # ---------------------------------------------------------------------------
