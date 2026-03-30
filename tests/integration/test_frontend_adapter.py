@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
 # ---------------------------------------------------------------------------
 # Helpers

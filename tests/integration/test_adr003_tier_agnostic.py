@@ -26,7 +26,7 @@ from akgentic.infra.wiring import wire_community
 
 from ._helpers import create_team
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
 
 # ---------------------------------------------------------------------------

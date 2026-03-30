@@ -21,7 +21,7 @@ from ._helpers import (
     wait_for_llm_response,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
 FOLLOWUP_CONTENT = "What is 7 + 7? Answer with the number."
 

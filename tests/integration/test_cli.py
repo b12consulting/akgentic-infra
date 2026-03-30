@@ -33,7 +33,7 @@ from ._helpers import (
     has_llm_content,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
 
 # ---------------------------------------------------------------------------

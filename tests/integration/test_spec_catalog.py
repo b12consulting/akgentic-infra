@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
 
 # ---------------------------------------------------------------------------

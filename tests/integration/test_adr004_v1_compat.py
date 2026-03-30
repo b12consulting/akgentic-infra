@@ -22,7 +22,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
 CATALOG_ENTRY_ID = "test-team"
 POLL_INTERVAL_S = 1.0

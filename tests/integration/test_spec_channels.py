@@ -21,7 +21,7 @@ from akgentic.infra.adapters.channel_parser_registry import (
 
 from .test_channels import StubChannelAdapter
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
 
 # ---------------------------------------------------------------------------
