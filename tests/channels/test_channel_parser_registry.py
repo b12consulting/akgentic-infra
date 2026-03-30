@@ -321,3 +321,81 @@ def test_channel_config_is_pydantic_model() -> None:
     assert "parser_fqcn" in fields
     assert "adapter_fqcn" in fields
     assert "config" in fields
+
+
+# ---------------------------------------------------------------------------
+# Reclassified from integration/test_spec_channels.py — TestChannelConfigPassthrough
+# Uses monkeypatch + direct construction; no real app needed.
+# ---------------------------------------------------------------------------
+
+
+class _StubParserWithConfig:
+    """Parser stub that captures constructor config args."""
+
+    received_config: dict[str, str]
+
+    def __init__(self, **kwargs: str) -> None:
+        _StubParserWithConfig.received_config = dict(kwargs)
+
+    @property
+    def channel_name(self) -> str:
+        return "config-test-channel"
+
+    @property
+    def default_catalog_entry(self) -> str:
+        return "test-team"
+
+    async def parse(self, payload: dict[str, object]) -> None:
+        pass  # pragma: no cover
+
+
+class _StubAdapterWithConfig:
+    """Adapter stub that captures constructor config args."""
+
+    received_config: dict[str, str]
+
+    def __init__(self, **kwargs: str) -> None:
+        _StubAdapterWithConfig.received_config = dict(kwargs)
+
+    def matches(self, msg: object) -> bool:
+        return True  # pragma: no cover
+
+    def deliver(self, msg: object) -> None:
+        pass  # pragma: no cover
+
+    def on_stop(self, team_id: uuid.UUID) -> None:
+        pass  # pragma: no cover
+
+
+class TestChannelConfigPassthrough:
+    """Verify ChannelConfig.config values reach adapter/parser constructors."""
+
+    def test_config_dict_reaches_constructors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configure channel with config dict, verify it reaches constructors."""
+        monkeypatch.setattr(
+            "akgentic.infra.adapters.channel_parser_registry.import_class",
+            lambda fqcn: (
+                _StubParserWithConfig if "Parser" in fqcn else _StubAdapterWithConfig
+            ),
+        )
+
+        config = {
+            "test-chan": ChannelConfig(
+                parser_fqcn="fake.module.Parser",
+                adapter_fqcn="fake.module.Adapter",
+                config={"key": "value", "api_token": "secret123"},
+            )
+        }
+
+        ChannelParserRegistry(channels_config=config)
+
+        assert _StubParserWithConfig.received_config == {
+            "key": "value",
+            "api_token": "secret123",
+        }
+        assert _StubAdapterWithConfig.received_config == {
+            "key": "value",
+            "api_token": "secret123",
+        }

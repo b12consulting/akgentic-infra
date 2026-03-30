@@ -32,11 +32,7 @@ FOLLOWUP_CONTENT = "What is 7 + 7? Answer with the number."
 
 
 class StubChannelParser:
-    """Stub ChannelParser for integration tests.
-
-    Satisfies the ChannelParser protocol via structural subtyping.
-    Parses a simple dict payload into a ChannelMessage.
-    """
+    """Stub ChannelParser for integration tests."""
 
     @property
     def channel_name(self) -> str:
@@ -65,25 +61,19 @@ class StubChannelParser:
 
 
 class StubChannelAdapter:
-    """Stub InteractionChannelAdapter for integration tests.
-
-    Captures outbound SentMessage events in a shared list.
-    Matches all messages (returns True for every SentMessage).
-    """
+    """Stub InteractionChannelAdapter for integration tests."""
 
     def __init__(self) -> None:
         self.delivered: list[SentMessage] = []
 
     def matches(self, msg: SentMessage) -> bool:  # noqa: ARG002
-        """Match all messages."""
         return True
 
     def deliver(self, msg: SentMessage) -> None:
-        """Capture delivered message."""
         self.delivered.append(msg)
 
     def on_stop(self, team_id: uuid.UUID) -> None:  # noqa: ARG002
-        """No-op cleanup."""
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +122,14 @@ class TestChannelInitiation:
         )
         assert team_id is not None, "Channel registry should map ext-user-1 after initiation"
 
-        events = wait_for_llm_response(
-            channel_client,
-            str(team_id),
-        )
-        assert has_llm_content(events)
-
-        # Stop the team to allow clean actor system teardown
-        channel_client.post(f"/teams/{team_id}/stop")
+        try:
+            events = wait_for_llm_response(
+                channel_client,
+                str(team_id),
+            )
+            assert has_llm_content(events)
+        finally:
+            channel_client.post(f"/teams/{team_id}/stop")
 
 
 class TestChannelReply:
@@ -156,21 +146,21 @@ class TestChannelReply:
         assert create_resp.status_code == 201
         team_id = create_resp.json()["team_id"]
 
-        resp = channel_client.post(
-            "/webhook/test-channel",
-            json={
-                "content": "What is 3 + 3? Answer with the number.",
-                "channel_user_id": "ext-user-2",
-                "team_id": team_id,
-            },
-        )
-        assert resp.status_code == 204
+        try:
+            resp = channel_client.post(
+                "/webhook/test-channel",
+                json={
+                    "content": "What is 3 + 3? Answer with the number.",
+                    "channel_user_id": "ext-user-2",
+                    "team_id": team_id,
+                },
+            )
+            assert resp.status_code == 204
 
-        events = wait_for_llm_response(channel_client, team_id)
-        assert has_llm_content(events)
-
-        # Stop the team to allow clean actor system teardown
-        channel_client.post(f"/teams/{team_id}/stop")
+            events = wait_for_llm_response(channel_client, team_id)
+            assert has_llm_content(events)
+        finally:
+            channel_client.post(f"/teams/{team_id}/stop")
 
 
 class TestChannelContinuation:
@@ -199,66 +189,57 @@ class TestChannelContinuation:
         )
         assert team_id is not None, "Channel registry should have mapping after initiation"
 
-        # Wait for LLM to process first message before sending follow-up
-        wait_for_llm_response(channel_client, str(team_id))
+        try:
+            wait_for_llm_response(channel_client, str(team_id))
 
-        # Step 2: Follow-up with same channel_user_id, no team_id
-        resp = channel_client.post(
-            "/webhook/test-channel",
-            json={
-                "content": FOLLOWUP_CONTENT,
-                "channel_user_id": "ext-user-cont",
-            },
-        )
-        assert resp.status_code == 204
-
-        # Verify follow-up is routed to the SAME team
-        deadline = time.monotonic() + POLL_TIMEOUT_S
-        found_followup = False
-        while time.monotonic() < deadline:
-            ev_resp = channel_client.get(
-                f"/teams/{team_id}/events",
+            # Step 2: Follow-up with same channel_user_id, no team_id
+            resp = channel_client.post(
+                "/webhook/test-channel",
+                json={
+                    "content": FOLLOWUP_CONTENT,
+                    "channel_user_id": "ext-user-cont",
+                },
             )
-            assert ev_resp.status_code == 200
-            events = ev_resp.json()["events"]
-            for ev_wrapper in events:
-                ev = ev_wrapper["event"]
-                if not isinstance(ev, dict):
-                    continue
-                content = ev.get("content")
-                if content == FOLLOWUP_CONTENT:
-                    found_followup = True
-                    break
-                msg = ev.get("message")
-                if isinstance(msg, dict) and msg.get("content") == FOLLOWUP_CONTENT:
-                    found_followup = True
-                    break
-            if found_followup:
-                break
-            time.sleep(POLL_INTERVAL_S)
+            assert resp.status_code == 204
 
-        assert found_followup, (
-            "Follow-up message should appear in the same team's "
-            "events (continuation flow via channel_user_id)"
-        )
+            # Verify follow-up is routed to the SAME team
+            deadline = time.monotonic() + POLL_TIMEOUT_S
+            found_followup = False
+            while time.monotonic() < deadline:
+                ev_resp = channel_client.get(f"/teams/{team_id}/events")
+                assert ev_resp.status_code == 200
+                events = ev_resp.json()["events"]
+                for ev_wrapper in events:
+                    ev = ev_wrapper["event"]
+                    if not isinstance(ev, dict):
+                        continue
+                    content = ev.get("content")
+                    if content == FOLLOWUP_CONTENT:
+                        found_followup = True
+                        break
+                    msg = ev.get("message")
+                    if isinstance(msg, dict) and msg.get("content") == FOLLOWUP_CONTENT:
+                        found_followup = True
+                        break
+                if found_followup:
+                    break
+                time.sleep(POLL_INTERVAL_S)
 
-        # Stop the team to allow clean actor system teardown
-        channel_client.post(f"/teams/{team_id}/stop")
+            assert found_followup, (
+                "Follow-up message should appear in the same team's "
+                "events (continuation flow via channel_user_id)"
+            )
+        finally:
+            channel_client.post(f"/teams/{team_id}/stop")
 
 
 class TestDispatcherRestoreSuppression:
-    """AC #4: Stop/restore preserves events without duplicating them.
-
-    Uses the same channel_client to verify the channel-enabled app
-    handles the stop/restore lifecycle correctly. Does not send
-    messages requiring LLM, avoiding rate-limit contention.
-    """
+    """AC #4: Stop/restore preserves events without duplicating them."""
 
     def test_restore_cycle_preserves_events(
         self,
         channel_client: TestClient,
     ) -> None:
-        # Create team via REST (no LLM call needed)
         create_resp = channel_client.post(
             "/teams/",
             json={"catalog_entry_id": "test-team"},
@@ -266,32 +247,27 @@ class TestDispatcherRestoreSuppression:
         assert create_resp.status_code == 201
         team_id = create_resp.json()["team_id"]
 
-        # Verify running
-        resp = channel_client.get(f"/teams/{team_id}")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
+        try:
+            resp = channel_client.get(f"/teams/{team_id}")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
 
-        # Count initial events (team creation events)
-        ev_resp = channel_client.get(f"/teams/{team_id}/events")
-        assert ev_resp.status_code == 200
-        events_before = len(ev_resp.json()["events"])
+            ev_resp = channel_client.get(f"/teams/{team_id}/events")
+            assert ev_resp.status_code == 200
+            events_before = len(ev_resp.json()["events"])
 
-        # Stop
-        resp = channel_client.post(f"/teams/{team_id}/stop")
-        assert resp.status_code == 204
-        resp = channel_client.get(f"/teams/{team_id}")
-        assert resp.json()["status"] == "stopped"
+            resp = channel_client.post(f"/teams/{team_id}/stop")
+            assert resp.status_code == 204
+            resp = channel_client.get(f"/teams/{team_id}")
+            assert resp.json()["status"] == "stopped"
 
-        # Restore
-        resp = channel_client.post(f"/teams/{team_id}/restore")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
+            resp = channel_client.post(f"/teams/{team_id}/restore")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
 
-        # Events preserved (not duplicated by restore replay)
-        ev_resp = channel_client.get(f"/teams/{team_id}/events")
-        assert ev_resp.status_code == 200
-        events_after = ev_resp.json()["events"]
-        assert len(events_after) == events_before
-
-        # Stop the team to allow clean actor system teardown
-        channel_client.post(f"/teams/{team_id}/stop")
+            ev_resp = channel_client.get(f"/teams/{team_id}/events")
+            assert ev_resp.status_code == 200
+            events_after = ev_resp.json()["events"]
+            assert len(events_after) == events_before
+        finally:
+            channel_client.post(f"/teams/{team_id}/stop")

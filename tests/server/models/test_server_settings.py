@@ -119,6 +119,124 @@ class TestServerSettingsModel:
             assert field_info.description is not None, f"Field {name} missing description"
 
 
+# ---------------------------------------------------------------------------
+# Reclassified from integration/test_adr003_tier_agnostic.py — TestSettingsHierarchy
+# Pure model field inspection; no real app needed.
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsHierarchy:
+    """Verify ServerSettings / CommunitySettings hierarchy."""
+
+    def test_server_settings_has_only_tier_agnostic_fields(self) -> None:
+        """ServerSettings has only tier-agnostic fields."""
+        server_fields = set(ServerSettings.model_fields.keys())
+        expected = {"host", "port", "log_level", "cors_origins", "frontend_adapter"}
+        assert server_fields == expected, (
+            f"ServerSettings fields mismatch: got {server_fields}, expected {expected}"
+        )
+
+    def test_community_settings_extends_server_settings(self) -> None:
+        """CommunitySettings is a subclass of ServerSettings."""
+        assert issubclass(CommunitySettings, ServerSettings)
+        community_own_fields = set(CommunitySettings.model_fields.keys()) - set(
+            ServerSettings.model_fields.keys()
+        )
+        assert "workspaces_root" in community_own_fields
+        assert "catalog_path" in community_own_fields
+
+    def test_community_settings_no_literal_fields(self) -> None:
+        """No Literal['yaml'] fields on either settings class."""
+        import typing
+
+        for cls in (ServerSettings, CommunitySettings):
+            for field_name, field_info in cls.model_fields.items():
+                annotation = field_info.annotation
+                origin = typing.get_origin(annotation)
+                if origin is typing.Literal:
+                    args = typing.get_args(annotation)
+                    assert "yaml" not in args, (
+                        f"{cls.__name__}.{field_name} has Literal['yaml']"
+                    )
+
+    def test_community_settings_wires_functional_app(self, tmp_path: Path) -> None:
+        """End-to-end: CommunitySettings -> wire -> create_app -> team works."""
+        from akgentic.infra.server.app import create_app
+        from akgentic.infra.wiring import wire_community
+
+        settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
+        # Seed a minimal catalog
+        _seed_minimal_catalog(settings.workspaces_root / "catalog")
+        services = wire_community(settings)
+        try:
+            from fastapi.testclient import TestClient
+
+            app = create_app(services, settings)
+            client = TestClient(app)
+
+            resp = client.get("/teams/")
+            assert resp.status_code == 200
+            assert "teams" in resp.json()
+        finally:
+            services.actor_system.shutdown()
+
+
+def _seed_minimal_catalog(catalog_root: Path) -> None:
+    """Seed minimal catalog for settings hierarchy test."""
+    import yaml
+
+    def _write_yaml(path: Path, data: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.dump(data, default_flow_style=False))
+
+    _write_yaml(
+        catalog_root / "agents" / "human-proxy.yaml",
+        {
+            "id": "human-proxy",
+            "tool_ids": [],
+            "card": {
+                "role": "Human",
+                "description": "Human user interface",
+                "skills": [],
+                "agent_class": "akgentic.agent.HumanProxy",
+                "config": {"name": "@Human", "role": "Human"},
+                "routes_to": ["@Manager"],
+            },
+        },
+    )
+    _write_yaml(
+        catalog_root / "agents" / "manager.yaml",
+        {
+            "id": "manager",
+            "tool_ids": [],
+            "card": {
+                "role": "Manager",
+                "description": "Test manager",
+                "skills": ["coordination"],
+                "agent_class": "akgentic.agent.BaseAgent",
+                "config": {"name": "@Manager", "role": "Manager"},
+                "routes_to": [],
+            },
+        },
+    )
+    _write_yaml(
+        catalog_root / "teams" / "test-team.yaml",
+        {
+            "id": "test-team",
+            "name": "Test Team",
+            "entry_point": "human-proxy",
+            "message_types": ["akgentic.core.messages.UserMessage"],
+            "members": [
+                {"agent_id": "human-proxy"},
+                {"agent_id": "manager"},
+            ],
+            "profiles": [],
+        },
+    )
+    (catalog_root / "templates").mkdir(parents=True, exist_ok=True)
+    (catalog_root / "tools").mkdir(parents=True, exist_ok=True)
+
+
 class TestCommunitySettingsDefaults:
     """CommunitySettings extends ServerSettings with community-specific fields."""
 

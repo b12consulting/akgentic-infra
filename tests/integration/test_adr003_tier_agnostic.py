@@ -2,13 +2,14 @@
 
 Validates stories 7.1 (WorkerHandle, PlacementStrategy) and 7.2
 (TierServices, ServerSettings, TeamService, create_app) end-to-end.
+
+Note: TestSettingsHierarchy and test_team_service_has_no_actor_internal_imports
+were reclassified as unit tests (story 9.4).
 """
 
 from __future__ import annotations
 
-import inspect
 import time
-import typing
 import uuid
 from pathlib import Path
 
@@ -21,10 +22,10 @@ from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
-from akgentic.infra.server.settings import CommunitySettings, ServerSettings
+from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 
-from ._helpers import create_team
+from ._helpers import create_team, poll_until
 
 pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
@@ -100,13 +101,13 @@ class TestWorkerHandleLifecycle:
     ) -> None:
         """AC #1: POST /teams/ creates team; cache populated."""
         team_id_str = create_team(integration_client)
-        team_id = uuid.UUID(team_id_str)
-        cache = integration_app.state.services.runtime_cache
-        assert cache.get(team_id) is not None
-
-        # Cleanup
-        integration_client.post(f"/teams/{team_id_str}/stop")
-        time.sleep(0.5)
+        try:
+            team_id = uuid.UUID(team_id_str)
+            cache = integration_app.state.services.runtime_cache
+            assert cache.get(team_id) is not None
+        finally:
+            integration_client.post(f"/teams/{team_id_str}/stop")
+            time.sleep(0.5)
 
     def test_stop_team_via_worker_handle(
         self,
@@ -115,16 +116,19 @@ class TestWorkerHandleLifecycle:
     ) -> None:
         """AC #1: Stop team clears cache; team status reflects stopped."""
         team_id_str = create_team(integration_client)
-        team_id = uuid.UUID(team_id_str)
-        cache = integration_app.state.services.runtime_cache
+        try:
+            team_id = uuid.UUID(team_id_str)
+            cache = integration_app.state.services.runtime_cache
 
-        resp = integration_client.post(f"/teams/{team_id_str}/stop")
-        assert resp.status_code == 204
-        assert cache.get(team_id) is None
+            resp = integration_client.post(f"/teams/{team_id_str}/stop")
+            assert resp.status_code == 204
+            assert cache.get(team_id) is None
 
-        resp = integration_client.get(f"/teams/{team_id_str}")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "stopped"
+            resp = integration_client.get(f"/teams/{team_id_str}")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "stopped"
+        finally:
+            integration_client.post(f"/teams/{team_id_str}/stop")
 
     def test_resume_team_via_worker_handle(
         self,
@@ -133,20 +137,24 @@ class TestWorkerHandleLifecycle:
     ) -> None:
         """AC #1: Stop then restore repopulates cache; status is running."""
         team_id_str = create_team(integration_client)
-        team_id = uuid.UUID(team_id_str)
-        cache = integration_app.state.services.runtime_cache
+        try:
+            team_id = uuid.UUID(team_id_str)
+            cache = integration_app.state.services.runtime_cache
 
-        integration_client.post(f"/teams/{team_id_str}/stop")
-        time.sleep(0.5)
+            integration_client.post(f"/teams/{team_id_str}/stop")
+            poll_until(
+                lambda: cache.get(team_id) is None,
+                message="Cache not cleared after stop",
+            )
 
-        resp = integration_client.post(f"/teams/{team_id_str}/restore")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
-        assert cache.get(team_id) is not None
-
-        # Cleanup
-        integration_client.post(f"/teams/{team_id_str}/stop")
-        time.sleep(0.5)
+            resp = integration_client.post(f"/teams/{team_id_str}/restore")
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "running"
+            assert cache.get(team_id) is not None
+        finally:
+            integration_client.post(f"/teams/{team_id_str}/stop")
+            # No pollable condition for final teardown; sleep for actor cleanup
+            time.sleep(0.5)
 
     def test_delete_team_via_worker_handle(
         self,
@@ -155,21 +163,27 @@ class TestWorkerHandleLifecycle:
     ) -> None:
         """AC #1: Create, stop, delete -> team removed."""
         team_id_str = create_team(integration_client)
-        team_id = uuid.UUID(team_id_str)
-        cache = integration_app.state.services.runtime_cache
+        try:
+            team_id = uuid.UUID(team_id_str)
+            cache = integration_app.state.services.runtime_cache
 
-        integration_client.post(f"/teams/{team_id_str}/stop")
-        time.sleep(0.5)
+            integration_client.post(f"/teams/{team_id_str}/stop")
+            poll_until(
+                lambda: cache.get(team_id) is None,
+                message="Cache not cleared after stop",
+            )
 
-        resp = integration_client.delete(f"/teams/{team_id_str}")
-        assert resp.status_code == 204
-        assert cache.get(team_id) is None
+            resp = integration_client.delete(f"/teams/{team_id_str}")
+            assert resp.status_code == 204
+            assert cache.get(team_id) is None
 
-        resp = integration_client.get(f"/teams/{team_id_str}")
-        if resp.status_code == 200:
-            assert resp.json()["status"] == "deleted"
-        else:
-            assert resp.status_code == 404
+            resp = integration_client.get(f"/teams/{team_id_str}")
+            if resp.status_code == 200:
+                assert resp.json()["status"] == "deleted"
+            else:
+                assert resp.status_code == 404
+        finally:
+            integration_client.post(f"/teams/{team_id_str}/stop")
 
     def test_full_worker_lifecycle(
         self,
@@ -178,39 +192,46 @@ class TestWorkerHandleLifecycle:
     ) -> None:
         """AC #1: create -> stop -> resume -> stop -> delete in one test."""
         cache = integration_app.state.services.runtime_cache
-
-        # Create
         team_id_str = create_team(integration_client)
-        team_id = uuid.UUID(team_id_str)
-        assert cache.get(team_id) is not None
+        try:
+            team_id = uuid.UUID(team_id_str)
+            assert cache.get(team_id) is not None
 
-        # Stop
-        resp = integration_client.post(f"/teams/{team_id_str}/stop")
-        assert resp.status_code == 204
-        assert cache.get(team_id) is None
+            # Stop
+            resp = integration_client.post(f"/teams/{team_id_str}/stop")
+            assert resp.status_code == 204
+            assert cache.get(team_id) is None
 
-        # Resume
-        time.sleep(0.5)
-        resp = integration_client.post(f"/teams/{team_id_str}/restore")
-        assert resp.status_code == 200
-        assert cache.get(team_id) is not None
+            # Resume
+            poll_until(
+                lambda: cache.get(team_id) is None,
+                message="Cache not cleared after stop",
+            )
+            resp = integration_client.post(f"/teams/{team_id_str}/restore")
+            assert resp.status_code == 200
+            assert cache.get(team_id) is not None
 
-        # Stop again
-        resp = integration_client.post(f"/teams/{team_id_str}/stop")
-        assert resp.status_code == 204
-        assert cache.get(team_id) is None
+            # Stop again
+            resp = integration_client.post(f"/teams/{team_id_str}/stop")
+            assert resp.status_code == 204
+            assert cache.get(team_id) is None
 
-        # Delete
-        time.sleep(0.5)
-        resp = integration_client.delete(f"/teams/{team_id_str}")
-        assert resp.status_code == 204
-        assert cache.get(team_id) is None
+            # Delete
+            poll_until(
+                lambda: cache.get(team_id) is None,
+                message="Cache not cleared after second stop",
+            )
+            resp = integration_client.delete(f"/teams/{team_id_str}")
+            assert resp.status_code == 204
+            assert cache.get(team_id) is None
 
-        resp = integration_client.get(f"/teams/{team_id_str}")
-        if resp.status_code == 200:
-            assert resp.json()["status"] == "deleted"
-        else:
-            assert resp.status_code == 404
+            resp = integration_client.get(f"/teams/{team_id_str}")
+            if resp.status_code == 200:
+                assert resp.json()["status"] == "deleted"
+            else:
+                assert resp.status_code == 404
+        finally:
+            integration_client.post(f"/teams/{team_id_str}/stop")
 
 
 # ---------------------------------------------------------------------------
@@ -228,15 +249,15 @@ class TestTeamServiceProtocolRouting:
     ) -> None:
         """AC #3: Creating a team produces a handle in the runtime cache."""
         team_id_str = create_team(integration_client)
-        team_id = uuid.UUID(team_id_str)
-        cache = integration_app.state.services.runtime_cache
-        handle = cache.get(team_id)
-        assert handle is not None
-        assert isinstance(handle, TeamHandle)
-
-        # Cleanup
-        integration_client.post(f"/teams/{team_id_str}/stop")
-        time.sleep(0.5)
+        try:
+            team_id = uuid.UUID(team_id_str)
+            cache = integration_app.state.services.runtime_cache
+            handle = cache.get(team_id)
+            assert handle is not None
+            assert isinstance(handle, TeamHandle)
+        finally:
+            integration_client.post(f"/teams/{team_id_str}/stop")
+            time.sleep(0.5)
 
     def test_send_message_routes_through_team_handle(
         self,
@@ -244,28 +265,26 @@ class TestTeamServiceProtocolRouting:
     ) -> None:
         """AC #3: Send message via API; events appear."""
         team_id = create_team(integration_client)
+        try:
+            resp = integration_client.post(
+                f"/teams/{team_id}/message",
+                json={"content": "Hello from integration test"},
+            )
+            assert resp.status_code == 204
 
-        resp = integration_client.post(
-            f"/teams/{team_id}/message",
-            json={"content": "Hello from integration test"},
-        )
-        assert resp.status_code == 204
-
-        # SentMessage event should appear immediately
-        time.sleep(0.5)
-        resp = integration_client.get(f"/teams/{team_id}/events")
-        assert resp.status_code == 200
-        events = resp.json()["events"]
-        assert len(events) >= 1
-        # Verify at least one event contains the sent message content
-        event_strs = [str(ev) for ev in events]
-        assert any("Hello from integration test" in s for s in event_strs), (
-            f"Expected sent message content in events, got: {events}"
-        )
-
-        # Cleanup
-        integration_client.post(f"/teams/{team_id}/stop")
-        time.sleep(0.5)
+            # SentMessage event should appear immediately
+            time.sleep(0.5)
+            resp = integration_client.get(f"/teams/{team_id}/events")
+            assert resp.status_code == 200
+            events = resp.json()["events"]
+            assert len(events) >= 1
+            event_strs = [str(ev) for ev in events]
+            assert any("Hello from integration test" in s for s in event_strs), (
+                f"Expected sent message content in events, got: {events}"
+            )
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
+            time.sleep(0.5)
 
     def test_stop_routes_through_worker_handle(
         self,
@@ -273,23 +292,22 @@ class TestTeamServiceProtocolRouting:
     ) -> None:
         """AC #3: Stop preserves events in event store."""
         team_id = create_team(integration_client)
+        try:
+            integration_client.post(
+                f"/teams/{team_id}/message",
+                json={"content": "Test message"},
+            )
+            time.sleep(0.5)
 
-        # Send a message to generate events
-        integration_client.post(
-            f"/teams/{team_id}/message",
-            json={"content": "Test message"},
-        )
-        time.sleep(0.5)
+            resp = integration_client.post(f"/teams/{team_id}/stop")
+            assert resp.status_code == 204
 
-        # Stop team
-        resp = integration_client.post(f"/teams/{team_id}/stop")
-        assert resp.status_code == 204
-
-        # Events should still be accessible
-        resp = integration_client.get(f"/teams/{team_id}/events")
-        assert resp.status_code == 200
-        events = resp.json()["events"]
-        assert len(events) >= 1
+            resp = integration_client.get(f"/teams/{team_id}/events")
+            assert resp.status_code == 200
+            events = resp.json()["events"]
+            assert len(events) >= 1
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
 
     def test_restore_routes_through_worker_handle(
         self,
@@ -298,90 +316,23 @@ class TestTeamServiceProtocolRouting:
     ) -> None:
         """AC #3: Create, stop, restore -> team running, cache handle is TeamHandle."""
         team_id_str = create_team(integration_client)
-        team_id = uuid.UUID(team_id_str)
-
-        integration_client.post(f"/teams/{team_id_str}/stop")
-        time.sleep(0.5)
-
-        resp = integration_client.post(f"/teams/{team_id_str}/restore")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
-
-        cache = integration_app.state.services.runtime_cache
-        handle = cache.get(team_id)
-        assert handle is not None
-        assert isinstance(handle, TeamHandle)
-
-        # Cleanup
-        integration_client.post(f"/teams/{team_id_str}/stop")
-        time.sleep(0.5)
-
-    def test_team_service_has_no_actor_internal_imports(self) -> None:
-        """AC #3: TeamService module does not import actor internals."""
-        from akgentic.infra.server.services import team_service as ts_module
-
-        source = inspect.getsource(ts_module)
-        forbidden = ["TeamManager", "ActorSystem", "LocalTeamHandle", "CommunityServices"]
-        for name in forbidden:
-            assert name not in source, f"TeamService module must not import {name}"
-
-
-# ---------------------------------------------------------------------------
-# AC #4 — Settings hierarchy validation
-# ---------------------------------------------------------------------------
-
-
-class TestSettingsHierarchy:
-    """Verify ServerSettings / CommunitySettings hierarchy."""
-
-    def test_server_settings_has_only_tier_agnostic_fields(self) -> None:
-        """AC #4: ServerSettings has only tier-agnostic fields."""
-        server_fields = set(ServerSettings.model_fields.keys())
-        expected = {"host", "port", "cors_origins", "frontend_adapter"}
-        assert server_fields == expected, (
-            f"ServerSettings fields mismatch: got {server_fields}, expected {expected}"
-        )
-
-    def test_community_settings_extends_server_settings(self) -> None:
-        """AC #4: CommunitySettings is a subclass of ServerSettings."""
-        assert issubclass(CommunitySettings, ServerSettings)
-        community_own_fields = set(CommunitySettings.model_fields.keys()) - set(
-            ServerSettings.model_fields.keys()
-        )
-        assert "workspaces_root" in community_own_fields
-        assert "catalog_path" in community_own_fields
-
-    def test_community_settings_no_literal_fields(self) -> None:
-        """AC #4: No Literal['yaml'] fields on either settings class."""
-        for cls in (ServerSettings, CommunitySettings):
-            for field_name, field_info in cls.model_fields.items():
-                annotation = field_info.annotation
-                origin = typing.get_origin(annotation)
-                if origin is typing.Literal:
-                    args = typing.get_args(annotation)
-                    assert "yaml" not in args, f"{cls.__name__}.{field_name} has Literal['yaml']"
-
-    def test_community_settings_wires_functional_app(self, tmp_path: Path) -> None:
-        """AC #4: End-to-end: CommunitySettings -> wire -> create_app -> team works."""
-        from ._helpers import seed_integration_catalog
-
-        settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
-        seed_integration_catalog(settings.workspaces_root / "catalog")
-        services = wire_community(settings)
         try:
-            app = create_app(services, settings)
-            client = TestClient(app)
+            team_id = uuid.UUID(team_id_str)
 
-            team_id = create_team(client)
-            resp = client.get(f"/teams/{team_id}")
+            integration_client.post(f"/teams/{team_id_str}/stop")
+            time.sleep(0.5)
+
+            resp = integration_client.post(f"/teams/{team_id_str}/restore")
             assert resp.status_code == 200
             assert resp.json()["status"] == "running"
 
-            # Cleanup
-            client.post(f"/teams/{team_id}/stop")
-            time.sleep(0.5)
+            cache = integration_app.state.services.runtime_cache
+            handle = cache.get(team_id)
+            assert handle is not None
+            assert isinstance(handle, TeamHandle)
         finally:
-            services.actor_system.shutdown()
+            integration_client.post(f"/teams/{team_id_str}/stop")
+            time.sleep(0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -419,14 +370,11 @@ class TestCatalogAccessViaTierServices:
     ) -> None:
         """AC #3: Team created via API uses catalog resolution."""
         team_id = create_team(integration_client)
-        resp = integration_client.get(f"/teams/{team_id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["status"] == "running"
-        # The team was created from catalog entry "test-team" which has
-        # entry_point "human-proxy" — verifying the team exists proves
-        # catalog resolution worked.
-
-        # Cleanup
-        integration_client.post(f"/teams/{team_id}/stop")
-        time.sleep(0.5)
+        try:
+            resp = integration_client.get(f"/teams/{team_id}")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "running"
+        finally:
+            integration_client.post(f"/teams/{team_id}/stop")
+            time.sleep(0.5)

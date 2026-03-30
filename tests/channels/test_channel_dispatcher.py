@@ -269,3 +269,30 @@ class TestEmptyAdapterList:
     def test_sent_message_with_no_adapters(self) -> None:
         dispatcher = InteractionChannelDispatcher(team_id=TEAM_ID, adapters=[])
         dispatcher.on_message(_make_sent_message())  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Reclassified from integration/test_spec_channels.py — TestMultiAdapterDispatch
+# Direct dispatcher construction with stubs; no real app needed.
+# ---------------------------------------------------------------------------
+
+
+class TestMultiAdapterDispatch:
+    """Verify dispatcher delivers to ALL matching adapters (no break short-circuit)."""
+
+    def test_two_adapters_both_receive_message(self) -> None:
+        """Two StubChannelAdapters both receive the dispatched SentMessage."""
+        adapter_a = _MatchingAdapter()
+        adapter_b = _MatchingAdapter()
+        dispatcher = InteractionChannelDispatcher(
+            team_id=TEAM_ID,
+            adapters=[adapter_a, adapter_b],
+        )
+
+        sent = _make_sent_message()
+        dispatcher.on_message(sent)
+
+        assert adapter_a.deliver_called, "Adapter A should receive the message"
+        assert adapter_b.deliver_called, "Adapter B should receive the message"
+        assert adapter_a.deliver_msg is sent
+        assert adapter_b.deliver_msg is sent
