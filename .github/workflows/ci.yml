@@ -24,7 +24,8 @@ jobs:
       - name: Override akgentic-infra submodule with current branch
         working-directory: packages/akgentic-infra
         run: |
-          git fetch origin master ${{ github.head_ref || github.ref_name }}
+          git fetch origin master
+          git fetch origin ${{ github.head_ref || github.ref_name }}
           git checkout FETCH_HEAD
 
       - name: Install uv
