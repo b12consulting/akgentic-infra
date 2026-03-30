@@ -74,7 +74,7 @@ class ApiClient:
         headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.Client(base_url=base_url, headers=headers)
+        self._client = httpx.Client(base_url=base_url, headers=headers, follow_redirects=True)
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
