@@ -140,11 +140,15 @@ def test_smoke_send_message_receive_response(smoke_client: TestClient) -> None:
             "SentMessage.message.content must be a non-empty string"
         )
 
-        # AC #5.4: Render through _render_event_impl
-        console = Console(file=open("/dev/null", "w"), highlight=False)  # noqa: SIM115
+        # AC #5.4: Render through _render_event_impl and verify output
+        buf = _StringCapture()
+        console = Console(file=buf, highlight=False, force_terminal=True)
         renderer = RichRenderer(console=console)
         rendered = _render_event_impl(ev, renderer)
         assert rendered is True, "_render_event_impl should return True for SentMessage"
+        rendered_text = buf.getvalue()
+        assert "@Manager" in rendered_text, "Rendered output must contain @Manager"
+        assert len(rendered_text.strip()) > 0, "Rendered output must not be empty"
     finally:
         if team_id:
             _delete_team(smoke_client, team_id)
@@ -212,7 +216,7 @@ def test_smoke_history_renders_messages(smoke_client: TestClient) -> None:
             buf = _StringCapture()
             console = Console(file=buf, highlight=False, force_terminal=True)
             renderer = RichRenderer(console=console)
-            was_rendered = _render_event_impl(ev["event"], renderer)
+            was_rendered = _render_event_impl(ev, renderer)
             if was_rendered:
                 rendered_outputs.append(buf.getvalue())
 
@@ -222,9 +226,13 @@ def test_smoke_history_renders_messages(smoke_client: TestClient) -> None:
             f"Expected at least 1 rendered message, got {len(rendered_outputs)}"
         )
 
-        # Verify rendered output contains agent name and content
+        # Verify rendered output contains agent name and message content
         combined = "\n".join(rendered_outputs)
         assert "@Manager" in combined, "Rendered output must contain @Manager"
+        # Verify actual message content appears (TestModel returns "Hello from TestModel")
+        assert len(combined.strip()) > len("@Manager"), (
+            "Rendered output must contain message content, not just agent name"
+        )
     finally:
         if team_id:
             _delete_team(smoke_client, team_id)
