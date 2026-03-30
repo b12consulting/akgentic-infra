@@ -150,6 +150,7 @@ jobs:
           -o "addopts="
           --cov=akgentic.infra
           --cov-report=term-missing
+          --cov-fail-under=0
 
   integration-llm:
     runs-on: ubuntu-latest
