@@ -9,11 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import websockets.exceptions
 
 from akgentic.infra.cli.client import EventInfo
+from akgentic.infra.cli.commands import build_default_registry
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.commands import build_default_registry
-from akgentic.infra.cli.repl import ChatSession, _SlashCompleter, _print_event, _render_event_impl
-
+from akgentic.infra.cli.repl import ChatSession, _print_event, _SlashCompleter
 from tests.fixtures.events import (
     make_error_message,
     make_event_message,

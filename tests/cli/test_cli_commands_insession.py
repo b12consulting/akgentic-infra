@@ -16,7 +16,6 @@ from akgentic.infra.cli.client import (
     WorkspaceTreeInfo,
     WorkspaceUploadInfo,
 )
-from tests.fixtures.events import _make_proxy, make_sent_message, make_start_message
 from akgentic.infra.cli.commands import (
     CommandRegistry,
     _agents_handler,
@@ -32,8 +31,8 @@ from akgentic.infra.cli.commands import (
     build_default_registry,
 )
 from akgentic.infra.cli.formatters import OutputFormat
-from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession
+from tests.fixtures.events import _make_proxy, make_sent_message, make_start_message
 
 from .conftest import captured_renderer as _captured_renderer
 from .conftest import make_session as _make_session
