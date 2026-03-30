@@ -107,14 +107,28 @@ async def _agents_handler(args: str, session: ChatSession) -> None:
     """List team members with roles and state."""
     loop = asyncio.get_running_loop()
     try:
-        team = await loop.run_in_executor(None, session.client.get_team, session.team_id)
+        events = await loop.run_in_executor(None, session.client.get_events, session.team_id)
     except SystemExit:
         print("Error fetching agents.", file=sys.stderr)
         return
 
-    print(f"Team: {team.name}")
-    print(f"Status: {team.status}")
-    print("(Agent listing not available from this endpoint)")
+    seen: dict[str, str] = {}
+    for e in events:
+        evt = e.model_dump().get("event", {})
+        if evt.get("__model__", "").endswith("StartMessage"):
+            sender = evt.get("sender", {})
+            name = sender.get("name", "")
+            role = sender.get("role", "")
+            if name and name != "orchestrator":
+                seen[name] = role
+
+    if not seen:
+        print("No agents found.")
+        return
+
+    print("Team agents:")
+    for name, role in seen.items():
+        print(f"  {name:<16s} ({role})")
 
 
 # -- History command --
