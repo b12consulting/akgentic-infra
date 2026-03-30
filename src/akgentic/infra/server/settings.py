@@ -52,3 +52,10 @@ class CommunitySettings(ServerSettings):
         default=None,
         description="Catalog directory; defaults to workspaces_root / 'catalog'",
     )
+    channel_registry_path: Path | None = Field(
+        default=None,
+        description=(
+            "Path to channel registry YAML file; "
+            "when unset, channels are disabled (NullChannelRegistry)"
+        ),
+    )
