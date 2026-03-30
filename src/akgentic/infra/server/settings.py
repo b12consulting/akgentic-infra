@@ -29,6 +29,8 @@ class ServerSettings(BaseSettings):
         default=None,
         description="FQDN for frontend adapter plugin class",
     )
+    # Community-tier permissive default. Department/enterprise tiers must
+    # override with explicit origins in their environment configuration.
     cors_origins: list[str] = Field(
         default=["*"],
         description="Allowed CORS origins for the HTTP server",

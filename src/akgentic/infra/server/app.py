@@ -50,7 +50,15 @@ def create_app(
 
 
 def _wire_ingestion(services: TierServices, team_service: TeamService) -> None:
-    """Complete deferred LocalIngestion wiring with the constructed TeamService."""
+    """Complete deferred LocalIngestion wiring with the constructed TeamService.
+
+    Community tier needs this deferred wiring because LocalIngestion holds a
+    direct in-process reference to TeamService, creating a circular construction
+    dependency (wire_community -> CommunityServices -> LocalIngestion, but
+    TeamService needs CommunityServices). Department/enterprise tiers don't
+    need this — their ingestion adapters communicate over the network (HTTP or
+    Dapr), so they arrive fully wired from their own wire_*() functions.
+    """
     from akgentic.infra.adapters.local_ingestion import LocalIngestion
 
     if isinstance(services.ingestion, LocalIngestion):

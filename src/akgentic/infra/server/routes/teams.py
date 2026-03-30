@@ -47,9 +47,11 @@ def create_team(
 ) -> TeamResponse:
     """Create a new team from a catalog entry."""
     try:
+        # Community-tier hardcoded identity. Department/enterprise tiers must
+        # replace with authenticated user identity from auth middleware.
         process = service.create_team(
             catalog_entry_id=body.catalog_entry_id,
-            user_id="anonymous",  # Community tier: no auth, single-user
+            user_id="anonymous",
         )
     except EntryNotFoundError:
         raise HTTPException(status_code=404, detail="Catalog entry not found") from None
@@ -61,7 +63,8 @@ def list_teams(
     service: TeamService = Depends(get_team_service),
 ) -> TeamListResponse:
     """List all teams for the current user."""
-    processes = service.list_teams(user_id="anonymous")  # Community tier: no auth
+    # Community-tier hardcoded identity (see create_team comment above).
+    processes = service.list_teams(user_id="anonymous")
     return TeamListResponse(teams=[_process_to_response(p) for p in processes])
 
 
@@ -179,6 +182,11 @@ def _raise_action_error(exc: ValueError) -> NoReturn:
 
     Raises:
         HTTPException: 404 for not-found/deleted errors, 409 for state conflicts.
+
+    Note:
+        String matching on exception messages is fragile. Department/enterprise
+        tiers should replace this with structured error codes (e.g. typed
+        exception subclasses with an ``http_status`` attribute).
     """
     detail = str(exc)
     if "not found" in detail or "deleted" in detail:

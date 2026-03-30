@@ -11,7 +11,10 @@ class LocalRuntimeCache:
     """In-process dict-backed cache mapping team IDs to live TeamHandle instances.
 
     Starts empty on construction — teams are only cached after explicit
-    ``store()`` calls (NFR2: ghost team prevention).
+    ``store()`` calls (NFR2: ghost team prevention). The cache must never
+    be pre-populated from disk: if it were, stopped teams would appear as
+    ghost handles (stale ``TeamHandle`` proxies that point to dead actors).
+    Teams are added only after successful creation or resumption.
     """
 
     def __init__(self) -> None:
