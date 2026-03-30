@@ -1,4 +1,4 @@
-![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/b12consulting/d0b84268aa19a7460fe186dbf23e500d/raw/coverage.json)
+![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/jltournay/d0b84268aa19a7460fe186dbf23e500d/raw/coverage.json)
 
 # akgentic-infra
 
