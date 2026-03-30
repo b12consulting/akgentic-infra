@@ -4,7 +4,7 @@ Every test creates a real team via the V1 TestClient backed by
 wire_community() + create_app(), exercises a V1 endpoint, and validates
 the response shape against the V1 contract in models.py.
 
-No MagicMock. No hand-crafted dicts.
+No mocks. No hand-crafted dicts.
 """
 
 from __future__ import annotations

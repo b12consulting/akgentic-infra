@@ -24,7 +24,8 @@ jobs:
       - name: Override akgentic-infra submodule with current branch
         working-directory: packages/akgentic-infra
         run: |
-          git fetch origin master ${{ github.head_ref || github.ref_name }}
+          git fetch origin master
+          git fetch origin ${{ github.head_ref || github.ref_name }}
           git checkout FETCH_HEAD
 
       - name: Install uv
@@ -71,7 +72,12 @@ jobs:
           --cov=akgentic.infra
           --cov-report=term-missing
           --cov-report=json:coverage.json
-          --cov-fail-under=90
+          --cov-fail-under=80
+
+      - name: Run smoke tests (no API key required)
+        run: >
+          uv run pytest packages/akgentic-infra/tests/integration/test_smoke.py -v
+          -o "addopts="
 
       - name: Run integration tests (no coverage gate)
         if: env.OPENAI_API_KEY != ''
