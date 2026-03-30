@@ -14,11 +14,9 @@ import httpx
 import pytest
 import websockets
 
-from tests.e2e.conftest import poll_until
+from tests.e2e.conftest import CATALOG_ENTRY_ID, poll_until
 
 pytestmark = [pytest.mark.e2e]
-
-CATALOG_ENTRY_ID = "test-team"
 
 
 # ---------------------------------------------------------------------------
@@ -43,10 +41,11 @@ def _create_v1_process(client: httpx.Client) -> str:
     """Create a V1 process and return its id."""
     resp = client.post(f"/process/{CATALOG_ENTRY_ID}")
     assert resp.status_code == 200, f"Expected 200, got {resp.status_code}: {resp.text}"
-    data = resp.json()
+    data: dict[str, Any] = resp.json()
     assert "id" in data
     assert "status" in data
-    return data["id"]
+    process_id: str = data["id"]
+    return process_id
 
 
 def _delete_v1_process(client: httpx.Client, process_id: str) -> None:
@@ -191,18 +190,21 @@ def _is_v1_manager_message(data: dict[str, Any]) -> bool:
     if data.get("type") != "message":
         return False
     payload = data.get("payload", {})
-    return payload.get("message_type") == "agent" and payload.get("sender") == "@Manager"
+    if not isinstance(payload, dict):
+        return False
+    return bool(payload.get("message_type") == "agent" and payload.get("sender") == "@Manager")
 
 
 async def _collect_v1_ws_events(
-    ws: Any,
-    deadline: float,  # noqa: ANN401
+    ws: websockets.ClientConnection,
+    deadline: float,
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Collect V1 WS events until @Manager responds or deadline expires."""
     events: list[dict[str, Any]] = []
     envelope_types: set[str] = set()
-    while asyncio.get_event_loop().time() < deadline:
-        remaining = deadline - asyncio.get_event_loop().time()
+    loop = asyncio.get_running_loop()
+    while loop.time() < deadline:
+        remaining = deadline - loop.time()
         if remaining <= 0:
             break
         try:
@@ -232,7 +234,7 @@ async def test_e2e_v1_websocket(
 
         async with websockets.connect(uri) as ws:
             # Send message via V1 REST (run sync in executor to satisfy ASYNC212)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 None,
                 lambda: e2e_http_client.patch(
@@ -241,7 +243,7 @@ async def test_e2e_v1_websocket(
                 ),
             )
 
-            deadline = asyncio.get_event_loop().time() + 60.0
+            deadline = loop.time() + 60.0
             events, envelope_types = await _collect_v1_ws_events(ws, deadline)
 
             assert len(events) >= 1, "Expected at least 1 V1 WS event"
@@ -258,6 +260,7 @@ def test_e2e_v1_delete(
     v1_enabled: None,
 ) -> None:
     """AC #26: DELETE /process/{id} verifies V1 delete response."""
+    process_id: str | None = None
     process_id = _create_v1_process(e2e_http_client)
     try:
         resp = e2e_http_client.delete(f"/process/{process_id}")
