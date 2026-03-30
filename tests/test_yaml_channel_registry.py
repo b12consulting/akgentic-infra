@@ -29,9 +29,7 @@ async def test_satisfies_channel_registry_protocol() -> None:
     assert isinstance(YamlChannelRegistry(Path("/tmp/fake.yaml")), ChannelRegistry)
 
 
-async def test_register_creates_mapping(
-    registry: YamlChannelRegistry, registry_path: Path
-) -> None:
+async def test_register_creates_mapping(registry: YamlChannelRegistry, registry_path: Path) -> None:
     """register() persists a channel-user → team mapping to YAML."""
     team_id = uuid.uuid4()
     await registry.register("whatsapp", "+1234567890", team_id)

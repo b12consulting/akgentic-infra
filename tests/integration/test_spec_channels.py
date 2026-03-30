@@ -73,7 +73,8 @@ class TestFormEncodedWebhook:
     """Verify form-encoded webhook payloads are parsed correctly."""
 
     def test_form_encoded_webhook_returns_204(
-        self, channel_client: TestClient,
+        self,
+        channel_client: TestClient,
     ) -> None:
         """AC #3: POST form-encoded to /webhook/{channel} returns 204.
 
@@ -84,7 +85,8 @@ class TestFormEncodedWebhook:
 
         # Create a team first so we can use reply flow (no LLM initiation)
         create_resp = channel_client.post(
-            "/teams/", json={"catalog_entry_id": "test-team"},
+            "/teams/",
+            json={"catalog_entry_id": "test-team"},
         )
         assert create_resp.status_code == 201
         team_id = create_resp.json()["team_id"]
@@ -156,11 +158,7 @@ class TestChannelConfigPassthrough:
         # Monkeypatch import_class to return our stubs
         monkeypatch.setattr(
             "akgentic.infra.adapters.channel_parser_registry.import_class",
-            lambda fqcn: (
-                StubParserWithConfig
-                if "Parser" in fqcn
-                else StubAdapterWithConfig
-            ),
+            lambda fqcn: StubParserWithConfig if "Parser" in fqcn else StubAdapterWithConfig,
         )
 
         config = {

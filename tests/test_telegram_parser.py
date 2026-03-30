@@ -50,6 +50,7 @@ PHOTO_MESSAGE_UPDATE: dict = {
 # Properties
 # ---------------------------------------------------------------------------
 
+
 class TestChannelName:
     """channel_name property returns 'telegram'."""
 
@@ -73,6 +74,7 @@ class TestDefaultCatalogEntry:
 # ---------------------------------------------------------------------------
 # parse() — happy path
 # ---------------------------------------------------------------------------
+
 
 class TestParseValidTextMessage:
     """AC 1: Valid Telegram text Update → correct ChannelMessage."""
@@ -105,6 +107,7 @@ class TestParseValidTextMessage:
 # ---------------------------------------------------------------------------
 # parse() — error cases
 # ---------------------------------------------------------------------------
+
 
 class TestParseNoMessage:
     """AC 2: Update with no 'message' key raises ValueError."""

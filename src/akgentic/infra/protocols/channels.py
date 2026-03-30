@@ -168,9 +168,7 @@ class ChannelRegistry(Protocol):
       multi-instance deployments.
     """
 
-    async def register(
-        self, channel: str, channel_user_id: str, team_id: uuid.UUID
-    ) -> None:
+    async def register(self, channel: str, channel_user_id: str, team_id: uuid.UUID) -> None:
         """Register a mapping from a channel user to a team.
 
         Args:
@@ -180,9 +178,7 @@ class ChannelRegistry(Protocol):
         """
         ...
 
-    async def find_team(
-        self, channel: str, channel_user_id: str
-    ) -> uuid.UUID | None:
+    async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
         """Find the team associated with a channel user.
 
         Args:

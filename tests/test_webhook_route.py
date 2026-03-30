@@ -17,6 +17,7 @@ from akgentic.infra.server.routes.webhook import router as webhook_router
 # Stub classes satisfying protocols via structural subtyping
 # ---------------------------------------------------------------------------
 
+
 class StubParser:
     """Stub ChannelParser that returns a configurable ChannelMessage."""
 
@@ -83,6 +84,7 @@ class StubIngestion:
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
+
 def _build_parser_registry(parser: StubParser) -> ChannelParserRegistry:
     """Build a ChannelParserRegistry with a pre-registered stub parser.
 
@@ -113,6 +115,7 @@ def _build_app(
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestWebhookReplyFlow:
     """AC #3: team_id in parsed message → route_reply."""
@@ -195,13 +198,9 @@ class TestWebhookInitiationFlow:
         assert call[1] == "user-3"
         assert call[2] == "my-catalog-entry"
 
-    async def test_initiation_registers_in_channel_registry(
-        self, tmp_path: Path
-    ) -> None:
+    async def test_initiation_registers_in_channel_registry(self, tmp_path: Path) -> None:
         parser = StubParser()
-        parser.set_next_message(
-            ChannelMessage(content="hello", channel_user_id="user-4")
-        )
+        parser.set_next_message(ChannelMessage(content="hello", channel_user_id="user-4"))
         new_team_id = uuid.uuid4()
         ingestion = StubIngestion()
         ingestion.set_next_team_id(new_team_id)
@@ -251,9 +250,7 @@ class TestWebhookStatusCode:
 
     def test_initiation_returns_204(self, tmp_path: Path) -> None:
         parser = StubParser()
-        parser.set_next_message(
-            ChannelMessage(content="msg", channel_user_id="u")
-        )
+        parser.set_next_message(ChannelMessage(content="msg", channel_user_id="u"))
         ingestion = StubIngestion()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         client = TestClient(_build_app(parser, ingestion, registry))
@@ -265,6 +262,7 @@ class TestWebhookStatusCode:
 # ---------------------------------------------------------------------------
 # AC #4: Form-data and unsupported content-type handling
 # ---------------------------------------------------------------------------
+
 
 class TestWebhookFormData:
     """AC #4: webhook handles application/x-www-form-urlencoded."""

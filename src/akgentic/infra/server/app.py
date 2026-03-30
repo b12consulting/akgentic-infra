@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,6 +19,7 @@ from akgentic.catalog.api.team_router import set_catalog as set_team_catalog
 from akgentic.catalog.api.template_router import set_catalog as set_template_catalog
 from akgentic.catalog.api.tool_router import set_catalog as set_tool_catalog
 from akgentic.infra.server.deps import TierServices
+from akgentic.infra.server.logging_config import configure_logging
 from akgentic.infra.server.routes.frontend_adapter import load_frontend_adapter
 from akgentic.infra.server.routes.teams import router as teams_router
 from akgentic.infra.server.routes.webhook import router as webhook_router
@@ -25,6 +28,8 @@ from akgentic.infra.server.routes.ws import ConnectionManager
 from akgentic.infra.server.routes.ws import router as ws_router
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -44,6 +49,8 @@ def create_app(
         Configured FastAPI application instance.
     """
     settings = settings or ServerSettings()
+    configure_logging(settings.log_level)
+    logger.info("Logging configured: level=%s", settings.log_level)
     team_service = TeamService(services)
     _wire_ingestion(services, team_service)
     return _build_app(services, team_service, settings)
@@ -86,6 +93,7 @@ def _build_app(
     _inject_catalogs(services)
     _mount_routes(app, settings)
     add_exception_handlers(app)
+    logger.info("Building app: routes mounted, CORS origins=%s", settings.cors_origins)
     return app
 
 
@@ -139,3 +147,4 @@ def _mount_routes(app: FastAPI, settings: ServerSettings) -> None:
         adapter = load_frontend_adapter(settings.frontend_adapter)
         adapter.register_routes(app)
         app.state.frontend_adapter = adapter
+        logger.debug("Frontend adapter loaded: %s", settings.frontend_adapter)

@@ -146,9 +146,7 @@ class ApiClient:
 
     def restore_team(self, team_id: str) -> TeamInfo:
         """POST /teams/{team_id}/restore → restored TeamInfo model."""
-        return TeamInfo.model_validate(
-            self._request("POST", f"/teams/{team_id}/restore").json()
-        )
+        return TeamInfo.model_validate(self._request("POST", f"/teams/{team_id}/restore").json())
 
     def get_events(self, team_id: str) -> list[EventInfo]:
         """GET /teams/{team_id}/events → list of EventInfo models."""

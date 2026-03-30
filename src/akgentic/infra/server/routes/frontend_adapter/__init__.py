@@ -176,9 +176,7 @@ def load_frontend_adapter(fqdn: str) -> FrontendAdapter:
     try:
         instance = cls()
     except TypeError as exc:
-        raise TypeError(
-            f"Cannot instantiate frontend adapter '{fqdn}': {exc}"
-        ) from exc
+        raise TypeError(f"Cannot instantiate frontend adapter '{fqdn}': {exc}") from exc
     if not isinstance(instance, FrontendAdapter):
         raise TypeError(f"Class '{fqdn}' does not implement FrontendAdapter protocol")
 

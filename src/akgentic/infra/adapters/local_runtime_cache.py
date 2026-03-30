@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from akgentic.infra.protocols.team_handle import TeamHandle
+
+logger = logging.getLogger(__name__)
 
 
 class LocalRuntimeCache:
@@ -22,6 +25,7 @@ class LocalRuntimeCache:
 
     def store(self, team_id: uuid.UUID, handle: TeamHandle) -> None:
         """Store a team handle in the cache."""
+        logger.debug("Cache store: team_id=%s", team_id)
         self._handles[team_id] = handle
 
     def get(self, team_id: uuid.UUID) -> TeamHandle | None:
@@ -30,4 +34,5 @@ class LocalRuntimeCache:
 
     def remove(self, team_id: uuid.UUID) -> None:
         """Remove a team handle from the cache (no-op if absent)."""
+        logger.debug("Cache remove: team_id=%s", team_id)
         self._handles.pop(team_id, None)

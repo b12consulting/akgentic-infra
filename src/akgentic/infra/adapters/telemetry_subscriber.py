@@ -22,6 +22,7 @@ class TelemetrySubscriber:
     """
 
     def __init__(self) -> None:
+        logger.debug("TelemetrySubscriber initialized")
         self._restoring = False
 
     def set_restoring(self, restoring: bool) -> None:
@@ -41,6 +42,7 @@ class TelemetrySubscriber:
             "orchestrator event: {msg_type}",
             msg_type=msg_type,
         )
+        logger.debug("Telemetry event: %s", msg_type)
 
     def on_stop(self) -> None:
         """Cleanup hook — logs shutdown."""

@@ -40,7 +40,8 @@ class TestWebSocketRoute:
     """Unit tests for WebSocket endpoint (AC #1, #2, #3, #4, #6)."""
 
     def test_ws_connect_nonexistent_team_receives_4004(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """AC #1: Non-existent team gets close code 4004."""
         from starlette.websockets import WebSocketDisconnect
@@ -52,7 +53,8 @@ class TestWebSocketRoute:
         assert exc_info.value.code == 4004
 
     def test_ws_connect_running_team_receives_events(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """AC #1, #2: Running team pushes events via subscriber."""
         resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
@@ -66,7 +68,8 @@ class TestWebSocketRoute:
             assert "__model__" in data
 
     def test_ws_connect_stopped_team_accepts_connection(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """AC #3: Stopped team accepts connection (idle)."""
         resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
@@ -78,7 +81,8 @@ class TestWebSocketRoute:
             pass
 
     def test_ws_event_json_contains_model_field(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """AC #1: __model__ discriminator in event JSON."""
         resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
@@ -90,7 +94,8 @@ class TestWebSocketRoute:
             assert "__model__" in data
 
     def test_ws_client_disconnect_triggers_cleanup(
-        self, client: TestClient,
+        self,
+        client: TestClient,
     ) -> None:
         """AC: Client disconnect unsubscribes from orchestrator."""
         resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
@@ -99,7 +104,6 @@ class TestWebSocketRoute:
         # Connect and immediately disconnect — should not raise
         with client.websocket_connect(f"/ws/{team_id}"):
             pass
-
 
     def test_ws_restore_scenario(self, client: TestClient) -> None:
         """AC #4: Idle connection starts receiving events after restore."""

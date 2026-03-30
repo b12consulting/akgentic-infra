@@ -98,9 +98,7 @@ def integration_client(integration_app: FastAPI) -> TestClient:
 # V1 Adapter Fixtures
 # ---------------------------------------------------------------------------
 
-V1_ADAPTER_FQDN = (
-    "akgentic.infra.server.routes.frontend_adapter.angular_v1.AngularV1Adapter"
-)
+V1_ADAPTER_FQDN = "akgentic.infra.server.routes.frontend_adapter.angular_v1.AngularV1Adapter"
 
 
 @pytest.fixture()

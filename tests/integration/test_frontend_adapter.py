@@ -165,7 +165,8 @@ class TestV1FrontendAdapter:
 
         # Verify V1MessageEntry shape on the LLM response
         llm_messages = [
-            m for m in messages
+            m
+            for m in messages
             if isinstance(m.get("sender"), str)
             and "@Manager" in str(m.get("sender"))
             and isinstance(m.get("content"), str)

@@ -35,26 +35,44 @@ def _mock_client(**overrides: Any) -> MagicMock:
     mock = MagicMock()
     mock.list_teams.return_value = [
         TeamInfo(
-            team_id="t1", name="Team 1", status="running",
-            user_id="u1", created_at="2025-01-01", updated_at="2025-01-01",
+            team_id="t1",
+            name="Team 1",
+            status="running",
+            user_id="u1",
+            created_at="2025-01-01",
+            updated_at="2025-01-01",
         ),
     ]
     mock.get_team.return_value = TeamInfo(
-        team_id="t1", name="Team 1", status="running",
-        user_id="u1", created_at="2025-01-01", updated_at="2025-01-02",
+        team_id="t1",
+        name="Team 1",
+        status="running",
+        user_id="u1",
+        created_at="2025-01-01",
+        updated_at="2025-01-02",
     )
     mock.create_team.return_value = TeamInfo(
-        team_id="new", name="New Team", status="created",
-        user_id="u1", created_at="2025-01-01", updated_at="2025-01-01",
+        team_id="new",
+        name="New Team",
+        status="created",
+        user_id="u1",
+        created_at="2025-01-01",
+        updated_at="2025-01-01",
     )
     mock.delete_team.return_value = None
     mock.restore_team.return_value = TeamInfo(
-        team_id="t1", name="Team 1", status="running",
-        user_id="u1", created_at="2025-01-01", updated_at="2025-01-03",
+        team_id="t1",
+        name="Team 1",
+        status="running",
+        user_id="u1",
+        created_at="2025-01-01",
+        updated_at="2025-01-03",
     )
     mock.get_events.return_value = [
         EventInfo(
-            team_id="t1", sequence=1, timestamp="2025-01-01T00:00:00",
+            team_id="t1",
+            sequence=1,
+            timestamp="2025-01-01T00:00:00",
             event={"type": "started"},
         ),
     ]

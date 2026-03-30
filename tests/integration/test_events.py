@@ -21,7 +21,8 @@ class TestEventPersistence:
     """Integration tests for event persistence after team lifecycle operations."""
 
     def test_events_persisted_after_stop(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #2: Create team, send message, wait for LLM, stop, verify events via REST."""
         team_id = create_team(integration_client)
@@ -56,7 +57,8 @@ class TestEventPersistence:
         )
 
     def test_event_count_after_send_and_respond(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #2: Verify event count >= 3 after a full send-and-respond cycle."""
         team_id = create_team(integration_client)
@@ -75,7 +77,8 @@ class TestEventPersistence:
         time.sleep(0.5)
 
     def test_events_survive_stop_restore_cycle(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #2: Events from before stop are still accessible after restore."""
         team_id = create_team(integration_client)

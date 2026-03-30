@@ -21,7 +21,8 @@ class TestWebSocketIntegration:
     """Integration tests for WebSocket event streaming (AC #1)."""
 
     def test_ws_create_team_send_message_receive_events(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #1: Create team, open WS, send message, verify events delivered via WS."""
         team_id = create_team(integration_client)
@@ -47,7 +48,8 @@ class TestWebSocketIntegration:
         time.sleep(0.5)
 
     def test_ws_full_round_trip_with_llm(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #1: Send message via HTTP, verify LLM response arrives, open WS for new events."""
         team_id = create_team(integration_client)
@@ -82,7 +84,8 @@ class TestWebSocketIntegration:
         time.sleep(0.5)
 
     def test_ws_restore_receives_events(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #1: Connect WS to stopped team, restore, verify events flow after restore."""
         team_id = create_team(integration_client)

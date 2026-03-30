@@ -12,14 +12,10 @@ class NullChannelRegistry:
     disabled but the ``ChannelRegistry`` protocol contract is satisfied.
     """
 
-    async def register(
-        self, channel: str, channel_user_id: str, team_id: uuid.UUID
-    ) -> None:
+    async def register(self, channel: str, channel_user_id: str, team_id: uuid.UUID) -> None:
         """No-op — registration is not supported when channels are disabled."""
 
-    async def find_team(
-        self, channel: str, channel_user_id: str
-    ) -> uuid.UUID | None:
+    async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
         """Always returns None — no channel mappings exist."""
         return None
 

@@ -203,8 +203,10 @@ class TestV1Models:
     def test_v1_config_put_body_serialization(self) -> None:
         """V1ConfigPutBody serializes correctly."""
         body = V1ConfigPutBody(
-            id="cfg-1", name="my-config",
-            config={"key": "value"}, dry_run=True,
+            id="cfg-1",
+            name="my-config",
+            config={"key": "value"},
+            dry_run=True,
         )
         data = body.model_dump()
         restored = V1ConfigPutBody.model_validate(data)
@@ -296,7 +298,9 @@ class TestV1ProcessRoutes:
     """Test V1 process endpoint translations."""
 
     def test_create_process(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #1: POST /process/{type} creates team via V2 service."""
         mock_service.create_team.return_value = _make_process()
@@ -308,11 +312,14 @@ class TestV1ProcessRoutes:
         assert data["status"] == "running"
         assert data["params"] == {"workspace": "false", "knowledge_graph": "false"}
         mock_service.create_team.assert_called_once_with(
-            catalog_entry_id="test-team", user_id="anonymous",
+            catalog_entry_id="test-team",
+            user_id="anonymous",
         )
 
     def test_create_process_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """POST /process/{type} with unknown type returns 404."""
         from akgentic.catalog.models.errors import EntryNotFoundError
@@ -322,7 +329,9 @@ class TestV1ProcessRoutes:
         assert resp.status_code == 404
 
     def test_list_processes(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #2: GET /process/ returns flat list of V1ProcessContext."""
         mock_service.list_teams.return_value = [_make_process()]
@@ -334,7 +343,9 @@ class TestV1ProcessRoutes:
         assert data[0]["type"] == "Test Team"
 
     def test_list_processes_empty(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """GET /process/ returns empty flat list when no teams."""
         mock_service.list_teams.return_value = []
@@ -343,7 +354,9 @@ class TestV1ProcessRoutes:
         assert resp.json() == []
 
     def test_list_processes_alias(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #1: GET /processes returns same flat list as GET /process/."""
         mock_service.list_teams.return_value = [_make_process()]
@@ -355,7 +368,9 @@ class TestV1ProcessRoutes:
         assert data[0]["type"] == "Test Team"
 
     def test_get_process(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #7: GET /process/{id} gets team with V1 response shape."""
         mock_service.get_team.return_value = _make_process()
@@ -364,7 +379,9 @@ class TestV1ProcessRoutes:
         assert resp.json()["id"] == str(_TEAM_ID)
 
     def test_get_process_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """GET /process/{id} returns 404 for unknown team."""
         mock_service.get_team.return_value = None
@@ -372,7 +389,9 @@ class TestV1ProcessRoutes:
         assert resp.status_code == 404
 
     def test_send_message(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #2: PATCH /process/{id} sends message via V2 service."""
         mock_service.send_message.return_value = None
@@ -384,7 +403,9 @@ class TestV1ProcessRoutes:
         mock_service.send_message.assert_called_once_with(_TEAM_ID, "hello")
 
     def test_send_message_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """PATCH /process/{id} returns 404 for unknown team."""
         mock_service.send_message.side_effect = ValueError("Team not found")
@@ -395,7 +416,9 @@ class TestV1ProcessRoutes:
         assert resp.status_code == 404
 
     def test_send_message_not_running(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """PATCH /process/{id} returns 409 when team is not running."""
         mock_service.send_message.side_effect = ValueError("Team is not running")
@@ -406,7 +429,9 @@ class TestV1ProcessRoutes:
         assert resp.status_code == 409
 
     def test_delete_process(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #7: DELETE /process/{id} deletes team via V2 service."""
         mock_service.delete_team.return_value = None
@@ -415,7 +440,9 @@ class TestV1ProcessRoutes:
         mock_service.delete_team.assert_called_once_with(_TEAM_ID)
 
     def test_delete_process_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """DELETE /process/{id} returns 404 for unknown team."""
         mock_service.delete_team.side_effect = ValueError("not found")
@@ -423,7 +450,9 @@ class TestV1ProcessRoutes:
         assert resp.status_code == 404
 
     def test_archive_process(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #6: DELETE /process/{id}/archive stops team via V2 service."""
         mock_service.stop_team.return_value = None
@@ -432,7 +461,9 @@ class TestV1ProcessRoutes:
         mock_service.stop_team.assert_called_once_with(_TEAM_ID)
 
     def test_archive_process_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """DELETE /process/{id}/archive returns 404 for unknown team."""
         mock_service.stop_team.side_effect = ValueError("not found")
@@ -440,7 +471,9 @@ class TestV1ProcessRoutes:
         assert resp.status_code == 404
 
     def test_archive_process_conflict(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """DELETE /process/{id}/archive returns 409 for already stopped team."""
         mock_service.stop_team.side_effect = ValueError("already stopped")
@@ -448,7 +481,9 @@ class TestV1ProcessRoutes:
         assert resp.status_code == 409
 
     def test_restore_process(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #7: POST /process/{id}/restore restores team via V2 service."""
         mock_service.restore_team.return_value = _make_process()
@@ -459,7 +494,9 @@ class TestV1ProcessRoutes:
         mock_service.restore_team.assert_called_once_with(_TEAM_ID)
 
     def test_restore_process_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """POST /process/{id}/restore returns 404 for unknown team."""
         mock_service.restore_team.side_effect = ValueError("not found")
@@ -467,7 +504,9 @@ class TestV1ProcessRoutes:
         assert resp.status_code == 404
 
     def test_restore_process_conflict(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """POST /process/{id}/restore returns 409 when already running."""
         mock_service.restore_team.side_effect = ValueError("already running")
@@ -479,7 +518,9 @@ class TestV1HumanInputRoute:
     """Test V1 human input endpoint translation."""
 
     def test_process_human_input(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #6: POST /process_human_input/{id}/human/{proxy} routes human input."""
         mock_service.process_human_input.return_value = None
@@ -489,11 +530,15 @@ class TestV1HumanInputRoute:
         )
         assert resp.status_code == 200
         mock_service.process_human_input.assert_called_once_with(
-            _TEAM_ID, "yes", "msg-123",
+            _TEAM_ID,
+            "yes",
+            "msg-123",
         )
 
     def test_process_human_input_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """POST /process_human_input returns 404 for unknown team."""
         mock_service.process_human_input.side_effect = ValueError("not found")
@@ -503,9 +548,10 @@ class TestV1HumanInputRoute:
         )
         assert resp.status_code == 404
 
-
     def test_process_human_input_missing_message_id(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """POST /process_human_input returns 422 when message has no 'id' field."""
         resp = v1_client.post(
@@ -519,7 +565,9 @@ class TestV1MessagesRoute:
     """Test V1 messages endpoint translation."""
 
     def test_get_messages(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #3: GET /messages/{id} returns event-sourced messages in V1 format."""
         user_msg = UserMessage(content="hello")
@@ -534,7 +582,9 @@ class TestV1MessagesRoute:
         assert data[0]["type"] == "user"
 
     def test_get_messages_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """GET /messages/{id} returns 404 for unknown team."""
         mock_service.get_events.side_effect = ValueError("not found")
@@ -542,7 +592,9 @@ class TestV1MessagesRoute:
         assert resp.status_code == 404
 
     def test_get_messages_filters_non_content_events(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """GET /messages/{id} filters out events without content."""
         user_msg = UserMessage(content="hello")
@@ -562,7 +614,9 @@ class TestV1LlmContextRoute:
     """Test V1 LLM context endpoint translation."""
 
     def test_get_llm_context_grouped(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #5: GET /llm_context/{id} returns context grouped by agent ID."""
         user_msg = UserMessage(content="hello")
@@ -581,7 +635,9 @@ class TestV1LlmContextRoute:
         assert data["system"]["context"][0]["content"] == "hello"
 
     def test_get_llm_context_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """GET /llm_context/{id} returns 404 for unknown team."""
         mock_service.get_events.side_effect = ValueError("not found")
@@ -593,7 +649,9 @@ class TestV1StatesRoute:
     """Test V1 states endpoint translation."""
 
     def test_get_states_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #6: GET /states/{id} returns 404 for unknown team."""
         mock_service.get_events.side_effect = ValueError("not found")
@@ -601,7 +659,9 @@ class TestV1StatesRoute:
         assert resp.status_code == 404
 
     def test_get_states_empty(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """GET /states/{id} returns empty dict when no state events."""
         user_msg = UserMessage(content="hello")
@@ -613,7 +673,9 @@ class TestV1StatesRoute:
         assert resp.json() == {}
 
     def test_get_states_grouped(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #6: GET /states/{id} returns states grouped by agent, latest wins."""
         sender = MagicMock()
@@ -636,7 +698,9 @@ class TestV1MessageExtraction:
     """Test message content extraction and classification helper coverage."""
 
     def test_sent_message_content_extraction(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """SentMessage.message.content is extracted when outer has no content."""
         inner = UserMessage(content="inner content")
@@ -652,7 +716,9 @@ class TestV1MessageExtraction:
         assert len(data) >= 1
 
     def test_result_message_classified_as_agent(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """ResultMessage events are classified as 'agent' type."""
         result_msg = ResultMessage(content="AI response")
@@ -666,7 +732,9 @@ class TestV1MessageExtraction:
         assert data[0]["type"] == "agent"
 
     def test_llm_context_filters_non_content_events(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """GET /llm_context/{id} filters out events without displayable content."""
         user_msg = UserMessage(content="hello")
@@ -785,7 +853,9 @@ class TestV1ProcessContextNewFields:
         assert restored == ctx
 
     def test_to_v1_process_context_populates_new_fields(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #3: GET /process/{id} orchestrator is V1ActorAddress."""
         process = _make_process()
@@ -803,7 +873,9 @@ class TestV1ProcessContextNewFields:
         assert data["user_email"] == ""
 
     def test_to_v1_process_context_populates_params(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #7: GET /process/{id} params has workspace and knowledge_graph."""
         process = _make_process()
@@ -814,7 +886,9 @@ class TestV1ProcessContextNewFields:
         assert data["params"] == {"workspace": "false", "knowledge_graph": "false"}
 
     def test_running_false_when_stopped(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """Running field is False when team is stopped."""
         process = _make_process(status=TeamStatus.STOPPED)
@@ -931,7 +1005,9 @@ class TestV1DescriptionEndpoint:
     """Test PATCH /process/{id}/description endpoint."""
 
     def test_update_description_ok(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC3: PATCH /process/{id}/description returns ok."""
         mock_service.get_team.return_value = _make_process()
@@ -943,7 +1019,9 @@ class TestV1DescriptionEndpoint:
         assert resp.json()["status"] == "ok"
 
     def test_update_description_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """PATCH /process/{id}/description returns 404 for missing team."""
         mock_service.get_team.return_value = None
@@ -958,7 +1036,9 @@ class TestV1RelaunchEndpoint:
     """Test POST /relaunch/{id}/message/{msgId} endpoint."""
 
     def test_relaunch_message_ok(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC3: POST /relaunch/{id}/message/{msgId} re-sends message."""
         msg = UserMessage(content="original message")
@@ -972,7 +1052,9 @@ class TestV1RelaunchEndpoint:
         mock_service.send_message.assert_called_once_with(_TEAM_ID, "original message")
 
     def test_relaunch_message_not_found_team(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """POST /relaunch/{id}/message/{msgId} returns 404 for unknown team."""
         mock_service.get_events.side_effect = ValueError("not found")
@@ -980,7 +1062,9 @@ class TestV1RelaunchEndpoint:
         assert resp.status_code == 404
 
     def test_relaunch_message_not_found_msg(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """POST /relaunch/{id}/message/{msgId} returns 404 for unknown msg."""
         mock_service.get_events.return_value = []
@@ -992,7 +1076,9 @@ class TestV1StateUpdateEndpoint:
     """Test PATCH /state/{id}/of/{agent} endpoint."""
 
     def test_update_agent_state_ok(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC3: PATCH /state/{id}/of/{agent} sends to agent."""
         mock_handle = MagicMock()
@@ -1006,7 +1092,9 @@ class TestV1StateUpdateEndpoint:
         mock_handle.send_to.assert_called_once_with("@Worker", "update state")
 
     def test_update_agent_state_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """PATCH /state/{id}/of/{agent} returns 404 when no handle."""
         mock_service.get_handle.return_value = None
@@ -1040,7 +1128,9 @@ class TestV1TeamConfigsEndpoint:
     """Test GET /team-configs endpoint."""
 
     def test_get_team_configs_dict(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC4: GET /team-configs returns dict keyed by team name."""
         mock_entry = MagicMock()
@@ -1060,7 +1150,9 @@ class TestV1TeamConfigsEndpoint:
         assert setup_parsed["id"] == "team-1"
 
     def test_get_team_configs_empty(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """GET /team-configs returns empty dict when no entries."""
         v1_client.app.state.services.team_catalog.list.return_value = []  # type: ignore[union-attr]
@@ -1073,7 +1165,9 @@ class TestV1ConfigEndpoints:
     """Test config CRUD endpoints."""
 
     def test_get_config_by_type(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC3: GET /config/{type} returns catalog entries."""
         mock_entry = MagicMock()
@@ -1093,7 +1187,9 @@ class TestV1ConfigEndpoints:
         assert resp.status_code == 400
 
     def test_delete_config_ok(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #5: DELETE /config/{type}/{id} deletes catalog entry."""
         mock_entry = MagicMock()
@@ -1103,7 +1199,9 @@ class TestV1ConfigEndpoints:
         assert resp.json()["status"] == "ok"
 
     def test_delete_config_not_found(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """DELETE /config/{type}/{id} returns 404 for missing entry."""
         v1_client.app.state.services.tool_catalog.get.return_value = None  # type: ignore[union-attr]
@@ -1115,7 +1213,9 @@ class TestV1PutConfigEndpoint:
     """Test PUT /config endpoint."""
 
     def test_put_config_update_existing(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #4: PUT /config/{type} updates existing catalog entry."""
         mock_existing = MagicMock()
@@ -1131,7 +1231,9 @@ class TestV1PutConfigEndpoint:
         v1_client.app.state.services.agent_catalog.update.assert_called_once()  # type: ignore[union-attr]
 
     def test_put_config_create_new(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC #4: PUT /config/{type} creates new catalog entry when not found."""
         mock_entry = MagicMock()
@@ -1148,7 +1250,9 @@ class TestV1PutConfigEndpoint:
         v1_client.app.state.services.agent_catalog.create.assert_called_once()  # type: ignore[union-attr]
 
     def test_put_config_empty_catalog_returns_400(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """PUT /config/{type} returns 400 when catalog is empty."""
         v1_client.app.state.services.agent_catalog.get.return_value = None  # type: ignore[union-attr]
@@ -1222,7 +1326,9 @@ class TestV1GroupedResponses:
     """Test grouped dict response shapes for team-configs, llm_context, states."""
 
     def test_llm_context_multi_agent_grouping(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC5: llm_context groups entries by agent ID."""
         sender_a = MagicMock()
@@ -1251,7 +1357,9 @@ class TestV1GroupedResponses:
         assert "timestamp" in data["@AgentB"]["context"][0]
 
     def test_states_latest_wins(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC6: states returns only latest state per agent."""
         sender = MagicMock()
@@ -1274,7 +1382,9 @@ class TestV1GroupedResponses:
         assert isinstance(data["@Manager"]["state"], dict)
 
     def test_states_multi_agent_grouping(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC6: states groups by agent ID with multiple agents."""
         sender_a = MagicMock()
@@ -1300,7 +1410,9 @@ class TestV1GroupedResponses:
         assert isinstance(data["@AgentB"]["state"], dict)
 
     def test_team_configs_multiple_entries(
-        self, v1_client: TestClient, mock_service: MagicMock,
+        self,
+        v1_client: TestClient,
+        mock_service: MagicMock,
     ) -> None:
         """AC4: team-configs dict has entry per team."""
         entry_a = MagicMock()

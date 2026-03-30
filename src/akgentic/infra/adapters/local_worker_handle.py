@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,9 @@ from akgentic.team.ports import ServiceRegistry
 if TYPE_CHECKING:
     from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import Process
+
+
+logger = logging.getLogger(__name__)
 
 
 class LocalWorkerHandle:
@@ -31,14 +35,17 @@ class LocalWorkerHandle:
 
     def stop_team(self, team_id: uuid.UUID) -> None:
         """Stop a running team by delegating to TeamManager."""
+        logger.debug("Stopping team: %s", team_id)
         self._team_manager.stop_team(team_id)
 
     def delete_team(self, team_id: uuid.UUID) -> None:
         """Delete a team by delegating to TeamManager."""
+        logger.debug("Deleting team: %s", team_id)
         self._team_manager.delete_team(team_id)
 
     def resume_team(self, team_id: uuid.UUID) -> TeamHandle:
         """Resume a stopped team and return a LocalTeamHandle."""
+        logger.debug("Resuming team: %s", team_id)
         runtime = self._team_manager.resume_team(team_id)
         return LocalTeamHandle(runtime)
 

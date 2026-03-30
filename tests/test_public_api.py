@@ -67,10 +67,15 @@ def test_infra_all_includes_server_app_and_models() -> None:
     from akgentic import infra
 
     expected = (
-        "create_app", "CreateTeamRequest", "TeamResponse",
-        "TeamListResponse", "TeamService",
-        "SendMessageRequest", "HumanInputRequest",
-        "EventResponse", "EventListResponse",
+        "create_app",
+        "CreateTeamRequest",
+        "TeamResponse",
+        "TeamListResponse",
+        "TeamService",
+        "SendMessageRequest",
+        "HumanInputRequest",
+        "EventResponse",
+        "EventListResponse",
     )
     for name in expected:
         assert name in infra.__all__, f"Missing export: {name}"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +11,8 @@ from akgentic.infra.protocols.channels import (
     ChannelParser,
     InteractionChannelAdapter,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelConfig(BaseModel):
@@ -69,14 +72,18 @@ class ChannelParserRegistry:
     def _load(self, channels_config: dict[str, ChannelConfig]) -> None:
         """Resolve FQCNs and instantiate parsers and adapters."""
         for _channel_key, cfg in channels_config.items():
+            logger.info(
+                "Loading channel: %s (parser=%s, adapter=%s)",
+                _channel_key,
+                cfg.parser_fqcn,
+                cfg.adapter_fqcn,
+            )
             parser_cls = import_class(cfg.parser_fqcn)
             adapter_cls = import_class(cfg.adapter_fqcn)
 
             parser = parser_cls(**cfg.config)
             if not isinstance(parser, ChannelParser):
-                msg = (
-                    f"Class '{cfg.parser_fqcn}' does not satisfy ChannelParser protocol"
-                )
+                msg = f"Class '{cfg.parser_fqcn}' does not satisfy ChannelParser protocol"
                 raise TypeError(msg)
 
             adapter = adapter_cls(**cfg.config)
@@ -89,10 +96,13 @@ class ChannelParserRegistry:
 
             self._parsers[parser.channel_name] = parser
             self._adapters.append(adapter)
+        logger.debug("Channel parser registry loaded: %d channel(s)", len(self._parsers))
 
     def get_parser(self, channel_name: str) -> ChannelParser | None:
         """Return the parser for the given channel name, or None."""
-        return self._parsers.get(channel_name)
+        parser = self._parsers.get(channel_name)
+        logger.debug("Parser lookup: channel=%s, found=%s", channel_name, parser is not None)
+        return parser
 
     def get_adapters(self) -> list[InteractionChannelAdapter]:
         """Return all resolved adapters."""

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from akgentic.infra.server.services.team_service import TeamService
+
+logger = logging.getLogger(__name__)
 
 
 class LocalIngestion:
@@ -63,6 +66,7 @@ class LocalIngestion:
             content: Message content from the human.
             original_message_id: Optional ID of the message being replied to.
         """
+        logger.info("Inbound reply: team_id=%s", team_id)
         self._require_team_service().send_message(team_id, content)
 
     async def initiate_team(
@@ -81,7 +85,10 @@ class LocalIngestion:
         Returns:
             The newly created team's ID.
         """
+        logger.info("Inbound initiation: catalog=%s", catalog_entry_id)
+        logger.debug("Initiation user: %s", channel_user_id)
         ts = self._require_team_service()
         process = ts.create_team(catalog_entry_id, user_id=channel_user_id)
         ts.send_message(process.team_id, content)
+        logger.debug("Team initiated: team_id=%s", process.team_id)
         return process.team_id

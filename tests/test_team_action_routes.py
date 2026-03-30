@@ -18,7 +18,8 @@ def test_send_message_success(client: TestClient) -> None:
 def test_send_message_not_found(client: TestClient) -> None:
     """POST /teams/{id}/message on non-existent team returns 404."""
     resp = client.post(
-        f"/teams/{uuid.uuid4()}/message", json={"content": "hello"},
+        f"/teams/{uuid.uuid4()}/message",
+        json={"content": "hello"},
     )
     assert resp.status_code == 404
 

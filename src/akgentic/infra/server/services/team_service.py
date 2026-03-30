@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from akgentic.catalog.models.errors import EntryNotFoundError
@@ -9,6 +10,8 @@ from akgentic.core.messages.message import Message
 from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
 from akgentic.infra.server.deps import TierServices
 from akgentic.team.models import PersistedEvent, Process, TeamStatus
+
+logger = logging.getLogger(__name__)
 
 
 class TeamService:
@@ -30,6 +33,7 @@ class TeamService:
         Raises:
             EntryNotFoundError: If catalog_entry_id is not found.
         """
+        logger.debug("Resolving catalog entry: %s", catalog_entry_id)
         entry = self._services.team_catalog.get(catalog_entry_id)
         if entry is None:
             raise EntryNotFoundError(catalog_entry_id)
@@ -47,6 +51,7 @@ class TeamService:
         if process is None:  # pragma: no cover
             msg = f"Team {handle.team_id} was created but not found in event store"
             raise RuntimeError(msg)
+        logger.info("Team created: team_id=%s, catalog_entry=%s", process.team_id, catalog_entry_id)
         return process
 
     def list_teams(self, user_id: str) -> list[Process]:
@@ -72,6 +77,7 @@ class TeamService:
             self._services.worker_handle.stop_team(team_id)
         self._cache.remove(team_id)
         self._services.worker_handle.delete_team(team_id)
+        logger.info("Team deleted: team_id=%s", team_id)
 
     def send_message(self, team_id: uuid.UUID, content: str) -> None:
         """Send a message to a running team.
@@ -81,6 +87,7 @@ class TeamService:
         """
         handle = self._get_running_handle(team_id)
         handle.send(content)
+        logger.debug("Message sent to team %s", team_id)
 
     def process_human_input(
         self,
@@ -96,6 +103,7 @@ class TeamService:
         handle = self._get_running_handle(team_id)
         original_message = self._find_message(team_id, message_id)
         handle.process_human_input(content, original_message)
+        logger.debug("Human input routed to team %s, message_id=%s", team_id, message_id)
 
     def stop_team(self, team_id: uuid.UUID) -> None:
         """Stop a running team without deleting persisted data.
@@ -115,6 +123,7 @@ class TeamService:
             raise ValueError(msg)
         self._services.worker_handle.stop_team(team_id)
         self._cache.remove(team_id)
+        logger.info("Team stopped: team_id=%s", team_id)
 
     def restore_team(self, team_id: uuid.UUID) -> Process:
         """Restore a stopped team.
@@ -138,6 +147,7 @@ class TeamService:
         if updated is None:  # pragma: no cover
             msg = f"Team {team_id} was restored but not found in event store"
             raise RuntimeError(msg)
+        logger.info("Team restored: team_id=%s", team_id)
         return updated
 
     def get_events(self, team_id: uuid.UUID) -> list[PersistedEvent]:
@@ -150,6 +160,7 @@ class TeamService:
         if process is None:
             msg = f"Team {team_id} not found"
             raise ValueError(msg)
+        logger.debug("Loading events for team %s", team_id)
         return self._services.event_store.load_events(team_id)
 
     def get_handle(self, team_id: uuid.UUID) -> TeamHandle | None:
@@ -176,6 +187,7 @@ class TeamService:
         if process.status != TeamStatus.RUNNING:
             msg = f"Team {team_id} is not running"
             raise ValueError(msg)
+        logger.debug("Resolving running handle for team %s", team_id)
         handle = self._cache.get(team_id)
         if handle is None:
             msg = f"Team {team_id} handle not cached"

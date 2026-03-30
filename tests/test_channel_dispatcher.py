@@ -14,6 +14,7 @@ from akgentic.infra.adapters.channel_dispatcher import InteractionChannelDispatc
 # Stub adapters satisfying InteractionChannelAdapter protocol (structural)
 # ---------------------------------------------------------------------------
 
+
 class _MatchingAdapter:
     """Adapter stub that always matches."""
 
@@ -64,17 +65,20 @@ class _NonMatchingAdapter:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_addr() -> ActorAddressProxy:
-    return ActorAddressProxy({
-        "__actor_address__": True,
-        "__actor_type__": "akgentic.core.actor_address_impl.ActorAddressProxy",
-        "agent_id": str(uuid.uuid4()),
-        "name": "test-agent",
-        "role": "tester",
-        "team_id": str(uuid.uuid4()),
-        "squad_id": str(uuid.uuid4()),
-        "user_message": False,
-    })
+    return ActorAddressProxy(
+        {
+            "__actor_address__": True,
+            "__actor_type__": "akgentic.core.actor_address_impl.ActorAddressProxy",
+            "agent_id": str(uuid.uuid4()),
+            "name": "test-agent",
+            "role": "tester",
+            "team_id": str(uuid.uuid4()),
+            "squad_id": str(uuid.uuid4()),
+            "user_message": False,
+        }
+    )
 
 
 def _make_sent_message() -> SentMessage:
@@ -89,6 +93,7 @@ TEAM_ID = uuid.uuid4()
 # ---------------------------------------------------------------------------
 # AC #1: matches() then deliver() on matching adapter
 # ---------------------------------------------------------------------------
+
 
 class TestDispatchToMatchingAdapter:
     """AC #1: Dispatcher calls matches() then deliver() on matching adapters."""
@@ -108,6 +113,7 @@ class TestDispatchToMatchingAdapter:
 # ---------------------------------------------------------------------------
 # AC #2: non-SentMessage events are skipped
 # ---------------------------------------------------------------------------
+
 
 class TestSkipsNonSentMessage:
     """Dispatcher ignores non-SentMessage events."""
@@ -135,6 +141,7 @@ class TestSkipsNonSentMessage:
 # AC #2: no adapter matches → silently skip
 # ---------------------------------------------------------------------------
 
+
 class TestNoAdapterMatch:
     """When no adapter matches, message is silently skipped."""
 
@@ -151,15 +158,14 @@ class TestNoAdapterMatch:
 # AC #2: multi-channel delivery — ALL matching adapters get deliver()
 # ---------------------------------------------------------------------------
 
+
 class TestMultiChannelDelivery:
     """With multiple adapters, ALL matching adapters receive deliver()."""
 
     def test_all_matching_adapters_deliver(self) -> None:
         first = _MatchingAdapter()
         second = _MatchingAdapter()
-        dispatcher = InteractionChannelDispatcher(
-            team_id=TEAM_ID, adapters=[first, second]
-        )
+        dispatcher = InteractionChannelDispatcher(team_id=TEAM_ID, adapters=[first, second])
         sent = _make_sent_message()
         dispatcher.on_message(sent)
 
@@ -173,9 +179,7 @@ class TestMultiChannelDelivery:
     def test_skips_non_matching_then_delivers_to_match(self) -> None:
         non_match = _NonMatchingAdapter()
         match = _MatchingAdapter()
-        dispatcher = InteractionChannelDispatcher(
-            team_id=TEAM_ID, adapters=[non_match, match]
-        )
+        dispatcher = InteractionChannelDispatcher(team_id=TEAM_ID, adapters=[non_match, match])
         dispatcher.on_message(_make_sent_message())
 
         assert non_match.matches_called
@@ -205,6 +209,7 @@ class TestMultiChannelDelivery:
 # AC #3: set_restoring(True) causes all events to be skipped
 # ---------------------------------------------------------------------------
 
+
 class TestRestoreMode:
     """set_restoring suppresses delivery during event replay."""
 
@@ -233,15 +238,14 @@ class TestRestoreMode:
 # AC #4: on_stop() calls adapter.on_stop(team_id) on ALL adapters
 # ---------------------------------------------------------------------------
 
+
 class TestOnStop:
     """on_stop() propagates to all registered adapters."""
 
     def test_on_stop_calls_all_adapters(self) -> None:
         a1 = _MatchingAdapter()
         a2 = _NonMatchingAdapter()
-        dispatcher = InteractionChannelDispatcher(
-            team_id=TEAM_ID, adapters=[a1, a2]
-        )
+        dispatcher = InteractionChannelDispatcher(team_id=TEAM_ID, adapters=[a1, a2])
         dispatcher.on_stop()
 
         assert a1.stop_called
@@ -257,6 +261,7 @@ class TestOnStop:
 # ---------------------------------------------------------------------------
 # Edge case: empty adapter list with SentMessage
 # ---------------------------------------------------------------------------
+
 
 class TestEmptyAdapterList:
     """Dispatcher with empty adapter list handles messages without error."""

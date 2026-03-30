@@ -398,6 +398,7 @@ class TestCliChat:
                 return "/quit"
             # After /quit: block until cancelled (session should have exited)
             import threading
+
             threading.Event().wait(timeout=30)
             return "/quit"
 
