@@ -73,6 +73,11 @@ jobs:
           --cov-report=json:coverage.json
           --cov-fail-under=90
 
+      - name: Run smoke tests (no API key required)
+        run: >
+          uv run pytest packages/akgentic-infra/tests/integration/test_smoke.py -v
+          -o "addopts="
+
       - name: Run integration tests (no coverage gate)
         if: env.OPENAI_API_KEY != ''
         env:

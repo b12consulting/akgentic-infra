@@ -1,16 +1,23 @@
-"""Integration test fixtures — real app, real actors, real LLM (no mocks)."""
+"""Integration test fixtures — real app, real actors, real LLM (no mocks).
+
+Smoke tests (marked ``@pytest.mark.smoke``) run WITHOUT ``OPENAI_API_KEY``
+by monkey-patching ``akgentic.llm.providers.create_model`` to return
+``pydantic_ai.models.test.TestModel`` for deterministic, offline responses.
+"""
 
 from __future__ import annotations
 
 import os
 from collections.abc import Generator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
 import pytest
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic_ai.models.test import TestModel
 
 from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.local_ingestion import LocalIngestion
@@ -37,24 +44,61 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 _seed_integration_catalog = seed_integration_catalog
 
 
+def _test_model_factory(
+    config: Any, http_client: Any = None,  # noqa: ANN401
+) -> TestModel:
+    """Drop-in replacement for ``create_model`` returning a ``TestModel``.
+
+    Returns a TestModel that produces a StructuredOutput with a single response
+    message directed to @Human (matching the integration test team topology).
+    """
+    return TestModel(
+        call_tools=[],
+        custom_output_args={
+            "messages": [
+                {
+                    "message_type": "response",
+                    "message": "Hello from TestModel",
+                    "recipient": "@Human",
+                },
+            ],
+        },
+    )
+
+
+def _test_get_output_type(
+    config: Any, output_type: Any,  # noqa: ANN401
+) -> Any:  # noqa: ANN401
+    """No NativeOutput wrapping — TestModel does not support it."""
+    return output_type
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="session", autouse=True)
-def openai_api_key() -> str:
-    """Ensure OPENAI_API_KEY is available; skip if not."""
+def _load_dotenv() -> None:
+    """Load .env once per session (makes OPENAI_API_KEY available if present)."""
     load_dotenv(_PROJECT_ROOT / ".env")
+
+
+@pytest.fixture(scope="session")
+def openai_api_key() -> str:
+    """Return OPENAI_API_KEY or skip — used only by LLM-dependent fixtures."""
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
-        pytest.skip("OPENAI_API_KEY not set — required for integration tests")
+        pytest.skip("OPENAI_API_KEY not set — required for LLM integration tests")
     return key
 
 
 @pytest.fixture()
-def integration_settings(tmp_path: Path) -> CommunitySettings:
-    """CommunitySettings backed by tmp_path with a seeded integration catalog."""
+def integration_settings(tmp_path: Path, openai_api_key: str) -> CommunitySettings:
+    """CommunitySettings backed by tmp_path with a seeded integration catalog.
+
+    Depends on ``openai_api_key`` so LLM-dependent tests are skipped when absent.
+    """
     settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
     seed_integration_catalog(settings.workspaces_root / "catalog")
     return settings
@@ -197,3 +241,53 @@ def channel_app(
 def channel_client(channel_app: FastAPI) -> TestClient:
     """Sync HTTP test client hitting a channel-enabled FastAPI app."""
     return TestClient(channel_app)
+
+
+# ---------------------------------------------------------------------------
+# Smoke Test Fixtures (TestModel — no OPENAI_API_KEY required)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def smoke_settings(tmp_path: Path) -> CommunitySettings:
+    """CommunitySettings for smoke tests — no OPENAI_API_KEY dependency.
+
+    Explicitly sets ``catalog_path`` so the env var ``AKGENTIC_CATALOG_PATH``
+    (loaded from .env) does not override the seeded test catalog.
+    """
+    catalog_dir = tmp_path / "workspaces" / "catalog"
+    seed_integration_catalog(catalog_dir)
+    return CommunitySettings(
+        workspaces_root=tmp_path / "workspaces",
+        catalog_path=catalog_dir,
+    )
+
+
+@pytest.fixture()
+def smoke_services(
+    smoke_settings: CommunitySettings,
+) -> Generator[CommunityServices, None, None]:
+    """Wired community services with TestModel injection — no real LLM calls."""
+    with (
+        patch("akgentic.llm.agent.create_model", side_effect=_test_model_factory),
+        patch("akgentic.llm.agent.get_output_type", side_effect=_test_get_output_type),
+    ):
+        services = wire_community(smoke_settings)
+        yield services
+        services.actor_system.shutdown()
+
+
+@pytest.fixture()
+def smoke_app(
+    smoke_settings: CommunitySettings,
+    smoke_services: CommunityServices,
+) -> Generator[FastAPI, None, None]:
+    """FastAPI app backed by real actors and TestModel LLM."""
+    application = create_app(smoke_services, smoke_settings)
+    yield application
+
+
+@pytest.fixture()
+def smoke_client(smoke_app: FastAPI) -> TestClient:
+    """Sync HTTP test client hitting a TestModel-backed FastAPI app."""
+    return TestClient(smoke_app)
