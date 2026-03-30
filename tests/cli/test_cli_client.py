@@ -16,6 +16,7 @@ from akgentic.infra.cli.client import (
     WorkspaceTreeInfo,
     WorkspaceUploadInfo,
 )
+from tests.fixtures.models import make_event_info, make_team_info
 
 
 def _transport(
@@ -49,28 +50,10 @@ def _client(
 # -- team endpoints --
 
 
-# -- Complete test data fixtures --
-
-_TEAM_DICT: dict[str, Any] = {
-    "team_id": "abc",
-    "name": "t1",
-    "status": "running",
-    "user_id": "user-1",
-    "created_at": "2026-01-01T00:00:00",
-    "updated_at": "2026-01-01T00:00:00",
-}
-
-_EVENT_DICT: dict[str, Any] = {
-    "team_id": "abc",
-    "sequence": 1,
-    "event": {"type": "msg"},
-    "timestamp": "2026-01-01T00:00:00",
-}
-
-
 class TestListTeams:
     def test_returns_team_list(self) -> None:
-        client = _client(_transport(json_body={"teams": [_TEAM_DICT]}))
+        team = make_team_info(team_id="abc", name="t1")
+        client = _client(_transport(json_body={"teams": [team]}))
         result = client.list_teams()
         assert len(result) == 1
         assert isinstance(result[0], TeamInfo)
@@ -84,7 +67,8 @@ class TestListTeams:
 
 class TestGetTeam:
     def test_returns_team_info(self) -> None:
-        client = _client(_transport(json_body=_TEAM_DICT))
+        team = make_team_info(team_id="abc", name="t1")
+        client = _client(_transport(json_body=team))
         result = client.get_team("abc")
         assert isinstance(result, TeamInfo)
         assert result.team_id == "abc"
@@ -93,11 +77,12 @@ class TestGetTeam:
 
 class TestCreateTeam:
     def test_sends_catalog_entry(self) -> None:
+        team = make_team_info(team_id="abc")
         sent_bodies: list[dict[str, Any]] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             sent_bodies.append(json.loads(request.content))
-            return httpx.Response(200, json=_TEAM_DICT)
+            return httpx.Response(200, json=team)
 
         client = _client(httpx.MockTransport(handler))
         result = client.create_team("my-entry")
@@ -133,7 +118,8 @@ class TestDeleteTeam:
 
 class TestRestoreTeam:
     def test_returns_restored(self) -> None:
-        client = _client(_transport(json_body=_TEAM_DICT))
+        team = make_team_info(team_id="abc", status="running")
+        client = _client(_transport(json_body=team))
         result = client.restore_team("abc")
         assert isinstance(result, TeamInfo)
         assert result.status == "running"
@@ -141,7 +127,8 @@ class TestRestoreTeam:
 
 class TestGetEvents:
     def test_returns_event_list(self) -> None:
-        client = _client(_transport(json_body={"events": [_EVENT_DICT]}))
+        event = make_event_info(team_id="abc", sequence=1)
+        client = _client(_transport(json_body={"events": [event]}))
         result = client.get_events("abc")
         assert len(result) == 1
         assert isinstance(result[0], EventInfo)
