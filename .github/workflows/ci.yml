@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: b12consulting/akgentic-quick-start
-          ref: feat/98-akgentic-infra-dev  # required until workspace PR merges akgentic-infra
+          ref: master
           submodules: recursive
           token: ${{ secrets.GH_PAT }}
 
