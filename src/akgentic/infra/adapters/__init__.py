@@ -14,6 +14,8 @@ from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
 from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.no_auth import NoAuth
 from akgentic.infra.adapters.null_channel_registry import NullChannelRegistry
+from akgentic.infra.adapters.telegram_adapter import TelegramChannelAdapter
+from akgentic.infra.adapters.telegram_parser import TelegramChannelParser
 from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.adapters.websocket_subscriber import WebSocketEventSubscriber
 from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
@@ -29,6 +31,8 @@ __all__ = [
     "LocalWorkerHandle",
     "NoAuth",
     "NullChannelRegistry",
+    "TelegramChannelAdapter",
+    "TelegramChannelParser",
     "TelemetrySubscriber",
     "WebSocketEventSubscriber",
     "YamlChannelRegistry",
