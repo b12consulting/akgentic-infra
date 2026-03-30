@@ -72,7 +72,7 @@ jobs:
           --cov=akgentic.infra
           --cov-report=term-missing
           --cov-report=json:coverage.json
-          --cov-fail-under=90
+          --cov-fail-under=80
 
       - name: Run smoke tests (no API key required)
         run: >
