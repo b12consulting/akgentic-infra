@@ -38,6 +38,8 @@ from .conftest import captured_renderer as _captured_renderer
 from .conftest import make_session as _make_session
 from .conftest import mock_ws as _mock_ws
 
+_PROMPT_PATH = "prompt_toolkit.PromptSession.prompt"
+
 # -- Helpers --
 
 
@@ -239,7 +241,7 @@ class TestHistoryHandler:
             EventInfo(
                 team_id="t1",
                 sequence=i,
-                event={"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"},
+                event={"__model__": "SentMessage", "sender": "bot", "message": {"content": f"msg-{i}"}},
                 timestamp="2026-01-01T00:00:00",
             )
             for i in range(25)
@@ -263,7 +265,7 @@ class TestHistoryHandler:
             EventInfo(
                 team_id="t1",
                 sequence=i,
-                event={"__model__": "SentMessage", "sender": "bot", "content": f"msg-{i}"},
+                event={"__model__": "SentMessage", "sender": "bot", "message": {"content": f"msg-{i}"}},
                 timestamp="2026-01-01T00:00:00",
             )
             for i in range(25)
@@ -315,7 +317,7 @@ class TestHistoryHandler:
             EventInfo(
                 team_id="t1",
                 sequence=2,
-                event={"__model__": "SentMessage", "sender": "bot", "content": "visible"},
+                event={"__model__": "SentMessage", "sender": "bot", "message": {"content": "visible"}},
                 timestamp="2026-01-01T00:00:00",
             ),
         ]
@@ -568,7 +570,7 @@ class TestChatSessionCommandIntegration:
         session = ChatSession(client, ws, "t1", OutputFormat.table)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=["/status", "/quit"],
         ):
             await session.run()
@@ -583,7 +585,7 @@ class TestChatSessionCommandIntegration:
         session = ChatSession(client, ws, "t1", OutputFormat.table)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=["hello there", "/quit"],
         ):
             await session.run()
@@ -596,7 +598,7 @@ class TestChatSessionCommandIntegration:
         session = ChatSession(client, ws, "t1", OutputFormat.table)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=["/quit"],
         ):
             await session.run()
@@ -610,7 +612,7 @@ class TestChatSessionCommandIntegration:
         session = ChatSession(client, ws, "t1", OutputFormat.table)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=["/unknown", "/quit"],
         ):
             await session.run()
