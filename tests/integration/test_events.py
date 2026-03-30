@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from ._helpers import create_team, has_llm_content, wait_for_llm_response
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
 
 # ---------------------------------------------------------------------------

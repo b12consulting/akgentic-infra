@@ -18,6 +18,15 @@ from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Auto-skip tests marked with ``llm`` when OPENAI_API_KEY is not set."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        skip_llm = pytest.mark.skip(reason="OPENAI_API_KEY not set")
+        for item in items:
+            if "llm" in item.keywords:
+                item.add_marker(skip_llm)
+
+
 def _write_yaml(path: Path, data: dict[str, object]) -> None:
     """Write a single YAML entry file."""
     path.parent.mkdir(parents=True, exist_ok=True)

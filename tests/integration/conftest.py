@@ -44,11 +44,11 @@ _seed_integration_catalog = seed_integration_catalog
 
 @pytest.fixture(scope="session", autouse=True)
 def openai_api_key() -> str:
-    """Ensure OPENAI_API_KEY is available; fail fast if not."""
+    """Ensure OPENAI_API_KEY is available; skip if not."""
     load_dotenv(_PROJECT_ROOT / ".env")
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
-        pytest.fail("OPENAI_API_KEY not set — required for integration tests")
+        pytest.skip("OPENAI_API_KEY not set — required for integration tests")
     return key
 
 

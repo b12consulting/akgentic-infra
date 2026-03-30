@@ -24,7 +24,7 @@ jobs:
       - name: Override akgentic-infra submodule with current branch
         working-directory: packages/akgentic-infra
         run: |
-          git fetch origin ${{ github.head_ref || github.ref_name }}
+          git fetch origin master ${{ github.head_ref || github.ref_name }}
           git checkout FETCH_HEAD
 
       - name: Install uv
@@ -44,13 +44,42 @@ jobs:
       - name: Linting
         run: uv run ruff check packages/akgentic-infra/src/
 
-      - name: Run tests with coverage
+      - name: Enforce no MagicMock in integration tests
+        working-directory: packages/akgentic-infra
+        run: |
+          # test_cli.py exclusion deferred to story 9.4/9.5
+          if grep -r "MagicMock" tests/integration/ --include='*.py' -l | grep -v '/test_cli\.py$'; then
+            echo "::error::MagicMock found in integration tests — integration tests must not use mocks"
+            exit 1
+          fi
+
+      - name: Enforce zero src/ changes on test branches
+        if: startsWith(github.head_ref || github.ref_name, 'test/')
+        working-directory: packages/akgentic-infra
+        run: |
+          changed=$(git diff origin/master --name-only -- src/ || true)
+          if [ -n "$changed" ]; then
+            echo "::error::src/ changes detected on a test/* branch — test branches must not modify production code"
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Run unit tests with coverage
         run: >
           uv run pytest packages/akgentic-infra/tests/
+          --ignore=packages/akgentic-infra/tests/integration/
           --cov=akgentic.infra
           --cov-report=term-missing
           --cov-report=json:coverage.json
           --cov-fail-under=90
+
+      - name: Run integration tests (no coverage gate)
+        if: env.OPENAI_API_KEY != ''
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: >
+          uv run pytest packages/akgentic-infra/tests/integration/ -v
+          -o "addopts="
 
       # Coverage badge is updated only on master push.
       # NOTE: Replace REPLACE_WITH_GIST_ID with the actual Gist ID after the
