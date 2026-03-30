@@ -3,43 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-import io
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import websockets.exceptions
-from rich.console import Console
 
 from akgentic.infra.cli.client import EventInfo
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession, _print_event, _render_event_impl
 
+from .conftest import captured_renderer as _captured_renderer
+from .conftest import mock_client as _shared_mock_client
+from .conftest import mock_ws as _mock_ws
 
-def _captured_renderer() -> tuple[RichRenderer, io.StringIO]:
-    """Build a RichRenderer that captures output to a StringIO buffer."""
-    buf = io.StringIO()
-    console = Console(file=buf, force_terminal=True, width=120, no_color=True)
-    return RichRenderer(console=console), buf
+_PROMPT_PATH = "prompt_toolkit.PromptSession.prompt"
 
 
 def _mock_client(**overrides: Any) -> MagicMock:
-    """Build a mock ApiClient."""
-    mock = MagicMock()
-    mock.get_events.return_value = []
-    mock.send_message.return_value = None
-    for k, v in overrides.items():
-        setattr(mock, k, v)
-    return mock
-
-
-def _mock_ws() -> AsyncMock:
-    """Build a mock WsClient."""
-    ws = AsyncMock()
-    ws.__aenter__ = AsyncMock(return_value=ws)
-    ws.__aexit__ = AsyncMock(return_value=None)
-    ws.receive_event = AsyncMock(side_effect=asyncio.CancelledError)
-    return ws
+    """Build a mock ApiClient with minimal defaults for REPL tests."""
+    defaults: dict[str, Any] = {"get_events": MagicMock(return_value=[])}
+    defaults.update(overrides)
+    return _shared_mock_client(**defaults)
 
 
 def _make_session(
@@ -67,7 +52,7 @@ class TestReplayHistory:
                         event={
                             "__model__": "SentMessage",
                             "sender": "bot",
-                            "content": "hello",
+                            "message": {"content": "hello"},
                         },
                         timestamp="2026-01-01T00:00:00",
                     ),
@@ -113,7 +98,7 @@ class TestQuitHandling:
         client = _mock_client()
         session = _make_session(client=client, renderer=renderer)
 
-        with patch("akgentic.infra.cli.repl._read_input", side_effect=["/quit"]):
+        with patch(_PROMPT_PATH, side_effect=["/quit"]):
             await session.run()
 
         out = buf.getvalue()
@@ -126,7 +111,7 @@ class TestQuitHandling:
         session = _make_session(client=client, renderer=renderer)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=KeyboardInterrupt,
         ):
             await session.run()
@@ -139,7 +124,7 @@ class TestQuitHandling:
         client = _mock_client()
         session = _make_session(client=client, renderer=renderer)
 
-        with patch("akgentic.infra.cli.repl._read_input", side_effect=EOFError):
+        with patch(_PROMPT_PATH, side_effect=EOFError):
             await session.run()
 
         out = buf.getvalue()
@@ -153,7 +138,7 @@ class TestMessageSending:
         session = _make_session(client=client, renderer=renderer)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=["hello world", "/quit"],
         ):
             await session.run()
@@ -166,7 +151,7 @@ class TestMessageSending:
         session = _make_session(client=client, renderer=renderer)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=["", "  ", "/quit"],
         ):
             await session.run()
@@ -178,7 +163,7 @@ class TestReceiveLoop:
     async def test_renders_sent_message(self) -> None:
         renderer, buf = _captured_renderer()
         events = [
-            {"event": {"__model__": "SentMessage", "sender": "agent1", "content": "hi there"}},
+            {"event": {"__model__": "SentMessage", "sender": "agent1", "message": {"content": "hi there"}}},
         ]
         client = _mock_client()
         ws = _mock_ws()
@@ -197,7 +182,7 @@ class TestReceiveLoop:
         session = _make_session(client=client, ws=ws, renderer=renderer)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=["/quit"],
         ):
             await session.run()
@@ -228,7 +213,7 @@ class TestReceiveLoop:
         session = _make_session(client=client, ws=ws, renderer=renderer)
 
         with patch(
-            "akgentic.infra.cli.repl._read_input",
+            _PROMPT_PATH,
             side_effect=["/quit"],
         ):
             await session.run()
@@ -249,7 +234,7 @@ class TestReceiveLoopCloseCode:
         ws.receive_event = AsyncMock(side_effect=exc)
         session = _make_session(client=client, ws=ws, renderer=renderer)
 
-        with patch("akgentic.infra.cli.repl._read_input", side_effect=["/quit"]):
+        with patch(_PROMPT_PATH, side_effect=["/quit"]):
             await session.run()
 
         out = buf.getvalue()
@@ -266,7 +251,7 @@ class TestReceiveLoopCloseCode:
         ws.receive_event = AsyncMock(side_effect=exc)
         session = _make_session(client=client, ws=ws, renderer=renderer)
 
-        with patch("akgentic.infra.cli.repl._read_input", side_effect=["/quit"]):
+        with patch(_PROMPT_PATH, side_effect=["/quit"]):
             await session.run()
 
         out = buf.getvalue()
@@ -279,7 +264,7 @@ class TestRenderEvent:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
         result = session._render_event(
-            {"event": {"__model__": "SentMessage", "sender": "bot", "content": "reply"}}
+            {"event": {"__model__": "SentMessage", "sender": "bot", "message": {"content": "reply"}}}
         )
         assert result is True
         out = buf.getvalue()
@@ -319,7 +304,7 @@ class TestRenderEvent:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
         result = session._render_event(
-            {"event": {"__model__": "SentMessage", "sender": "bot", "content": ""}}
+            {"event": {"__model__": "SentMessage", "sender": "bot", "message": {"content": ""}}}
         )
         assert result is False
 
@@ -385,7 +370,7 @@ class TestPrintEventBackwardCompat:
 
     def test_sent_message(self) -> None:
         result = _print_event(
-            {"event": {"__model__": "SentMessage", "sender": "bot", "content": "reply"}}
+            {"event": {"__model__": "SentMessage", "sender": "bot", "message": {"content": "reply"}}}
         )
         assert result is True
 

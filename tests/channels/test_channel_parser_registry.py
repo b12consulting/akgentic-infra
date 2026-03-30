@@ -110,7 +110,7 @@ def test_import_class_class_not_found() -> None:
 
 def _make_config() -> dict[str, ChannelConfig]:
     """Build a channels config pointing to test stubs in this module."""
-    this_module = "tests.test_channel_parser_registry"
+    this_module = "tests.channels.test_channel_parser_registry"
     return {
         "whatsapp": ChannelConfig(
             parser_fqcn=f"{this_module}.StubWhatsAppParser",
@@ -180,7 +180,7 @@ def test_registry_invalid_parser_fqcn() -> None:
     config = {
         "bad": ChannelConfig(
             parser_fqcn="nonexistent.module.BadParser",
-            adapter_fqcn="tests.test_channel_parser_registry.StubWhatsAppAdapter",
+            adapter_fqcn="tests.channels.test_channel_parser_registry.StubWhatsAppAdapter",
         ),
     }
     with pytest.raises(ImportError):
@@ -191,7 +191,7 @@ def test_registry_invalid_adapter_fqcn() -> None:
     """ChannelParserRegistry raises ImportError for invalid adapter FQCN."""
     config = {
         "bad": ChannelConfig(
-            parser_fqcn="tests.test_channel_parser_registry.StubWhatsAppParser",
+            parser_fqcn="tests.channels.test_channel_parser_registry.StubWhatsAppParser",
             adapter_fqcn="nonexistent.module.BadAdapter",
         ),
     }
@@ -215,8 +215,8 @@ def test_registry_rejects_non_parser_protocol() -> None:
     """ChannelParserRegistry raises TypeError when class doesn't satisfy ChannelParser."""
     config = {
         "bad": ChannelConfig(
-            parser_fqcn="tests.test_channel_parser_registry._NotAParser",
-            adapter_fqcn="tests.test_channel_parser_registry.StubWhatsAppAdapter",
+            parser_fqcn="tests.channels.test_channel_parser_registry._NotAParser",
+            adapter_fqcn="tests.channels.test_channel_parser_registry.StubWhatsAppAdapter",
         ),
     }
     with pytest.raises(TypeError, match="ChannelParser"):
@@ -227,8 +227,8 @@ def test_registry_rejects_non_adapter_protocol() -> None:
     """ChannelParserRegistry raises TypeError for non-InteractionChannelAdapter."""
     config = {
         "bad": ChannelConfig(
-            parser_fqcn="tests.test_channel_parser_registry.StubWhatsAppParser",
-            adapter_fqcn="tests.test_channel_parser_registry._NotAnAdapter",
+            parser_fqcn="tests.channels.test_channel_parser_registry.StubWhatsAppParser",
+            adapter_fqcn="tests.channels.test_channel_parser_registry._NotAnAdapter",
         ),
     }
     with pytest.raises(TypeError, match="InteractionChannelAdapter"):
@@ -278,15 +278,15 @@ class StubConfigAdapter:
 def test_channel_config_has_config_field() -> None:
     """ChannelConfig has a config dict field with empty dict default."""
     cfg = ChannelConfig(
-        parser_fqcn="tests.test_channel_parser_registry.StubWhatsAppParser",
-        adapter_fqcn="tests.test_channel_parser_registry.StubWhatsAppAdapter",
+        parser_fqcn="tests.channels.test_channel_parser_registry.StubWhatsAppParser",
+        adapter_fqcn="tests.channels.test_channel_parser_registry.StubWhatsAppAdapter",
     )
     assert cfg.config == {}
 
 
 def test_config_passthrough_to_constructors() -> None:
     """Config values are passed to parser and adapter constructors."""
-    this_module = "tests.test_channel_parser_registry"
+    this_module = "tests.channels.test_channel_parser_registry"
     config = {
         "configurable": ChannelConfig(
             parser_fqcn=f"{this_module}.StubConfigParser",
