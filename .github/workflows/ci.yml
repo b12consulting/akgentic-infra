@@ -45,11 +45,15 @@ jobs:
       - name: Linting
         run: uv run ruff check packages/akgentic-infra/src/
 
-      - name: Enforce no MagicMock in integration tests
+      - name: Enforce no MagicMock in integration and e2e tests
         working-directory: packages/akgentic-infra
         run: |
           if grep -r "MagicMock" tests/integration/ --include='*.py' -l | grep -v '/test_cli\.py$'; then
             echo "::error::MagicMock found in integration tests — integration tests must not use mocks"
+            exit 1
+          fi
+          if grep -r "MagicMock" tests/e2e/ --include='*.py' -l 2>/dev/null; then
+            echo "::error::MagicMock found in e2e tests — e2e tests must not use mocks"
             exit 1
           fi
 
@@ -97,6 +101,7 @@ jobs:
         run: >
           uv run pytest packages/akgentic-infra/tests/
           --ignore=packages/akgentic-infra/tests/integration/
+          --ignore=packages/akgentic-infra/tests/e2e/
           --cov=akgentic.infra
           --cov-report=term-missing
           --cov-report=json:coverage.json
