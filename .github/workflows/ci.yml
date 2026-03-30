@@ -24,7 +24,7 @@ jobs:
       - name: Override akgentic-infra submodule with current branch
         working-directory: packages/akgentic-infra
         run: |
-          git fetch origin ${{ github.head_ref || github.ref_name }}
+          git fetch origin master ${{ github.head_ref || github.ref_name }}
           git checkout FETCH_HEAD
 
       - name: Install uv
@@ -48,7 +48,7 @@ jobs:
         working-directory: packages/akgentic-infra
         run: |
           # test_cli.py exclusion deferred to story 9.4/9.5
-          if grep -r "MagicMock" tests/integration/ --include='*.py' -l | grep -v test_cli.py; then
+          if grep -r "MagicMock" tests/integration/ --include='*.py' -l | grep -v '/test_cli\.py$'; then
             echo "::error::MagicMock found in integration tests — integration tests must not use mocks"
             exit 1
           fi
