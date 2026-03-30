@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,9 @@ from akgentic.team.ports import ServiceRegistry
 if TYPE_CHECKING:
     from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import TeamCard
+
+
+logger = logging.getLogger(__name__)
 
 
 class LocalPlacement:
@@ -46,5 +50,7 @@ class LocalPlacement:
         Returns:
             A LocalTeamHandle for interacting with the newly created team.
         """
+        logger.debug("LocalPlacement creating team: user_id=%s", user_id)
         runtime = self._team_manager.create_team(team_card, user_id)
+        logger.debug("Team created locally: team_id=%s", runtime.id)
         return LocalTeamHandle(runtime)

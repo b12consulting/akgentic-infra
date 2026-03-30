@@ -47,22 +47,15 @@ class StubChannelParser:
         return "test-team"
 
     async def parse(
-        self, payload: dict[str, JsonValue],
+        self,
+        payload: dict[str, JsonValue],
     ) -> ChannelMessage:
         """Parse test payload into ChannelMessage."""
         content = str(payload.get("content", ""))
         channel_user_id = str(payload.get("channel_user_id", ""))
         raw_team_id = payload.get("team_id")
-        team_id = (
-            uuid.UUID(str(raw_team_id))
-            if raw_team_id is not None
-            else None
-        )
-        message_id = (
-            str(payload["message_id"])
-            if payload.get("message_id")
-            else None
-        )
+        team_id = uuid.UUID(str(raw_team_id)) if raw_team_id is not None else None
+        message_id = str(payload["message_id"]) if payload.get("message_id") else None
         return ChannelMessage(
             content=content,
             channel_user_id=channel_user_id,
@@ -127,19 +120,21 @@ class TestChannelInitiation:
             "channel_user_id": "ext-user-1",
         }
         resp = channel_client.post(
-            "/webhook/test-channel", json=payload,
+            "/webhook/test-channel",
+            json=payload,
         )
         assert resp.status_code == 204
 
         team_id = _find_team_via_registry(
-            channel_registry_instance, "test-channel", "ext-user-1",
+            channel_registry_instance,
+            "test-channel",
+            "ext-user-1",
         )
-        assert team_id is not None, (
-            "Channel registry should map ext-user-1 after initiation"
-        )
+        assert team_id is not None, "Channel registry should map ext-user-1 after initiation"
 
         events = wait_for_llm_response(
-            channel_client, str(team_id),
+            channel_client,
+            str(team_id),
         )
         assert has_llm_content(events)
 
@@ -151,10 +146,12 @@ class TestChannelReply:
     """AC #2: Webhook with team_id routes to the correct team."""
 
     def test_reply_routes_to_existing_team(
-        self, channel_client: TestClient,
+        self,
+        channel_client: TestClient,
     ) -> None:
         create_resp = channel_client.post(
-            "/teams/", json={"catalog_entry_id": "test-team"},
+            "/teams/",
+            json={"catalog_entry_id": "test-team"},
         )
         assert create_resp.status_code == 201
         team_id = create_resp.json()["team_id"]
@@ -190,7 +187,8 @@ class TestChannelContinuation:
             "channel_user_id": "ext-user-cont",
         }
         resp = channel_client.post(
-            "/webhook/test-channel", json=payload,
+            "/webhook/test-channel",
+            json=payload,
         )
         assert resp.status_code == 204
 
@@ -199,9 +197,7 @@ class TestChannelContinuation:
             "test-channel",
             "ext-user-cont",
         )
-        assert team_id is not None, (
-            "Channel registry should have mapping after initiation"
-        )
+        assert team_id is not None, "Channel registry should have mapping after initiation"
 
         # Wait for LLM to process first message before sending follow-up
         wait_for_llm_response(channel_client, str(team_id))
@@ -234,10 +230,7 @@ class TestChannelContinuation:
                     found_followup = True
                     break
                 msg = ev.get("message")
-                if (
-                    isinstance(msg, dict)
-                    and msg.get("content") == FOLLOWUP_CONTENT
-                ):
+                if isinstance(msg, dict) and msg.get("content") == FOLLOWUP_CONTENT:
                     found_followup = True
                     break
             if found_followup:
@@ -267,7 +260,8 @@ class TestDispatcherRestoreSuppression:
     ) -> None:
         # Create team via REST (no LLM call needed)
         create_resp = channel_client.post(
-            "/teams/", json={"catalog_entry_id": "test-team"},
+            "/teams/",
+            json={"catalog_entry_id": "test-team"},
         )
         assert create_resp.status_code == 201
         team_id = create_resp.json()["team_id"]

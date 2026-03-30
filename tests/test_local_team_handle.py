@@ -98,7 +98,9 @@ class TestLocalTeamHandleProcessHumanInput:
 
         handle = LocalTeamHandle(runtime)
         message = MagicMock()
-        with pytest.raises(ValueError, match="HumanProxy 'human' found but has no resolved address"):
+        with pytest.raises(
+            ValueError, match="HumanProxy 'human' found but has no resolved address"
+        ):
             handle.process_human_input("input", message)
 
     def test_process_human_input_raises_for_empty_agent_cards(self) -> None:
@@ -152,7 +154,8 @@ class TestLocalTeamHandleSubscribe:
         handle.subscribe(subscriber)
 
         runtime.actor_system.proxy_ask.assert_called_once_with(
-            runtime.orchestrator_addr, Orchestrator,
+            runtime.orchestrator_addr,
+            Orchestrator,
         )
         mock_orch_proxy.subscribe.assert_called_once_with(subscriber)
 
@@ -173,6 +176,7 @@ class TestLocalTeamHandleUnsubscribe:
         handle.unsubscribe(subscriber)
 
         runtime.actor_system.proxy_ask.assert_called_once_with(
-            runtime.orchestrator_addr, Orchestrator,
+            runtime.orchestrator_addr,
+            Orchestrator,
         )
         mock_orch_proxy.unsubscribe.assert_called_once_with(subscriber)

@@ -77,6 +77,7 @@ class TelegramChannelAdapter:
         """
         chat_id = msg.recipient.name
         text = getattr(msg.message, "content", None) or str(msg.message)
+        logger.debug("Delivering message to Telegram chat %s", chat_id)
 
         try:
             response = self._client.post(
@@ -98,4 +99,5 @@ class TelegramChannelAdapter:
         Args:
             team_id: The team being stopped.
         """
+        logger.debug("TelegramAdapter stopped: team_id=%s", team_id)
         self._client.close()

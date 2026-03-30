@@ -63,9 +63,7 @@ async def test_initiate_team_creates_and_sends() -> None:
 
     result = await ingestion.initiate_team("first message", "user-42", "catalog-entry-1")
 
-    mock_service.create_team.assert_called_once_with(
-        "catalog-entry-1", user_id="user-42"
-    )
+    mock_service.create_team.assert_called_once_with("catalog-entry-1", user_id="user-42")
     mock_service.send_message.assert_called_once_with(new_team_id, "first message")
     assert result == new_team_id
 

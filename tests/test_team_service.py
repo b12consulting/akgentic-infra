@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 import pytest
@@ -79,3 +80,29 @@ def test_delete_team_not_found_raises(team_service: TeamService) -> None:
     """delete_team raises ValueError for a nonexistent team ID."""
     with pytest.raises(ValueError, match="not found"):
         team_service.delete_team(uuid.uuid4())
+
+
+class TestTeamServiceLogging:
+    """TeamService emits expected log messages."""
+
+    def test_create_team_emits_info_log(
+        self,
+        team_service: TeamService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """create_team() emits INFO log with team_id and catalog_entry."""
+        with caplog.at_level(logging.INFO, logger="akgentic.infra.server.services.team_service"):
+            team_service.create_team("test-team", user_id="anonymous")
+        assert any("Team created" in r.message for r in caplog.records)
+
+    def test_delete_team_emits_info_log(
+        self,
+        team_service: TeamService,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """delete_team() emits INFO log with team_id."""
+        process = team_service.create_team("test-team", user_id="anonymous")
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="akgentic.infra.server.services.team_service"):
+            team_service.delete_team(process.team_id)
+        assert any("Team deleted" in r.message for r in caplog.records)

@@ -53,11 +53,7 @@ def _has_llm_content(events: list[dict[str, object]]) -> bool:
         sender = ev.get("sender")
         if not isinstance(sender, dict):
             continue
-        if (
-            isinstance(content, str)
-            and len(content) > 0
-            and sender.get("name") == "@Manager"
-        ):
+        if isinstance(content, str) and len(content) > 0 and sender.get("name") == "@Manager":
             return True
     return False
 
@@ -80,7 +76,8 @@ class TestTeamLifecycle:
     """Integration tests exercising the full team lifecycle via HTTP."""
 
     def test_create_team_send_message_receive_response(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #1, #2: Create a team and verify it is running."""
         team_id = _create_team(integration_client)
@@ -90,7 +87,8 @@ class TestTeamLifecycle:
         assert resp.json()["status"] == "running"
 
     def test_send_message_and_receive_llm_response(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #5 (partial): Send a message and verify LLM responds."""
         team_id = _create_team(integration_client)
@@ -105,7 +103,8 @@ class TestTeamLifecycle:
         assert _has_llm_content(events)
 
     def test_stop_and_restore_team(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #5 (partial): Stop and restore a team."""
         team_id = _create_team(integration_client)
@@ -124,7 +123,8 @@ class TestTeamLifecycle:
         assert resp.json()["status"] == "running"
 
     def test_events_persisted_after_stop(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #5 (partial): Events persist after stop."""
         team_id = _create_team(integration_client)
@@ -147,7 +147,8 @@ class TestTeamLifecycle:
         assert len(events) >= 3
 
     def test_full_lifecycle_round_trip(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #5: Full round-trip — create, message, LLM, stop, restore."""
         # 1. Create

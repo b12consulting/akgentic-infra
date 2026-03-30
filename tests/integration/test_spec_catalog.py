@@ -37,7 +37,8 @@ class TestCatalogTeamCrud:
         assert body["name"] == "Integration Test Team"
 
     def test_create_update_delete_team(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #6: POST/PUT/DELETE /catalog/api/teams for full CRUD."""
         new_entry = {
@@ -62,7 +63,8 @@ class TestCatalogTeamCrud:
         # Update
         new_entry["name"] = "Updated CRUD Team"
         resp = integration_client.put(
-            "/catalog/api/teams/crud-test-team", json=new_entry,
+            "/catalog/api/teams/crud-test-team",
+            json=new_entry,
         )
         assert resp.status_code == 200
         assert resp.json()["name"] == "Updated CRUD Team"
@@ -72,7 +74,8 @@ class TestCatalogTeamCrud:
         assert resp.status_code == 204
 
     def test_get_nonexistent_team_404(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #6: GET /catalog/api/teams/nonexistent returns 404."""
         resp = integration_client.get("/catalog/api/teams/nonexistent-xyz")
@@ -104,7 +107,8 @@ class TestCatalogAgentCrud:
         assert resp.json()["id"] == "manager"
 
     def test_get_nonexistent_agent_404(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #6: GET /catalog/api/agents/nonexistent returns 404."""
         resp = integration_client.get("/catalog/api/agents/nonexistent-xyz")

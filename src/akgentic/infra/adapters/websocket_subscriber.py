@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from akgentic.core.messages import Message
+
+logger = logging.getLogger(__name__)
 
 
 class WebSocketEventSubscriber:
@@ -31,9 +34,11 @@ class WebSocketEventSubscriber:
         """
         json_str: str = msg.model_dump_json()
         self._queue.put(json_str)
+        logger.debug("Event queued: %s", type(msg).__name__)
 
     def on_stop(self) -> None:
         """Signal connection closure by enqueuing a sentinel None."""
+        logger.debug("WebSocketEventSubscriber stopped, sentinel queued")
         self._queue.put(None)
 
     def get_queue(self) -> queue.Queue[str | None]:

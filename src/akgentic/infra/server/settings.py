@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 
 class ServerSettings(BaseSettings):
@@ -25,6 +28,25 @@ class ServerSettings(BaseSettings):
         default=8000,
         description="Port number for the HTTP server",
     )
+    log_level: str = Field(
+        default="INFO",
+        description="Application log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+    )
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, v: str) -> str:
+        """Normalize to uppercase and fall back to INFO for invalid values."""
+        upper = str(v).upper()
+        if upper not in _VALID_LOG_LEVELS:
+            warnings.warn(
+                f"Invalid AKGENTIC_LOG_LEVEL '{v}', falling back to INFO",
+                UserWarning,
+                stacklevel=1,
+            )
+            return "INFO"
+        return upper
+
     frontend_adapter: str | None = Field(
         default=None,
         description="FQDN for frontend adapter plugin class",

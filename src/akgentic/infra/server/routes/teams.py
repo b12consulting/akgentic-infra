@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import NoReturn, cast
 
@@ -19,6 +20,8 @@ from akgentic.infra.server.models import (
 )
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.models import Process
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/teams", tags=["teams"])
 
@@ -46,6 +49,7 @@ def create_team(
     service: TeamService = Depends(get_team_service),
 ) -> TeamResponse:
     """Create a new team from a catalog entry."""
+    logger.info("POST /teams — catalog_entry=%s", body.catalog_entry_id)
     try:
         # Community-tier hardcoded identity. Department/enterprise tiers must
         # replace with authenticated user identity from auth middleware.
@@ -54,6 +58,7 @@ def create_team(
             user_id="anonymous",
         )
     except EntryNotFoundError:
+        logger.warning("Team creation failed: catalog entry %s not found", body.catalog_entry_id)
         raise HTTPException(status_code=404, detail="Catalog entry not found") from None
     return _process_to_response(process)
 
@@ -63,6 +68,7 @@ def list_teams(
     service: TeamService = Depends(get_team_service),
 ) -> TeamListResponse:
     """List all teams for the current user."""
+    logger.debug("GET /teams")
     # Community-tier hardcoded identity (see create_team comment above).
     processes = service.list_teams(user_id="anonymous")
     return TeamListResponse(teams=[_process_to_response(p) for p in processes])
@@ -74,6 +80,7 @@ def get_team(
     service: TeamService = Depends(get_team_service),
 ) -> TeamResponse:
     """Get a single team by ID."""
+    logger.debug("GET /teams/%s", team_id)
     process = service.get_team(team_id)
     if process is None:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -86,6 +93,7 @@ def delete_team(
     service: TeamService = Depends(get_team_service),
 ) -> None:
     """Stop and delete a team."""
+    logger.info("DELETE /teams/%s", team_id)
     try:
         service.delete_team(team_id)
     except ValueError:
@@ -102,6 +110,7 @@ def send_message(
     service: TeamService = Depends(get_team_service),
 ) -> None:
     """Send a message to a running team."""
+    logger.info("POST /teams/%s/message", team_id)
     try:
         service.send_message(team_id, body.content)
     except ValueError as exc:
@@ -115,6 +124,7 @@ def human_input(
     service: TeamService = Depends(get_team_service),
 ) -> None:
     """Provide human input in response to an agent request."""
+    logger.info("POST /teams/%s/human-input", team_id)
     try:
         service.process_human_input(team_id, body.content, body.message_id)
     except ValueError as exc:
@@ -127,6 +137,7 @@ def stop_team(
     service: TeamService = Depends(get_team_service),
 ) -> None:
     """Stop a running team without deleting persisted data."""
+    logger.info("POST /teams/%s/stop", team_id)
     try:
         service.stop_team(team_id)
     except ValueError as exc:
@@ -140,6 +151,7 @@ def restore_team(
     service: TeamService = Depends(get_team_service),
 ) -> TeamResponse:
     """Restore a stopped team and notify waiting WebSocket connections."""
+    logger.info("POST /teams/%s/restore", team_id)
     try:
         process = service.restore_team(team_id)
     except ValueError as exc:
@@ -160,6 +172,7 @@ def get_events(
     service: TeamService = Depends(get_team_service),
 ) -> EventListResponse:
     """Get all persisted events for a team."""
+    logger.debug("GET /teams/%s/events", team_id)
     try:
         events = service.get_events(team_id)
     except ValueError:
@@ -190,5 +203,7 @@ def _raise_action_error(exc: ValueError) -> NoReturn:
     """
     detail = str(exc)
     if "not found" in detail or "deleted" in detail:
+        logger.debug("Action error (not found): %s", detail)
         raise HTTPException(status_code=404, detail=detail) from None
+    logger.warning("Action error: %s", detail)
     raise HTTPException(status_code=409, detail=detail) from None

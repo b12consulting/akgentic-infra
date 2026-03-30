@@ -85,8 +85,7 @@ def seed_integration_catalog(catalog_root: Path) -> None:
                     "role": "Manager",
                     "prompt": {
                         "template": (
-                            "You are a helpful assistant. "
-                            "Reply concisely in one or two sentences."
+                            "You are a helpful assistant. Reply concisely in one or two sentences."
                         ),
                     },
                     "model_cfg": {
@@ -134,10 +133,6 @@ def has_llm_content(events: list[dict[str, object]]) -> bool:
         sender = ev.get("sender")
         if not isinstance(sender, dict):
             continue
-        if (
-            isinstance(content, str)
-            and len(content) > 0
-            and sender.get("name") == "@Manager"
-        ):
+        if isinstance(content, str) and len(content) > 0 and sender.get("name") == "@Manager":
             return True
     return False

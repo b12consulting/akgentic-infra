@@ -110,12 +110,17 @@ class _StubChannelRegistry:
         self.registrations: list[tuple] = []
 
     async def register(
-        self, channel: str, channel_user_id: str, team_id: uuid.UUID,
+        self,
+        channel: str,
+        channel_user_id: str,
+        team_id: uuid.UUID,
     ) -> None:
         self.registrations.append((channel, channel_user_id, team_id))
 
     async def find_team(
-        self, channel: str, channel_user_id: str,
+        self,
+        channel: str,
+        channel_user_id: str,
     ) -> uuid.UUID | None:
         return None
 
@@ -130,7 +135,8 @@ class TestWebhookWithTelegramParser:
         from akgentic.infra.server.routes.webhook import router
 
         parser = TelegramChannelParser(
-            bot_token="test-token", default_catalog_entry="test-team",
+            bot_token="test-token",
+            default_catalog_entry="test-team",
         )
         registry = ChannelParserRegistry(channels_config={})
         registry._parsers[parser.channel_name] = parser

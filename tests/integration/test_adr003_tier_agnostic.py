@@ -259,9 +259,9 @@ class TestTeamServiceProtocolRouting:
         assert len(events) >= 1
         # Verify at least one event contains the sent message content
         event_strs = [str(ev) for ev in events]
-        assert any(
-            "Hello from integration test" in s for s in event_strs
-        ), f"Expected sent message content in events, got: {events}"
+        assert any("Hello from integration test" in s for s in event_strs), (
+            f"Expected sent message content in events, got: {events}"
+        )
 
         # Cleanup
         integration_client.post(f"/teams/{team_id}/stop")

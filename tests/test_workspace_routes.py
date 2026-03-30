@@ -81,9 +81,7 @@ def test_workspace_file_traversal_attack(
     client: TestClient, team_with_workspace: uuid.UUID
 ) -> None:
     """GET /workspace/{team_id}/file rejects path traversal attempts with 403."""
-    resp = client.get(
-        f"/workspace/{team_with_workspace}/file", params={"path": "../../etc/passwd"}
-    )
+    resp = client.get(f"/workspace/{team_with_workspace}/file", params={"path": "../../etc/passwd"})
     assert resp.status_code == 403
 
 

@@ -27,9 +27,7 @@ class TelegramChannelParser:
         default_catalog_entry: Catalog entry ID for initiating new teams.
     """
 
-    def __init__(
-        self, default_catalog_entry: str = "default", **_kwargs: str
-    ) -> None:
+    def __init__(self, default_catalog_entry: str = "default", **_kwargs: str) -> None:
         self._default_catalog_entry = default_catalog_entry
 
     @property
@@ -85,6 +83,7 @@ class TelegramChannelParser:
 
         message_id = message.get("message_id")
 
+        logger.debug("Parsing Telegram update: chat_id=%s", chat_id)
         return ChannelMessage(
             content=text,
             channel_user_id=str(chat_id),

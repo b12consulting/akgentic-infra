@@ -16,7 +16,8 @@ class TestCatalogIntegration:
     """Integration tests for catalog browsing with real YAML catalog."""
 
     def test_list_teams_returns_seeded_entry(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #3: GET /catalog/api/teams returns at least the seeded test-team."""
         resp = integration_client.get("/catalog/api/teams")
@@ -27,7 +28,8 @@ class TestCatalogIntegration:
         assert "test-team" in ids, f"Expected 'test-team' in catalog, got: {ids}"
 
     def test_get_team_details(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #3: GET /catalog/api/teams/test-team returns full details."""
         resp = integration_client.get("/catalog/api/teams/test-team")
@@ -41,7 +43,8 @@ class TestCatalogIntegration:
         assert isinstance(body["profiles"], list)
 
     def test_get_nonexistent_team_returns_404(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #3: GET /catalog/api/teams/nonexistent returns 404."""
         resp = integration_client.get("/catalog/api/teams/nonexistent")

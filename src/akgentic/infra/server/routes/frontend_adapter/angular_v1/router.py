@@ -290,11 +290,13 @@ def get_llm_context(
             continue
         agent_id = get_sender_name(ev.event)
         grouped.setdefault(agent_id, [])
-        grouped[agent_id].append({
-            "role": classify_message_type(ev.event),
-            "content": content,
-            "timestamp": ev.timestamp.isoformat(),
-        })
+        grouped[agent_id].append(
+            {
+                "role": classify_message_type(ev.event),
+                "content": content,
+                "timestamp": ev.timestamp.isoformat(),
+            }
+        )
     return {agent_id: {"context": entries} for agent_id, entries in grouped.items()}
 
 
@@ -327,7 +329,9 @@ def get_states(
 
 
 @process_router.patch(
-    "/{id}/description", status_code=200, response_model=V1StatusResponse,
+    "/{id}/description",
+    status_code=200,
+    response_model=V1StatusResponse,
 )
 def update_description(
     id: str,
@@ -346,7 +350,9 @@ def update_description(
 
 
 @relaunch_router.post(
-    "/{id}/message/{msg_id}", status_code=200, response_model=V1StatusResponse,
+    "/{id}/message/{msg_id}",
+    status_code=200,
+    response_model=V1StatusResponse,
 )
 def relaunch_message(
     id: str,
@@ -377,7 +383,9 @@ def relaunch_message(
 
 
 @state_update_router.patch(
-    "/{id}/of/{agent}", status_code=200, response_model=V1StatusResponse,
+    "/{id}/of/{agent}",
+    status_code=200,
+    response_model=V1StatusResponse,
 )
 def update_agent_state(
     id: str,
@@ -409,7 +417,8 @@ def _get_catalog_for_type(request: Request, config_type: str) -> Any:
     catalog = catalogs.get(config_type)
     if catalog is None:
         raise HTTPException(
-            status_code=400, detail=f"Unknown config type: {config_type}",
+            status_code=400,
+            detail=f"Unknown config type: {config_type}",
         )
     return catalog
 
@@ -431,7 +440,9 @@ def get_config(config_type: str, request: Request) -> list[V1ConfigEntry]:
 
 @config_router.put("/{config_type}", status_code=200, response_model=V1StatusResponse)
 def put_config(
-    config_type: str, body: V1ConfigPutBody, request: Request,
+    config_type: str,
+    body: V1ConfigPutBody,
+    request: Request,
 ) -> V1StatusResponse:
     """PUT /config/{config_type} -> create or update a catalog entry."""
     catalog = _get_catalog_for_type(request, config_type)
@@ -448,10 +459,14 @@ def put_config(
 
 
 @config_router.delete(
-    "/{config_type}/{config_id}", status_code=200, response_model=V1StatusResponse,
+    "/{config_type}/{config_id}",
+    status_code=200,
+    response_model=V1StatusResponse,
 )
 def delete_config(
-    config_type: str, config_id: str, request: Request,
+    config_type: str,
+    config_id: str,
+    request: Request,
 ) -> V1StatusResponse:
     """DELETE /config/{config_type}/{config_id} -> delete a catalog entry."""
     catalog = _get_catalog_for_type(request, config_type)

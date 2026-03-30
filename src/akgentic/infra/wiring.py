@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from akgentic.catalog.repositories.yaml import (
     YamlAgentCatalogRepository,
     YamlTeamCatalogRepository,
@@ -30,6 +32,8 @@ from akgentic.team.manager import TeamManager
 from akgentic.team.ports import NullServiceRegistry, ServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
 
+logger = logging.getLogger(__name__)
+
 
 def wire_community(settings: CommunitySettings) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
@@ -43,6 +47,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     Returns:
         Fully wired CommunityServices container
     """
+    logger.info("Wiring community services")
     event_store = YamlEventStore(data_dir=settings.workspaces_root)
     service_registry = NullServiceRegistry()
     actor_system, team_manager = _build_actor_layer(event_store, service_registry)
@@ -51,6 +56,11 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     local_placement = LocalPlacement(team_manager, service_registry)
     local_worker_handle = LocalWorkerHandle(team_manager, service_registry)
 
+    logger.info(
+        "Community services wired: placement=%s, worker=%s",
+        type(local_placement).__name__,
+        type(local_worker_handle).__name__,
+    )
     return CommunityServices(
         placement=local_placement,
         worker_handle=local_worker_handle,
@@ -79,6 +89,7 @@ def _build_actor_layer(
     service_registry: ServiceRegistry,
 ) -> tuple[ActorSystem, TeamManager]:
     """Build ActorSystem and TeamManager."""
+    logger.debug("Building actor layer: event_store=%s", type(event_store).__name__)
     shared_subscribers: list[EventSubscriber] = [TelemetrySubscriber()]
     actor_system = ActorSystem()
     team_manager = TeamManager(
@@ -86,6 +97,10 @@ def _build_actor_layer(
         event_store=event_store,
         service_registry=service_registry,
         subscribers=shared_subscribers,
+    )
+    logger.debug(
+        "Actor system created, team manager initialized with %d shared subscribers",
+        len(shared_subscribers),
     )
     return actor_system, team_manager
 
@@ -95,6 +110,7 @@ def _build_catalogs(
 ) -> tuple[TeamCatalog, AgentCatalog, ToolCatalog, TemplateCatalog]:
     """Build YAML-backed catalog services."""
     catalog_root = settings.catalog_path or settings.workspaces_root / "catalog"
+    logger.debug("Building catalogs from %s", catalog_root)
     template_catalog = TemplateCatalog(
         repository=YamlTemplateCatalogRepository(catalog_dir=catalog_root / "templates"),
     )

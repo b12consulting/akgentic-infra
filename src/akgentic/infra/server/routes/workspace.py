@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import PurePosixPath
 from typing import Annotated, cast
@@ -17,6 +18,8 @@ from akgentic.infra.server.models import (
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.tool.workspace import Filesystem
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
 
@@ -42,6 +45,7 @@ def list_workspace_tree(
     path: str = "",
 ) -> WorkspaceTreeResponse:
     """List files in a team's workspace directory."""
+    logger.debug("GET /workspace/%s/tree path=%s", team_id, path)
     _validate_team(team_id, request)
     settings = cast(CommunitySettings, request.app.state.settings)
     ws = _get_workspace(team_id, settings)
@@ -52,9 +56,7 @@ def list_workspace_tree(
     return WorkspaceTreeResponse(
         team_id=str(team_id),
         path=path,
-        entries=[
-            WorkspaceFileEntry(name=e.name, is_dir=e.is_dir, size=e.size) for e in entries
-        ],
+        entries=[WorkspaceFileEntry(name=e.name, is_dir=e.is_dir, size=e.size) for e in entries],
     )
 
 
@@ -65,6 +67,7 @@ def read_workspace_file(
     path: str,
 ) -> Response:
     """Read a file from a team's workspace."""
+    logger.debug("GET /workspace/%s/file path=%s", team_id, path)
     _validate_team(team_id, request)
     settings = cast(CommunitySettings, request.app.state.settings)
     ws = _get_workspace(team_id, settings)
@@ -98,6 +101,7 @@ async def upload_workspace_file(
     data = await file.read()
     if len(data) > _MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="File exceeds 10 MB size limit")
+    logger.info("POST /workspace/%s/file path=%s, size=%d", team_id, path, len(data))
     try:
         ws.write(path, data)
     except PermissionError:

@@ -374,9 +374,7 @@ class TestFilesHandler:
 
     async def test_empty_workspace(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
-        client.workspace_tree.return_value = WorkspaceTreeInfo(
-            team_id="t1", path="/", entries=[]
-        )
+        client.workspace_tree.return_value = WorkspaceTreeInfo(team_id="t1", path="/", entries=[])
         session = _make_session(client=client)
 
         await _files_handler("", session)

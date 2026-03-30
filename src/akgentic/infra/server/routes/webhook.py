@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -12,6 +13,8 @@ from akgentic.infra.protocols.channels import (
     InteractionChannelIngestion,
     JsonValue,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhook", tags=["webhook"])
 
@@ -46,31 +49,38 @@ async def webhook(
     2. Continuation: no team_id but existing team found → route_reply
     3. Initiation: no existing team → initiate_team + register
     """
+    content_type = request.headers.get("content-type", "")
+    logger.info("POST /webhook/%s — content_type=%s", channel, content_type)
+
     parser = parser_registry.get_parser(channel)
     if parser is None:
+        logger.warning("Unknown channel: %s", channel)
         raise HTTPException(status_code=404, detail=f"Unknown channel: {channel}")
 
-    content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         payload: dict[str, JsonValue] = await request.json()
     elif "application/x-www-form-urlencoded" in content_type:
         form_data = await request.form()
         payload = {k: str(v) for k, v in form_data.items()}
     else:
+        logger.warning("Unsupported content type: %s", content_type)
         raise HTTPException(status_code=415, detail="Unsupported content type")
     message = await parser.parse(payload)
 
     if message.team_id is not None:
         # Reply flow
-        await ingestion.route_reply(
-            message.team_id, message.content, message.message_id
-        )
+        logger.debug("Webhook reply: channel=%s, team_id=%s", channel, message.team_id)
+        await ingestion.route_reply(message.team_id, message.content, message.message_id)
     else:
-        existing_team = await channel_registry.find_team(
-            channel, message.channel_user_id
-        )
+        existing_team = await channel_registry.find_team(channel, message.channel_user_id)
         if existing_team is not None:
             # Continuation flow
+            logger.debug(
+                "Webhook continuation: channel=%s, user=%s, team_id=%s",
+                channel,
+                message.channel_user_id,
+                existing_team,
+            )
             await ingestion.route_reply(existing_team, message.content)
         else:
             # Initiation flow
@@ -79,6 +89,10 @@ async def webhook(
                 message.channel_user_id,
                 parser.default_catalog_entry,
             )
-            await channel_registry.register(
-                channel, message.channel_user_id, new_team_id
+            logger.debug(
+                "Webhook initiation: channel=%s, user=%s, new_team=%s",
+                channel,
+                message.channel_user_id,
+                new_team_id,
             )
+            await channel_registry.register(channel, message.channel_user_id, new_team_id)

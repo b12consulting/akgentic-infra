@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 class YamlChannelRegistry:
@@ -34,23 +37,23 @@ class YamlChannelRegistry:
     def _save(self, data: dict[str, dict[str, str]]) -> None:
         """Write registry data to YAML."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            yaml.safe_dump(data, default_flow_style=False), encoding="utf-8"
-        )
+        self._path.write_text(yaml.safe_dump(data, default_flow_style=False), encoding="utf-8")
 
-    async def register(
-        self, channel: str, channel_user_id: str, team_id: uuid.UUID
-    ) -> None:
+    async def register(self, channel: str, channel_user_id: str, team_id: uuid.UUID) -> None:
         """Add a channel-user → team mapping."""
         data = self._load()
         if channel not in data:
             data[channel] = {}
         data[channel][channel_user_id] = str(team_id)
         self._save(data)
+        logger.debug(
+            "Channel registry: registered %s/%s → team %s",
+            channel,
+            channel_user_id,
+            team_id,
+        )
 
-    async def find_team(
-        self, channel: str, channel_user_id: str
-    ) -> uuid.UUID | None:
+    async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
         """Look up the team for a channel user, or return None."""
         data = self._load()
         channel_data = data.get(channel)
@@ -58,7 +61,9 @@ class YamlChannelRegistry:
             return None
         team_str = channel_data.get(channel_user_id)
         if team_str is None:
+            logger.debug("Channel registry: lookup %s/%s → None", channel, channel_user_id)
             return None
+        logger.debug("Channel registry: lookup %s/%s → %s", channel, channel_user_id, team_str)
         return uuid.UUID(team_str)
 
     async def deregister(self, channel: str, channel_user_id: str) -> None:
@@ -71,3 +76,4 @@ class YamlChannelRegistry:
         if not channel_data:
             del data[channel]
         self._save(data)
+        logger.debug("Channel registry: deregistered %s/%s", channel, channel_user_id)

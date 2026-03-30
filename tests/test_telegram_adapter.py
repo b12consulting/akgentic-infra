@@ -17,17 +17,20 @@ from akgentic.infra.adapters.telegram_adapter import TelegramChannelAdapter
 # Helpers (following test_channel_dispatcher.py patterns)
 # ---------------------------------------------------------------------------
 
+
 def _make_addr(role: str = "UserProxy", name: str = "987654321") -> ActorAddressProxy:
-    return ActorAddressProxy({
-        "__actor_address__": True,
-        "__actor_type__": "akgentic.core.actor_address_impl.ActorAddressProxy",
-        "agent_id": str(uuid.uuid4()),
-        "name": name,
-        "role": role,
-        "team_id": str(uuid.uuid4()),
-        "squad_id": str(uuid.uuid4()),
-        "user_message": False,
-    })
+    return ActorAddressProxy(
+        {
+            "__actor_address__": True,
+            "__actor_type__": "akgentic.core.actor_address_impl.ActorAddressProxy",
+            "agent_id": str(uuid.uuid4()),
+            "name": name,
+            "role": role,
+            "team_id": str(uuid.uuid4()),
+            "squad_id": str(uuid.uuid4()),
+            "user_message": False,
+        }
+    )
 
 
 def _make_sent_message(
@@ -46,6 +49,7 @@ def _make_sent_message(
 # ---------------------------------------------------------------------------
 # Mock transport for httpx
 # ---------------------------------------------------------------------------
+
 
 class _CaptureTransport(httpx.BaseTransport):
     """Captures requests and returns configurable responses."""
@@ -80,6 +84,7 @@ def _make_adapter(
 # AC 3: matches() returns True for UserProxy
 # ---------------------------------------------------------------------------
 
+
 class TestMatchesUserProxy:
     """AC 3: SentMessage targeting UserProxy → matches() returns True."""
 
@@ -92,6 +97,7 @@ class TestMatchesUserProxy:
 # ---------------------------------------------------------------------------
 # AC 4: matches() returns False for non-UserProxy
 # ---------------------------------------------------------------------------
+
 
 class TestMatchesNonUserProxy:
     """AC 4: SentMessage targeting non-UserProxy → matches() returns False."""
@@ -110,6 +116,7 @@ class TestMatchesNonUserProxy:
 # ---------------------------------------------------------------------------
 # AC 5: deliver() POSTs to Telegram API
 # ---------------------------------------------------------------------------
+
 
 class TestDeliver:
     """AC 5: deliver() sends correct POST to Telegram sendMessage."""
@@ -133,6 +140,7 @@ class TestDeliver:
 # AC 6: deliver() handles errors without raising
 # ---------------------------------------------------------------------------
 
+
 class TestDeliverError:
     """AC 6: Telegram API error → logged, no exception raised."""
 
@@ -151,6 +159,7 @@ class TestDeliverError:
 # ---------------------------------------------------------------------------
 # on_stop() cleanup
 # ---------------------------------------------------------------------------
+
 
 class TestOnStop:
     """on_stop() closes the httpx client without error."""

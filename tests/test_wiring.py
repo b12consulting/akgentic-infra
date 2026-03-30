@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 from pathlib import Path
 
@@ -18,6 +19,24 @@ from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
+
+
+class TestWireCommunityLogging:
+    """wire_community() emits expected log messages."""
+
+    def test_emits_wiring_info_log(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """wire_community() emits 'Wiring community services' INFO log."""
+        settings = CommunitySettings(workspaces_root=tmp_path)
+        with caplog.at_level(logging.INFO, logger="akgentic.infra.wiring"):
+            services = wire_community(settings)
+        try:
+            assert any("Wiring community services" in r.message for r in caplog.records)
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
 
 
 class TestWireCommunity:
@@ -73,7 +92,8 @@ class TestWireCommunity:
         assert services.service_registry is services.team_manager._service_registry
 
     def test_service_registry_satisfies_protocol(
-        self, services: CommunityServices,
+        self,
+        services: CommunityServices,
     ) -> None:
         """Service registry satisfies the ServiceRegistry protocol."""
         assert isinstance(services.service_registry, ServiceRegistry)
@@ -95,7 +115,8 @@ class TestWireCommunity:
             services.team_manager._actor_system.shutdown(timeout=5)
 
     def test_default_channel_registry_is_null(
-        self, services: CommunityServices,
+        self,
+        services: CommunityServices,
     ) -> None:
         """When channel_registry_path is None (default), uses NullChannelRegistry."""
         assert isinstance(services.channel_registry, NullChannelRegistry)

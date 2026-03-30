@@ -37,7 +37,8 @@ class _StubAdapter:
     def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
         return WrappedWsEvent(
             payload=UnknownPayload(
-                type="stub", data={"wrapped": True, "sequence": event.sequence},
+                type="stub",
+                data={"wrapped": True, "sequence": event.sequence},
             ),
         )
 
@@ -133,7 +134,8 @@ class TestLoadFrontendAdapter:
             return_value=mod,
         ):
             with pytest.raises(
-                TypeError, match="does not implement FrontendAdapter protocol",
+                TypeError,
+                match="does not implement FrontendAdapter protocol",
             ):
                 load_frontend_adapter("fake_adapter_module._NotAnAdapter")
 
@@ -293,11 +295,13 @@ class TestWebSocketAdapterIntegration:
             assert "__model__" in data
 
     def test_ws_calls_wrap_ws_event_when_adapter_present(
-        self, client_with_adapter: TestClient,
+        self,
+        client_with_adapter: TestClient,
     ) -> None:
         """AC #1: Adapter present — wrap_ws_event is called."""
         resp = client_with_adapter.post(
-            "/teams/", json={"catalog_entry_id": "test-team"},
+            "/teams/",
+            json={"catalog_entry_id": "test-team"},
         )
         assert resp.status_code == 201
         team_id = resp.json()["team_id"]

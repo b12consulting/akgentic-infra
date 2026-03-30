@@ -91,15 +91,17 @@ def _make_message() -> Message:
 
     from akgentic.core.actor_address_impl import ActorAddressProxy
 
-    addr = ActorAddressProxy({
-        "__actor_address__": True,
-        "__actor_type__": "akgentic.core.actor_address_impl.ActorAddressProxy",
-        "agent_id": str(uuid.uuid4()),
-        "name": "test-agent",
-        "role": "tester",
-        "team_id": str(uuid.uuid4()),
-        "squad_id": str(uuid.uuid4()),
-        "user_message": False,
-    })
+    addr = ActorAddressProxy(
+        {
+            "__actor_address__": True,
+            "__actor_type__": "akgentic.core.actor_address_impl.ActorAddressProxy",
+            "agent_id": str(uuid.uuid4()),
+            "name": "test-agent",
+            "role": "tester",
+            "team_id": str(uuid.uuid4()),
+            "squad_id": str(uuid.uuid4()),
+            "user_message": False,
+        }
+    )
     inner = Message(sender=addr)
     return SentMessage(message=inner, recipient=addr, sender=addr)

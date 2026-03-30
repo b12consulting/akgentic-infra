@@ -88,10 +88,12 @@ async def websocket_events(websocket: WebSocket, team_id: uuid.UUID) -> None:
 
     process = service.get_team(team_id)
     if process is None:
+        logger.info("WebSocket rejected: team_id=%s (not found)", team_id)
         await websocket.close(code=4004, reason="Team not found")
         return
 
     await websocket.accept()
+    logger.info("WebSocket connected: team_id=%s", team_id)
 
     adapter: FrontendAdapter | None = getattr(websocket.app.state, "frontend_adapter", None)
 
@@ -109,8 +111,10 @@ async def _run_streaming_loop(
     adapter: FrontendAdapter | None = None,
 ) -> None:
     """Subscribe to orchestrator events and forward them over WebSocket."""
+    logger.debug("Streaming loop started: team_id=%s", team_id)
     handle = service.get_handle(team_id)
     if handle is None:
+        logger.debug("Runtime not available for team %s, closing WebSocket", team_id)
         await websocket.close(code=1011, reason="Runtime not available")
         return
 
@@ -120,7 +124,7 @@ async def _run_streaming_loop(
     try:
         await _send_loop(websocket, subscriber, team_id, adapter)
     except WebSocketDisconnect:
-        pass
+        logger.info("WebSocket disconnected: team_id=%s", team_id)
     finally:
         try:
             handle.unsubscribe(subscriber)
@@ -161,17 +165,21 @@ async def _send_loop(
                 logger.warning("Malformed JSON in event queue, sending raw text")
                 await websocket.send_text(item)
                 continue
-            event = PersistedEvent.model_validate({
-                "team_id": str(team_id),
-                "sequence": seq,
-                "event": msg_data,
-                "timestamp": datetime.now(tz=UTC).isoformat(),
-            })
+            event = PersistedEvent.model_validate(
+                {
+                    "team_id": str(team_id),
+                    "sequence": seq,
+                    "event": msg_data,
+                    "timestamp": datetime.now(tz=UTC).isoformat(),
+                }
+            )
             seq += 1
             wrapped = adapter.wrap_ws_event(event)
             await websocket.send_text(wrapped.model_dump_json())
+            logger.debug("Event forwarded to client: %s", item[:80])
         else:
             await websocket.send_text(item)
+            logger.debug("Event forwarded to client: %s", item[:80])
 
 
 async def _run_idle_loop(
@@ -189,6 +197,7 @@ async def _run_idle_loop(
     iteration. Direct signaling is not used because there is no safe
     way to interrupt a blocking ``receive_text()`` from another thread.
     """
+    logger.debug("WebSocket idle, waiting for restore: team_id=%s", team_id)
     conn_mgr.add_waiting(team_id, websocket)
     try:
         while True:
@@ -218,6 +227,8 @@ def notify_restore(
     waiting = conn_mgr.pop_waiting(team_id)
     if not waiting:
         return
+
+    logger.info("Notifying %d waiting WebSocket(s) for team %s", len(waiting), team_id)
 
     handle = service.get_handle(team_id)
     if handle is None:

@@ -360,14 +360,10 @@ def test_channel_registry_structural_subtyping() -> None:
     from akgentic.infra.protocols import ChannelRegistry
 
     class FakeRegistry:
-        async def register(
-            self, channel: str, channel_user_id: str, team_id: uuid.UUID
-        ) -> None:
+        async def register(self, channel: str, channel_user_id: str, team_id: uuid.UUID) -> None:
             pass
 
-        async def find_team(
-            self, channel: str, channel_user_id: str
-        ) -> uuid.UUID | None:
+        async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
             return None
 
         async def deregister(self, channel: str, channel_user_id: str) -> None:
@@ -453,11 +449,13 @@ def test_team_handle_is_runtime_checkable() -> None:
     assert getattr(TeamHandle, "__protocol_attrs__", None) is not None or hasattr(
         TeamHandle, "_is_runtime_protocol"
     )
+
     # Verify isinstance works (runtime_checkable requirement)
     class FakeHandle:
         @property
         def team_id(self) -> object:
             import uuid
+
             return uuid.uuid4()
 
         def send(self, content: str) -> None:
@@ -530,9 +528,7 @@ def test_team_handle_method_count() -> None:
     from akgentic.infra.protocols import TeamHandle
 
     public_methods = [
-        m
-        for m in dir(TeamHandle)
-        if not m.startswith("_") and callable(getattr(TeamHandle, m))
+        m for m in dir(TeamHandle) if not m.startswith("_") and callable(getattr(TeamHandle, m))
     ]
     assert len(public_methods) == 5
 
@@ -629,9 +625,7 @@ def test_runtime_cache_method_count() -> None:
     from akgentic.infra.protocols import RuntimeCache
 
     public_methods = [
-        m
-        for m in dir(RuntimeCache)
-        if not m.startswith("_") and callable(getattr(RuntimeCache, m))
+        m for m in dir(RuntimeCache) if not m.startswith("_") and callable(getattr(RuntimeCache, m))
     ]
     assert len(public_methods) == 3
 
@@ -786,8 +780,6 @@ def test_worker_handle_method_count() -> None:
     from akgentic.infra.protocols import WorkerHandle
 
     public_methods = [
-        m
-        for m in dir(WorkerHandle)
-        if not m.startswith("_") and callable(getattr(WorkerHandle, m))
+        m for m in dir(WorkerHandle) if not m.startswith("_") and callable(getattr(WorkerHandle, m))
     ]
     assert len(public_methods) == 4

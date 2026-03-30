@@ -86,7 +86,8 @@ class TestProcessEndpoint:
     """Test GET /processes returns flat list with V1ActorAddress orchestrator."""
 
     def test_get_processes_returns_flat_list(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC1: GET /processes returns 200 with flat list response."""
         team_id = _create_v1_team(v1_adapter_client)
@@ -101,7 +102,8 @@ class TestProcessEndpoint:
         time.sleep(0.5)
 
     def test_orchestrator_v1_actor_address_fields(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC1: orchestrator is V1ActorAddress with name, role, and string defaults."""
         team_id = _create_v1_team(v1_adapter_client)
@@ -129,7 +131,8 @@ class TestProcessEndpoint:
         time.sleep(0.5)
 
     def test_params_workspace_and_knowledge_graph(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC1: params contains workspace and knowledge_graph keys."""
         team_id = _create_v1_team(v1_adapter_client)
@@ -149,7 +152,8 @@ class TestProcessEndpoint:
         time.sleep(0.5)
 
     def test_processes_alias_matches_process_list(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC1: GET /process/ returns same data as GET /processes."""
         team_id = _create_v1_team(v1_adapter_client)
@@ -176,7 +180,8 @@ class TestConfigEndpoint:
     """Test PUT /config/{config_type} and DELETE /config/{config_type}/{config_id}."""
 
     def test_put_config_new_url_shape(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC2: PUT /config/team with V1ConfigPutBody succeeds."""
         # Get existing entry to build a valid config
@@ -198,7 +203,8 @@ class TestConfigEndpoint:
         v1_adapter_client.delete("/config/team/adr004-put-test")
 
     def test_delete_config_new_url_shape(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC2: DELETE /config/team/{config_id} with URL params succeeds."""
         # Create an entry first
@@ -229,7 +235,8 @@ class TestHumanInput:
     """Test POST /process_human_input/{id}/human/{proxy} with message dict."""
 
     def test_human_input_with_message_body(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC3: human input with message dict containing id field succeeds."""
         team_id = _create_v1_team(v1_adapter_client)
@@ -300,7 +307,8 @@ class TestTeamConfigs:
     """Test GET /team-configs/ returns dict keyed by team name."""
 
     def test_team_configs_returns_dict(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC5: GET /team-configs/ returns a dict (not a list)."""
         resp = v1_adapter_client.get("/team-configs/")
@@ -309,7 +317,8 @@ class TestTeamConfigs:
         assert isinstance(data, dict)
 
     def test_team_configs_has_seeded_entry(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC5: at least one entry exists from seeded catalog."""
         resp = v1_adapter_client.get("/team-configs/")
@@ -318,7 +327,8 @@ class TestTeamConfigs:
         assert len(data) >= 1
 
     def test_team_configs_entry_shape(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC5: each value has module (str) and setup (str, parseable as JSON) keys."""
         resp = v1_adapter_client.get("/team-configs/")
@@ -345,7 +355,8 @@ class TestLlmContextGrouped:
     """Test GET /llm_context/{id} returns dict keyed by agent ID."""
 
     def test_llm_context_grouped_response(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC6: GET /llm_context/{id} returns dict with agent keys and context lists."""
         team_id = _create_v1_team(v1_adapter_client)
@@ -382,7 +393,8 @@ class TestStatesGrouped:
     """Test GET /states/{id} returns dict keyed by agent ID."""
 
     def test_states_grouped_response(
-        self, v1_adapter_client: TestClient,
+        self,
+        v1_adapter_client: TestClient,
     ) -> None:
         """AC7: GET /states/{id} returns dict."""
         team_id = _create_v1_team(v1_adapter_client)

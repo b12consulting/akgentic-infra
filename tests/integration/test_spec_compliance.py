@@ -31,7 +31,8 @@ class TestAppFactory:
     """Verify the 2-line fixture pattern: settings -> create_app -> TestClient."""
 
     def test_app_starts_and_teams_returns_200(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #1: App created via create_app(settings) serves /teams/ correctly."""
         resp = integration_client.get("/teams/")
@@ -54,7 +55,9 @@ class TestAppFactory:
         services.actor_system.shutdown()
 
     def test_team_create_get_delete_via_test_client(
-        self, integration_client: TestClient, integration_app: FastAPI,
+        self,
+        integration_client: TestClient,
+        integration_app: FastAPI,
     ) -> None:
         """AC #1: Team create/get/delete work through TestClient."""
         team_id = create_team(integration_client)
@@ -88,7 +91,9 @@ class TestRuntimeCacheLifecycle:
     """Verify RuntimeCache store/get/remove through team lifecycle operations."""
 
     def test_cache_lifecycle_create_stop_restore_delete(
-        self, integration_client: TestClient, integration_app: FastAPI,
+        self,
+        integration_client: TestClient,
+        integration_app: FastAPI,
     ) -> None:
         """AC #2: Full RuntimeCache lifecycle — create, stop, restore, delete."""
         cache = integration_app.state.services.runtime_cache
@@ -96,16 +101,12 @@ class TestRuntimeCacheLifecycle:
         # 1. Create team -> cache.get(team_id) is not None
         team_id_str = create_team(integration_client)
         team_id = uuid.UUID(team_id_str)
-        assert cache.get(team_id) is not None, (
-            "RuntimeCache should hold handle after create"
-        )
+        assert cache.get(team_id) is not None, "RuntimeCache should hold handle after create"
 
         # 2. Stop team -> cache.get(team_id) returns None
         resp = integration_client.post(f"/teams/{team_id_str}/stop")
         assert resp.status_code == 204
-        assert cache.get(team_id) is None, (
-            "RuntimeCache should be empty after stop"
-        )
+        assert cache.get(team_id) is None, "RuntimeCache should be empty after stop"
 
         # 3. Verify events still accessible (event store preserved)
         resp = integration_client.get(f"/teams/{team_id_str}/events")
@@ -117,18 +118,14 @@ class TestRuntimeCacheLifecycle:
         resp = integration_client.post(f"/teams/{team_id_str}/restore")
         assert resp.status_code == 200
         assert resp.json()["status"] == "running"
-        assert cache.get(team_id) is not None, (
-            "RuntimeCache should hold handle after restore"
-        )
+        assert cache.get(team_id) is not None, "RuntimeCache should hold handle after restore"
 
         # 5. Delete team -> team gone
         resp = integration_client.post(f"/teams/{team_id_str}/stop")
         assert resp.status_code == 204
         resp = integration_client.delete(f"/teams/{team_id_str}")
         assert resp.status_code == 204
-        assert cache.get(team_id) is None, (
-            "RuntimeCache should be empty after delete"
-        )
+        assert cache.get(team_id) is None, "RuntimeCache should be empty after delete"
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +137,8 @@ class TestWebSocketTeamHandle:
     """Verify WebSocket events flow through TeamHandle.subscribe/unsubscribe."""
 
     def test_ws_events_arrive_via_team_handle(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #4: Create team, open WS, verify events arrive via TeamHandle."""
         team_id = create_team(integration_client)
@@ -165,7 +163,8 @@ class TestWebSocketTeamHandle:
         time.sleep(0.5)
 
     def test_ws_send_message_via_rest_receive_via_ws(
-        self, integration_client: TestClient,
+        self,
+        integration_client: TestClient,
     ) -> None:
         """AC #4: Send message via REST, verify WS receives events, close cleanly."""
         team_id = create_team(integration_client)
