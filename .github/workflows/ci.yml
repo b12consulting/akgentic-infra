@@ -144,6 +144,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-packages --all-extras
 
+      # --cov-fail-under=0 overrides pyproject.toml fail_under=90
+      # so integration coverage is reported without a gate.
       - name: Run integration tests
         run: >
           uv run pytest packages/akgentic-infra/tests/integration/ -v
@@ -152,6 +154,8 @@ jobs:
           --cov-report=term-missing
           --cov-fail-under=0
 
+  # Optional job — not required for PR merge. Succeeds (skipped) when
+  # OPENAI_API_KEY is absent; runs real-LLM integration tests when present.
   integration-llm:
     runs-on: ubuntu-latest
     env:
@@ -161,7 +165,6 @@ jobs:
         if: env.OPENAI_API_KEY == ''
         run: |
           echo "::notice::OPENAI_API_KEY not available — skipping LLM integration tests"
-          exit 0
 
       - name: Checkout workspace
         if: env.OPENAI_API_KEY != ''
