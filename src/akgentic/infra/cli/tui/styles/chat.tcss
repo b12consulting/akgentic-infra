@@ -35,6 +35,19 @@ ThinkingIndicator {
     margin: 0 0 1 0;
 }
 
+CommandPalette {
+    layer: overlay;
+    dock: bottom;
+    offset-y: -3;
+    height: auto;
+    max-height: 8;
+    width: 50%;
+    min-width: 40;
+    border: solid $accent;
+    background: $surface;
+    padding: 0 1;
+}
+
 /* History replay -- dimmed widgets */
 .history {
     opacity: 60%;
