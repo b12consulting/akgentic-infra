@@ -30,6 +30,7 @@ from akgentic.infra.cli.commands import (
     _history_handler,
     _info_handler,
     _read_handler,
+    _reconnect_handler,
     _restore_handler,
     _stop_handler,
     _switch_handler,
@@ -825,8 +826,8 @@ class TestSwitchHandler:
         session.conn.switch_team.assert_called_once_with("t2")
         assert session.team_id == "t2"
         # After switch, team info should be refreshed
-        assert session._team_name == "Test Team"
-        assert session._team_status == "running"
+        assert session._state.team_name == "Test Team"
+        assert session._state.team_status == "running"
 
     async def test_no_arg_shows_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
         session = _make_session()
@@ -1024,6 +1025,7 @@ class TestBuildDefaultRegistry:
             "stop",
             "restore",
             "switch",
+            "reconnect",
         }
         assert set(registry.commands.keys()) == expected
 
@@ -1034,3 +1036,70 @@ class TestBuildDefaultRegistry:
     def test_restore_usage_updated(self) -> None:
         registry = build_default_registry()
         assert "[team_id]" in registry.commands["restore"].usage
+
+    def test_reconnect_registered(self) -> None:
+        registry = build_default_registry()
+        assert "reconnect" in registry.commands
+
+
+# =============================================================================
+# Story 11.3: /reconnect command tests
+# =============================================================================
+
+
+class TestReconnectHandler:
+    async def test_successful_reconnect(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+
+        await _reconnect_handler("", session)
+
+        session.conn.connect.assert_called_once()
+        out = buf.getvalue()
+        assert "Reconnecting" in out
+        assert "Connected" in out
+
+    async def test_reconnect_failure(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        session.conn.connect = AsyncMock(
+            side_effect=WsConnectionError("server down", retryable=False)
+        )
+
+        await _reconnect_handler("", session)
+
+        out = buf.getvalue()
+        assert "Reconnecting" in out
+        assert "Reconnection failed" in out
+        assert "server down" in out
+
+
+# =============================================================================
+# Story 11.3: render_connection_status tests
+# =============================================================================
+
+
+class TestRenderConnectionStatus:
+    def test_connected_green(self) -> None:
+        renderer, buf = _captured_renderer()
+        renderer.render_connection_status("connected")
+        out = buf.getvalue()
+        assert "Connected" in out
+
+    def test_reconnecting_yellow(self) -> None:
+        renderer, buf = _captured_renderer()
+        renderer.render_connection_status("reconnecting")
+        out = buf.getvalue()
+        assert "Reconnecting..." in out
+
+    def test_disconnected_red(self) -> None:
+        renderer, buf = _captured_renderer()
+        renderer.render_connection_status("disconnected")
+        out = buf.getvalue()
+        assert "Disconnected" in out
+
+    def test_unknown_status(self) -> None:
+        renderer, buf = _captured_renderer()
+        renderer.render_connection_status("custom-state")
+        out = buf.getvalue()
+        assert "custom-state" in out

@@ -5,21 +5,50 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from enum import Enum
 from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
+from pydantic import BaseModel
 
 from akgentic.infra.cli.client import ApiClient, ApiError, TeamInfo
 from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
-from akgentic.infra.cli.connection import ConnectionManager
+from akgentic.infra.cli.connection import ConnectionManager, ConnectionState
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.ws_client import WsConnectionError
 
 # Event types to display vs skip
 _DISPLAY_EVENTS = {"SentMessage", "ErrorMessage", "EventMessage"}
+
+
+class InputMode(Enum):
+    """Input mode for the REPL session."""
+
+    CHAT = "chat"
+    REPLY = "reply"
+
+
+class ReplyContext(BaseModel):
+    """Context for an in-progress reply to an agent."""
+
+    reply_id: str
+    agent_name: str
+    prompt: str
+
+
+class SessionState(BaseModel):
+    """Structured session state for the chat REPL."""
+
+    team_id: str
+    team_name: str = "(unknown)"
+    team_status: str = "?"
+    input_mode: InputMode = InputMode.CHAT
+    reply_context: ReplyContext | None = None
+    connection_state: ConnectionState = ConnectionState.CONNECTING
+
 
 _STOPPED_PAGE_SIZE = 5
 
@@ -186,32 +215,45 @@ class ChatSession:
     ) -> None:
         self.client = client
         self.conn = conn
-        self.team_id = team_id
+        self._state = SessionState(team_id=team_id)
         self.fmt = fmt
         self.server_url = server_url
         self.api_key = api_key
         self.renderer = renderer or RichRenderer()
         self.command_registry: CommandRegistry = build_default_registry()
         self._running = True
-        self._pending_reply_id: str | None = None
-        self._pending_agent_name: str | None = None
         self._receive_task: asyncio.Task[None] | None = None
-        self._team_name: str = ""
-        self._team_status: str = ""
+        self._message_buffer: list[str] = []
         self._prompt_session: PromptSession[str] = PromptSession(
             history=InMemoryHistory(),
             completer=_SlashCompleter(self.command_registry),
         )
 
+        def _on_conn_state_change(new_state: ConnectionState) -> None:
+            self._state = self._state.model_copy(update={"connection_state": new_state})
+            if new_state == ConnectionState.CONNECTED and self._message_buffer:
+                self._flush_message_buffer()
+
+        self.conn._on_state_change = _on_conn_state_change
+
+    @property
+    def team_id(self) -> str:
+        """Team ID from session state."""
+        return self._state.team_id
+
+    @team_id.setter
+    def team_id(self, value: str) -> None:
+        self._state = self._state.model_copy(update={"team_id": value})
+
     def _fetch_team_info(self) -> None:
         """Fetch and cache team name and status for the status bar."""
         try:
-            team = self.client.get_team(self.team_id)
-            self._team_name = team.name
-            self._team_status = team.status
+            team = self.client.get_team(self._state.team_id)
+            self._state = self._state.model_copy(
+                update={"team_name": team.name, "team_status": team.status}
+            )
         except ApiError:
-            self._team_name = "(unknown)"
-            self._team_status = "?"
+            pass  # Keep defaults "(unknown)" and "?"
 
     async def run(self) -> None:
         """Main REPL loop: connect WS, replay history, read input, stream events."""
@@ -236,17 +278,60 @@ class ChatSession:
                 self.renderer.render_border()
                 self.renderer.render_system_message("Session closed.")
 
+    def _get_prompt(self) -> str:
+        """Build dynamic prompt based on connection state and input mode."""
+        if self._state.connection_state == ConnectionState.DISCONNECTED:
+            return "[disconnected] > "
+        if self._state.connection_state == ConnectionState.RECONNECTING:
+            return "[reconnecting...] > "
+        if self._state.input_mode == InputMode.REPLY and self._state.reply_context:
+            return f"Reply to {self._state.reply_context.agent_name}: "
+        return "> "
+
     def _read_input(self) -> str:
         """Render bottom border, prompt for input, then status bar below."""
         self.renderer.render_border()
-        line = self._prompt_session.prompt("> ")
+        line = self._prompt_session.prompt(self._get_prompt())
         self.renderer.render_border()
         self.renderer.render_status_bar(
-            self._team_name or "(unknown)",
-            self.team_id,
-            self._team_status or "?",
+            self._state.team_name,
+            self._state.team_id,
+            self._state.team_status,
         )
         return line
+
+    def _check_connection_gate(self, line: str) -> bool:
+        """Check connection state and handle DISCONNECTED/RECONNECTING. Returns True if blocked."""
+        conn_state = self._state.connection_state
+        if conn_state == ConnectionState.DISCONNECTED:
+            self.renderer.render_error(
+                "Not connected. Use /reconnect to restore connection."
+            )
+            return True
+        if conn_state == ConnectionState.RECONNECTING:
+            self.renderer.render_system_message(
+                "Reconnecting... message will be sent when connection is restored."
+            )
+            self._message_buffer.append(line)
+            return True
+        return False
+
+    async def _handle_reply(self, line: str) -> None:
+        """Send a reply to the pending human-input request."""
+        loop = asyncio.get_running_loop()
+        ctx = self._state.reply_context
+        if ctx is None:
+            return
+        try:
+            await loop.run_in_executor(
+                None, self.client.human_input, self._state.team_id, line, ctx.reply_id
+            )
+            # Clear only after successful send
+            self._state = self._state.model_copy(
+                update={"input_mode": InputMode.CHAT, "reply_context": None}
+            )
+        except ApiError:
+            self.renderer.render_error("Error sending reply. Try again.")
 
     async def _input_loop(self) -> None:
         """Read user input and send messages."""
@@ -268,22 +353,21 @@ class ChatSession:
                 continue
 
             # Route as human-input reply if pending
-            if self._pending_reply_id:
-                try:
-                    reply_id = self._pending_reply_id
-                    await loop.run_in_executor(
-                        None, self.client.human_input, self.team_id, line, reply_id
-                    )
-                    # Clear only after successful send
-                    self._pending_reply_id = None
-                    self._pending_agent_name = None
-                except ApiError:
-                    self.renderer.render_error("Error sending reply. Try again.")
+            if self._state.input_mode == InputMode.REPLY and self._state.reply_context:
+                if self._check_connection_gate(line):
+                    continue
+                await self._handle_reply(line)
+                continue
+
+            # Connection-aware message sending
+            if self._check_connection_gate(line):
                 continue
 
             # Send message via REST API (run in executor to avoid blocking)
             try:
-                await loop.run_in_executor(None, self.client.send_message, self.team_id, line)
+                await loop.run_in_executor(
+                    None, self.client.send_message, self._state.team_id, line
+                )
             except ApiError:
                 self.renderer.render_error("Error sending message.")
 
@@ -299,10 +383,19 @@ class ChatSession:
                 self.renderer.render_error(f"Connection lost: {exc.reason}")
                 break
 
+    def _flush_message_buffer(self) -> None:
+        """Send all buffered messages that were queued during RECONNECTING state."""
+        while self._message_buffer:
+            msg = self._message_buffer.pop(0)
+            try:
+                self.client.send_message(self._state.team_id, msg)
+            except ApiError:
+                self.renderer.render_error(f"Failed to send buffered message: {msg[:50]}")
+
     def _replay_history(self) -> None:
         """Fetch and display past events before starting the REPL."""
         try:
-            events = self.client.get_events(self.team_id)
+            events = self.client.get_events(self._state.team_id)
         except ApiError:
             return
         self._display_events([e.model_dump() for e in events])
@@ -311,7 +404,9 @@ class ChatSession:
         """Async version of _replay_history — uses run_in_executor to avoid blocking."""
         loop = asyncio.get_running_loop()
         try:
-            events = await loop.run_in_executor(None, self.client.get_events, self.team_id)
+            events = await loop.run_in_executor(
+                None, self.client.get_events, self._state.team_id
+            )
         except ApiError:
             return
         self._display_events([e.model_dump() for e in events])
@@ -329,8 +424,14 @@ class ChatSession:
         """Format and render a single event. Returns True if something was rendered."""
 
         def _set_pending(message_id: str, agent_name: str) -> None:
-            self._pending_reply_id = message_id
-            self._pending_agent_name = agent_name
+            self._state = self._state.model_copy(
+                update={
+                    "input_mode": InputMode.REPLY,
+                    "reply_context": ReplyContext(
+                        reply_id=message_id, agent_name=agent_name, prompt=""
+                    ),
+                }
+            )
 
         return _render_event_impl(data, self.renderer, on_human_input=_set_pending)
 
