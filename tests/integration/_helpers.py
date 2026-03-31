@@ -21,7 +21,7 @@ POLL_TIMEOUT_S = 60.0
 
 
 class StubRenderer:
-    """Lightweight renderer stub that captures agent messages without MagicMock."""
+    """Lightweight renderer stub that captures agent messages without mocking."""
 
     def __init__(self) -> None:
         self.agent_messages: list[str] = []
