@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json as json_mod
 import sys
 from collections.abc import Awaitable, Callable
@@ -90,17 +91,122 @@ async def _help_handler(args: str, session: ChatSession) -> None:
 # -- Team inspection commands --
 
 
-async def _status_handler(args: str, session: ChatSession) -> None:
-    """Show team status and agent states."""
+async def _teams_handler(args: str, session: ChatSession) -> None:
+    """List all teams with status indicators."""
     loop = asyncio.get_running_loop()
     try:
-        team = await loop.run_in_executor(None, session.client.get_team, session.team_id)
+        teams = await loop.run_in_executor(None, session.client.list_teams)
     except SystemExit:
-        print("Error fetching team status.", file=sys.stderr)
+        print("Error fetching teams.", file=sys.stderr)
         return
 
-    print(f"Team: {team.name}")
+    if not teams:
+        print("No teams found.")
+        return
+
+    print(f"{'Team ID':<38s} {'Name':<20s} {'Status':<10s}")
+    print("-" * 68)
+    for t in teams:
+        marker = " (current)" if t.team_id == session.team_id else ""
+        print(f"{t.team_id:<38s} {t.name:<20s} {t.status:<10s}{marker}")
+
+
+async def _create_handler(args: str, session: ChatSession) -> None:
+    """Create a team from a catalog entry and auto-switch to it."""
+    catalog_entry_id = args.strip()
+    if not catalog_entry_id:
+        print("Usage: /create <catalog_entry>")
+        return
+
+    loop = asyncio.get_running_loop()
+    try:
+        team = await loop.run_in_executor(
+            None, session.client.create_team, catalog_entry_id
+        )
+    except SystemExit:
+        print("Error creating team.", file=sys.stderr)
+        return
+
+    print(f"Created team: {team.name} ({team.team_id})")
+    await _switch_handler(team.team_id, session)
+
+
+async def _delete_handler(args: str, session: ChatSession) -> None:
+    """Delete a team after confirmation."""
+    target_id = args.strip() or session.team_id
+    loop = asyncio.get_running_loop()
+
+    try:
+        team = await loop.run_in_executor(None, session.client.get_team, target_id)
+    except SystemExit:
+        print("Error fetching team info.", file=sys.stderr)
+        return
+
+    prompt_text = (
+        f"Delete team {team.name} ({target_id})? "
+        "All event history will be lost. [y/N] "
+    )
+    try:
+        response = await loop.run_in_executor(None, builtins.input, prompt_text)
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        return
+
+    if response.strip().lower() != "y":
+        print("Aborted.")
+        return
+
+    try:
+        await loop.run_in_executor(None, session.client.delete_team, target_id)
+    except SystemExit:
+        print("Error deleting team.", file=sys.stderr)
+        return
+
+    print(f"Team {team.name} ({target_id}) deleted.")
+    if target_id == session.team_id:
+        print("Current team deleted. Use /switch or /teams to select another team.")
+
+
+async def _info_handler(args: str, session: ChatSession) -> None:
+    """Show team details."""
+    target_id = args.strip() or session.team_id
+    loop = asyncio.get_running_loop()
+    try:
+        team = await loop.run_in_executor(None, session.client.get_team, target_id)
+    except SystemExit:
+        print("Error fetching team info.", file=sys.stderr)
+        return
+
+    print(f"Name: {team.name}")
+    print(f"Team ID: {team.team_id}")
     print(f"Status: {team.status}")
+    print(f"User ID: {team.user_id}")
+    print(f"Created: {team.created_at}")
+    print(f"Updated: {team.updated_at}")
+
+
+async def _events_handler(args: str, session: ChatSession) -> None:
+    """Show raw team events."""
+    limit = 20
+    if args.strip():
+        try:
+            limit = int(args.strip())
+        except ValueError:
+            print("Usage: /events [N]  — N must be a positive integer.")
+            return
+        if limit <= 0:
+            print("Usage: /events [N]  — N must be a positive integer.")
+            return
+
+    loop = asyncio.get_running_loop()
+    try:
+        events = await loop.run_in_executor(None, session.client.get_events, session.team_id)
+    except SystemExit:
+        print("Error fetching events.", file=sys.stderr)
+        return
+
+    for evt in events[-limit:]:
+        print(json_mod.dumps(evt.model_dump(), indent=2, default=str))
 
 
 async def _agents_handler(args: str, session: ChatSession) -> None:
@@ -262,15 +368,19 @@ async def _stop_handler(args: str, session: ChatSession) -> None:
 
 
 async def _restore_handler(args: str, session: ChatSession) -> None:
-    """Restore a stopped team."""
+    """Restore a stopped team, optionally by ID."""
+    target_id = args.strip() or session.team_id
     loop = asyncio.get_running_loop()
     try:
-        await loop.run_in_executor(None, session.client.restore_team, session.team_id)
+        await loop.run_in_executor(None, session.client.restore_team, target_id)
     except SystemExit:
         print("Error restoring team.", file=sys.stderr)
         return
 
-    print(f"Team {session.team_id} restored. Live events resumed.")
+    print(f"Team {target_id} restored. Live events resumed.")
+
+    if target_id != session.team_id:
+        await _switch_handler(target_id, session)
 
 
 # -- Switch command --
@@ -337,13 +447,21 @@ def build_default_registry() -> CommandRegistry:
     """Create a command registry with all built-in commands."""
     registry = CommandRegistry()
     registry.register("help", _help_handler, "Show available commands", "/help")
-    registry.register("status", _status_handler, "Show team status", "/status")
+    registry.register("teams", _teams_handler, "List all teams", "/teams")
+    registry.register(
+        "create", _create_handler, "Create a team from catalog", "/create <catalog_entry>"
+    )
+    registry.register("delete", _delete_handler, "Delete a team", "/delete [team_id]")
+    registry.register("info", _info_handler, "Show team details", "/info [team_id]")
+    registry.register("events", _events_handler, "Show raw team events", "/events [N]")
     registry.register("agents", _agents_handler, "List team agents", "/agents")
     registry.register("history", _history_handler, "Show recent messages", "/history [N]")
     registry.register("files", _files_handler, "Show workspace files", "/files")
     registry.register("read", _read_handler, "Read a workspace file", "/read <path>")
     registry.register("upload", _upload_handler, "Upload a file to workspace", "/upload <path>")
     registry.register("stop", _stop_handler, "Stop the team", "/stop")
-    registry.register("restore", _restore_handler, "Restore a stopped team", "/restore")
+    registry.register(
+        "restore", _restore_handler, "Restore a stopped team", "/restore [team_id]"
+    )
     registry.register("switch", _switch_handler, "Switch to another team", "/switch <team_id>")
     return registry
