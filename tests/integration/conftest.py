@@ -104,8 +104,12 @@ def integration_settings(tmp_path: Path, openai_api_key: str) -> CommunitySettin
 
     Depends on ``openai_api_key`` so LLM-dependent tests are skipped when absent.
     """
-    settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
-    seed_integration_catalog(settings.workspaces_root / "catalog")
+    settings = CommunitySettings(
+        workspaces_root=tmp_path / "workspaces",
+        event_store_path=tmp_path / "event_store",
+        catalog_path=tmp_path / "catalog",
+    )
+    seed_integration_catalog(settings.catalog_path)
     return settings
 
 
@@ -155,9 +159,11 @@ def v1_adapter_settings(tmp_path: Path) -> CommunitySettings:
     """CommunitySettings with V1 frontend adapter enabled."""
     settings = CommunitySettings(
         workspaces_root=tmp_path / "workspaces",
+        event_store_path=tmp_path / "event_store",
+        catalog_path=tmp_path / "catalog",
         frontend_adapter=V1_ADAPTER_FQDN,
     )
-    seed_integration_catalog(settings.workspaces_root / "catalog")
+    seed_integration_catalog(settings.catalog_path)
     return settings
 
 
@@ -260,10 +266,11 @@ def smoke_settings(tmp_path: Path) -> CommunitySettings:
     Explicitly sets ``catalog_path`` so the env var ``AKGENTIC_CATALOG_PATH``
     (loaded from .env) does not override the seeded test catalog.
     """
-    catalog_dir = tmp_path / "workspaces" / "catalog"
+    catalog_dir = tmp_path / "catalog"
     seed_integration_catalog(catalog_dir)
     return CommunitySettings(
         workspaces_root=tmp_path / "workspaces",
+        event_store_path=tmp_path / "event_store",
         catalog_path=catalog_dir,
     )
 

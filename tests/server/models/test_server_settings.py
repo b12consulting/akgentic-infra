@@ -143,6 +143,7 @@ class TestSettingsHierarchy:
             ServerSettings.model_fields.keys()
         )
         assert "workspaces_root" in community_own_fields
+        assert "event_store_path" in community_own_fields
         assert "catalog_path" in community_own_fields
 
     def test_community_settings_no_literal_fields(self) -> None:
@@ -164,9 +165,13 @@ class TestSettingsHierarchy:
         from akgentic.infra.server.app import create_app
         from akgentic.infra.wiring import wire_community
 
-        settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
         # Seed a minimal catalog
-        _seed_minimal_catalog(settings.workspaces_root / "catalog")
+        _seed_minimal_catalog(settings.catalog_path)
         services = wire_community(settings)
         try:
             from fastapi.testclient import TestClient
@@ -249,10 +254,15 @@ class TestCommunitySettingsDefaults:
         settings = CommunitySettings()
         assert settings.workspaces_root == Path("workspaces")
 
-    def test_default_catalog_path(self) -> None:
-        """Default catalog_path is None."""
+    def test_default_event_store_path(self) -> None:
+        """Default event_store_path is Path('data/event_store')."""
         settings = CommunitySettings()
-        assert settings.catalog_path is None
+        assert settings.event_store_path == Path("data/event_store")
+
+    def test_default_catalog_path(self) -> None:
+        """Default catalog_path is Path('data/catalog')."""
+        settings = CommunitySettings()
+        assert settings.catalog_path == Path("data/catalog")
 
     def test_inherits_base_fields(self) -> None:
         """CommunitySettings inherits host, port, cors_origins from ServerSettings."""
@@ -260,6 +270,24 @@ class TestCommunitySettingsDefaults:
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
         assert settings.cors_origins == ["*"]
+
+    def test_event_store_path_from_env(self) -> None:
+        """AKGENTIC_EVENT_STORE_PATH overrides event_store_path field."""
+        os.environ["AKGENTIC_EVENT_STORE_PATH"] = "/tmp/events"
+        try:
+            settings = CommunitySettings()
+            assert settings.event_store_path == Path("/tmp/events")
+        finally:
+            del os.environ["AKGENTIC_EVENT_STORE_PATH"]
+
+    def test_catalog_path_from_env(self) -> None:
+        """AKGENTIC_CATALOG_PATH overrides catalog_path field."""
+        os.environ["AKGENTIC_CATALOG_PATH"] = "/tmp/catalog"
+        try:
+            settings = CommunitySettings()
+            assert settings.catalog_path == Path("/tmp/catalog")
+        finally:
+            del os.environ["AKGENTIC_CATALOG_PATH"]
 
     def test_workspaces_root_from_env(self) -> None:
         """AKGENTIC_WORKSPACES_ROOT overrides workspaces_root field."""

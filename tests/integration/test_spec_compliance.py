@@ -42,8 +42,12 @@ class TestAppFactory:
         """AC #1: Demonstrate the fixture pattern works end-to-end."""
         from tests.integration.conftest import _seed_integration_catalog
 
-        settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
-        _seed_integration_catalog(settings.workspaces_root / "catalog")
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
+        _seed_integration_catalog(settings.catalog_path)
         services = wire_community(settings)
         try:
             app = create_app(services, settings)

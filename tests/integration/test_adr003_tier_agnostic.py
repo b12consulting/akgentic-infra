@@ -72,8 +72,12 @@ class TestTierAgnosticFixturePattern:
         """AC #2: Full inline pattern in one test."""
         from ._helpers import seed_integration_catalog
 
-        settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
-        seed_integration_catalog(settings.workspaces_root / "catalog")
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
+        seed_integration_catalog(settings.catalog_path)
         services = wire_community(settings)
         try:
             app = create_app(services, settings)

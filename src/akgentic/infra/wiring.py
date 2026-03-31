@@ -48,7 +48,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
         Fully wired CommunityServices container
     """
     logger.info("Wiring community services")
-    event_store = YamlEventStore(data_dir=settings.workspaces_root)
+    event_store = YamlEventStore(data_dir=settings.event_store_path)
     service_registry = NullServiceRegistry()
     actor_system, team_manager = _build_actor_layer(event_store, service_registry)
     catalogs = _build_catalogs(settings)
@@ -109,7 +109,7 @@ def _build_catalogs(
     settings: CommunitySettings,
 ) -> tuple[TeamCatalog, AgentCatalog, ToolCatalog, TemplateCatalog]:
     """Build YAML-backed catalog services."""
-    catalog_root = settings.catalog_path or settings.workspaces_root / "catalog"
+    catalog_root = settings.catalog_path
     logger.debug("Building catalogs from %s", catalog_root)
     template_catalog = TemplateCatalog(
         repository=YamlTemplateCatalogRepository(catalog_dir=catalog_root / "templates"),

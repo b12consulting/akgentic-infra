@@ -30,7 +30,11 @@ class TestWireCommunityLogging:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """wire_community() emits 'Wiring community services' INFO log."""
-        settings = CommunitySettings(workspaces_root=tmp_path)
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
         with caplog.at_level(logging.INFO, logger="akgentic.infra.wiring"):
             services = wire_community(settings)
         try:
@@ -45,7 +49,11 @@ class TestWireCommunity:
     @pytest.fixture()
     def services(self, tmp_path: Path) -> Generator[CommunityServices, None, None]:
         """Wire community services with a temp workspace root and cleanup ActorSystem."""
-        settings = CommunitySettings(workspaces_root=tmp_path)
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
         svc = wire_community(settings)
         yield svc
         svc.team_manager._actor_system.shutdown(timeout=5)
@@ -78,12 +86,17 @@ class TestWireCommunity:
         """TeamManager is present and correctly typed."""
         assert isinstance(services.team_manager, TeamManager)
 
-    def test_uses_settings_workspaces_root(self, tmp_path: Path) -> None:
-        """wire_community passes settings.workspaces_root to YamlEventStore."""
-        settings = CommunitySettings(workspaces_root=tmp_path)
+    def test_uses_settings_event_store_path(self, tmp_path: Path) -> None:
+        """wire_community passes settings.event_store_path to YamlEventStore."""
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
         services = wire_community(settings)
         try:
             assert isinstance(services.event_store, YamlEventStore)
+            assert services.event_store._data_dir == settings.event_store_path
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
 
@@ -105,7 +118,8 @@ class TestWireCommunity:
         for sub in ("teams", "agents", "tools", "templates"):
             (custom_catalog / sub).mkdir()
         settings = CommunitySettings(
-            workspaces_root=tmp_path,
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
             catalog_path=custom_catalog,
         )
         services = wire_community(settings)
@@ -125,7 +139,9 @@ class TestWireCommunity:
         """When channel_registry_path is set, uses YamlChannelRegistry."""
         reg_path = tmp_path / "registry.yaml"
         settings = CommunitySettings(
-            workspaces_root=tmp_path,
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
             channel_registry_path=reg_path,
         )
         services = wire_community(settings)
