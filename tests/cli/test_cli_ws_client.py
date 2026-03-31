@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import websockets.exceptions
 
-from akgentic.infra.cli.ws_client import WsClient
+from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
 
 
 class TestUrlConversion:
@@ -33,6 +33,22 @@ class TestUrlConversion:
         assert client._headers == []
 
 
+class TestWsConnectionError:
+    def test_default_retryable(self) -> None:
+        err = WsConnectionError("reason")
+        assert err.reason == "reason"
+        assert err.retryable is True
+        assert str(err) == "reason"
+
+    def test_not_retryable(self) -> None:
+        err = WsConnectionError("reason", retryable=False)
+        assert err.retryable is False
+
+    def test_str_output(self) -> None:
+        err = WsConnectionError("some reason")
+        assert str(err) == "some reason"
+
+
 class TestConnect:
     async def test_connect_success(self) -> None:
         mock_ws = AsyncMock()
@@ -46,31 +62,30 @@ class TestConnect:
             assert result is client
             assert client._ws is mock_ws
 
-    async def test_connect_refused_exits(self) -> None:
+    async def test_connect_refused_raises_ws_error(self) -> None:
         with patch(
             "akgentic.infra.cli.ws_client.websockets.asyncio.client.connect",
             new_callable=AsyncMock,
             side_effect=ConnectionRefusedError("refused"),
         ):
             client = WsClient("http://localhost:8000", "t1")
-            with pytest.raises(SystemExit) as exc_info:
+            with pytest.raises(WsConnectionError) as exc_info:
                 await client.connect()
-            assert exc_info.value.code == 1
+            assert exc_info.value.retryable is True
+            assert "Connection error" in exc_info.value.reason
 
-    async def test_connect_os_error_exits(self) -> None:
+    async def test_connect_os_error_raises_ws_error(self) -> None:
         with patch(
             "akgentic.infra.cli.ws_client.websockets.asyncio.client.connect",
             new_callable=AsyncMock,
             side_effect=OSError("network error"),
         ):
             client = WsClient("http://localhost:8000", "t1")
-            with pytest.raises(SystemExit) as exc_info:
+            with pytest.raises(WsConnectionError) as exc_info:
                 await client.connect()
-            assert exc_info.value.code == 1
+            assert exc_info.value.retryable is True
 
-    async def test_connect_invalid_status_404_exits(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    async def test_connect_invalid_status_404_raises_ws_error(self) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 404
         exc = websockets.exceptions.InvalidStatus(mock_response)
@@ -80,14 +95,41 @@ class TestConnect:
             side_effect=exc,
         ):
             client = WsClient("http://localhost:8000", "t1")
-            with pytest.raises(SystemExit) as exc_info:
+            with pytest.raises(WsConnectionError) as exc_info:
                 await client.connect()
-            assert exc_info.value.code == 1
-        assert "team not found" in capsys.readouterr().err
+            assert exc_info.value.retryable is False
+            assert "not found" in exc_info.value.reason.lower()
 
-    async def test_connect_invalid_handshake_exits(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    async def test_connect_invalid_status_403_raises_ws_error(self) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+        exc = websockets.exceptions.InvalidStatus(mock_response)
+        with patch(
+            "akgentic.infra.cli.ws_client.websockets.asyncio.client.connect",
+            new_callable=AsyncMock,
+            side_effect=exc,
+        ):
+            client = WsClient("http://localhost:8000", "t1")
+            with pytest.raises(WsConnectionError) as exc_info:
+                await client.connect()
+            assert exc_info.value.retryable is False
+
+    async def test_connect_invalid_status_500_raises_ws_error(self) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        exc = websockets.exceptions.InvalidStatus(mock_response)
+        with patch(
+            "akgentic.infra.cli.ws_client.websockets.asyncio.client.connect",
+            new_callable=AsyncMock,
+            side_effect=exc,
+        ):
+            client = WsClient("http://localhost:8000", "t1")
+            with pytest.raises(WsConnectionError) as exc_info:
+                await client.connect()
+            assert exc_info.value.retryable is True
+            assert "HTTP 500" in exc_info.value.reason
+
+    async def test_connect_invalid_handshake_raises_ws_error(self) -> None:
         exc = websockets.exceptions.InvalidHandshake("bad handshake")
         with patch(
             "akgentic.infra.cli.ws_client.websockets.asyncio.client.connect",
@@ -95,10 +137,10 @@ class TestConnect:
             side_effect=exc,
         ):
             client = WsClient("http://localhost:8000", "t1")
-            with pytest.raises(SystemExit) as exc_info:
+            with pytest.raises(WsConnectionError) as exc_info:
                 await client.connect()
-            assert exc_info.value.code == 1
-        assert "handshake failed" in capsys.readouterr().err
+            assert exc_info.value.retryable is True
+            assert "handshake failed" in exc_info.value.reason.lower()
 
 
 class TestReceiveEvent:

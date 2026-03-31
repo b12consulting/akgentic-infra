@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from akgentic.infra.cli.client import (
     ApiClient,
+    ApiError,
     EventInfo,
     TeamInfo,
     WorkspaceTreeInfo,
@@ -203,27 +204,102 @@ class TestWorkspaceUpload:
 # -- error handling --
 
 
+class TestApiError:
+    def test_404_not_retryable(self) -> None:
+        err = ApiError(404, "not found")
+        assert err.status_code == 404
+        assert err.detail == "not found"
+        assert str(err) == "HTTP 404: not found"
+        assert err.retryable is False
+
+    def test_500_retryable(self) -> None:
+        err = ApiError(500, "internal")
+        assert err.retryable is True
+
+    def test_429_retryable(self) -> None:
+        err = ApiError(429, "rate limited")
+        assert err.retryable is True
+
+    def test_0_retryable(self) -> None:
+        err = ApiError(0, "timeout")
+        assert err.retryable is True
+
+    def test_400_not_retryable(self) -> None:
+        err = ApiError(400, "bad request")
+        assert err.retryable is False
+
+    def test_empty_detail(self) -> None:
+        err = ApiError(500, "")
+        assert str(err) == "HTTP 500"
+
+    def test_502_retryable(self) -> None:
+        err = ApiError(502, "bad gateway")
+        assert err.retryable is True
+
+    def test_503_retryable(self) -> None:
+        err = ApiError(503, "service unavailable")
+        assert err.retryable is True
+
+
 class TestErrorHandling:
-    def test_404_raises_exit(self) -> None:
+    def test_404_raises_api_error(self) -> None:
         client = _client(_transport(status=404, json_body={"detail": "Not found"}))
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ApiError) as exc_info:
             client.get_team("missing")
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Not found"
 
-    def test_500_raises_exit(self) -> None:
+    def test_500_raises_api_error(self) -> None:
         client = _client(_transport(status=500, content=b"Internal error"))
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ApiError) as exc_info:
             client.list_teams()
+        assert exc_info.value.status_code == 500
 
-    def test_409_raises_exit(self) -> None:
+    def test_409_raises_api_error(self) -> None:
         client = _client(_transport(status=409, json_body={"detail": "Conflict"}))
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ApiError) as exc_info:
             client.delete_team("abc")
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "Conflict"
 
-    def test_404_prints_detail(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_404_detail_in_error(self) -> None:
         client = _client(_transport(status=404, json_body={"detail": "Not found"}))
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ApiError) as exc_info:
             client.get_team("missing")
-        assert "Not found" in capsys.readouterr().err
+        assert "Not found" in exc_info.value.detail
+
+    def test_timeout_raises_api_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.TimeoutException("timed out")
+
+        client = _client(httpx.MockTransport(handler))
+        with pytest.raises(ApiError) as exc_info:
+            client.list_teams()
+        assert exc_info.value.status_code == 0
+        assert "timed out" in exc_info.value.detail
+
+    def test_connect_error_raises_api_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        client = _client(httpx.MockTransport(handler))
+        with pytest.raises(ApiError) as exc_info:
+            client.list_teams()
+        assert exc_info.value.status_code == 0
+        assert "Connection failed" in exc_info.value.detail
+
+    def test_successful_response_returns_normally(self) -> None:
+        team = make_team_info(team_id="abc", name="t1")
+        client = _client(_transport(json_body={"teams": [team]}))
+        result = client.list_teams()
+        assert len(result) == 1
+
+
+class TestTimeoutConfiguration:
+    def test_timeout_configured(self) -> None:
+        client = ApiClient(base_url="http://test")
+        timeout = client._client.timeout
+        assert timeout == httpx.Timeout(30.0, connect=10.0)
 
 
 class TestValidationErrors:

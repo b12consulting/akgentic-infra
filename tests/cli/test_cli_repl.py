@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import websockets.exceptions
 
-from akgentic.infra.cli.client import EventInfo
+from akgentic.infra.cli.client import ApiError, EventInfo
 from akgentic.infra.cli.commands import build_default_registry
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
@@ -98,7 +98,7 @@ class TestReplayHistory:
     def test_replay_handles_error(self) -> None:
         renderer, buf = _captured_renderer()
         client = _mock_client()
-        client.get_events.side_effect = SystemExit(1)
+        client.get_events.side_effect = ApiError(500, "test error")
         session = _make_session(client=client, renderer=renderer)
         session._replay_history()  # Should not raise
 
