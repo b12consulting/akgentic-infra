@@ -4,19 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import socket
 import threading
 import time
-from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import httpx
 import pytest
-import uvicorn
 from click.testing import Result
-from fastapi import FastAPI
 from typer.testing import CliRunner
 
 from akgentic.infra.cli.client import ApiClient
@@ -29,6 +25,7 @@ from ._helpers import (
     CATALOG_ENTRY_ID,
     POLL_INTERVAL_S,
     POLL_TIMEOUT_S,
+    StubRenderer,
     create_team,
     has_llm_content,
 )
@@ -39,65 +36,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.llm]
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-def _get_free_port() -> int:
-    """Bind to port 0 to get a free port from the OS."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port: int = s.getsockname()[1]
-        return port
-
-
-@pytest.fixture(autouse=True)
-def _httpx_follow_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch httpx.Client to follow redirects by default.
-
-    The CLI's ApiClient creates httpx.Client without follow_redirects=True,
-    but FastAPI redirects /teams → /teams/ (trailing-slash redirect).
-    This patch ensures the CLI tests work against a real server.
-    """
-    _original_init = httpx.Client.__init__
-
-    def _patched_init(self: httpx.Client, *args: Any, **kwargs: Any) -> None:
-        kwargs.setdefault("follow_redirects", True)
-        _original_init(self, *args, **kwargs)
-
-    monkeypatch.setattr(httpx.Client, "__init__", _patched_init)
-
-
-@pytest.fixture()
-def cli_server(integration_app: FastAPI) -> Generator[str, None, None]:
-    """Start the integration app on a real TCP port via uvicorn in a daemon thread.
-
-    Yields the base URL ``http://127.0.0.1:{port}``.
-    """
-    port = _get_free_port()
-    config = uvicorn.Config(
-        app=integration_app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-    )
-    server = uvicorn.Server(config)
-
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-
-    # Wait for the server to be ready
-    deadline = time.monotonic() + 10.0
-    url = f"http://127.0.0.1:{port}"
-    while time.monotonic() < deadline:
-        if server.started:
-            break
-        time.sleep(0.1)
-    else:
-        pytest.fail("uvicorn server did not start within 10 seconds")
-
-    yield url
-
-    server.should_exit = True
-    thread.join(timeout=5)
 
 
 @pytest.fixture()
@@ -330,29 +268,7 @@ class TestCliTeamLifecycle:
 # ---------------------------------------------------------------------------
 
 
-class _StubRenderer:
-    """Lightweight renderer stub that captures agent messages without MagicMock."""
-
-    def __init__(self) -> None:
-        self.agent_messages: list[str] = []
-
-    def render_agent_message(self, sender: str, content: str) -> None:
-        self.agent_messages.append(f"{sender}: {content}")
-
-    def render_system_message(self, *args: object, **kwargs: object) -> None:
-        pass
-
-    def render_error(self, *args: object, **kwargs: object) -> None:
-        pass
-
-    def render_tool_call(self, *args: object, **kwargs: object) -> None:
-        pass
-
-    def render_human_input_request(self, *args: object, **kwargs: object) -> None:
-        pass
-
-    def render_history_separator(self, *args: object, **kwargs: object) -> None:
-        pass
+_StubRenderer = StubRenderer
 
 
 class TestCliChat:
