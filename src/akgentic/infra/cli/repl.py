@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from typing import Any
 
 import websockets.exceptions
@@ -44,6 +45,8 @@ class ChatSession:
         self.renderer = renderer or RichRenderer()
         self.command_registry: CommandRegistry = build_default_registry()
         self._running = True
+        self._pending_reply_id: str | None = None
+        self._pending_agent_name: str | None = None
         self._receive_task: asyncio.Task[None] | None = None
         self._prompt_session: PromptSession[str] = PromptSession(
             history=InMemoryHistory(),
@@ -73,13 +76,20 @@ class ChatSession:
                         pass
                 self.renderer.render_system_message("Session closed.")
 
+    def _get_prompt(self) -> str:
+        """Return the current input prompt, reflecting pending reply state."""
+        if self._pending_reply_id:
+            name = self._pending_agent_name or "Agent"
+            return f"Reply to {name}: "
+        return "You: "
+
     async def _input_loop(self) -> None:
         """Read user input and send messages."""
         loop = asyncio.get_running_loop()
         while self._running:
             try:
                 line = await loop.run_in_executor(
-                    None, self._prompt_session.prompt, "You: "
+                    None, self._prompt_session.prompt, self._get_prompt()
                 )
             except (EOFError, KeyboardInterrupt):
                 break
@@ -92,6 +102,19 @@ class ChatSession:
 
             # Try dispatching as a slash command
             if await self.command_registry.dispatch(line, self):
+                continue
+
+            # Route as human-input reply if pending
+            if self._pending_reply_id:
+                try:
+                    reply_id = self._pending_reply_id
+                    self._pending_reply_id = None
+                    self._pending_agent_name = None
+                    await loop.run_in_executor(
+                        None, self.client.human_input, self.team_id, line, reply_id
+                    )
+                except SystemExit:
+                    self.renderer.render_error("Error sending reply.")
                 continue
 
             # Send message via REST API (run in executor to avoid blocking)
@@ -148,7 +171,12 @@ class ChatSession:
 
     def _render_event(self, data: dict[str, Any]) -> bool:
         """Format and render a single event. Returns True if something was rendered."""
-        return _render_event_impl(data, self.renderer)
+
+        def _set_pending(message_id: str, agent_name: str) -> None:
+            self._pending_reply_id = message_id
+            self._pending_agent_name = agent_name
+
+        return _render_event_impl(data, self.renderer, on_human_input=_set_pending)
 
 
 class _SlashCompleter(Completer):
@@ -174,7 +202,11 @@ class _SlashCompleter(Completer):
                 )
 
 
-def _render_event_impl(data: dict[str, Any], renderer: RichRenderer) -> bool:
+def _render_event_impl(
+    data: dict[str, Any],
+    renderer: RichRenderer,
+    on_human_input: Callable[[str, str], None] | None = None,
+) -> bool:
     """Shared event rendering logic used by both ChatSession and _print_event."""
     event = data.get("event", data)
     if isinstance(event, str):
@@ -195,7 +227,9 @@ def _render_event_impl(data: dict[str, Any], renderer: RichRenderer) -> bool:
         return True
 
     if short_model == "EventMessage":
-        return _render_event_message_impl(event, renderer)
+        return _render_event_message_impl(
+            event, renderer, on_human_input=on_human_input, outer_data=data
+        )
 
     # SentMessage — agent response; content lives inside nested "message"
     raw_sender = event.get("sender", "agent")
@@ -208,7 +242,47 @@ def _render_event_impl(data: dict[str, Any], renderer: RichRenderer) -> bool:
     return False
 
 
-def _render_event_message_impl(event: dict[str, Any], renderer: RichRenderer) -> bool:
+def _render_tool_call(nested: dict[str, Any], renderer: RichRenderer) -> None:
+    """Extract and render a tool call event."""
+    tool_name = str(nested["tool_name"])
+    raw_input = nested.get("arguments", nested.get("args", nested.get("input", "")))
+    if isinstance(raw_input, dict | list):
+        tool_input = json.dumps(raw_input, indent=2)
+    else:
+        tool_input = str(raw_input)
+    raw_output = nested.get("result")
+    if raw_output is None:
+        tool_output = None
+    elif isinstance(raw_output, dict | list):
+        tool_output = json.dumps(raw_output, indent=2)
+    else:
+        tool_output = str(raw_output)
+    renderer.render_tool_call(tool_name, tool_input, tool_output)
+
+
+def _notify_human_input(
+    outer_data: dict[str, Any],
+    on_human_input: Callable[[str, str], None],
+) -> None:
+    """Extract message_id and agent_name from outer event data and invoke callback."""
+    raw_id = outer_data.get("id")
+    if not raw_id:
+        return
+    message_id = str(raw_id)
+    raw_sender = outer_data.get("sender", "Agent")
+    if isinstance(raw_sender, dict):
+        agent_name = str(raw_sender.get("name", "Agent"))
+    else:
+        agent_name = str(raw_sender)
+    on_human_input(message_id, agent_name)
+
+
+def _render_event_message_impl(
+    event: dict[str, Any],
+    renderer: RichRenderer,
+    on_human_input: Callable[[str, str], None] | None = None,
+    outer_data: dict[str, Any] | None = None,
+) -> bool:
     """Handle EventMessage — inspect nested event for tool calls / human input."""
     nested = event.get("event", {})
     if isinstance(nested, str):
@@ -222,32 +296,15 @@ def _render_event_message_impl(event: dict[str, Any], renderer: RichRenderer) ->
 
     nested_model = nested.get("__model__", "")
 
-    # Tool call events (ToolCallEvent uses "arguments", others use "args"/"input")
     if "tool_name" in nested:
-        tool_name = str(nested["tool_name"])
-        raw_input = nested.get("arguments", nested.get("args", nested.get("input", "")))
-        if isinstance(raw_input, dict | list):
-            tool_input = json.dumps(raw_input, indent=2)
-        else:
-            tool_input = str(raw_input)
-        raw_output = nested.get("result")
-        if raw_output is None:
-            tool_output = None
-        elif isinstance(raw_output, dict | list):
-            tool_output = json.dumps(raw_output, indent=2)
-        else:
-            tool_output = str(raw_output)
-        renderer.render_tool_call(
-            tool_name,
-            tool_input,
-            tool_output,
-        )
+        _render_tool_call(nested, renderer)
         return True
 
-    # Human input request
     if "HumanInput" in nested_model or "RequestInput" in nested_model:
         prompt_text = str(nested.get("prompt", nested.get("content", "Input requested")))
         renderer.render_human_input_request(prompt_text)
+        if on_human_input is not None and outer_data is not None:
+            _notify_human_input(outer_data, on_human_input)
         return True
 
     return False
