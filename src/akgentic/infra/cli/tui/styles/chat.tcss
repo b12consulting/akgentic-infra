@@ -31,6 +31,10 @@ HintBar {
     background: $surface;
 }
 
+ThinkingIndicator {
+    margin: 0 0 1 0;
+}
+
 /* History replay -- dimmed widgets */
 .history {
     opacity: 60%;
