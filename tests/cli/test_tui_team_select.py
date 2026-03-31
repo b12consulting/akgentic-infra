@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from textual.widgets import Input
 
-from akgentic.infra.cli.client import ApiClient, CatalogTeamInfo, TeamInfo
+from akgentic.infra.cli.client import ApiClient, ApiError, CatalogTeamInfo, TeamInfo
 from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.screens.team_select import TeamSelectScreen
 
@@ -199,6 +199,25 @@ async def test_invalid_number_shows_error() -> None:
         await _submit_input(app, "99", pilot)
         all_text = _get_team_list_text(app)
         assert "Invalid selection" in all_text
+
+
+@pytest.mark.asyncio
+async def test_api_error_during_fetch_shows_empty() -> None:
+    """ApiError during data fetch renders empty sections gracefully."""
+    client = MagicMock(spec=ApiClient)
+    client.list_teams.side_effect = ApiError(500, "connection refused")
+    client.list_catalog_teams.side_effect = ApiError(500, "connection refused")
+
+    class TestApp(ChatApp):
+        def on_mount(self) -> None:
+            self.push_screen(TeamSelectScreen(client=client))
+
+    app = TestApp(team_name="t", team_id="pre-set", team_status="running")
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        all_text = _get_team_list_text(app)
+        assert "(none)" in all_text
 
 
 # -- Task 7: Pagination tests --

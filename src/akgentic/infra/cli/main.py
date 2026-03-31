@@ -168,8 +168,8 @@ def chat(
         team = _state.client.create_team(create)
         team_id = team.team_id
 
-    if team_id is not None:
-        try:
+    try:
+        if team_id is not None:
             team_info = _state.client.get_team(team_id)
             tui_app = ChatApp(
                 team_name=team_info.name,
@@ -177,23 +177,9 @@ def chat(
                 team_status=team_info.status,
                 client=_state.client,
             )
-            tui_app.run()
-        except KeyboardInterrupt:
-            pass
-        except ApiError as exc:
-            renderer.render_error(f"Server error: {exc}")
-            raise typer.Exit(code=1) from exc
-        except Exception as exc:
-            renderer.render_error(f"Unexpected error: {exc}")
-            logging.getLogger(__name__).exception("Unhandled exception in TUI")
-            raise typer.Exit(code=1) from exc
-        finally:
-            _state.client.close()
-        return
-
-    # No team_id and no --create: let TeamSelectScreen handle it
-    try:
-        tui_app = ChatApp(client=_state.client)
+        else:
+            # No team_id and no --create: let TeamSelectScreen handle it
+            tui_app = ChatApp(client=_state.client)
         tui_app.run()
     except KeyboardInterrupt:
         pass
