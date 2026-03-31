@@ -7,6 +7,11 @@ from typing import Any
 from unittest.mock import MagicMock
 
 from akgentic.infra.cli.event_router import EventRouter
+from akgentic.infra.cli.tui.colors import AgentColorRegistry
+from akgentic.infra.cli.tui.widgets.agent_message import AgentMessage
+from akgentic.infra.cli.tui.widgets.error import ErrorWidget
+from akgentic.infra.cli.tui.widgets.human_input import HumanInputPrompt
+from akgentic.infra.cli.tui.widgets.tool_call import ToolCallWidget
 from tests.fixtures.events import (
     make_error_message,
     make_event_message,
@@ -326,3 +331,127 @@ class TestNestedEventJsonString:
         }
         result = router.route(data)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# to_widget() tests
+# ---------------------------------------------------------------------------
+
+
+def _make_widget_router() -> tuple[EventRouter, AgentColorRegistry]:
+    """Build an EventRouter and AgentColorRegistry for to_widget tests."""
+    renderer, _ = _captured_renderer()
+    router = EventRouter(renderer)
+    registry = AgentColorRegistry()
+    return router, registry
+
+
+class TestToWidgetSentMessage:
+    def test_returns_agent_message(self) -> None:
+        router, registry = _make_widget_router()
+        data = {"event": make_sent_message(content="hello")}
+        widget = router.to_widget(data, registry)
+        assert isinstance(widget, AgentMessage)
+
+    def test_empty_content_returns_none(self) -> None:
+        router, registry = _make_widget_router()
+        data = {"event": make_sent_message(content="")}
+        widget = router.to_widget(data, registry)
+        assert widget is None
+
+    def test_uses_color_registry(self) -> None:
+        router, registry = _make_widget_router()
+        data = {"event": make_sent_message(content="hi")}
+        router.to_widget(data, registry)
+        # sender from make_sent_message defaults to "sender"
+        assert "sender" in registry._map
+
+
+class TestToWidgetErrorMessage:
+    def test_returns_error_widget(self) -> None:
+        router, registry = _make_widget_router()
+        data = {"event": make_error_message(exception_value="boom")}
+        widget = router.to_widget(data, registry)
+        assert isinstance(widget, ErrorWidget)
+
+
+class TestToWidgetToolCall:
+    def test_returns_tool_call_widget(self) -> None:
+        router, registry = _make_widget_router()
+        data = {
+            "event": make_event_message(
+                event=make_tool_call_event(tool_name="search")
+            )
+        }
+        widget = router.to_widget(data, registry)
+        assert isinstance(widget, ToolCallWidget)
+
+    def test_tool_call_with_dict_args(self) -> None:
+        router, registry = _make_widget_router()
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "tool_name": "calc",
+                    "arguments": {"x": 1},
+                    "result": {"answer": 42},
+                },
+            },
+        }
+        widget = router.to_widget(data, registry)
+        assert isinstance(widget, ToolCallWidget)
+
+
+class TestToWidgetHumanInput:
+    def test_returns_human_input_prompt(self) -> None:
+        router, registry = _make_widget_router()
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "__model__": "HumanInputRequest",
+                    "prompt": "Enter name",
+                },
+            },
+        }
+        widget = router.to_widget(data, registry)
+        assert isinstance(widget, HumanInputPrompt)
+
+    def test_request_input_model(self) -> None:
+        router, registry = _make_widget_router()
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "__model__": "RequestInput",
+                    "prompt": "provide data",
+                },
+            },
+        }
+        widget = router.to_widget(data, registry)
+        assert isinstance(widget, HumanInputPrompt)
+
+
+class TestToWidgetUnknown:
+    def test_unknown_model_returns_none(self) -> None:
+        router, registry = _make_widget_router()
+        data = {"event": make_start_message()}
+        widget = router.to_widget(data, registry)
+        assert widget is None
+
+
+class TestToWidgetMalformed:
+    def test_empty_dict_returns_none(self) -> None:
+        router, registry = _make_widget_router()
+        widget = router.to_widget({}, registry)
+        assert widget is None
+
+    def test_missing_model_returns_none(self) -> None:
+        router, registry = _make_widget_router()
+        widget = router.to_widget({"event": {"data": "no model"}}, registry)
+        assert widget is None
+
+    def test_invalid_json_event_returns_none(self) -> None:
+        router, registry = _make_widget_router()
+        widget = router.to_widget({"event": "not json {{"}, registry)
+        assert widget is None
