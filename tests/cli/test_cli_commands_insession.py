@@ -19,14 +19,18 @@ from akgentic.infra.cli.client import (
 from akgentic.infra.cli.commands import (
     CommandRegistry,
     _agents_handler,
+    _create_handler,
+    _delete_handler,
+    _events_handler,
     _files_handler,
     _help_handler,
     _history_handler,
+    _info_handler,
     _read_handler,
     _restore_handler,
-    _status_handler,
     _stop_handler,
     _switch_handler,
+    _teams_handler,
     _upload_handler,
     build_default_registry,
 )
@@ -153,7 +157,11 @@ class TestHelpCommand:
         await _help_handler("", session)
 
         out = capsys.readouterr().out
-        assert "/status" in out
+        assert "/teams" in out
+        assert "/create" in out
+        assert "/delete" in out
+        assert "/info" in out
+        assert "/events" in out
         assert "/agents" in out
         assert "/history" in out
         assert "/files" in out
@@ -163,6 +171,7 @@ class TestHelpCommand:
         assert "/restore" in out
         assert "/switch" in out
         assert "/help" in out
+        assert "/status" not in out
 
 
 # =============================================================================
@@ -170,23 +179,251 @@ class TestHelpCommand:
 # =============================================================================
 
 
-class TestStatusHandler:
-    async def test_shows_team_info(self, capsys: pytest.CaptureFixture[str]) -> None:
+class TestTeamsHandler:
+    async def test_lists_teams(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.list_teams.return_value = [
+            TeamInfo(
+                team_id="t1", name="Team A", status="running",
+                user_id="u1", created_at="2026-01-01", updated_at="2026-01-01",
+            ),
+            TeamInfo(
+                team_id="t2", name="Team B", status="stopped",
+                user_id="u1", created_at="2026-01-01", updated_at="2026-01-01",
+            ),
+        ]
+        session = _make_session(client=client)
+
+        await _teams_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Team A" in out
+        assert "Team B" in out
+        assert "running" in out
+        assert "stopped" in out
+
+    async def test_highlights_current_team(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.list_teams.return_value = [
+            TeamInfo(
+                team_id="t1", name="Team A", status="running",
+                user_id="u1", created_at="2026-01-01", updated_at="2026-01-01",
+            ),
+            TeamInfo(
+                team_id="t2", name="Team B", status="stopped",
+                user_id="u1", created_at="2026-01-01", updated_at="2026-01-01",
+            ),
+        ]
+        session = _make_session(client=client)
+
+        await _teams_handler("", session)
+
+        out = capsys.readouterr().out
+        lines = out.strip().split("\n")
+        # The line with t1 should have (current) marker
+        t1_line = [l for l in lines if "t1" in l][0]
+        assert "(current)" in t1_line
+        t2_line = [l for l in lines if "t2" in l][0]
+        assert "(current)" not in t2_line
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.list_teams.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _teams_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestCreateHandler:
+    async def test_creates_and_switches(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.create_team.return_value = TeamInfo(
+            team_id="new-t", name="New Team", status="running",
+            user_id="u1", created_at="2026-01-01", updated_at="2026-01-01",
+        )
+        session = _make_session(client=client)
+        session._receive_task = asyncio.create_task(asyncio.sleep(100))
+
+        new_ws_mock = _mock_ws()
+        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
+            await _create_handler("my-catalog-entry", session)
+
+        out = capsys.readouterr().out
+        assert "Created team: New Team" in out
+        assert "new-t" in out
+        client.create_team.assert_called_once_with("my-catalog-entry")
+        # Should have auto-switched
+        assert session.team_id == "new-t"
+
+    async def test_missing_arg_shows_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _create_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.create_team.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _create_handler("my-entry", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestDeleteHandler:
+    async def test_delete_confirms_and_proceeds(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         client = _mock_client()
         session = _make_session(client=client)
 
-        await _status_handler("", session)
+        with patch("akgentic.infra.cli.commands.builtins.input", return_value="y"):
+            await _delete_handler("", session)
 
         out = capsys.readouterr().out
-        assert "Test Team" in out
-        assert "running" in out
+        assert "deleted" in out.lower()
+        client.delete_team.assert_called_once_with("t1")
+
+    async def test_delete_aborts_on_no(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        with patch("akgentic.infra.cli.commands.builtins.input", return_value="n"):
+            await _delete_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Aborted" in out
+        client.delete_team.assert_not_called()
+
+    async def test_defaults_to_current_team(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        with patch("akgentic.infra.cli.commands.builtins.input", return_value="y"):
+            await _delete_handler("", session)
+
+        client.get_team.assert_called_once_with("t1")
+        client.delete_team.assert_called_once_with("t1")
+
+    async def test_delete_current_team_shows_switch_msg(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        with patch("akgentic.infra.cli.commands.builtins.input", return_value="y"):
+            await _delete_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "/switch" in out or "/teams" in out
 
     async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
         client.get_team.side_effect = SystemExit(1)
         session = _make_session(client=client)
 
-        await _status_handler("", session)
+        await _delete_handler("some-id", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestInfoHandler:
+    async def test_info_current_team(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _info_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Test Team" in out
+        assert "running" in out
+        assert "user-1" in out
+        client.get_team.assert_called_once_with("t1")
+
+    async def test_info_specific_team(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _info_handler("t2", session)
+
+        client.get_team.assert_called_once_with("t2")
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.get_team.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _info_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error" in err
+
+
+class TestEventsHandler:
+    async def test_default_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        events = [
+            EventInfo(
+                team_id="t1", sequence=i,
+                event={"type": f"event-{i}"}, timestamp="2026-01-01T00:00:00",
+            )
+            for i in range(25)
+        ]
+        client.get_events.return_value = events
+        session = _make_session(client=client)
+
+        await _events_handler("", session)
+
+        out = capsys.readouterr().out
+        # Default limit 20, so first 5 should be missing
+        assert "event-0" not in out
+        assert "event-4" not in out
+        assert "event-5" in out
+        assert "event-24" in out
+
+    async def test_custom_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        events = [
+            EventInfo(
+                team_id="t1", sequence=i,
+                event={"type": f"event-{i}"}, timestamp="2026-01-01T00:00:00",
+            )
+            for i in range(25)
+        ]
+        client.get_events.return_value = events
+        session = _make_session(client=client)
+
+        await _events_handler("10", session)
+
+        out = capsys.readouterr().out
+        assert "event-14" not in out
+        assert "event-15" in out
+        assert "event-24" in out
+
+    async def test_invalid_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _events_handler("abc", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.get_events.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _events_handler("", session)
 
         err = capsys.readouterr().err
         assert "Error" in err
@@ -482,11 +719,44 @@ class TestStopHandler:
 
 
 class TestRestoreHandler:
-    async def test_restores_team(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_restores_current_team_no_arg(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         client = _mock_client()
         session = _make_session(client=client)
 
         await _restore_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Team t1 restored. Live events resumed." in out
+        client.restore_team.assert_called_once_with("t1")
+        # No switch should happen when restoring current team
+        assert session.team_id == "t1"
+
+    async def test_restores_different_team_and_switches(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+        session._receive_task = asyncio.create_task(asyncio.sleep(100))
+
+        new_ws_mock = _mock_ws()
+        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
+            await _restore_handler("t2", session)
+
+        out = capsys.readouterr().out
+        assert "Team t2 restored. Live events resumed." in out
+        client.restore_team.assert_called_once_with("t2")
+        # Should have auto-switched
+        assert session.team_id == "t2"
+
+    async def test_restores_same_team_id_no_switch(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client = _mock_client()
+        session = _make_session(client=client)
+
+        await _restore_handler("t1", session)
 
         out = capsys.readouterr().out
         assert "Team t1 restored. Live events resumed." in out
@@ -563,18 +833,18 @@ class TestSwitchHandler:
 
 
 class TestChatSessionCommandIntegration:
-    async def test_status_dispatched_not_sent(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_info_dispatched_not_sent(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
         ws = _mock_ws()
         session = ChatSession(client, ws, "t1", OutputFormat.table)
 
         with patch(
             _PROMPT_PATH,
-            side_effect=["/status", "/quit"],
+            side_effect=["/info", "/quit"],
         ):
             await session.run()
 
-        # /status should have triggered get_team, not send_message
+        # /info should have triggered get_team, not send_message
         client.get_team.assert_called_once_with("t1")
         client.send_message.assert_not_called()
 
@@ -631,7 +901,11 @@ class TestBuildDefaultRegistry:
         registry = build_default_registry()
         expected = {
             "help",
-            "status",
+            "teams",
+            "create",
+            "delete",
+            "info",
+            "events",
             "agents",
             "history",
             "files",
@@ -642,3 +916,11 @@ class TestBuildDefaultRegistry:
             "switch",
         }
         assert set(registry.commands.keys()) == expected
+
+    def test_status_not_registered(self) -> None:
+        registry = build_default_registry()
+        assert "status" not in registry.commands
+
+    def test_restore_usage_updated(self) -> None:
+        registry = build_default_registry()
+        assert "[team_id]" in registry.commands["restore"].usage

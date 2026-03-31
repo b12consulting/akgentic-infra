@@ -408,12 +408,12 @@ class TestSlashCompleter:
         doc.text_before_cursor = text
         return doc
 
-    def test_partial_slash_st_yields_status_and_stop(self) -> None:
+    def test_partial_slash_st_yields_stop(self) -> None:
         completer = _SlashCompleter(build_default_registry())
         completions = list(completer.get_completions(self._make_doc("/st"), None))
         texts = [c.text for c in completions]
-        assert "/status" in texts
         assert "/stop" in texts
+        assert "/status" not in texts
 
     def test_slash_help_yields_help(self) -> None:
         completer = _SlashCompleter(build_default_registry())
