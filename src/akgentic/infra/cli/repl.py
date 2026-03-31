@@ -7,16 +7,16 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-import websockets.exceptions
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
 
 from akgentic.infra.cli.client import ApiClient, ApiError, TeamInfo
 from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
+from akgentic.infra.cli.connection import ConnectionManager
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.ws_client import WsClient
+from akgentic.infra.cli.ws_client import WsConnectionError
 
 # Event types to display vs skip
 _DISPLAY_EVENTS = {"SentMessage", "ErrorMessage", "EventMessage"}
@@ -176,7 +176,7 @@ class ChatSession:
     def __init__(
         self,
         client: ApiClient,
-        ws_client: WsClient,
+        conn: ConnectionManager,
         team_id: str,
         fmt: OutputFormat,
         *,
@@ -185,7 +185,7 @@ class ChatSession:
         renderer: RichRenderer | None = None,
     ) -> None:
         self.client = client
-        self.ws_client = ws_client
+        self.conn = conn
         self.team_id = team_id
         self.fmt = fmt
         self.server_url = server_url
@@ -215,7 +215,7 @@ class ChatSession:
 
     async def run(self) -> None:
         """Main REPL loop: connect WS, replay history, read input, stream events."""
-        async with self.ws_client:
+        async with self.conn:
             self._fetch_team_info()
             self.renderer.render_border()
             self._replay_history()
@@ -271,13 +271,14 @@ class ChatSession:
             if self._pending_reply_id:
                 try:
                     reply_id = self._pending_reply_id
-                    self._pending_reply_id = None
-                    self._pending_agent_name = None
                     await loop.run_in_executor(
                         None, self.client.human_input, self.team_id, line, reply_id
                     )
+                    # Clear only after successful send
+                    self._pending_reply_id = None
+                    self._pending_agent_name = None
                 except ApiError:
-                    self.renderer.render_error("Error sending reply.")
+                    self.renderer.render_error("Error sending reply. Try again.")
                 continue
 
             # Send message via REST API (run in executor to avoid blocking)
@@ -290,21 +291,13 @@ class ChatSession:
         """Background coroutine: read WebSocket events and render them."""
         while self._running:
             try:
-                event = await self.ws_client.receive_event()
+                event = await self.conn.receive_event()
                 self._render_event(event)
             except asyncio.CancelledError:
                 raise
-            except websockets.exceptions.ConnectionClosed as exc:
-                if exc.rcvd is not None and exc.rcvd.code == 4004:
-                    self.renderer.render_error("team not found")
-                elif exc.rcvd is not None and exc.rcvd.code not in (1000, 1001):
-                    self.renderer.render_system_message(
-                        f"Connection closed: {exc.rcvd.reason or exc.rcvd.code}"
-                    )
+            except WsConnectionError as exc:
+                self.renderer.render_error(f"Connection lost: {exc.reason}")
                 break
-            except Exception:  # noqa: BLE001
-                if self._running:
-                    break
 
     def _replay_history(self) -> None:
         """Fetch and display past events before starting the REPL."""

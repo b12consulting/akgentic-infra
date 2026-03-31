@@ -6,8 +6,6 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import websockets.exceptions
-
 from akgentic.infra.cli.client import ApiError, EventInfo
 from akgentic.infra.cli.commands import build_default_registry
 from akgentic.infra.cli.formatters import OutputFormat
@@ -18,6 +16,7 @@ from akgentic.infra.cli.repl import (
     _render_event_impl,
     _SlashCompleter,
 )
+from akgentic.infra.cli.ws_client import WsConnectionError
 from tests.fixtures.events import (
     make_error_message,
     make_event_message,
@@ -30,7 +29,7 @@ from tests.fixtures.events import (
 
 from .conftest import captured_renderer as _captured_renderer
 from .conftest import mock_client as _shared_mock_client
-from .conftest import mock_ws as _mock_ws
+from .conftest import mock_conn as _mock_conn
 
 _PROMPT_PATH = "prompt_toolkit.PromptSession.prompt"
 
@@ -44,15 +43,15 @@ def _mock_client(**overrides: Any) -> MagicMock:
 
 def _make_session(
     client: MagicMock | None = None,
-    ws: AsyncMock | None = None,
+    conn: AsyncMock | None = None,
     renderer: RichRenderer | None = None,
 ) -> ChatSession:
     """Create a ChatSession with mocked dependencies and optional captured renderer."""
     if client is None:
         client = _mock_client()
-    if ws is None:
-        ws = _mock_ws()
-    return ChatSession(client, ws, "t1", OutputFormat.table, renderer=renderer)
+    if conn is None:
+        conn = _mock_conn()
+    return ChatSession(client, conn, "t1", OutputFormat.table, renderer=renderer)
 
 
 class TestReplayHistory:
@@ -178,7 +177,7 @@ class TestReceiveLoop:
             {"event": make_sent_message(content="hi there")},
         ]
         client = _mock_client()
-        ws = _mock_ws()
+        conn = _mock_conn()
         call_count = 0
 
         async def recv_events() -> dict[str, Any]:
@@ -190,8 +189,8 @@ class TestReceiveLoop:
             await asyncio.sleep(10)
             return {}
 
-        ws.receive_event = AsyncMock(side_effect=recv_events)
-        session = _make_session(client=client, ws=ws, renderer=renderer)
+        conn.receive_event = AsyncMock(side_effect=recv_events)
+        session = _make_session(client=client, conn=conn, renderer=renderer)
 
         with patch(
             _PROMPT_PATH,
@@ -209,7 +208,7 @@ class TestReceiveLoop:
             {"event": {"__model__": "StateChangedMessage", "state": "running"}},
         ]
         client = _mock_client()
-        ws = _mock_ws()
+        conn = _mock_conn()
         call_count = 0
 
         async def recv_events() -> dict[str, Any]:
@@ -221,8 +220,8 @@ class TestReceiveLoop:
             await asyncio.sleep(10)
             return {}
 
-        ws.receive_event = AsyncMock(side_effect=recv_events)
-        session = _make_session(client=client, ws=ws, renderer=renderer)
+        conn.receive_event = AsyncMock(side_effect=recv_events)
+        session = _make_session(client=client, conn=conn, renderer=renderer)
 
         with patch(
             _PROMPT_PATH,
@@ -234,41 +233,23 @@ class TestReceiveLoop:
         assert "StateChanged" not in out
 
 
-class TestReceiveLoopCloseCode:
-    async def test_close_code_4004_prints_error(self) -> None:
+class TestReceiveLoopConnectionError:
+    async def test_ws_connection_error_prints_error(self) -> None:
+        """WsConnectionError (reconnection exhausted) renders error and breaks loop."""
         renderer, buf = _captured_renderer()
-        close_frame = MagicMock()
-        close_frame.code = 4004
-        close_frame.reason = "Team not found"
-        exc = websockets.exceptions.ConnectionClosedError(rcvd=close_frame, sent=None)
         client = _mock_client()
-        ws = _mock_ws()
-        ws.receive_event = AsyncMock(side_effect=exc)
-        session = _make_session(client=client, ws=ws, renderer=renderer)
+        conn = _mock_conn()
+        conn.receive_event = AsyncMock(
+            side_effect=WsConnectionError("Reconnection failed after 10 attempts", retryable=False)
+        )
+        session = _make_session(client=client, conn=conn, renderer=renderer)
 
         with patch(_PROMPT_PATH, side_effect=["/quit"]):
             await session.run()
 
         out = buf.getvalue()
-        assert "team not found" in out
-
-    async def test_close_code_1000_no_error(self) -> None:
-        renderer, buf = _captured_renderer()
-        close_frame = MagicMock()
-        close_frame.code = 1000
-        close_frame.reason = "OK"
-        exc = websockets.exceptions.ConnectionClosedOK(rcvd=close_frame, sent=None)
-        client = _mock_client()
-        ws = _mock_ws()
-        ws.receive_event = AsyncMock(side_effect=exc)
-        session = _make_session(client=client, ws=ws, renderer=renderer)
-
-        with patch(_PROMPT_PATH, side_effect=["/quit"]):
-            await session.run()
-
-        out = buf.getvalue()
-        # Should NOT contain connection error — only system messages (Connected, Session closed)
-        assert "Connection closed" not in out
+        assert "Connection lost" in out
+        assert "Reconnection failed" in out
 
 
 class TestRenderEvent:
@@ -511,6 +492,25 @@ class TestImplicitHumanInputReplyRouting:
         # Pending cleared
         assert session._pending_reply_id is None
         assert session._pending_agent_name is None
+
+    async def test_pending_preserved_on_api_error(self) -> None:
+        """Safe reply clearing: pending state preserved when human_input() fails."""
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        client.human_input.side_effect = ApiError(500, "server error")
+        session = _make_session(client=client, renderer=renderer)
+        session._pending_reply_id = "msg-abc"
+        session._pending_agent_name = "AgentX"
+
+        with patch(_PROMPT_PATH, side_effect=["my answer", "/quit"]):
+            await session.run()
+
+        client.human_input.assert_called_once_with("t1", "my answer", "msg-abc")
+        # Pending should still be set — not cleared on error
+        assert session._pending_reply_id == "msg-abc"
+        assert session._pending_agent_name == "AgentX"
+        out = buf.getvalue()
+        assert "Error sending reply" in out
 
     # -- AC #5: no pending sends normal message --
 
