@@ -304,7 +304,16 @@ class TestStateTransitionWS:
                 # Original team should still be connected
                 assert session.team_id == team_id
 
-                # Send and verify WS still works
+                # Cancel receive loop before verifying WS directly (avoids
+                # concurrent recv on the same websocket connection)
+                if session._receive_task is not None:
+                    session._receive_task.cancel()
+                    try:
+                        await session._receive_task
+                    except asyncio.CancelledError:
+                        pass
+
+                # Send and verify WS still works via direct receive
                 session.client.send_message(team_id, "still here")
                 event = await _wait_for_ws_event(session.conn)
                 assert event is not None
