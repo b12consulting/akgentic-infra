@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from enum import Enum
 from typing import Any
@@ -77,8 +78,6 @@ class ChatSession:
             history=InMemoryHistory(),
             completer=_SlashCompleter(self.command_registry),
         )
-        import logging
-
         self._event_router = EventRouter(self.renderer, logger=logging.getLogger(__name__))
 
         def _on_conn_state_change(new_state: ConnectionState) -> None:

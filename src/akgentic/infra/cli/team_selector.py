@@ -99,7 +99,7 @@ class TeamSelector:
         try:
             entries = self._client.list_catalog_teams()
             return [(e.id, e.description) for e in entries]
-        except (ApiError, Exception):  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             return []
 
     def _browse_stopped(self, stopped: list[TeamInfo]) -> str | None:

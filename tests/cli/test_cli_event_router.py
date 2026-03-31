@@ -61,9 +61,7 @@ class TestRouteErrorMessage:
     def test_valid_error_message_renders(self) -> None:
         renderer, buf = _captured_renderer()
         router = EventRouter(renderer)
-        result = router.route(
-            {"event": make_error_message(exception_value="something broke")}
-        )
+        result = router.route({"event": make_error_message(exception_value="something broke")})
         assert result is True
         out = buf.getvalue()
         assert "error" in out
@@ -243,3 +241,88 @@ class TestNotifyHumanInput:
         }
         router.route(data)
         callback.assert_called_once_with("msg-789", "SimpleAgent")
+
+
+class TestToolCallArgFormats:
+    def test_dict_arguments_rendered_as_json(self) -> None:
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "tool_name": "search",
+                    "arguments": {"query": "test", "limit": 10},
+                    "result": {"items": ["a", "b"]},
+                },
+            },
+        }
+        result = router.route(data)
+        assert result is True
+        out = buf.getvalue()
+        assert "search" in out
+
+    def test_list_arguments_rendered_as_json(self) -> None:
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "tool_name": "multi_search",
+                    "arguments": ["query1", "query2"],
+                    "result": None,
+                },
+            },
+        }
+        result = router.route(data)
+        assert result is True
+        out = buf.getvalue()
+        assert "multi_search" in out
+
+
+class TestNestedEventJsonString:
+    def test_nested_event_json_string_parsed(self) -> None:
+        """EventMessage with a JSON-string nested event should be parsed."""
+        import json
+
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        nested = json.dumps({"tool_name": "calc", "arguments": "2+2", "result": "4"})
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": nested,
+            },
+        }
+        result = router.route(data)
+        assert result is True
+        out = buf.getvalue()
+        assert "calc" in out
+
+    def test_nested_event_invalid_json_string_returns_false(self) -> None:
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": "not valid json {{",
+            },
+        }
+        result = router.route(data)
+        assert result is False
+
+    def test_nested_event_non_dict_returns_false(self) -> None:
+        """If nested event parses to a non-dict (e.g., list), return False."""
+        import json
+
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": json.dumps([1, 2, 3]),
+            },
+        }
+        result = router.route(data)
+        assert result is False

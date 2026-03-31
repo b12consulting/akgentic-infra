@@ -156,3 +156,133 @@ class TestTeamSelectorBrowseStopped:
 
         assert result == "stopped-1"
         client.restore_team.assert_called_once_with("stopped-1")
+
+    def test_next_page_navigation(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        selector = TeamSelector(client, renderer)
+        stopped = _make_stopped_teams(8)  # more than _STOPPED_PAGE_SIZE
+
+        # Navigate to next page then back
+        with patch("builtins.input", side_effect=["n", "b"]):
+            result = selector._browse_stopped(stopped)
+
+        assert result is None
+
+    def test_invalid_digit_renders_error(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        selector = TeamSelector(client, renderer)
+        stopped = _make_stopped_teams(2)
+
+        with patch("builtins.input", side_effect=["9", "b"]):
+            result = selector._browse_stopped(stopped)
+
+        assert result is None
+        out = buf.getvalue()
+        assert "Invalid selection" in out
+
+    def test_unknown_choice_renders_error(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        selector = TeamSelector(client, renderer)
+        stopped = _make_stopped_teams(2)
+
+        with patch("builtins.input", side_effect=["x", "b"]):
+            result = selector._browse_stopped(stopped)
+
+        assert result is None
+        out = buf.getvalue()
+        assert "Unknown choice" in out
+
+    def test_restore_api_error_continues(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        client.restore_team.side_effect = ApiError(500, "fail")
+        selector = TeamSelector(client, renderer)
+        stopped = _make_stopped_teams(2)
+
+        with patch("builtins.input", side_effect=["1", "b"]):
+            result = selector._browse_stopped(stopped)
+
+        assert result is None
+        out = buf.getvalue()
+        assert "Failed to restore team" in out
+
+
+class TestTeamSelectorQuit:
+    def test_slash_quit_returns_none(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        selector = TeamSelector(client, renderer)
+
+        with patch("builtins.input", return_value="/quit"):
+            result = selector.run()
+
+        assert result is None
+
+
+class TestTeamSelectorInvalidDigit:
+    def test_invalid_digit_renders_error_and_loops(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        selector = TeamSelector(client, renderer)
+
+        with patch("builtins.input", side_effect=["99", "q"]):
+            result = selector.run()
+
+        assert result is None
+        out = buf.getvalue()
+        assert "Invalid selection" in out
+
+
+class TestTeamSelectorUnknownChoice:
+    def test_unknown_choice_renders_error_and_loops(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        selector = TeamSelector(client, renderer)
+
+        with patch("builtins.input", side_effect=["xyz", "q"]):
+            result = selector.run()
+
+        assert result is None
+        out = buf.getvalue()
+        assert "Unknown choice" in out
+
+
+class TestTeamSelectorBrowseStopped2:
+    def test_s_browses_stopped(self) -> None:
+        renderer, buf = _captured_renderer()
+        running = _make_running_teams(1)
+        stopped = _make_stopped_teams(2)
+        client = _mock_client(list_teams=MagicMock(return_value=running + stopped))
+        selector = TeamSelector(client, renderer)
+
+        with patch("builtins.input", side_effect=["s", "b", "q"]):
+            result = selector.run()
+
+        assert result is None
+
+
+class TestFetchTeamsError:
+    def test_fetch_teams_api_error_returns_empty(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        client.list_teams.side_effect = ApiError(500, "fail")
+        selector = TeamSelector(client, renderer)
+
+        with patch("builtins.input", return_value="q"):
+            result = selector.run()
+
+        assert result is None
+
+    def test_fetch_catalog_error_returns_empty(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        client.list_catalog_teams.side_effect = Exception("network error")
+        selector = TeamSelector(client, renderer)
+
+        with patch("builtins.input", return_value="q"):
+            result = selector.run()
+
+        assert result is None
