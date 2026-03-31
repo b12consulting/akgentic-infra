@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from akgentic.infra.cli.client import (
+    CatalogTeamInfo,
     EventInfo,
     TeamInfo,
     WorkspaceEntry,
@@ -19,6 +20,7 @@ from akgentic.infra.cli.client import (
 from akgentic.infra.cli.commands import (
     CommandRegistry,
     _agents_handler,
+    _catalog_handler,
     _create_handler,
     _delete_handler,
     _events_handler,
@@ -71,6 +73,7 @@ def _mock_client(**overrides: Any) -> MagicMock:
     mock.workspace_upload.return_value = WorkspaceUploadInfo(path="test.txt", size=5)
     mock.stop_team.return_value = None
     mock.delete_team.return_value = None
+    mock.list_catalog_teams.return_value = []
     mock.restore_team.return_value = TeamInfo(
         team_id="t1",
         name="Test Team",
@@ -929,6 +932,97 @@ class TestChatSessionCommandIntegration:
 
 
 # =============================================================================
+# Story 10.3: Catalog browsing tests
+# =============================================================================
+
+
+class TestCatalogHandler:
+    async def test_catalog_handler_lists_entries(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client = _mock_client()
+        client.list_catalog_teams.return_value = [
+            CatalogTeamInfo(
+                id="research-team",
+                name="Research Team",
+                description="Multi-agent research and analysis team",
+            ),
+            CatalogTeamInfo(
+                id="code-review",
+                name="Code Review",
+                description="Automated code review with expert agents",
+            ),
+        ]
+        session = _make_session(client=client)
+
+        await _catalog_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "Available team templates:" in out
+        assert "research-team" in out
+        assert "Research Team" in out
+        assert "Multi-agent research and analysis team" in out
+        assert "code-review" in out
+        assert "Code Review" in out
+        assert "Automated code review with expert agents" in out
+
+    async def test_catalog_handler_empty(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client = _mock_client()
+        client.list_catalog_teams.return_value = []
+        session = _make_session(client=client)
+
+        await _catalog_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "No team templates found." in out
+
+    async def test_catalog_handler_error(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        client = _mock_client()
+        client.list_catalog_teams.side_effect = SystemExit(1)
+        session = _make_session(client=client)
+
+        await _catalog_handler("", session)
+
+        err = capsys.readouterr().err
+        assert "Error fetching catalog." in err
+
+
+class TestListCatalogTeamsClient:
+    def test_list_catalog_teams_parses_response(self) -> None:
+        """Verify list_catalog_teams parses JSON array into CatalogTeamInfo list."""
+        from akgentic.infra.cli.client import ApiClient
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = [
+            {
+                "id": "research-team",
+                "name": "Research Team",
+                "description": "Multi-agent research and analysis team",
+                "entry_point": "human-proxy",
+                "message_types": ["akgentic.core.messages.UserMessage"],
+                "members": [],
+                "profiles": [],
+            },
+        ]
+        mock_response.is_success = True
+
+        client = ApiClient.__new__(ApiClient)
+        client._client = MagicMock()
+        client._client.request.return_value = mock_response
+
+        result = client.list_catalog_teams()
+
+        assert len(result) == 1
+        assert result[0].id == "research-team"
+        assert result[0].name == "Research Team"
+        assert result[0].description == "Multi-agent research and analysis team"
+
+
+# =============================================================================
 # Task 8.4: Verify build_default_registry has all commands
 # =============================================================================
 
@@ -939,6 +1033,7 @@ class TestBuildDefaultRegistry:
         expected = {
             "help",
             "teams",
+            "catalog",
             "create",
             "delete",
             "info",

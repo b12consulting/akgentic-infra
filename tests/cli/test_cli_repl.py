@@ -12,7 +12,12 @@ from akgentic.infra.cli.client import EventInfo
 from akgentic.infra.cli.commands import build_default_registry
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.repl import ChatSession, _print_event, _SlashCompleter
+from akgentic.infra.cli.repl import (
+    ChatSession,
+    _print_event,
+    _render_event_impl,
+    _SlashCompleter,
+)
 from tests.fixtures.events import (
     make_error_message,
     make_event_message,
@@ -431,3 +436,184 @@ class TestSlashCompleter:
         completer = _SlashCompleter(registry)
         completions = list(completer.get_completions(self._make_doc("/"), None))
         assert len(completions) == len(registry.commands)
+
+
+class TestImplicitHumanInputReplyRouting:
+    """Tests for story 10.2: implicit human-input reply routing."""
+
+    def _human_input_event(
+        self,
+        message_id: str = "msg-uuid-123",
+        agent_name: str = "AgentX",
+        model: str = "HumanInputRequest",
+        prompt: str = "What should I do?",
+    ) -> dict[str, Any]:
+        """Build a top-level event dict simulating a HumanInput WS event."""
+        return {
+            "id": message_id,
+            "sender": {"name": agent_name, "role": "helper"},
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "__model__": model,
+                    "prompt": prompt,
+                },
+            },
+        }
+
+    # -- AC #1: pending state set on HumanInput event --
+
+    def test_pending_set_on_human_input_event(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        data = self._human_input_event()
+        session._render_event(data)
+        assert session._pending_reply_id == "msg-uuid-123"
+        assert session._pending_agent_name == "AgentX"
+
+    def test_pending_set_on_request_input_event(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        data = self._human_input_event(
+            model="RequestInputSomething",
+            message_id="req-456",
+            agent_name="BotY",
+        )
+        session._render_event(data)
+        assert session._pending_reply_id == "req-456"
+        assert session._pending_agent_name == "BotY"
+
+    # -- AC #2: dynamic prompt --
+
+    def test_prompt_changes_when_pending(self) -> None:
+        session = _make_session()
+        assert session._get_prompt() == "You: "
+        session._pending_reply_id = "some-id"
+        session._pending_agent_name = "AgentX"
+        assert session._get_prompt() == "Reply to AgentX: "
+
+    def test_prompt_returns_default_when_not_pending(self) -> None:
+        session = _make_session()
+        assert session._get_prompt() == "You: "
+
+    # -- AC #3, #4: plain text consumes pending reply --
+
+    async def test_plain_text_consumes_pending_reply(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        session = _make_session(client=client, renderer=renderer)
+        session._pending_reply_id = "msg-abc"
+        session._pending_agent_name = "AgentX"
+
+        with patch(_PROMPT_PATH, side_effect=["my answer", "/quit"]):
+            await session.run()
+
+        client.human_input.assert_called_once_with("t1", "my answer", "msg-abc")
+        client.send_message.assert_not_called()
+        # Pending cleared
+        assert session._pending_reply_id is None
+        assert session._pending_agent_name is None
+
+    # -- AC #5: no pending sends normal message --
+
+    async def test_no_pending_sends_normal_message(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        session = _make_session(client=client, renderer=renderer)
+
+        with patch(_PROMPT_PATH, side_effect=["hello world", "/quit"]):
+            await session.run()
+
+        client.send_message.assert_called_once_with("t1", "hello world")
+        client.human_input.assert_not_called()
+
+    # -- AC #6: slash commands do not consume pending --
+
+    async def test_slash_command_does_not_consume_pending(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        session = _make_session(client=client, renderer=renderer)
+        session._pending_reply_id = "msg-pending"
+        session._pending_agent_name = "AgentZ"
+
+        with patch(_PROMPT_PATH, side_effect=["/help", "/quit"]):
+            await session.run()
+
+        # Pending should still be set after slash command
+        assert session._pending_reply_id == "msg-pending"
+        assert session._pending_agent_name == "AgentZ"
+        client.human_input.assert_not_called()
+
+    # -- backward compat: _render_event_impl without callback --
+
+    def test_render_event_impl_without_callback(self) -> None:
+        renderer, buf = _captured_renderer()
+        data = self._human_input_event()
+        result = _render_event_impl(data, renderer, on_human_input=None)
+        assert result is True
+        out = buf.getvalue()
+        assert "Human Input Required" in out
+
+    # -- sender as string fallback --
+
+    def test_pending_set_with_string_sender(self) -> None:
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        data = {
+            "id": "msg-str-sender",
+            "sender": "SimpleAgent",
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "__model__": "HumanInputRequest",
+                    "prompt": "question?",
+                },
+            },
+        }
+        session._render_event(data)
+        assert session._pending_reply_id == "msg-str-sender"
+        assert session._pending_agent_name == "SimpleAgent"
+
+    def test_pending_not_set_when_id_is_none(self) -> None:
+        """Verify that a None id in the outer event data does not set pending state."""
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        data = {
+            "id": None,
+            "sender": {"name": "AgentX"},
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "__model__": "HumanInputRequest",
+                    "prompt": "question?",
+                },
+            },
+        }
+        session._render_event(data)
+        assert session._pending_reply_id is None
+        assert session._pending_agent_name is None
+
+    def test_pending_not_set_when_id_missing(self) -> None:
+        """Verify that a missing id in the outer event data does not set pending state."""
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        data = {
+            "sender": {"name": "AgentX"},
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "__model__": "HumanInputRequest",
+                    "prompt": "question?",
+                },
+            },
+        }
+        session._render_event(data)
+        assert session._pending_reply_id is None
+        assert session._pending_agent_name is None
+
+    def test_prompt_fallback_when_agent_name_is_none(self) -> None:
+        """Verify prompt uses 'Agent' fallback when _pending_agent_name is None."""
+        session = _make_session()
+        session._pending_reply_id = "some-id"
+        session._pending_agent_name = None
+        assert session._get_prompt() == "Reply to Agent: "

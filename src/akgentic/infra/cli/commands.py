@@ -443,6 +443,24 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
     print(f"Switched to team {new_team_id}.")
 
 
+async def _catalog_handler(args: str, session: ChatSession) -> None:
+    """List available team templates from the catalog."""
+    loop = asyncio.get_running_loop()
+    try:
+        entries = await loop.run_in_executor(None, session.client.list_catalog_teams)
+    except SystemExit:
+        print("Error fetching catalog.", file=sys.stderr)
+        return
+
+    if not entries:
+        print("No team templates found.")
+        return
+
+    print("Available team templates:")
+    for entry in entries:
+        print(f"  {entry.id:<20s} {entry.name:<24s} {entry.description}")
+
+
 def build_default_registry() -> CommandRegistry:
     """Create a command registry with all built-in commands."""
     registry = CommandRegistry()
@@ -451,6 +469,7 @@ def build_default_registry() -> CommandRegistry:
     registry.register(
         "create", _create_handler, "Create a team from catalog", "/create <catalog_entry>"
     )
+    registry.register("catalog", _catalog_handler, "List team templates", "/catalog")
     registry.register("delete", _delete_handler, "Delete a team", "/delete [team_id]")
     registry.register("info", _info_handler, "Show team details", "/info [team_id]")
     registry.register("events", _events_handler, "Show raw team events", "/events [N]")
