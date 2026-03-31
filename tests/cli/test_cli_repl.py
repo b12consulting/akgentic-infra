@@ -573,3 +573,47 @@ class TestImplicitHumanInputReplyRouting:
         session._render_event(data)
         assert session._pending_reply_id == "msg-str-sender"
         assert session._pending_agent_name == "SimpleAgent"
+
+    def test_pending_not_set_when_id_is_none(self) -> None:
+        """Verify that a None id in the outer event data does not set pending state."""
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        data = {
+            "id": None,
+            "sender": {"name": "AgentX"},
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "__model__": "HumanInputRequest",
+                    "prompt": "question?",
+                },
+            },
+        }
+        session._render_event(data)
+        assert session._pending_reply_id is None
+        assert session._pending_agent_name is None
+
+    def test_pending_not_set_when_id_missing(self) -> None:
+        """Verify that a missing id in the outer event data does not set pending state."""
+        renderer, buf = _captured_renderer()
+        session = _make_session(renderer=renderer)
+        data = {
+            "sender": {"name": "AgentX"},
+            "event": {
+                "__model__": "EventMessage",
+                "event": {
+                    "__model__": "HumanInputRequest",
+                    "prompt": "question?",
+                },
+            },
+        }
+        session._render_event(data)
+        assert session._pending_reply_id is None
+        assert session._pending_agent_name is None
+
+    def test_prompt_fallback_when_agent_name_is_none(self) -> None:
+        """Verify prompt uses 'Agent' fallback when _pending_agent_name is None."""
+        session = _make_session()
+        session._pending_reply_id = "some-id"
+        session._pending_agent_name = None
+        assert session._get_prompt() == "Reply to Agent: "

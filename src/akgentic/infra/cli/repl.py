@@ -79,7 +79,8 @@ class ChatSession:
     def _get_prompt(self) -> str:
         """Return the current input prompt, reflecting pending reply state."""
         if self._pending_reply_id:
-            return f"Reply to {self._pending_agent_name}: "
+            name = self._pending_agent_name or "Agent"
+            return f"Reply to {name}: "
         return "You: "
 
     async def _input_loop(self) -> None:
@@ -264,14 +265,16 @@ def _notify_human_input(
     on_human_input: Callable[[str, str], None],
 ) -> None:
     """Extract message_id and agent_name from outer event data and invoke callback."""
-    message_id = str(outer_data.get("id", ""))
+    raw_id = outer_data.get("id")
+    if not raw_id:
+        return
+    message_id = str(raw_id)
     raw_sender = outer_data.get("sender", "Agent")
     if isinstance(raw_sender, dict):
         agent_name = str(raw_sender.get("name", "Agent"))
     else:
         agent_name = str(raw_sender)
-    if message_id:
-        on_human_input(message_id, agent_name)
+    on_human_input(message_id, agent_name)
 
 
 def _render_event_message_impl(
