@@ -11,6 +11,7 @@ from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
+from textual.events import Key
 from textual.screen import Screen
 from textual.widgets import Input, Static
 
@@ -169,21 +170,21 @@ class TeamSelectScreen(Screen[str | None]):
         if self._running_teams:
             start = self._page * PAGE_SIZE + 1
             end = min(start + PAGE_SIZE - 1, len(self._running_teams))
-            hints_parts.append(f"[{start}-{end}] connect")
+            hints_parts.append(f"\\[{start}-{end}] connect")
         if self._stopped_teams:
             start = self._page * PAGE_SIZE + 1
             end = min(start + PAGE_SIZE - 1, len(self._stopped_teams))
-            hints_parts.append(f"[s{start}-s{end}] restore")
+            hints_parts.append(f"\\[s{start}-s{end}] restore")
         if self._catalog:
-            hints_parts.append("[c <name>] create")
+            hints_parts.append("\\[c <name>] create")
         if self._max_pages() > 1:
             hints_parts.append("<-> page")
-        hints_parts.append("[q] quit")
+        hints_parts.append("\\[q] quit")
         hint_text = "  ".join(hints_parts)
         try:
             self.query_one("#team-hints", Static).update(hint_text)
-        except Exception:  # noqa: BLE001
-            pass
+        except LookupError:
+            _log.debug("team-hints widget not available for update")
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input from the Input widget."""
@@ -221,12 +222,8 @@ class TeamSelectScreen(Screen[str | None]):
 
         self._show_error(f"Unknown command: {text}")
 
-    def on_key(self, event: object) -> None:
+    def on_key(self, event: Key) -> None:
         """Handle arrow key presses for pagination."""
-        from textual.events import Key
-
-        if not isinstance(event, Key):
-            return
         if event.key == "right":
             self._next_page()
         elif event.key == "left":
@@ -292,8 +289,10 @@ class TeamSelectScreen(Screen[str | None]):
             self.app.call_from_thread(self._show_error, f"Failed to create team: {exc}")
 
     def _show_error(self, message: str) -> None:
-        """Display an error message in the team list area."""
+        """Display an error message in the team list area, replacing any previous error."""
         container = self.query_one("#team-list", VerticalScroll)
+        for old in container.query(".error-message"):
+            old.remove()
         error_widget = Static(
             Text(message, style="bold red"),
             classes="error-message",
