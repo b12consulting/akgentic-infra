@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from rich.console import RenderableType
 from rich.text import Text
 from textual.widgets import Static
-
-if TYPE_CHECKING:
-    from akgentic.infra.cli.tui.messages import ConnectionStateChanged
 
 
 class StatusHeader(Static):
@@ -58,13 +53,6 @@ class StatusHeader(Static):
         """Update connection state and re-render."""
         self._connection_state = state
         self.refresh()
-
-    def on_connection_state_changed(
-        self,
-        event: ConnectionStateChanged,
-    ) -> None:
-        """Update connection indicator when state changes."""
-        self.update_connection(event.state.value)
 
     def update_team(
         self,

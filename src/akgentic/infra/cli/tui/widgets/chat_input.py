@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from textual import events
 from textual.message import Message
 from textual.widgets import TextArea
-
-if TYPE_CHECKING:
-    from akgentic.infra.cli.tui.messages import ConnectionStateChanged
 
 
 class ChatInput(TextArea):
@@ -48,15 +43,3 @@ class ChatInput(TextArea):
                 self.clear()
         # Shift+Enter is "shift+enter" key name -- let it pass through for newline
 
-    def on_connection_state_changed(
-        self,
-        event: ConnectionStateChanged,
-    ) -> None:
-        """Update input mode based on connection state."""
-        state = event.state.value
-        if state == "disconnected":
-            self.border_title = "\\[disconnected] > "
-        elif state == "reconnecting":
-            self.border_title = "\\[reconnecting...] > "
-        elif state == "connected":
-            self.border_title = "> "

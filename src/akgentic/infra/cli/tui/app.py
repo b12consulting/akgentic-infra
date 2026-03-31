@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,8 @@ from akgentic.infra.cli.tui.messages import ConnectionStateChanged
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
 from akgentic.infra.cli.tui.widgets.hint_bar import HintBar
 from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from akgentic.infra.cli.connection import ConnectionManager
@@ -82,7 +85,7 @@ class ChatApp(App[None]):
         try:
             self.query_one(StatusHeader).update_connection(state_str)
         except Exception:  # noqa: BLE001
-            pass
+            _log.debug("StatusHeader not available for connection state update")
         try:
             chat_input = self.query_one(ChatInput)
             if state_str == "disconnected":
@@ -92,7 +95,7 @@ class ChatApp(App[None]):
             elif state_str == "connected":
                 chat_input.border_title = "> "
         except Exception:  # noqa: BLE001
-            pass
+            _log.debug("ChatInput not available for connection state update")
 
     @work(exclusive=True)
     async def stream_events(self) -> None:
