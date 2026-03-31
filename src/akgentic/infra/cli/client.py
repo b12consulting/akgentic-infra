@@ -67,6 +67,14 @@ class WorkspaceUploadInfo(BaseModel):
     size: int
 
 
+class CatalogTeamInfo(BaseModel):
+    """Catalog team entry for display (subset of server-side TeamEntry)."""
+
+    id: str
+    name: str
+    description: str
+
+
 class ApiClient:
     """Thin HTTP client mapping CLI commands to server endpoints."""
 
@@ -119,6 +127,13 @@ class ApiClient:
             print(msg, file=sys.stderr)
             raise typer.Exit(code=1)
         return resp
+
+    # -- catalog endpoints --
+
+    def list_catalog_teams(self) -> list[CatalogTeamInfo]:
+        """GET /catalog/api/teams/ -> list of CatalogTeamInfo models."""
+        resp = self._request("GET", "/catalog/api/teams/")
+        return [CatalogTeamInfo.model_validate(entry) for entry in resp.json()]
 
     # -- team endpoints --
 

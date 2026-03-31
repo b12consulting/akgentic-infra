@@ -77,6 +77,7 @@ def mock_client(**overrides: Any) -> MagicMock:
             WorkspaceEntry(name="readme.md", is_dir=False, size=42),
         ],
     )
+    mock.list_catalog_teams.return_value = []
     mock.workspace_read.return_value = b"file content"
     mock.workspace_upload.return_value = WorkspaceUploadInfo(path="readme.md", size=12)
     for k, v in overrides.items():
