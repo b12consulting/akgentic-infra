@@ -21,6 +21,7 @@ from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 _log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from akgentic.infra.cli.commands import CommandRegistry
     from akgentic.infra.cli.connection import ConnectionManager
     from akgentic.infra.cli.event_router import EventRouter
 
@@ -40,6 +41,7 @@ class ChatApp(App[None]):
         team_status: str = "running",
         connection_manager: ConnectionManager | None = None,
         event_router: EventRouter | None = None,
+        command_registry: CommandRegistry | None = None,
     ) -> None:
         super().__init__()
         self._team_name = team_name
@@ -47,6 +49,7 @@ class ChatApp(App[None]):
         self._team_status = team_status
         self._connection_manager = connection_manager
         self._event_router = event_router
+        self._command_registry = command_registry
         self._color_registry = AgentColorRegistry()
 
     def compose(self) -> ComposeResult:
@@ -63,7 +66,7 @@ class ChatApp(App[None]):
             ),
             id="conversation",
         )
-        yield ChatInput()
+        yield ChatInput(command_registry=self._command_registry)
         yield HintBar()
 
     def on_mount(self) -> None:
@@ -89,11 +92,11 @@ class ChatApp(App[None]):
         try:
             chat_input = self.query_one(ChatInput)
             if state_str == "disconnected":
-                chat_input.border_title = "\\[disconnected] > "
+                chat_input.input_mode = "disconnected"
             elif state_str == "reconnecting":
-                chat_input.border_title = "\\[reconnecting...] > "
+                chat_input.input_mode = "reconnecting"
             elif state_str == "connected":
-                chat_input.border_title = "> "
+                chat_input.input_mode = "chat"
         except Exception:  # noqa: BLE001
             _log.debug("ChatInput not available for connection state update")
 
