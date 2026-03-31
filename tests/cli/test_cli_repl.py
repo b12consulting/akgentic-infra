@@ -493,6 +493,25 @@ class TestImplicitHumanInputReplyRouting:
         assert session._pending_reply_id is None
         assert session._pending_agent_name is None
 
+    async def test_pending_preserved_on_api_error(self) -> None:
+        """Safe reply clearing: pending state preserved when human_input() fails."""
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        client.human_input.side_effect = ApiError(500, "server error")
+        session = _make_session(client=client, renderer=renderer)
+        session._pending_reply_id = "msg-abc"
+        session._pending_agent_name = "AgentX"
+
+        with patch(_PROMPT_PATH, side_effect=["my answer", "/quit"]):
+            await session.run()
+
+        client.human_input.assert_called_once_with("t1", "my answer", "msg-abc")
+        # Pending should still be set — not cleared on error
+        assert session._pending_reply_id == "msg-abc"
+        assert session._pending_agent_name == "AgentX"
+        out = buf.getvalue()
+        assert "Error sending reply" in out
+
     # -- AC #5: no pending sends normal message --
 
     async def test_no_pending_sends_normal_message(self) -> None:

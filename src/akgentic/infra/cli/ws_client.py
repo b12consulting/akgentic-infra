@@ -68,6 +68,12 @@ class WsClient:
         text = raw if isinstance(raw, str) else raw.decode("utf-8")
         return json.loads(text)  # type: ignore[no-any-return]
 
+    async def ping(self) -> None:
+        """Send a WebSocket ping frame. Raises if not connected."""
+        if self._ws is None:
+            raise RuntimeError("Not connected")
+        await self._ws.ping()
+
     async def close(self) -> None:
         """Close WebSocket connection."""
         if self._ws is not None:

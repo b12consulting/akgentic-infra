@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from enum import Enum
 from typing import Any
 
-from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
+import websockets.exceptions
 
-# Callback type for state change notifications
-type StateChangeCallback = Any  # Callable[[ConnectionState], None] | None
+from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
 
 
 class ConnectionState(Enum):
@@ -34,7 +34,7 @@ class ConnectionManager:
         server_url: str,
         team_id: str,
         api_key: str | None = None,
-        on_state_change: StateChangeCallback = None,
+        on_state_change: Callable[[ConnectionState], None] | None = None,
         max_retries: int = 10,
     ) -> None:
         self._server_url = server_url
@@ -100,16 +100,15 @@ class ConnectionManager:
 
         Raises WsConnectionError only after max_retries exhausted.
         """
-        if self._ws_client is None:
-            raise WsConnectionError("Not connected", retryable=False)
-        try:
-            event = await self._ws_client.receive_event()
-            self._last_event_time = time.monotonic()
-            return event
-        except Exception:  # noqa: BLE001
-            # Any receive failure triggers reconnect
-            await self._reconnect()
-            return await self.receive_event()
+        while True:
+            if self._ws_client is None:
+                raise WsConnectionError("Not connected", retryable=False)
+            try:
+                event = await self._ws_client.receive_event()
+                self._last_event_time = time.monotonic()
+                return event
+            except websockets.exceptions.ConnectionClosed:
+                await self._reconnect()
 
     async def close(self) -> None:
         """Graceful shutdown."""
@@ -145,10 +144,9 @@ class ConnectionManager:
             self._state == ConnectionState.CONNECTED
             and time.monotonic() - self._last_event_time > 60.0
             and self._ws_client is not None
-            and self._ws_client._ws is not None  # noqa: SLF001
         ):
             try:
-                await self._ws_client._ws.ping()  # noqa: SLF001
+                await self._ws_client.ping()
             except Exception:  # noqa: BLE001
                 await self._reconnect()
 

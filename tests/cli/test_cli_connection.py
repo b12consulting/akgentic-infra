@@ -209,6 +209,28 @@ class TestReceiveEvent:
         cm._reconnect.assert_called_once()
         assert event == {"type": "after_reconnect"}
 
+    async def test_receive_propagates_reconnect_failure(self) -> None:
+        """AC #5: WsConnectionError propagates when reconnect exhausted."""
+        cm = ConnectionManager(server_url="http://localhost:8000", team_id="t1")
+        mock_ws = AsyncMock()
+        mock_ws.receive_event = AsyncMock(
+            side_effect=websockets.exceptions.ConnectionClosedError(
+                rcvd=None, sent=None
+            )
+        )
+        cm._ws_client = mock_ws
+        cm._state = ConnectionState.CONNECTED
+
+        # Mock _reconnect to raise (retries exhausted)
+        cm._reconnect = AsyncMock(  # type: ignore[method-assign]
+            side_effect=WsConnectionError(
+                "Reconnection failed after 10 attempts", retryable=False
+            )
+        )
+
+        with pytest.raises(WsConnectionError, match="Reconnection failed"):
+            await cm.receive_event()
+
 
 class TestSwitchTeam:
     """AC #7: Atomic team switch."""
@@ -294,40 +316,36 @@ class TestCheckHealth:
     async def test_ping_when_idle(self) -> None:
         """AC #6: Ping sent when no event for 60+ seconds."""
         cm = ConnectionManager(server_url="http://localhost:8000", team_id="t1")
-        mock_ws_internal = AsyncMock()
-        mock_ws = MagicMock()
-        mock_ws._ws = mock_ws_internal
+        mock_ws = AsyncMock()
+        mock_ws.ping = AsyncMock()
         cm._ws_client = mock_ws
         cm._state = ConnectionState.CONNECTED
         cm._last_event_time = 0.0  # long ago
 
         await cm.check_health()
 
-        mock_ws_internal.ping.assert_called_once()
+        mock_ws.ping.assert_called_once()
 
     async def test_no_ping_when_recent_event(self) -> None:
         """AC #6: No ping when events are recent."""
         import time
 
         cm = ConnectionManager(server_url="http://localhost:8000", team_id="t1")
-        mock_ws_internal = AsyncMock()
-        mock_ws = MagicMock()
-        mock_ws._ws = mock_ws_internal
+        mock_ws = AsyncMock()
+        mock_ws.ping = AsyncMock()
         cm._ws_client = mock_ws
         cm._state = ConnectionState.CONNECTED
         cm._last_event_time = time.monotonic()  # just now
 
         await cm.check_health()
 
-        mock_ws_internal.ping.assert_not_called()
+        mock_ws.ping.assert_not_called()
 
     async def test_ping_failure_triggers_reconnect(self) -> None:
         """AC #6: Failed ping triggers reconnect."""
         cm = ConnectionManager(server_url="http://localhost:8000", team_id="t1")
-        mock_ws_internal = AsyncMock()
-        mock_ws_internal.ping = AsyncMock(side_effect=ConnectionError("dead"))
-        mock_ws = MagicMock()
-        mock_ws._ws = mock_ws_internal
+        mock_ws = AsyncMock()
+        mock_ws.ping = AsyncMock(side_effect=ConnectionError("dead"))
         cm._ws_client = mock_ws
         cm._state = ConnectionState.CONNECTED
         cm._last_event_time = 0.0
