@@ -284,11 +284,7 @@ class TestRenderEvent:
         assert result is True
         out = buf.getvalue()
         assert "error" in out
-        # Note: renderer extracts content via event.get("content") or event.get("error"),
-        # but ErrorMessage.model_dump() uses "exception_value". The renderer renders an
-        # error panel but with empty content. This is a known renderer limitation -- the
-        # renderer does not extract "exception_value" from real ErrorMessage serialization.
-        # A separate bug should address renderer compatibility with real ErrorMessage shape.
+        assert "something broke" in out
 
     def test_skip_start_message(self) -> None:
         renderer, buf = _captured_renderer()

@@ -190,7 +190,7 @@ def _render_event_impl(data: dict[str, Any], renderer: RichRenderer) -> bool:
         return False
 
     if short_model == "ErrorMessage":
-        content = event.get("content", event.get("error", ""))
+        content = event.get("exception_value", event.get("content", event.get("error", "")))
         renderer.render_error(str(content))
         return True
 
