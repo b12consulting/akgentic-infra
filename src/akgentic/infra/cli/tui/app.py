@@ -15,7 +15,7 @@ from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 _CSS_PATH = Path(__file__).parent / "styles" / "chat.tcss"
 
 
-class ChatApp(App):  # type: ignore[type-arg]
+class ChatApp(App[None]):
     """Top-level Textual application for ak-infra chat."""
 
     TITLE = "Akgentic Chat"

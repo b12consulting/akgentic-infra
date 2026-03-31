@@ -152,3 +152,37 @@ async def test_status_header_update_team() -> None:
         assert "new-team" in text
         assert "abc123def456x" in text  # truncated to 13
         assert "paused" in text
+
+
+@pytest.mark.asyncio
+async def test_chat_input_empty_does_not_submit() -> None:
+    """Verify Enter on empty input does not add to history (no submission)."""
+    app = ChatApp(team_name="test", team_id="123", team_status="running")
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        assert len(chat_input._history) == 0
+        # Press enter on empty input
+        await pilot.click(ChatInput)
+        await pilot.press("enter")
+        await pilot.pause()
+        # History should remain empty -- nothing submitted
+        assert len(chat_input._history) == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_input_submitted_message_content() -> None:
+    """Verify Submitted message carries the correct text via history."""
+    app = ChatApp(team_name="test", team_id="123", team_status="running")
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        await pilot.click(ChatInput)
+        await pilot.press("t", "e", "s", "t")
+        await pilot.press("enter")
+        await pilot.pause()
+        # History records the submitted text
+        assert len(chat_input._history) == 1
+        assert chat_input._history[0] == "test"
+        # Input was cleared after submit
+        assert chat_input.text.strip() == ""

@@ -12,7 +12,7 @@ from akgentic.infra.cli.tui.widgets.hint_bar import HintBar
 from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 
 
-class ChatScreen(Screen):  # type: ignore[type-arg]
+class ChatScreen(Screen[None]):
     """Main chat layout with four docked zones."""
 
     CSS_PATH = "../styles/chat.tcss"
