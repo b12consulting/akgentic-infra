@@ -35,32 +35,3 @@ HintBar {
 .history {
     opacity: 60%;
 }
-
-/* Widget-specific styles (supplements DEFAULT_CSS on each widget) */
-AgentMessage {
-    margin: 0 0 1 0;
-}
-
-ToolCallWidget {
-    margin: 0 0 1 2;
-}
-
-ErrorWidget {
-    margin: 0 0 1 0;
-}
-
-HumanInputPrompt {
-    margin: 0 0 1 0;
-}
-
-UserMessage {
-    margin: 0 0 1 0;
-}
-
-SystemMessage {
-    margin: 0 0 0 0;
-}
-
-HistorySeparator {
-    margin: 1 0;
-}
