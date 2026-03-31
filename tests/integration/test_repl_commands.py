@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from akgentic.infra.cli.commands import (
     _catalog_handler,
@@ -44,13 +45,10 @@ class TestReplTeamLifecycle:
     def test_repl_teams_lists_teams(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """AC #1: /teams lists teams with status indicators."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         # Create 2 teams via REST
         resp1 = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp1.status_code == 201
@@ -88,13 +86,10 @@ class TestReplTeamLifecycle:
     def test_repl_create_and_switch(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """AC #2: /create creates team and auto-switches session to it."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         # Create initial team
         resp = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp.status_code == 201
@@ -116,6 +111,7 @@ class TestReplTeamLifecycle:
             assert session.team_id != original_team_id
             created_team_id = session.team_id
         finally:
+            session.client.close()
             with httpx.Client(base_url=cli_server) as c:
                 c.post(f"/teams/{initial_team_id}/stop")
                 if created_team_id:
@@ -125,13 +121,10 @@ class TestReplTeamLifecycle:
     def test_repl_delete_with_confirmation(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """AC #3: /delete deletes team after confirmation."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         resp = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp.status_code == 201
         team_id = resp.json()["team_id"]
@@ -158,13 +151,10 @@ class TestReplTeamLifecycle:
     def test_repl_info_current_team(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """AC #4: /info shows current team details."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         resp = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp.status_code == 201
         team_id = resp.json()["team_id"]
@@ -190,13 +180,10 @@ class TestReplTeamLifecycle:
     def test_repl_info_explicit_team_id(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """AC #4: /info <team_id> shows a different team's details."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         resp1 = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp1.status_code == 201
         team1_id = resp1.json()["team_id"]
@@ -224,13 +211,10 @@ class TestReplTeamLifecycle:
     def test_repl_events(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """AC #5: /events shows raw team events."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         resp = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp.status_code == 201
         team_id = resp.json()["team_id"]
@@ -266,13 +250,10 @@ class TestReplTeamLifecycle:
     def test_repl_restore_and_switch(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """AC #6: /restore restores a stopped team and auto-switches."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         resp1 = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp1.status_code == 201
         team1_id = resp1.json()["team_id"]
@@ -297,6 +278,7 @@ class TestReplTeamLifecycle:
             # Auto-switch should have changed session.team_id
             assert session.team_id == team2_id
         finally:
+            session.client.close()
             with httpx.Client(base_url=cli_server) as c:
                 c.post(f"/teams/{team1_id}/stop")
                 c.post(f"/teams/{team2_id}/stop")
@@ -314,13 +296,10 @@ class TestReplCatalog:
     def test_repl_catalog_lists_entries(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """AC #7: /catalog lists available team templates."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         # Need a team for the session
         resp = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp.status_code == 201
@@ -354,12 +333,9 @@ class TestReplImplicitReply:
     def test_repl_pending_reply_set_on_human_input(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
     ) -> None:
         """AC #8: _render_event sets pending reply state on HumanInput event."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         resp = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp.status_code == 201
         team_id = resp.json()["team_id"]
@@ -393,12 +369,9 @@ class TestReplImplicitReply:
     def test_repl_pending_reply_consumed_on_text(
         self,
         cli_server: str,
-        integration_client: Any,
+        integration_client: TestClient,
     ) -> None:
         """AC #8: pending reply state is consumed when plain text is sent."""
-        from fastapi.testclient import TestClient
-
-        assert isinstance(integration_client, TestClient)
         resp = integration_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
         assert resp.status_code == 201
         team_id = resp.json()["team_id"]
@@ -406,21 +379,33 @@ class TestReplImplicitReply:
         try:
             session = make_integration_session(cli_server, team_id)
 
-            # Set pending state directly
+            # Set pending state via _render_event (same as production path)
             pending_id = str(uuid4())
-            session._pending_reply_id = pending_id
-            session._pending_agent_name = "@Manager"
+            event_data: dict[str, Any] = {
+                "id": pending_id,
+                "sender": {"name": "@Manager", "role": "Manager"},
+                "event": {
+                    "__model__": "EventMessage",
+                    "event": {
+                        "__model__": "HumanInputRequest",
+                        "prompt": "What should I do?",
+                    },
+                },
+            }
+            session._render_event(event_data)
+            assert session._pending_reply_id == pending_id
+            assert session._pending_agent_name == "@Manager"
 
-            # Call human_input -- the endpoint returns 404 since the pending_id
-            # doesn't correspond to a real event. The ApiClient raises typer.Exit
-            # (a click.exceptions.Exit subclass) on HTTP errors.
+            # Call human_input via the client -- the endpoint returns an error
+            # since the pending_id doesn't correspond to a real server-side event.
+            # The ApiClient raises typer.Exit (a SystemExit subclass) on HTTP errors.
             try:
                 session.client.human_input(team_id, "reply text", pending_id)
             except (SystemExit, Exception):  # noqa: BLE001
                 pass  # Expected: server returns error since pending_id is synthetic
 
-            # Verify the pending state mechanism: after the REPL _input_loop
-            # sends a reply, it clears pending state. Simulate that here.
+            # Simulate the clearing that _input_loop does after sending the reply
+            # (repl.py lines 110-111: clears pending state before run_in_executor)
             session._pending_reply_id = None
             session._pending_agent_name = None
             assert session._pending_reply_id is None
