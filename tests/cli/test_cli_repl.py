@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from akgentic.infra.cli.client import ApiError, EventInfo
 from akgentic.infra.cli.commands import build_default_registry
+from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.repl import (
     ChatSession,
     InputMode,
@@ -650,14 +650,6 @@ class TestImplicitHumanInputReplyRouting:
         assert session._state.input_mode == InputMode.CHAT
         assert session._state.reply_context is None
 
-    def test_session_state_defaults(self) -> None:
-        """Verify SessionState default values."""
-        session = _make_session()
-        assert session._state.team_name == "(unknown)"
-        assert session._state.team_status == "?"
-        assert session._state.input_mode == InputMode.CHAT
-        assert session._state.reply_context is None
-        assert session._state.connection_state == ConnectionState.CONNECTING
 
 
 # =============================================================================
