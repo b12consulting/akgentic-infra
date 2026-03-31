@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from akgentic.infra.cli.client import ApiError
-from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
+from akgentic.infra.cli.ws_client import WsConnectionError
 
 if TYPE_CHECKING:
     from akgentic.infra.cli.repl import ChatSession
@@ -394,39 +394,13 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
         print("Usage: /switch <team_id>")
         return
 
-    old_team_id = session.team_id
-    old_ws = session.ws_client
-
-    # Close current WebSocket
-    await old_ws.close()
-
-    # Create new WsClient using stored server_url and api_key
-    new_ws = WsClient(
-        base_url=session.server_url,
-        team_id=new_team_id,
-        api_key=session.api_key,
-    )
-
     try:
-        await new_ws.connect()
-    except (ApiError, WsConnectionError, Exception):  # noqa: BLE001
-        session.renderer.render_error(f"Team {new_team_id} not found.")
-        # Restore previous connection
-        restored = WsClient(
-            base_url=session.server_url,
-            team_id=old_team_id,
-            api_key=session.api_key,
-        )
-        try:
-            await restored.connect()
-            session.ws_client = restored
-        except Exception:  # noqa: BLE001
-            session.renderer.render_error("Failed to restore previous connection.")
+        await session.conn.switch_team(new_team_id)
+    except WsConnectionError as exc:
+        session.renderer.render_error(f"Switch failed: {exc.reason}")
         return
 
-    # Update session state
     session.team_id = new_team_id
-    session.ws_client = new_ws
 
     # Cancel old receive loop before replaying history
     if session._receive_task is not None:
@@ -442,6 +416,16 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
     await session.replay_history_async()
 
     session._receive_task = asyncio.create_task(session._receive_loop())
+
+
+async def _reconnect_handler(args: str, session: ChatSession) -> None:
+    """Manually trigger reconnection."""
+    session.renderer.render_connection_status("reconnecting")
+    try:
+        await session.conn.connect()
+        session.renderer.render_connection_status("connected")
+    except WsConnectionError as exc:
+        session.renderer.render_error(f"Reconnection failed: {exc.reason}")
 
 
 async def _catalog_handler(args: str, session: ChatSession) -> None:
@@ -484,4 +468,5 @@ def build_default_registry() -> CommandRegistry:
         "restore", _restore_handler, "Restore a stopped team", "/restore [team_id]"
     )
     registry.register("switch", _switch_handler, "Switch to another team", "/switch <team_id>")
+    registry.register("reconnect", _reconnect_handler, "Reconnect to server", "/reconnect")
     return registry

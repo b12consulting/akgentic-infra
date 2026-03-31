@@ -11,10 +11,12 @@ import typer
 from pydantic import BaseModel
 
 from akgentic.infra.cli.client import ApiClient, ApiError
+from akgentic.infra.cli.connection import ConnectionManager
 from akgentic.infra.cli.formatters import OutputFormat, format_output
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.repl import ChatSession, TeamSelector
-from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
+from akgentic.infra.cli.repl import ChatSession
+from akgentic.infra.cli.team_selector import TeamSelector
+from akgentic.infra.cli.ws_client import WsConnectionError
 
 app = typer.Typer(name="ak-infra", help="Akgentic Infrastructure CLI")
 team_app = typer.Typer(name="team", help="Manage agent teams")
@@ -176,14 +178,14 @@ def chat(
         if team_id is None:
             raise typer.Exit(code=0)
 
-    ws = WsClient(
-        base_url=_state.server,
+    conn = ConnectionManager(
+        server_url=_state.server,
         team_id=team_id,
         api_key=_state.api_key,
     )
     session = ChatSession(
         _state.client,
-        ws,
+        conn,
         team_id,
         _state.fmt,
         server_url=_state.server,

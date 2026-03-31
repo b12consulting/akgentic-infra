@@ -177,7 +177,7 @@ class TestChat:
         mock = _mock_client()
         with (
             patch("akgentic.infra.cli.main.ChatSession") as mock_session_cls,
-            patch("akgentic.infra.cli.main.WsClient") as mock_ws_cls,
+            patch("akgentic.infra.cli.main.ConnectionManager") as mock_ws_cls,
             patch("akgentic.infra.cli.main.asyncio.run") as mock_run,
         ):
             mock_session = MagicMock()
@@ -192,7 +192,7 @@ class TestChat:
         mock = _mock_client()
         with (
             patch("akgentic.infra.cli.main.ChatSession") as mock_session_cls,
-            patch("akgentic.infra.cli.main.WsClient"),
+            patch("akgentic.infra.cli.main.ConnectionManager"),
             patch("akgentic.infra.cli.main.asyncio.run"),
         ):
             mock_session_cls.return_value = MagicMock()

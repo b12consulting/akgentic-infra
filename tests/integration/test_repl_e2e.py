@@ -28,6 +28,7 @@ from akgentic.infra.cli.commands import (
     _stop_handler,
     _switch_handler,
 )
+from akgentic.infra.cli.connection import ConnectionManager
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.repl import ChatSession, TeamSelector
 from akgentic.infra.cli.ws_client import WsClient
@@ -51,10 +52,10 @@ def _make_session(
 ) -> ChatSession:
     """Build a ChatSession pointing at a real smoke_server."""
     api = ApiClient(base_url=server_url)
-    ws = WsClient(base_url=server_url, team_id=team_id)
+    conn = ConnectionManager(server_url=server_url, team_id=team_id)
     return ChatSession(
         api,
-        ws,
+        conn,
         team_id,
         OutputFormat.table,
         server_url=server_url,
@@ -108,11 +109,11 @@ def _cleanup_team(server_url: str, team_id: str) -> None:
 
 
 async def _wait_for_ws_event(
-    ws: WsClient,
+    conn: ConnectionManager | WsClient,
     timeout: float = POLL_TIMEOUT_S,
 ) -> dict[str, object]:
     """Wait for a single WebSocket event with timeout."""
-    return await asyncio.wait_for(ws.receive_event(), timeout=timeout)
+    return await asyncio.wait_for(conn.receive_event(), timeout=timeout)
 
 
 def _poll_events_have_content(server_url: str, team_id: str) -> bool:
@@ -153,9 +154,9 @@ class TestStateTransitionWS:
         team_id = _create_team(smoke_server)
         try:
             session = _make_session(smoke_server, team_id)
-            async with session.ws_client:
+            async with session.conn:
                 session.client.send_message(team_id, "hello")
-                event = await _wait_for_ws_event(session.ws_client)
+                event = await _wait_for_ws_event(session.conn)
                 assert event is not None
                 assert isinstance(event, dict)
         finally:
@@ -166,7 +167,7 @@ class TestStateTransitionWS:
         team_id = _create_team(smoke_server)
         try:
             session = _make_session(smoke_server, team_id)
-            async with session.ws_client:
+            async with session.conn:
                 # Start receive task so _stop_handler can work
                 session._receive_task = asyncio.create_task(session._receive_loop())
 
@@ -193,21 +194,20 @@ class TestStateTransitionWS:
         team_id = _create_team(smoke_server)
         try:
             session = _make_session(smoke_server, team_id)
-            original_ws = session.ws_client
-            async with session.ws_client:
+            async with session.conn:
                 session._receive_task = asyncio.create_task(session._receive_loop())
 
                 # Stop the team
                 await _stop_handler("", session)
                 await asyncio.sleep(0.5)
 
-                # Restore — this should reconnect the WebSocket
+                # Restore — this triggers conn.switch_team() which reconnects internally
                 await _restore_handler("", session)
                 await asyncio.sleep(0.5)
 
-                # Prove WS was reconnected (the core assertion)
-                assert session.ws_client is not original_ws
+                # Verify team_id preserved and team is running
                 assert session.team_id == team_id
+                assert session.conn.team_id == team_id
 
                 # Verify team is running again
                 team = session.client.get_team(team_id)
@@ -225,7 +225,7 @@ class TestStateTransitionWS:
             await asyncio.sleep(0.3)
 
             session = _make_session(smoke_server, team1_id)
-            async with session.ws_client:
+            async with session.conn:
                 session._receive_task = asyncio.create_task(session._receive_loop())
 
                 # Restore team2 from team1's session
@@ -248,18 +248,15 @@ class TestStateTransitionWS:
         team2_id = _create_team(smoke_server)
         try:
             session = _make_session(smoke_server, team1_id)
-            original_ws = session.ws_client
-            async with session.ws_client:
+            async with session.conn:
                 session._receive_task = asyncio.create_task(session._receive_loop())
 
                 await _switch_handler(team2_id, session)
                 await asyncio.sleep(0.3)
 
                 assert session.team_id == team2_id
-                assert session.ws_client is not original_ws
-
-                # Verify new WS is connected to team2
-                assert team2_id in session.ws_client.url
+                # ConnectionManager.switch_team() updates internal team_id
+                assert session.conn.team_id == team2_id
         finally:
             _cleanup_team(smoke_server, team1_id)
             _cleanup_team(smoke_server, team2_id)
@@ -270,7 +267,7 @@ class TestStateTransitionWS:
         original_team_id = session.team_id
         created_team_id: str | None = None
         try:
-            async with session.ws_client:
+            async with session.conn:
                 session._receive_task = asyncio.create_task(session._receive_loop())
 
                 await _create_handler(CATALOG_ENTRY_ID, session)
@@ -284,8 +281,8 @@ class TestStateTransitionWS:
                 team = session.client.get_team(created_team_id)
                 assert team.status == "running"
 
-                # WS should point to new team
-                assert created_team_id in session.ws_client.url
+                # ConnectionManager should point to new team
+                assert session.conn.team_id == created_team_id
         finally:
             _cleanup_team(smoke_server, original_team_id)
             if created_team_id:
@@ -298,7 +295,7 @@ class TestStateTransitionWS:
         team_id = _create_team(smoke_server)
         try:
             session = _make_session(smoke_server, team_id)
-            async with session.ws_client:
+            async with session.conn:
                 session._receive_task = asyncio.create_task(session._receive_loop())
 
                 # Switch to nonexistent team — should fail gracefully
@@ -307,9 +304,18 @@ class TestStateTransitionWS:
                 # Original team should still be connected
                 assert session.team_id == team_id
 
-                # Send and verify WS still works
+                # Cancel receive loop before verifying WS directly (avoids
+                # concurrent recv on the same websocket connection)
+                if session._receive_task is not None:
+                    session._receive_task.cancel()
+                    try:
+                        await session._receive_task
+                    except asyncio.CancelledError:
+                        pass
+
+                # Send and verify WS still works via direct receive
                 session.client.send_message(team_id, "still here")
-                event = await _wait_for_ws_event(session.ws_client)
+                event = await _wait_for_ws_event(session.conn)
                 assert event is not None
         finally:
             _cleanup_team(smoke_server, team_id)
