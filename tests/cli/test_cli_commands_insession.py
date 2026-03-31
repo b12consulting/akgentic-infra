@@ -37,14 +37,11 @@ from akgentic.infra.cli.commands import (
     _upload_handler,
     build_default_registry,
 )
-from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.ws_client import WsConnectionError
-from akgentic.infra.cli.repl import ChatSession
 from tests.fixtures.events import _make_proxy, make_sent_message, make_start_message
 
 from .conftest import captured_renderer as _captured_renderer
 from .conftest import make_session as _make_session
-from .conftest import mock_ws as _mock_ws
 
 _PROMPT_PATH = "prompt_toolkit.PromptSession.prompt"
 
@@ -262,16 +259,15 @@ class TestCreateHandler:
         session = _make_session(client=client)
         session._receive_task = asyncio.create_task(asyncio.sleep(100))
 
-        new_ws_mock = _mock_ws()
-        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
-            await _create_handler("my-catalog-entry", session)
+        await _create_handler("my-catalog-entry", session)
 
         out = capsys.readouterr().out
         assert "Created team: New Team" in out
         assert "new-t" in out
         client.create_team.assert_called_once_with("my-catalog-entry")
-        # Should have auto-switched
+        # Should have auto-switched via conn.switch_team
         assert session.team_id == "new-t"
+        session.conn.switch_team.assert_called_once_with("new-t")
 
     async def test_missing_arg_shows_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
         session = _make_session()
@@ -763,18 +759,16 @@ class TestRestoreHandler:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         client = _mock_client()
-        old_ws = _mock_ws()
-        session = _make_session(client=client, ws=old_ws)
+        session = _make_session(client=client)
         session._receive_task = asyncio.create_task(asyncio.sleep(100))
 
-        new_ws_mock = _mock_ws()
-        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
-            await _restore_handler("", session)
+        await _restore_handler("", session)
 
         out = capsys.readouterr().out
         assert "Team t1 restored. Live events resumed." in out
         client.restore_team.assert_called_once_with("t1")
-        # WebSocket reconnected via switch for the same team
+        # WebSocket reconnected via conn.switch_team for the same team
+        session.conn.switch_team.assert_called_once_with("t1")
         assert session.team_id == "t1"
 
     async def test_restores_different_team_and_switches(
@@ -784,32 +778,29 @@ class TestRestoreHandler:
         session = _make_session(client=client)
         session._receive_task = asyncio.create_task(asyncio.sleep(100))
 
-        new_ws_mock = _mock_ws()
-        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
-            await _restore_handler("t2", session)
+        await _restore_handler("t2", session)
 
         out = capsys.readouterr().out
         assert "Team t2 restored. Live events resumed." in out
         client.restore_team.assert_called_once_with("t2")
-        # Should have auto-switched
+        # Should have auto-switched via conn.switch_team
+        session.conn.switch_team.assert_called_once_with("t2")
         assert session.team_id == "t2"
 
     async def test_restores_same_team_id_reconnects_ws(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         client = _mock_client()
-        old_ws = _mock_ws()
-        session = _make_session(client=client, ws=old_ws)
+        session = _make_session(client=client)
         session._receive_task = asyncio.create_task(asyncio.sleep(100))
 
-        new_ws_mock = _mock_ws()
-        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
-            await _restore_handler("t1", session)
+        await _restore_handler("t1", session)
 
         out = capsys.readouterr().out
         assert "Team t1 restored. Live events resumed." in out
         client.restore_team.assert_called_once_with("t1")
         # WebSocket reconnected even for same team
+        session.conn.switch_team.assert_called_once_with("t1")
         assert session.team_id == "t1"
 
     async def test_handles_api_error(self) -> None:
@@ -826,23 +817,13 @@ class TestRestoreHandler:
 class TestSwitchHandler:
     async def test_switches_team(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
-        old_ws = _mock_ws()
-        session = _make_session(client=client, ws=old_ws)
+        session = _make_session(client=client)
         session._receive_task = asyncio.create_task(asyncio.sleep(100))
 
-        new_ws_mock = _mock_ws()
-        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock) as ws_cls:
-            await _switch_handler("t2", session)
+        await _switch_handler("t2", session)
 
-        old_ws.close.assert_called_once()
+        session.conn.switch_team.assert_called_once_with("t2")
         assert session.team_id == "t2"
-        assert session.ws_client is new_ws_mock
-        # Verify server_url and api_key are passed to new WsClient
-        ws_cls.assert_called_once_with(
-            base_url="http://localhost:8000",
-            team_id="t2",
-            api_key="test-key",
-        )
         # After switch, team info should be refreshed
         assert session._team_name == "Test Team"
         assert session._team_status == "running"
@@ -855,26 +836,17 @@ class TestSwitchHandler:
         out = capsys.readouterr().out
         assert "Usage" in out
 
-    async def test_switch_fails_restores_old(self) -> None:
+    async def test_switch_fails_old_connection_untouched(self) -> None:
         client = _mock_client()
-        old_ws = _mock_ws()
         renderer, buf = _captured_renderer()
-        session = _make_session(client=client, ws=old_ws, renderer=renderer)
+        session = _make_session(client=client, renderer=renderer)
+        session.conn.switch_team = AsyncMock(
+            side_effect=WsConnectionError("test error")
+        )
 
-        # First call creates the new WsClient (connect will fail),
-        # second call creates the restored WsClient for the old team
-        new_ws_mock = _mock_ws()
-        new_ws_mock.connect = AsyncMock(side_effect=WsConnectionError("test error"))
-        restored_ws_mock = _mock_ws()
-        with patch(
-            "akgentic.infra.cli.commands.WsClient",
-            side_effect=[new_ws_mock, restored_ws_mock],
-        ):
-            await _switch_handler("bad-team", session)
+        await _switch_handler("bad-team", session)
 
-        assert "not found" in buf.getvalue()
-        # Session ws should be the restored connection
-        assert session.ws_client is restored_ws_mock
+        assert "Switch failed" in buf.getvalue()
         assert session.team_id == "t1"  # unchanged
 
 
@@ -886,8 +858,7 @@ class TestSwitchHandler:
 class TestChatSessionCommandIntegration:
     async def test_info_dispatched_not_sent(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client)
 
         with patch(
             _PROMPT_PATH,
@@ -902,8 +873,7 @@ class TestChatSessionCommandIntegration:
 
     async def test_regular_text_sent_as_message(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client)
 
         with patch(
             _PROMPT_PATH,
@@ -915,8 +885,7 @@ class TestChatSessionCommandIntegration:
 
     async def test_quit_still_exits(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client)
 
         with patch(
             _PROMPT_PATH,
@@ -929,8 +898,7 @@ class TestChatSessionCommandIntegration:
 
     async def test_unknown_slash_command_not_sent(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
-        ws = _mock_ws()
-        session = ChatSession(client, ws, "t1", OutputFormat.table)
+        session = _make_session(client=client)
 
         with patch(
             _PROMPT_PATH,

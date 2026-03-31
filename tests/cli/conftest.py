@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 from rich.console import Console
 
@@ -16,6 +16,7 @@ from akgentic.infra.cli.client import (
     WorkspaceTreeInfo,
     WorkspaceUploadInfo,
 )
+from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession
@@ -86,7 +87,7 @@ def mock_client(**overrides: Any) -> MagicMock:
 
 
 def mock_ws() -> AsyncMock:
-    """Build a mock WsClient for CLI tests."""
+    """Build a mock WsClient for CLI tests (legacy helper)."""
     ws = AsyncMock()
     ws.__aenter__ = AsyncMock(return_value=ws)
     ws.__aexit__ = AsyncMock(return_value=None)
@@ -95,6 +96,21 @@ def mock_ws() -> AsyncMock:
     ws.close = AsyncMock()
     ws.connect = AsyncMock(return_value=ws)
     return ws
+
+
+def mock_conn(team_id: str = "t1") -> AsyncMock:
+    """Build a mock ConnectionManager for CLI tests."""
+    conn = AsyncMock()
+    conn.__aenter__ = AsyncMock(return_value=conn)
+    conn.__aexit__ = AsyncMock(return_value=None)
+    conn.receive_event = AsyncMock(side_effect=asyncio.CancelledError)
+    conn.close = AsyncMock()
+    conn.connect = AsyncMock()
+    conn.switch_team = AsyncMock()
+    # Use PropertyMock for properties
+    type(conn).state = PropertyMock(return_value=ConnectionState.CONNECTED)
+    type(conn).team_id = PropertyMock(return_value=team_id)
+    return conn
 
 
 def captured_renderer() -> tuple[RichRenderer, io.StringIO]:
@@ -106,18 +122,18 @@ def captured_renderer() -> tuple[RichRenderer, io.StringIO]:
 
 def make_session(
     client: MagicMock | None = None,
-    ws: AsyncMock | None = None,
+    conn: AsyncMock | None = None,
     team_id: str = "t1",
     renderer: RichRenderer | None = None,
 ) -> ChatSession:
     """Create a ChatSession with mocked dependencies."""
     if client is None:
         client = mock_client()
-    if ws is None:
-        ws = mock_ws()
+    if conn is None:
+        conn = mock_conn(team_id)
     return ChatSession(
         client,
-        ws,
+        conn,
         team_id,
         OutputFormat.table,
         server_url="http://localhost:8000",

@@ -23,29 +23,29 @@ def _mock_state() -> MagicMock:
 
 
 @pytest.fixture()
-def _mock_ws() -> AsyncMock:
-    """Patch WsClient constructor."""
-    ws = AsyncMock()
-    ws.__aenter__ = AsyncMock(return_value=ws)
-    ws.__aexit__ = AsyncMock(return_value=None)
-    with patch("akgentic.infra.cli.main.WsClient", return_value=ws):
-        yield ws
+def _mock_conn() -> AsyncMock:
+    """Patch ConnectionManager constructor."""
+    conn = AsyncMock()
+    conn.__aenter__ = AsyncMock(return_value=conn)
+    conn.__aexit__ = AsyncMock(return_value=None)
+    with patch("akgentic.infra.cli.main.ConnectionManager", return_value=conn):
+        yield conn
 
 
 class TestChatErrorBoundary:
     """Test the top-level error boundary in chat()."""
 
     def test_api_error_renders_error_and_exits(
-        self, _mock_state: MagicMock, _mock_ws: AsyncMock
+        self, _mock_state: MagicMock, _mock_conn: AsyncMock
     ) -> None:
         """ApiError during session.run() renders error and exits cleanly."""
         error = ApiError(500, "internal server error")
         with (
-            patch("akgentic.infra.cli.main.RichRenderer") as MockRenderer,
+            patch("akgentic.infra.cli.main.RichRenderer") as mock_renderer_cls,
             patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
-            renderer_instance = MockRenderer.return_value
+            renderer_instance = mock_renderer_cls.return_value
             mock_asyncio.run.side_effect = error
 
             from akgentic.infra.cli.main import chat
@@ -59,16 +59,16 @@ class TestChatErrorBoundary:
             _mock_state.client.close.assert_called_once()
 
     def test_ws_connection_error_renders_error_and_exits(
-        self, _mock_state: MagicMock, _mock_ws: AsyncMock
+        self, _mock_state: MagicMock, _mock_conn: AsyncMock
     ) -> None:
         """WsConnectionError during session.run() renders error and exits cleanly."""
         error = WsConnectionError("refused")
         with (
-            patch("akgentic.infra.cli.main.RichRenderer") as MockRenderer,
+            patch("akgentic.infra.cli.main.RichRenderer") as mock_renderer_cls,
             patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
-            renderer_instance = MockRenderer.return_value
+            renderer_instance = mock_renderer_cls.return_value
             mock_asyncio.run.side_effect = error
 
             from akgentic.infra.cli.main import chat
@@ -82,16 +82,16 @@ class TestChatErrorBoundary:
             _mock_state.client.close.assert_called_once()
 
     def test_generic_exception_renders_error_and_exits(
-        self, _mock_state: MagicMock, _mock_ws: AsyncMock
+        self, _mock_state: MagicMock, _mock_conn: AsyncMock
     ) -> None:
         """Generic Exception during session.run() renders error and exits cleanly."""
         error = RuntimeError("something broke")
         with (
-            patch("akgentic.infra.cli.main.RichRenderer") as MockRenderer,
+            patch("akgentic.infra.cli.main.RichRenderer") as mock_renderer_cls,
             patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
-            renderer_instance = MockRenderer.return_value
+            renderer_instance = mock_renderer_cls.return_value
             mock_asyncio.run.side_effect = error
 
             from akgentic.infra.cli.main import chat
@@ -105,15 +105,15 @@ class TestChatErrorBoundary:
             _mock_state.client.close.assert_called_once()
 
     def test_keyboard_interrupt_exits_cleanly(
-        self, _mock_state: MagicMock, _mock_ws: AsyncMock
+        self, _mock_state: MagicMock, _mock_conn: AsyncMock
     ) -> None:
         """KeyboardInterrupt during session.run() exits without error message."""
         with (
-            patch("akgentic.infra.cli.main.RichRenderer") as MockRenderer,
+            patch("akgentic.infra.cli.main.RichRenderer") as mock_renderer_cls,
             patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
-            renderer_instance = MockRenderer.return_value
+            renderer_instance = mock_renderer_cls.return_value
             mock_asyncio.run.side_effect = KeyboardInterrupt
 
             from akgentic.infra.cli.main import chat
@@ -125,7 +125,7 @@ class TestChatErrorBoundary:
             _mock_state.client.close.assert_called_once()
 
     def test_client_close_called_on_success(
-        self, _mock_state: MagicMock, _mock_ws: AsyncMock
+        self, _mock_state: MagicMock, _mock_conn: AsyncMock
     ) -> None:
         """client.close() is called even on successful exit."""
         with (
