@@ -21,18 +21,24 @@ POLL_TIMEOUT_S = 60.0
 
 
 class StubRenderer:
-    """Lightweight renderer stub that captures agent messages without mocking."""
+    """Lightweight renderer stub that captures events without mocking.
+
+    Captures agent messages and errors for assertions. All other render methods
+    are no-ops to satisfy the RichRenderer interface used by ChatSession,
+    TeamSelector, and slash command handlers.
+    """
 
     def __init__(self) -> None:
         self.agent_messages: list[str] = []
+        self.errors: list[str] = []
 
     def render_agent_message(self, sender: str, content: str) -> None:
         self.agent_messages.append(f"{sender}: {content}")
 
-    def render_system_message(self, *args: object, **kwargs: object) -> None:
-        pass
+    def render_error(self, content: str) -> None:
+        self.errors.append(content)
 
-    def render_error(self, *args: object, **kwargs: object) -> None:
+    def render_system_message(self, *args: object, **kwargs: object) -> None:
         pass
 
     def render_tool_call(self, *args: object, **kwargs: object) -> None:
@@ -42,6 +48,27 @@ class StubRenderer:
         pass
 
     def render_history_separator(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_border(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_status_bar(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_welcome_header(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_team_list(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_catalog_list(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_startup_hints(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_pagination_hints(self, *args: object, **kwargs: object) -> None:
         pass
 
 

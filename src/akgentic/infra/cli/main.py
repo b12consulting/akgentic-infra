@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from akgentic.infra.cli.client import ApiClient
 from akgentic.infra.cli.formatters import OutputFormat, format_output
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.repl import ChatSession
+from akgentic.infra.cli.repl import ChatSession, TeamSelector
 from akgentic.infra.cli.ws_client import WsClient
 
 app = typer.Typer(name="ak-infra", help="Akgentic Infrastructure CLI")
@@ -166,11 +166,13 @@ def chat(
     if create is not None:
         team = _state.client.create_team(create)
         team_id = team.team_id
-        typer.echo(f"Created team {team_id}")
 
     if team_id is None:
-        typer.echo("Error: provide a TEAM_ID or use --create <catalog_entry>", err=True)
-        raise typer.Exit(code=1)
+        renderer = RichRenderer()
+        selector = TeamSelector(_state.client, renderer)
+        team_id = selector.run()
+        if team_id is None:
+            raise typer.Exit(code=0)
 
     ws = WsClient(
         base_url=_state.server,
