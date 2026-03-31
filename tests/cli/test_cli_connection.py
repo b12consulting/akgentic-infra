@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -320,7 +321,8 @@ class TestCheckHealth:
         mock_ws.ping = AsyncMock()
         cm._ws_client = mock_ws
         cm._state = ConnectionState.CONNECTED
-        cm._last_event_time = 0.0  # long ago
+        # Set last event time to 120 seconds before current monotonic time
+        cm._last_event_time = time.monotonic() - 120.0
 
         await cm.check_health()
 
@@ -328,8 +330,6 @@ class TestCheckHealth:
 
     async def test_no_ping_when_recent_event(self) -> None:
         """AC #6: No ping when events are recent."""
-        import time
-
         cm = ConnectionManager(server_url="http://localhost:8000", team_id="t1")
         mock_ws = AsyncMock()
         mock_ws.ping = AsyncMock()
