@@ -8,10 +8,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from akgentic.infra.cli.client import ApiError, EventInfo
 from akgentic.infra.cli.commands import build_default_registry
+from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import (
     ChatSession,
+    InputMode,
+    ReplyContext,
+    SessionState,
     _print_event,
     _render_event_impl,
     _SlashCompleter,
@@ -114,7 +118,7 @@ class TestQuitHandling:
         out = buf.getvalue()
         assert "Session closed." in out
         # Team info fetched for status bar
-        assert session._team_name != ""
+        assert session._state.team_name != "(unknown)"
 
     async def test_ctrl_c_exits(self) -> None:
         renderer, buf = _captured_renderer()
@@ -450,8 +454,10 @@ class TestImplicitHumanInputReplyRouting:
         session = _make_session(renderer=renderer)
         data = self._human_input_event()
         session._render_event(data)
-        assert session._pending_reply_id == "msg-uuid-123"
-        assert session._pending_agent_name == "AgentX"
+        assert session._state.input_mode == InputMode.REPLY
+        assert session._state.reply_context is not None
+        assert session._state.reply_context.reply_id == "msg-uuid-123"
+        assert session._state.reply_context.agent_name == "AgentX"
 
     def test_pending_set_on_request_input_event(self) -> None:
         renderer, buf = _captured_renderer()
@@ -462,18 +468,29 @@ class TestImplicitHumanInputReplyRouting:
             agent_name="BotY",
         )
         session._render_event(data)
-        assert session._pending_reply_id == "req-456"
-        assert session._pending_agent_name == "BotY"
+        assert session._state.input_mode == InputMode.REPLY
+        assert session._state.reply_context is not None
+        assert session._state.reply_context.reply_id == "req-456"
+        assert session._state.reply_context.agent_name == "BotY"
 
     # -- AC #2: pending reply state --
 
     def test_pending_state_tracks_reply_info(self) -> None:
         session = _make_session()
-        assert session._pending_reply_id is None
-        session._pending_reply_id = "some-id"
-        session._pending_agent_name = "AgentX"
-        assert session._pending_reply_id == "some-id"
-        assert session._pending_agent_name == "AgentX"
+        assert session._state.input_mode == InputMode.CHAT
+        assert session._state.reply_context is None
+        session._state = session._state.model_copy(
+            update={
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(
+                    reply_id="some-id", agent_name="AgentX", prompt=""
+                ),
+            }
+        )
+        assert session._state.input_mode == InputMode.REPLY
+        assert session._state.reply_context is not None
+        assert session._state.reply_context.reply_id == "some-id"
+        assert session._state.reply_context.agent_name == "AgentX"
 
     # -- AC #3, #4: plain text consumes pending reply --
 
@@ -481,8 +498,14 @@ class TestImplicitHumanInputReplyRouting:
         renderer, buf = _captured_renderer()
         client = _mock_client()
         session = _make_session(client=client, renderer=renderer)
-        session._pending_reply_id = "msg-abc"
-        session._pending_agent_name = "AgentX"
+        session._state = session._state.model_copy(
+            update={
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(
+                    reply_id="msg-abc", agent_name="AgentX", prompt=""
+                ),
+            }
+        )
 
         with patch(_PROMPT_PATH, side_effect=["my answer", "/quit"]):
             await session.run()
@@ -490,8 +513,8 @@ class TestImplicitHumanInputReplyRouting:
         client.human_input.assert_called_once_with("t1", "my answer", "msg-abc")
         client.send_message.assert_not_called()
         # Pending cleared
-        assert session._pending_reply_id is None
-        assert session._pending_agent_name is None
+        assert session._state.input_mode == InputMode.CHAT
+        assert session._state.reply_context is None
 
     async def test_pending_preserved_on_api_error(self) -> None:
         """Safe reply clearing: pending state preserved when human_input() fails."""
@@ -499,16 +522,24 @@ class TestImplicitHumanInputReplyRouting:
         client = _mock_client()
         client.human_input.side_effect = ApiError(500, "server error")
         session = _make_session(client=client, renderer=renderer)
-        session._pending_reply_id = "msg-abc"
-        session._pending_agent_name = "AgentX"
+        session._state = session._state.model_copy(
+            update={
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(
+                    reply_id="msg-abc", agent_name="AgentX", prompt=""
+                ),
+            }
+        )
 
         with patch(_PROMPT_PATH, side_effect=["my answer", "/quit"]):
             await session.run()
 
         client.human_input.assert_called_once_with("t1", "my answer", "msg-abc")
         # Pending should still be set — not cleared on error
-        assert session._pending_reply_id == "msg-abc"
-        assert session._pending_agent_name == "AgentX"
+        assert session._state.input_mode == InputMode.REPLY
+        assert session._state.reply_context is not None
+        assert session._state.reply_context.reply_id == "msg-abc"
+        assert session._state.reply_context.agent_name == "AgentX"
         out = buf.getvalue()
         assert "Error sending reply" in out
 
@@ -531,15 +562,23 @@ class TestImplicitHumanInputReplyRouting:
         renderer, buf = _captured_renderer()
         client = _mock_client()
         session = _make_session(client=client, renderer=renderer)
-        session._pending_reply_id = "msg-pending"
-        session._pending_agent_name = "AgentZ"
+        session._state = session._state.model_copy(
+            update={
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(
+                    reply_id="msg-pending", agent_name="AgentZ", prompt=""
+                ),
+            }
+        )
 
         with patch(_PROMPT_PATH, side_effect=["/help", "/quit"]):
             await session.run()
 
         # Pending should still be set after slash command
-        assert session._pending_reply_id == "msg-pending"
-        assert session._pending_agent_name == "AgentZ"
+        assert session._state.input_mode == InputMode.REPLY
+        assert session._state.reply_context is not None
+        assert session._state.reply_context.reply_id == "msg-pending"
+        assert session._state.reply_context.agent_name == "AgentZ"
         client.human_input.assert_not_called()
 
     # -- backward compat: _render_event_impl without callback --
@@ -569,8 +608,10 @@ class TestImplicitHumanInputReplyRouting:
             },
         }
         session._render_event(data)
-        assert session._pending_reply_id == "msg-str-sender"
-        assert session._pending_agent_name == "SimpleAgent"
+        assert session._state.input_mode == InputMode.REPLY
+        assert session._state.reply_context is not None
+        assert session._state.reply_context.reply_id == "msg-str-sender"
+        assert session._state.reply_context.agent_name == "SimpleAgent"
 
     def test_pending_not_set_when_id_is_none(self) -> None:
         """Verify that a None id in the outer event data does not set pending state."""
@@ -588,8 +629,8 @@ class TestImplicitHumanInputReplyRouting:
             },
         }
         session._render_event(data)
-        assert session._pending_reply_id is None
-        assert session._pending_agent_name is None
+        assert session._state.input_mode == InputMode.CHAT
+        assert session._state.reply_context is None
 
     def test_pending_not_set_when_id_missing(self) -> None:
         """Verify that a missing id in the outer event data does not set pending state."""
@@ -606,13 +647,229 @@ class TestImplicitHumanInputReplyRouting:
             },
         }
         session._render_event(data)
-        assert session._pending_reply_id is None
-        assert session._pending_agent_name is None
+        assert session._state.input_mode == InputMode.CHAT
+        assert session._state.reply_context is None
 
-    def test_pending_agent_name_can_be_none(self) -> None:
-        """Verify pending state works when agent name is None."""
+
+
+# =============================================================================
+# Story 11.3: Session State Model tests
+# =============================================================================
+
+
+class TestSessionStateModels:
+    """Tests for InputMode, ReplyContext, and SessionState models."""
+
+    def test_input_mode_values(self) -> None:
+        assert InputMode.CHAT.value == "chat"
+        assert InputMode.REPLY.value == "reply"
+
+    def test_reply_context_creation(self) -> None:
+        ctx = ReplyContext(reply_id="r1", agent_name="Bot", prompt="Say hi")
+        assert ctx.reply_id == "r1"
+        assert ctx.agent_name == "Bot"
+        assert ctx.prompt == "Say hi"
+
+    def test_session_state_defaults(self) -> None:
+        state = SessionState(team_id="t1")
+        assert state.team_id == "t1"
+        assert state.team_name == "(unknown)"
+        assert state.team_status == "?"
+        assert state.input_mode == InputMode.CHAT
+        assert state.reply_context is None
+        assert state.connection_state == ConnectionState.CONNECTING
+
+    def test_session_state_model_copy_transitions(self) -> None:
+        state = SessionState(team_id="t1")
+        updated = state.model_copy(
+            update={
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(reply_id="r1", agent_name="A", prompt=""),
+            }
+        )
+        assert updated.input_mode == InputMode.REPLY
+        assert updated.reply_context is not None
+        assert updated.reply_context.reply_id == "r1"
+        # Original unchanged
+        assert state.input_mode == InputMode.CHAT
+
+    def test_session_state_connection_state_update(self) -> None:
+        state = SessionState(team_id="t1")
+        updated = state.model_copy(update={"connection_state": ConnectionState.CONNECTED})
+        assert updated.connection_state == ConnectionState.CONNECTED
+
+
+class TestGetPrompt:
+    """Tests for ChatSession._get_prompt() dynamic prompt."""
+
+    def test_normal_chat_connected(self) -> None:
         session = _make_session()
-        session._pending_reply_id = "some-id"
-        session._pending_agent_name = None
-        assert session._pending_reply_id == "some-id"
-        assert session._pending_agent_name is None
+        session._state = session._state.model_copy(
+            update={"connection_state": ConnectionState.CONNECTED}
+        )
+        assert session._get_prompt() == "> "
+
+    def test_disconnected(self) -> None:
+        session = _make_session()
+        session._state = session._state.model_copy(
+            update={"connection_state": ConnectionState.DISCONNECTED}
+        )
+        assert session._get_prompt() == "[disconnected] > "
+
+    def test_reconnecting(self) -> None:
+        session = _make_session()
+        session._state = session._state.model_copy(
+            update={"connection_state": ConnectionState.RECONNECTING}
+        )
+        assert session._get_prompt() == "[reconnecting...] > "
+
+    def test_reply_mode(self) -> None:
+        session = _make_session()
+        session._state = session._state.model_copy(
+            update={
+                "connection_state": ConnectionState.CONNECTED,
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(
+                    reply_id="r1", agent_name="AgentX", prompt=""
+                ),
+            }
+        )
+        assert session._get_prompt() == "Reply to AgentX: "
+
+    def test_disconnected_overrides_reply_mode(self) -> None:
+        """Disconnected state takes priority over reply mode."""
+        session = _make_session()
+        session._state = session._state.model_copy(
+            update={
+                "connection_state": ConnectionState.DISCONNECTED,
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(
+                    reply_id="r1", agent_name="AgentX", prompt=""
+                ),
+            }
+        )
+        assert session._get_prompt() == "[disconnected] > "
+
+
+class TestConnectionAwareSending:
+    """Tests for connection-aware message sending behavior."""
+
+    async def test_connected_sends_normally(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        session = _make_session(client=client, renderer=renderer)
+        session._state = session._state.model_copy(
+            update={"connection_state": ConnectionState.CONNECTED}
+        )
+
+        with patch(_PROMPT_PATH, side_effect=["hello", "/quit"]):
+            await session.run()
+
+        client.send_message.assert_called_once_with("t1", "hello")
+
+    async def test_disconnected_blocks_send(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        session = _make_session(client=client, renderer=renderer)
+        session._state = session._state.model_copy(
+            update={"connection_state": ConnectionState.DISCONNECTED}
+        )
+
+        with patch(_PROMPT_PATH, side_effect=["hello", "/quit"]):
+            await session.run()
+
+        client.send_message.assert_not_called()
+        out = buf.getvalue()
+        assert "Not connected" in out
+        assert "/reconnect" in out
+
+    async def test_reconnecting_buffers_message(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        session = _make_session(client=client, renderer=renderer)
+        session._state = session._state.model_copy(
+            update={"connection_state": ConnectionState.RECONNECTING}
+        )
+
+        with patch(_PROMPT_PATH, side_effect=["buffered msg", "/quit"]):
+            await session.run()
+
+        client.send_message.assert_not_called()
+        assert "buffered msg" in session._message_buffer
+        out = buf.getvalue()
+        assert "Reconnecting" in out
+        assert "connection is restored" in out
+
+    async def test_buffer_flushed_on_connected(self) -> None:
+        """Buffered messages are flushed when connection state transitions to CONNECTED."""
+        client = _mock_client()
+        session = _make_session(client=client)
+        session._message_buffer = ["msg1", "msg2"]
+        # Trigger the on_state_change callback with CONNECTED
+        session.conn._on_state_change(ConnectionState.CONNECTED)
+        assert session._message_buffer == []
+        assert client.send_message.call_count == 2
+        client.send_message.assert_any_call("t1", "msg1")
+        client.send_message.assert_any_call("t1", "msg2")
+
+    async def test_disconnected_blocks_reply_send(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        session = _make_session(client=client, renderer=renderer)
+        session._state = session._state.model_copy(
+            update={
+                "connection_state": ConnectionState.DISCONNECTED,
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(
+                    reply_id="r1", agent_name="Agent", prompt=""
+                ),
+            }
+        )
+
+        with patch(_PROMPT_PATH, side_effect=["my reply", "/quit"]):
+            await session.run()
+
+        client.human_input.assert_not_called()
+        out = buf.getvalue()
+        assert "Not connected" in out
+
+    async def test_reconnecting_buffers_reply(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        session = _make_session(client=client, renderer=renderer)
+        session._state = session._state.model_copy(
+            update={
+                "connection_state": ConnectionState.RECONNECTING,
+                "input_mode": InputMode.REPLY,
+                "reply_context": ReplyContext(
+                    reply_id="r1", agent_name="Agent", prompt=""
+                ),
+            }
+        )
+
+        with patch(_PROMPT_PATH, side_effect=["my reply", "/quit"]):
+            await session.run()
+
+        client.human_input.assert_not_called()
+        assert "my reply" in session._message_buffer
+
+    def test_flush_buffer_handles_api_error(self) -> None:
+        renderer, buf = _captured_renderer()
+        client = _mock_client()
+        client.send_message.side_effect = ApiError(500, "fail")
+        session = _make_session(client=client, renderer=renderer)
+        session._message_buffer = ["msg1"]
+        session._flush_message_buffer()
+        assert session._message_buffer == []
+        out = buf.getvalue()
+        assert "Failed to send buffered message" in out
+
+    def test_team_id_property_getter(self) -> None:
+        session = _make_session()
+        assert session.team_id == "t1"
+
+    def test_team_id_property_setter(self) -> None:
+        session = _make_session()
+        session.team_id = "t2"
+        assert session._state.team_id == "t2"
+        assert session.team_id == "t2"

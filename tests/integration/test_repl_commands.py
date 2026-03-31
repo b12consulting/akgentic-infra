@@ -22,6 +22,7 @@ from akgentic.infra.cli.commands import (
     _restore_handler,
     _teams_handler,
 )
+from akgentic.infra.cli.repl import InputMode
 
 from ._helpers import (
     CATALOG_ENTRY_ID,
@@ -358,8 +359,10 @@ class TestReplImplicitReply:
             }
 
             session._render_event(event_data)
-            assert session._pending_reply_id == event_id
-            assert session._pending_agent_name == "@Manager"
+            assert session._state.input_mode == InputMode.REPLY
+            assert session._state.reply_context is not None
+            assert session._state.reply_context.reply_id == event_id
+            assert session._state.reply_context.agent_name == "@Manager"
         finally:
             session.client.close()
             with httpx.Client(base_url=cli_server) as c:
@@ -393,8 +396,10 @@ class TestReplImplicitReply:
                 },
             }
             session._render_event(event_data)
-            assert session._pending_reply_id == pending_id
-            assert session._pending_agent_name == "@Manager"
+            assert session._state.input_mode == InputMode.REPLY
+            assert session._state.reply_context is not None
+            assert session._state.reply_context.reply_id == pending_id
+            assert session._state.reply_context.agent_name == "@Manager"
 
             # Call human_input via the client -- the endpoint returns an error
             # since the pending_id doesn't correspond to a real server-side event.
@@ -405,11 +410,12 @@ class TestReplImplicitReply:
                 pass  # Expected: server returns error since pending_id is synthetic
 
             # Simulate the clearing that _input_loop does after sending the reply
-            # (repl.py lines 110-111: clears pending state before run_in_executor)
-            session._pending_reply_id = None
-            session._pending_agent_name = None
-            assert session._pending_reply_id is None
-            assert session._pending_agent_name is None
+            # via model_copy (same pattern as ChatSession._handle_reply)
+            session._state = session._state.model_copy(
+                update={"input_mode": InputMode.CHAT, "reply_context": None}
+            )
+            assert session._state.input_mode == InputMode.CHAT
+            assert session._state.reply_context is None
         finally:
             session.client.close()
             with httpx.Client(base_url=cli_server) as c:

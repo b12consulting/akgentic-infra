@@ -155,6 +155,16 @@ class RichRenderer:
             parts.append("[s] stopped teams")
         self._console.print(f"  [dim]{'  '.join(parts)}[/dim]")
 
+    def render_connection_status(self, status: str) -> None:
+        """Render connection state changes with appropriate styling."""
+        styles = {
+            "connected": ("green", "Connected"),
+            "reconnecting": ("yellow", "Reconnecting..."),
+            "disconnected": ("red", "Disconnected"),
+        }
+        color, label = styles.get(status, ("dim", status))
+        self._console.print(f"[{color}]{label}[/{color}]")
+
     def render_pagination_hints(self, has_next: bool) -> None:
         """Render pagination hints for stopped teams list."""
         parts = ["[number] restore & connect"]

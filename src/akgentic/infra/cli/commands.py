@@ -418,6 +418,16 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
     session._receive_task = asyncio.create_task(session._receive_loop())
 
 
+async def _reconnect_handler(args: str, session: ChatSession) -> None:
+    """Manually trigger reconnection."""
+    session.renderer.render_connection_status("reconnecting")
+    try:
+        await session.conn.connect()
+        session.renderer.render_connection_status("connected")
+    except WsConnectionError as exc:
+        session.renderer.render_error(f"Reconnection failed: {exc.reason}")
+
+
 async def _catalog_handler(args: str, session: ChatSession) -> None:
     """List available team templates from the catalog."""
     loop = asyncio.get_running_loop()
@@ -458,4 +468,5 @@ def build_default_registry() -> CommandRegistry:
         "restore", _restore_handler, "Restore a stopped team", "/restore [team_id]"
     )
     registry.register("switch", _switch_handler, "Switch to another team", "/switch <team_id>")
+    registry.register("reconnect", _reconnect_handler, "Reconnect to server", "/reconnect")
     return registry
