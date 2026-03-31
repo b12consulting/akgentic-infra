@@ -763,14 +763,18 @@ class TestRestoreHandler:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         client = _mock_client()
-        session = _make_session(client=client)
+        old_ws = _mock_ws()
+        session = _make_session(client=client, ws=old_ws)
+        session._receive_task = asyncio.create_task(asyncio.sleep(100))
 
-        await _restore_handler("", session)
+        new_ws_mock = _mock_ws()
+        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
+            await _restore_handler("", session)
 
         out = capsys.readouterr().out
         assert "Team t1 restored. Live events resumed." in out
         client.restore_team.assert_called_once_with("t1")
-        # No switch should happen when restoring current team
+        # WebSocket reconnected via switch for the same team
         assert session.team_id == "t1"
 
     async def test_restores_different_team_and_switches(
@@ -790,17 +794,23 @@ class TestRestoreHandler:
         # Should have auto-switched
         assert session.team_id == "t2"
 
-    async def test_restores_same_team_id_no_switch(
+    async def test_restores_same_team_id_reconnects_ws(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         client = _mock_client()
-        session = _make_session(client=client)
+        old_ws = _mock_ws()
+        session = _make_session(client=client, ws=old_ws)
+        session._receive_task = asyncio.create_task(asyncio.sleep(100))
 
-        await _restore_handler("t1", session)
+        new_ws_mock = _mock_ws()
+        with patch("akgentic.infra.cli.commands.WsClient", return_value=new_ws_mock):
+            await _restore_handler("t1", session)
 
         out = capsys.readouterr().out
         assert "Team t1 restored. Live events resumed." in out
         client.restore_team.assert_called_once_with("t1")
+        # WebSocket reconnected even for same team
+        assert session.team_id == "t1"
 
     async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
@@ -833,8 +843,9 @@ class TestSwitchHandler:
             team_id="t2",
             api_key="test-key",
         )
-        out = capsys.readouterr().out
-        assert "Switched to team t2" in out
+        # After switch, team info should be refreshed
+        assert session._team_name == "Test Team"
+        assert session._team_status == "running"
 
     async def test_no_arg_shows_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
         session = _make_session()
@@ -885,7 +896,8 @@ class TestChatSessionCommandIntegration:
             await session.run()
 
         # /info should have triggered get_team, not send_message
-        client.get_team.assert_called_once_with("t1")
+        # get_team is called twice: once for the header bar, once for /info
+        assert client.get_team.call_count == 2
         client.send_message.assert_not_called()
 
     async def test_regular_text_sent_as_message(self, capsys: pytest.CaptureFixture[str]) -> None:

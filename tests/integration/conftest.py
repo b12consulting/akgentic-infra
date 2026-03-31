@@ -360,3 +360,37 @@ def cli_server(integration_app: FastAPI) -> Generator[str, None, None]:
 
     server.should_exit = True
     thread.join(timeout=5)
+
+
+@pytest.fixture()
+def smoke_server(smoke_app: FastAPI) -> Generator[str, None, None]:
+    """Start the smoke (TestModel) app on a real TCP port via uvicorn.
+
+    Same as ``cli_server`` but uses ``smoke_app`` — no OPENAI_API_KEY required.
+    Yields the base URL ``http://127.0.0.1:{port}``.
+    """
+    port = _get_free_port()
+    config = uvicorn.Config(
+        app=smoke_app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+    server = uvicorn.Server(config)
+
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + 10.0
+    url = f"http://127.0.0.1:{port}"
+    while time.monotonic() < deadline:
+        if server.started:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("smoke uvicorn server did not start within 10 seconds")
+
+    yield url
+
+    server.should_exit = True
+    thread.join(timeout=5)

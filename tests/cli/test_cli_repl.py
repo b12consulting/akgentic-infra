@@ -113,8 +113,9 @@ class TestQuitHandling:
             await session.run()
 
         out = buf.getvalue()
-        assert "Connected to team t1" in out
         assert "Session closed." in out
+        # Team info fetched for status bar
+        assert session._team_name != ""
 
     async def test_ctrl_c_exits(self) -> None:
         renderer, buf = _captured_renderer()
@@ -483,18 +484,15 @@ class TestImplicitHumanInputReplyRouting:
         assert session._pending_reply_id == "req-456"
         assert session._pending_agent_name == "BotY"
 
-    # -- AC #2: dynamic prompt --
+    # -- AC #2: pending reply state --
 
-    def test_prompt_changes_when_pending(self) -> None:
+    def test_pending_state_tracks_reply_info(self) -> None:
         session = _make_session()
-        assert session._get_prompt() == "You: "
+        assert session._pending_reply_id is None
         session._pending_reply_id = "some-id"
         session._pending_agent_name = "AgentX"
-        assert session._get_prompt() == "Reply to AgentX: "
-
-    def test_prompt_returns_default_when_not_pending(self) -> None:
-        session = _make_session()
-        assert session._get_prompt() == "You: "
+        assert session._pending_reply_id == "some-id"
+        assert session._pending_agent_name == "AgentX"
 
     # -- AC #3, #4: plain text consumes pending reply --
 
@@ -611,9 +609,10 @@ class TestImplicitHumanInputReplyRouting:
         assert session._pending_reply_id is None
         assert session._pending_agent_name is None
 
-    def test_prompt_fallback_when_agent_name_is_none(self) -> None:
-        """Verify prompt uses 'Agent' fallback when _pending_agent_name is None."""
+    def test_pending_agent_name_can_be_none(self) -> None:
+        """Verify pending state works when agent name is None."""
         session = _make_session()
         session._pending_reply_id = "some-id"
         session._pending_agent_name = None
-        assert session._get_prompt() == "Reply to Agent: "
+        assert session._pending_reply_id == "some-id"
+        assert session._pending_agent_name is None

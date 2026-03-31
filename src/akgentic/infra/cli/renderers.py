@@ -16,8 +16,12 @@ class RichRenderer:
 
     _PALETTE: list[str] = ["cyan", "green", "magenta", "yellow", "blue", "red"]
 
+    _MAX_WIDTH: int = 100
+
     def __init__(self, console: Console | None = None) -> None:
-        self._console = console or Console(highlight=False)
+        self._console = console or Console(
+            highlight=False, width=min(self._MAX_WIDTH, Console().width)
+        )
         self._agent_colors: dict[str, str] = {}
         self._color_idx: int = 0
 
@@ -84,3 +88,77 @@ class RichRenderer:
     def render_system_message(self, text: str) -> None:
         """Render system/status messages in dim style."""
         self._console.print(f"[dim]{text}[/dim]")
+
+    # -- Layout borders --
+
+    def render_border(self, style: str = "bright_black") -> None:
+        """Render a horizontal border line."""
+        self._console.rule(style=style)
+
+    def render_status_bar(self, team_name: str, team_id: str, status: str) -> None:
+        """Render the bottom status bar with team info and usage hints."""
+        status_icon = "\u25b6" if status == "running" else "\u23f8"
+        status_color = "green" if status == "running" else "yellow"
+        short_id = team_id[:13] if len(team_id) > 13 else team_id
+        left = (
+            f"[bold cyan]{team_name}[/bold cyan]  "
+            f"[dim]{short_id}[/dim]  "
+            f"[{status_color}]{status_icon} {status}[/{status_color}]"
+        )
+        hints = "[dim]@mention  /command  /help  /quit[/dim]"
+        self._console.print(f"  {left}  {hints}")
+
+    # -- Startup / welcome screen --
+
+    def render_welcome_header(self) -> None:
+        """Render the welcome screen header."""
+        self._console.print()
+        self._console.print("[bold]  Akgentic Chat[/bold]")
+        self._console.print()
+
+    def render_team_list(
+        self,
+        teams: list[tuple[int, str, str, str]],
+        *,
+        title: str = "Running teams:",
+    ) -> None:
+        """Render a numbered list of teams. Each tuple: (number, name, short_id, status)."""
+        self._console.print(f"  [bold]{title}[/bold]")
+        for num, name, short_id, status in teams:
+            status_icon = "\u25b6" if status == "running" else "\u23f8"
+            status_color = "green" if status == "running" else "yellow"
+            self._console.print(
+                f"    [bold white]\\[{num}][/bold white] "
+                f"{name:<20s} [dim]{short_id}[/dim]  "
+                f"[{status_color}]{status_icon} {status}[/{status_color}]"
+            )
+        self._console.print()
+
+    def render_catalog_list(self, entries: list[tuple[str, str]]) -> None:
+        """Render catalog entries. Each tuple: (entry_id, description)."""
+        self._console.print("  [bold]Create new:[/bold]")
+        for entry_id, description in entries:
+            desc = description or ""
+            self._console.print(
+                f"    [bold white]\\[c {entry_id}][/bold white]  "
+                f"[dim]{desc}[/dim]"
+            )
+        self._console.print()
+
+    def render_startup_hints(self, max_num: int, has_stopped: bool) -> None:
+        """Render the startup menu hints in the status bar area."""
+        parts = []
+        if max_num > 0:
+            parts.append(f"[1-{max_num}] connect")
+        parts.append("[c <name>] create")
+        if has_stopped:
+            parts.append("[s] stopped teams")
+        self._console.print(f"  [dim]{'  '.join(parts)}[/dim]")
+
+    def render_pagination_hints(self, has_next: bool) -> None:
+        """Render pagination hints for stopped teams list."""
+        parts = ["[number] restore & connect"]
+        if has_next:
+            parts.append("[n] next page")
+        parts.append("[b] back")
+        self._console.print(f"  [dim]{'  '.join(parts)}[/dim]")

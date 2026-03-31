@@ -379,8 +379,9 @@ async def _restore_handler(args: str, session: ChatSession) -> None:
 
     print(f"Team {target_id} restored. Live events resumed.")
 
-    if target_id != session.team_id:
-        await _switch_handler(target_id, session)
+    # Reconnect WebSocket — either switch to the new team or
+    # re-establish connection for the current team after restore
+    await _switch_handler(target_id, session)
 
 
 # -- Switch command --
@@ -435,12 +436,12 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
         except asyncio.CancelledError:
             pass
 
-    # Replay history for the new team (non-blocking)
+    # Refresh team info for status bar and replay history
+    session._fetch_team_info()
+    session.renderer.render_border()
     await session.replay_history_async()
 
     session._receive_task = asyncio.create_task(session._receive_loop())
-
-    print(f"Switched to team {new_team_id}.")
 
 
 async def _catalog_handler(args: str, session: ChatSession) -> None:
