@@ -191,7 +191,6 @@ class ChatInput(TextArea):
         last_line = len(lines) - 1
         last_col = len(lines[-1])
         self.move_cursor((last_line, last_col))
-        # Shift+Enter is "shift+enter" key name -- let it pass through for newline
 
 
 # Import at bottom to avoid circular imports
