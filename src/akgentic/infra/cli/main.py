@@ -14,7 +14,8 @@ from akgentic.infra.cli.client import ApiClient, ApiError
 from akgentic.infra.cli.connection import ConnectionManager
 from akgentic.infra.cli.formatters import OutputFormat, format_output
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.repl import ChatSession, TeamSelector
+from akgentic.infra.cli.repl import ChatSession
+from akgentic.infra.cli.team_selector import TeamSelector
 from akgentic.infra.cli.ws_client import WsConnectionError
 
 app = typer.Typer(name="ak-infra", help="Akgentic Infrastructure CLI")
