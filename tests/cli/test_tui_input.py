@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from akgentic.infra.cli.commands import CommandRegistry, SlashCommand, build_default_registry
+from akgentic.infra.cli.commands import CommandRegistry
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.messages import ConnectionStateChanged
@@ -340,6 +340,100 @@ async def test_no_palette_without_registry() -> None:
         await pilot.pause()
         await pilot.pause()
         assert len(pilot.app.query(CommandPalette)) == 0
+
+
+@pytest.mark.asyncio
+async def test_enter_selects_palette_command_and_submits() -> None:
+    """Enter with palette visible selects the highlighted command and submits it."""
+    registry = _make_small_registry()
+    app = _make_app(command_registry=registry)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        await pilot.click(ChatInput)
+        await pilot.press("/")
+        await pilot.pause()
+        await pilot.pause()
+        # Palette should be visible
+        assert len(pilot.app.query(CommandPalette)) == 1
+        # Press enter to select + submit
+        await pilot.press("enter")
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        # After enter: input is cleared (submitted) and palette dismissed
+        assert chat_input.text.strip() == ""
+        assert len(pilot.app.query(CommandPalette)) == 0
+        # The selected command should have been submitted to history
+        assert len(chat_input._history) == 1
+        assert chat_input._history[0].startswith("/")
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for CommandPalette
+# ---------------------------------------------------------------------------
+
+
+def test_command_palette_render() -> None:
+    """CommandPalette.render() produces correct Rich Text output."""
+    registry = _make_small_registry()
+    palette = CommandPalette(registry.commands)
+    output = palette.render()
+    text_str = str(output)
+    assert "/help" in text_str
+    assert "/teams" in text_str
+    assert "/test" in text_str
+
+
+def test_command_palette_render_empty_filter() -> None:
+    """CommandPalette with no matches renders placeholder text."""
+    registry = _make_small_registry()
+    palette = CommandPalette(registry.commands)
+    palette.filter_text = "zzz_no_match"
+    output = palette.render()
+    assert "no matching commands" in str(output)
+
+
+def test_command_palette_selected_command_empty() -> None:
+    """selected_command returns None when no commands match."""
+    registry = _make_small_registry()
+    palette = CommandPalette(registry.commands)
+    palette.filter_text = "zzz_no_match"
+    assert palette.selected_command is None
+
+
+def test_command_palette_move_up_at_top() -> None:
+    """move_up at index 0 stays at 0."""
+    registry = _make_small_registry()
+    palette = CommandPalette(registry.commands)
+    assert palette._selected_idx == 0
+    palette.move_up()
+    assert palette._selected_idx == 0
+
+
+def test_command_palette_move_down_at_bottom() -> None:
+    """move_down at last index stays at last index."""
+    registry = _make_small_registry()
+    palette = CommandPalette(registry.commands)
+    # Move to the last item
+    for _ in range(len(palette._filtered)):
+        palette.move_down()
+    last_idx = len(palette._filtered) - 1
+    assert palette._selected_idx == last_idx
+    palette.move_down()
+    assert palette._selected_idx == last_idx
+
+
+def test_command_palette_filter_clamps_index() -> None:
+    """filter_text clamps selected_idx when filtered list shrinks."""
+    registry = _make_small_registry()
+    palette = CommandPalette(registry.commands)
+    # Move to idx 2 (3 commands: help, teams, test)
+    palette.move_down()
+    palette.move_down()
+    assert palette._selected_idx == 2
+    # Filter to only 1 match
+    palette.filter_text = "help"
+    assert palette._selected_idx == 0
+    assert palette.selected_command == "help"
 
 
 # ---------------------------------------------------------------------------
