@@ -42,9 +42,7 @@ class TestChatErrorBoundary:
         error = ApiError(500, "internal server error")
         with (
             patch("akgentic.infra.cli.main.RichRenderer") as MockRenderer,
-            patch(
-                "akgentic.infra.cli.main.ChatSession"
-            ) as MockSession,
+            patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
             renderer_instance = MockRenderer.return_value
@@ -67,9 +65,7 @@ class TestChatErrorBoundary:
         error = WsConnectionError("refused")
         with (
             patch("akgentic.infra.cli.main.RichRenderer") as MockRenderer,
-            patch(
-                "akgentic.infra.cli.main.ChatSession"
-            ) as MockSession,
+            patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
             renderer_instance = MockRenderer.return_value
@@ -92,9 +88,7 @@ class TestChatErrorBoundary:
         error = RuntimeError("something broke")
         with (
             patch("akgentic.infra.cli.main.RichRenderer") as MockRenderer,
-            patch(
-                "akgentic.infra.cli.main.ChatSession"
-            ) as MockSession,
+            patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
             renderer_instance = MockRenderer.return_value
@@ -116,9 +110,7 @@ class TestChatErrorBoundary:
         """KeyboardInterrupt during session.run() exits without error message."""
         with (
             patch("akgentic.infra.cli.main.RichRenderer") as MockRenderer,
-            patch(
-                "akgentic.infra.cli.main.ChatSession"
-            ) as MockSession,
+            patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
             renderer_instance = MockRenderer.return_value
@@ -138,9 +130,7 @@ class TestChatErrorBoundary:
         """client.close() is called even on successful exit."""
         with (
             patch("akgentic.infra.cli.main.RichRenderer"),
-            patch(
-                "akgentic.infra.cli.main.ChatSession"
-            ),
+            patch("akgentic.infra.cli.main.ChatSession"),
             patch("akgentic.infra.cli.main.asyncio") as mock_asyncio,
         ):
             mock_asyncio.run.return_value = None
