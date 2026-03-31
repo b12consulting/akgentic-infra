@@ -221,10 +221,20 @@ class TestTeamsHandler:
         out = capsys.readouterr().out
         lines = out.strip().split("\n")
         # The line with t1 should have (current) marker
-        t1_line = [l for l in lines if "t1" in l][0]
+        t1_line = [line for line in lines if "t1" in line][0]
         assert "(current)" in t1_line
-        t2_line = [l for l in lines if "t2" in l][0]
+        t2_line = [line for line in lines if "t2" in line][0]
         assert "(current)" not in t2_line
+
+    async def test_empty_teams_list(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.list_teams.return_value = []
+        session = _make_session(client=client)
+
+        await _teams_handler("", session)
+
+        out = capsys.readouterr().out
+        assert "No teams found" in out
 
     async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()
@@ -417,6 +427,33 @@ class TestEventsHandler:
 
         out = capsys.readouterr().out
         assert "Usage" in out
+
+    async def test_zero_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _events_handler("0", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_negative_limit(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session = _make_session()
+
+        await _events_handler("-3", session)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+    async def test_no_events(self, capsys: pytest.CaptureFixture[str]) -> None:
+        client = _mock_client()
+        client.get_events.return_value = []
+        session = _make_session(client=client)
+
+        await _events_handler("", session)
+
+        out = capsys.readouterr().out
+        # No events = no output (no crash)
+        assert out == ""
 
     async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
         client = _mock_client()

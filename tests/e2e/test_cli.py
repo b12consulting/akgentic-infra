@@ -165,7 +165,7 @@ def test_e2e_cli_slash_commands(
         _agents_handler,
         _files_handler,
         _history_handler,
-        _status_handler,
+        _info_handler,
     )
 
     team_id: str | None = None
@@ -183,8 +183,8 @@ def test_e2e_cli_slash_commands(
             _render_event=lambda ev: None,
         )
 
-        # /status
-        asyncio.run(_status_handler("", session))  # type: ignore[arg-type]
+        # /info (replaces removed /status)
+        asyncio.run(_info_handler("", session))  # type: ignore[arg-type]
 
         # /agents — wait briefly for StartMessage events
         time.sleep(2)
