@@ -94,14 +94,22 @@ def _ensure_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture()
 def server_settings(tmp_path: Path) -> CommunitySettings:
     """Server settings with tmp_path-based workspaces."""
-    return CommunitySettings(workspaces_root=tmp_path / "workspaces")
+    return CommunitySettings(
+        workspaces_root=tmp_path / "workspaces",
+        event_store_path=tmp_path / "event_store",
+        catalog_path=tmp_path / "catalog",
+    )
 
 
 @pytest.fixture()
 def seeded_settings(tmp_path: Path) -> CommunitySettings:
     """Server settings with pre-seeded catalog YAML files."""
-    settings = CommunitySettings(workspaces_root=tmp_path / "workspaces")
-    _seed_catalog(settings.workspaces_root / "catalog")
+    settings = CommunitySettings(
+        workspaces_root=tmp_path / "workspaces",
+        event_store_path=tmp_path / "event_store",
+        catalog_path=tmp_path / "catalog",
+    )
+    _seed_catalog(settings.catalog_path)
     return settings
 
 

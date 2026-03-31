@@ -70,9 +70,13 @@ class CommunitySettings(ServerSettings):
         default=Path("workspaces"),
         description="Root directory for team workspace storage",
     )
-    catalog_path: Path | None = Field(
-        default=None,
-        description="Catalog directory; defaults to workspaces_root / 'catalog'",
+    event_store_path: Path = Field(
+        default=Path("data/event_store"),
+        description="Root directory for event store persistence",
+    )
+    catalog_path: Path = Field(
+        default=Path("data/catalog"),
+        description="Catalog directory for team/agent/tool/template definitions",
     )
     channel_registry_path: Path | None = Field(
         default=None,
