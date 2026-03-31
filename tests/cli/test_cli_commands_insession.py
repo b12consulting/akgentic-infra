@@ -73,6 +73,7 @@ def _mock_client(**overrides: Any) -> MagicMock:
     mock.workspace_upload.return_value = WorkspaceUploadInfo(path="test.txt", size=5)
     mock.stop_team.return_value = None
     mock.delete_team.return_value = None
+    mock.list_catalog_teams.return_value = []
     mock.restore_team.return_value = TeamInfo(
         team_id="t1",
         name="Test Team",
