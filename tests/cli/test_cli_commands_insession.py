@@ -43,19 +43,6 @@ _PROMPT_PATH = "prompt_toolkit.PromptSession.prompt"
 # -- Helpers --
 
 
-def _short_model(event: dict[str, Any]) -> dict[str, Any]:
-    """Normalize __model__ to short class name for _is_displayable compatibility.
-
-    _is_displayable checks __model__ against short names ("SentMessage") but factory
-    output uses fully-qualified names ("akgentic.core.messages.orchestrator.SentMessage").
-    _render_event_impl handles both via rsplit, but _is_displayable does not.
-    This is a known production inconsistency -- this helper works around it in tests.
-    """
-    model = event.get("__model__", "")
-    if "." in model:
-        event = {**event, "__model__": model.rsplit(".", 1)[-1]}
-    return event
-
 
 def _mock_client(**overrides: Any) -> MagicMock:
     """Build a mock ApiClient with in-session-specific defaults."""
@@ -254,7 +241,7 @@ class TestHistoryHandler:
             EventInfo(
                 team_id="t1",
                 sequence=i,
-                event=_short_model(make_sent_message(content=f"msg-{i}")),
+                event=make_sent_message(content=f"msg-{i}"),
                 timestamp="2026-01-01T00:00:00",
             )
             for i in range(25)
@@ -278,7 +265,7 @@ class TestHistoryHandler:
             EventInfo(
                 team_id="t1",
                 sequence=i,
-                event=_short_model(make_sent_message(content=f"msg-{i}")),
+                event=make_sent_message(content=f"msg-{i}"),
                 timestamp="2026-01-01T00:00:00",
             )
             for i in range(25)
@@ -331,7 +318,7 @@ class TestHistoryHandler:
             EventInfo(
                 team_id="t1",
                 sequence=2,
-                event=_short_model(make_sent_message(content="visible")),
+                event=make_sent_message(content="visible"),
                 timestamp="2026-01-01T00:00:00",
             ),
         ]
