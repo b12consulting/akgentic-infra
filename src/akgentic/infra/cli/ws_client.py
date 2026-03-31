@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any
 
 import websockets.asyncio.client
 import websockets.exceptions
+
+
+class WsConnectionError(Exception):
+    """WebSocket connection failed."""
+
+    def __init__(self, reason: str, *, retryable: bool = True) -> None:
+        self.reason = reason
+        self.retryable = retryable
+        super().__init__(reason)
 
 
 class WsClient:
@@ -34,18 +42,22 @@ class WsClient:
                 additional_headers=self._headers,
             )
         except (ConnectionRefusedError, OSError) as exc:
-            print(f"Connection error: {exc}", file=sys.stderr)
-            raise SystemExit(1) from exc
+            raise WsConnectionError(
+                f"Connection error: {exc}", retryable=True
+            ) from exc
         except websockets.exceptions.InvalidStatus as exc:
             status = exc.response.status_code
             if status == 404 or status == 403:
-                print("Error: team not found", file=sys.stderr)
-            else:
-                print(f"WebSocket rejected: HTTP {status}", file=sys.stderr)
-            raise SystemExit(1) from exc
+                raise WsConnectionError(
+                    "Team not found", retryable=False
+                ) from exc
+            raise WsConnectionError(
+                f"WebSocket rejected: HTTP {status}", retryable=True
+            ) from exc
         except websockets.exceptions.InvalidHandshake as exc:
-            print(f"WebSocket handshake failed: {exc}", file=sys.stderr)
-            raise SystemExit(1) from exc
+            raise WsConnectionError(
+                f"WebSocket handshake failed: {exc}", retryable=True
+            ) from exc
         return self
 
     async def receive_event(self) -> dict[str, Any]:

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 from typing import Any
 
 import httpx
-import typer
 from pydantic import BaseModel
 
 # -- CLI-side response models (independent of server models) --
@@ -75,6 +73,20 @@ class CatalogTeamInfo(BaseModel):
     description: str
 
 
+class ApiError(Exception):
+    """HTTP API call failed."""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(f"HTTP {status_code}: {detail}" if detail else f"HTTP {status_code}")
+
+    @property
+    def retryable(self) -> bool:
+        """True for transient server errors and network issues."""
+        return self.status_code >= 500 or self.status_code == 429 or self.status_code == 0
+
+
 class ApiClient:
     """Thin HTTP client mapping CLI commands to server endpoints."""
 
@@ -82,7 +94,12 @@ class ApiClient:
         headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.Client(base_url=base_url, headers=headers, follow_redirects=True)
+        self._client = httpx.Client(
+            base_url=base_url,
+            headers=headers,
+            follow_redirects=True,
+            timeout=httpx.Timeout(30.0, connect=10.0),
+        )
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -106,14 +123,20 @@ class ApiClient:
         files: dict[str, Any] | None = None,
         data: dict[str, str] | None = None,
     ) -> httpx.Response:
-        resp = self._client.request(
-            method,
-            path,
-            json=json,
-            params=params,
-            files=files,
-            data=data,
-        )
+        try:
+            resp = self._client.request(
+                method,
+                path,
+                json=json,
+                params=params,
+                files=files,
+                data=data,
+            )
+        except httpx.TimeoutException as exc:
+            raise ApiError(0, f"Request timed out: {method} {path}") from exc
+        except httpx.ConnectError as exc:
+            raise ApiError(0, f"Connection failed: {exc}") from exc
+
         if not resp.is_success:
             detail = ""
             try:
@@ -121,11 +144,7 @@ class ApiClient:
                 detail = body.get("detail", "")
             except Exception:  # noqa: BLE001
                 pass
-            msg = f"HTTP {resp.status_code}"
-            if detail:
-                msg += f": {detail}"
-            print(msg, file=sys.stderr)
-            raise typer.Exit(code=1)
+            raise ApiError(resp.status_code, detail)
         return resp
 
     # -- catalog endpoints --

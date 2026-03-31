@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from pydantic import BaseModel
 
-from akgentic.infra.cli.client import ApiClient
+from akgentic.infra.cli.client import ApiClient, ApiError
 from akgentic.infra.cli.formatters import OutputFormat, format_output
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import ChatSession, TeamSelector
-from akgentic.infra.cli.ws_client import WsClient
+from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
 
 app = typer.Typer(name="ak-infra", help="Akgentic Infrastructure CLI")
 team_app = typer.Typer(name="team", help="Manage agent teams")
@@ -163,12 +164,13 @@ def chat(
     ] = None,
 ) -> None:
     """Interactive chat REPL — connect to a team via WebSocket."""
+    renderer = RichRenderer()
+
     if create is not None:
         team = _state.client.create_team(create)
         team_id = team.team_id
 
     if team_id is None:
-        renderer = RichRenderer()
         selector = TeamSelector(_state.client, renderer)
         team_id = selector.run()
         if team_id is None:
@@ -179,7 +181,6 @@ def chat(
         team_id=team_id,
         api_key=_state.api_key,
     )
-    renderer = RichRenderer()
     session = ChatSession(
         _state.client,
         ws,
@@ -189,7 +190,22 @@ def chat(
         api_key=_state.api_key,
         renderer=renderer,
     )
-    asyncio.run(session.run())
+    try:
+        asyncio.run(session.run())
+    except KeyboardInterrupt:
+        pass
+    except WsConnectionError as exc:
+        renderer.render_error(f"Connection failed: {exc.reason}")
+        raise typer.Exit(code=1) from exc
+    except ApiError as exc:
+        renderer.render_error(f"Server error: {exc}")
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        renderer.render_error(f"Unexpected error: {exc}")
+        logging.getLogger(__name__).exception("Unhandled exception in REPL")
+        raise typer.Exit(code=1) from exc
+    finally:
+        _state.client.close()
 
 
 # -- workspace commands --

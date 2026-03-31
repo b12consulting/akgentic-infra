@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from akgentic.infra.cli.client import (
+    ApiError,
     CatalogTeamInfo,
     EventInfo,
     TeamInfo,
@@ -37,6 +38,7 @@ from akgentic.infra.cli.commands import (
     build_default_registry,
 )
 from akgentic.infra.cli.formatters import OutputFormat
+from akgentic.infra.cli.ws_client import WsConnectionError
 from akgentic.infra.cli.repl import ChatSession
 from tests.fixtures.events import _make_proxy, make_sent_message, make_start_message
 
@@ -239,15 +241,15 @@ class TestTeamsHandler:
         out = capsys.readouterr().out
         assert "No teams found" in out
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.list_teams.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.list_teams.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _teams_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestCreateHandler:
@@ -279,15 +281,15 @@ class TestCreateHandler:
         out = capsys.readouterr().out
         assert "Usage" in out
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.create_team.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.create_team.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _create_handler("my-entry", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestDeleteHandler:
@@ -339,15 +341,15 @@ class TestDeleteHandler:
         out = capsys.readouterr().out
         assert "/switch" in out or "/teams" in out
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.get_team.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.get_team.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _delete_handler("some-id", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestInfoHandler:
@@ -371,15 +373,15 @@ class TestInfoHandler:
 
         client.get_team.assert_called_once_with("t2")
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.get_team.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.get_team.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _info_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestEventsHandler:
@@ -458,15 +460,15 @@ class TestEventsHandler:
         # No events = no output (no crash)
         assert out == ""
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.get_events.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.get_events.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _events_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestAgentsHandler:
@@ -499,15 +501,15 @@ class TestAgentsHandler:
         out = capsys.readouterr().out
         assert "No agents found" in out
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.get_events.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.get_events.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _agents_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestHistoryHandler:
@@ -608,15 +610,15 @@ class TestHistoryHandler:
         assert "visible" in out
         assert "StateChanged" not in out
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.get_events.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.get_events.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _history_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestFilesHandler:
@@ -641,15 +643,15 @@ class TestFilesHandler:
         out = capsys.readouterr().out
         assert "empty" in out.lower()
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.workspace_tree.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.workspace_tree.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _files_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestReadHandler:
@@ -680,15 +682,15 @@ class TestReadHandler:
         out = capsys.readouterr().out
         assert "binary" in out.lower() or "bytes" in out.lower()
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.workspace_read.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.workspace_read.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _read_handler("test.txt", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestUploadHandler:
@@ -720,19 +722,17 @@ class TestUploadHandler:
         out = capsys.readouterr().out
         assert "Error" in out or "not a file" in out
 
-    async def test_handles_api_error(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    async def test_handles_api_error(self, tmp_path: Path) -> None:
         f = tmp_path / "test.txt"
         f.write_text("hello")
         client = _mock_client()
-        client.workspace_upload.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.workspace_upload.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _upload_handler(str(f), session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestStopHandler:
@@ -747,15 +747,15 @@ class TestStopHandler:
         client.stop_team.assert_called_once_with("t1")
         client.delete_team.assert_not_called()
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.stop_team.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.stop_team.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _stop_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestRestoreHandler:
@@ -812,15 +812,15 @@ class TestRestoreHandler:
         # WebSocket reconnected even for same team
         assert session.team_id == "t1"
 
-    async def test_handles_api_error(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_handles_api_error(self) -> None:
         client = _mock_client()
-        client.restore_team.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.restore_team.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _restore_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error" in err
+        assert "Error" in buf.getvalue()
 
 
 class TestSwitchHandler:
@@ -855,15 +855,16 @@ class TestSwitchHandler:
         out = capsys.readouterr().out
         assert "Usage" in out
 
-    async def test_switch_fails_restores_old(self, capsys: pytest.CaptureFixture[str]) -> None:
+    async def test_switch_fails_restores_old(self) -> None:
         client = _mock_client()
         old_ws = _mock_ws()
-        session = _make_session(client=client, ws=old_ws)
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, ws=old_ws, renderer=renderer)
 
         # First call creates the new WsClient (connect will fail),
         # second call creates the restored WsClient for the old team
         new_ws_mock = _mock_ws()
-        new_ws_mock.connect = AsyncMock(side_effect=SystemExit(1))
+        new_ws_mock.connect = AsyncMock(side_effect=WsConnectionError("test error"))
         restored_ws_mock = _mock_ws()
         with patch(
             "akgentic.infra.cli.commands.WsClient",
@@ -871,8 +872,7 @@ class TestSwitchHandler:
         ):
             await _switch_handler("bad-team", session)
 
-        err = capsys.readouterr().err
-        assert "not found" in err
+        assert "not found" in buf.getvalue()
         # Session ws should be the restored connection
         assert session.ws_client is restored_ws_mock
         assert session.team_id == "t1"  # unchanged
@@ -990,17 +990,15 @@ class TestCatalogHandler:
         out = capsys.readouterr().out
         assert "No team templates found." in out
 
-    async def test_catalog_handler_error(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    async def test_catalog_handler_error(self) -> None:
         client = _mock_client()
-        client.list_catalog_teams.side_effect = SystemExit(1)
-        session = _make_session(client=client)
+        client.list_catalog_teams.side_effect = ApiError(500, "test error")
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
 
         await _catalog_handler("", session)
 
-        err = capsys.readouterr().err
-        assert "Error fetching catalog." in err
+        assert "Error fetching catalog" in buf.getvalue()
 
 
 class TestListCatalogTeamsClient:

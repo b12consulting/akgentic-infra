@@ -12,7 +12,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
 
-from akgentic.infra.cli.client import ApiClient, TeamInfo
+from akgentic.infra.cli.client import ApiClient, ApiError, TeamInfo
 from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
@@ -100,7 +100,7 @@ class TeamSelector:
         try:
             team = self._client.create_team(entry_id)
             return team.team_id
-        except SystemExit:
+        except ApiError:
             self._renderer.render_error(f"Failed to create team from '{entry_id}'")
             return None
 
@@ -108,7 +108,7 @@ class TeamSelector:
         """Fetch all teams from the server."""
         try:
             return self._client.list_teams()
-        except SystemExit:
+        except ApiError:
             return []
 
     def _fetch_catalog(self) -> list[tuple[str, str]]:
@@ -116,7 +116,7 @@ class TeamSelector:
         try:
             entries = self._client.list_catalog_teams()
             return [(e.id, e.description) for e in entries]
-        except (SystemExit, Exception):  # noqa: BLE001
+        except (ApiError, Exception):  # noqa: BLE001
             return []
 
     def _browse_stopped(self, stopped: list[TeamInfo]) -> str | None:
@@ -161,7 +161,7 @@ class TeamSelector:
                     try:
                         self._client.restore_team(team.team_id)
                         return team.team_id
-                    except SystemExit:
+                    except ApiError:
                         self._renderer.render_error(f"Failed to restore team {team.name}")
                         continue
                 self._renderer.render_error(f"Invalid selection: {choice}")
@@ -209,7 +209,7 @@ class ChatSession:
             team = self.client.get_team(self.team_id)
             self._team_name = team.name
             self._team_status = team.status
-        except SystemExit:
+        except ApiError:
             self._team_name = "(unknown)"
             self._team_status = "?"
 
@@ -276,14 +276,14 @@ class ChatSession:
                     await loop.run_in_executor(
                         None, self.client.human_input, self.team_id, line, reply_id
                     )
-                except SystemExit:
+                except ApiError:
                     self.renderer.render_error("Error sending reply.")
                 continue
 
             # Send message via REST API (run in executor to avoid blocking)
             try:
                 await loop.run_in_executor(None, self.client.send_message, self.team_id, line)
-            except SystemExit:
+            except ApiError:
                 self.renderer.render_error("Error sending message.")
 
     async def _receive_loop(self) -> None:
@@ -310,7 +310,7 @@ class ChatSession:
         """Fetch and display past events before starting the REPL."""
         try:
             events = self.client.get_events(self.team_id)
-        except SystemExit:
+        except ApiError:
             return
         self._display_events([e.model_dump() for e in events])
 
@@ -319,7 +319,7 @@ class ChatSession:
         loop = asyncio.get_running_loop()
         try:
             events = await loop.run_in_executor(None, self.client.get_events, self.team_id)
-        except SystemExit:
+        except ApiError:
             return
         self._display_events([e.model_dump() for e in events])
 

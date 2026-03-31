@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import builtins
 import json as json_mod
-import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from akgentic.infra.cli.ws_client import WsClient
+from akgentic.infra.cli.client import ApiError
+from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
 
 if TYPE_CHECKING:
     from akgentic.infra.cli.repl import ChatSession
@@ -96,8 +96,8 @@ async def _teams_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         teams = await loop.run_in_executor(None, session.client.list_teams)
-    except SystemExit:
-        print("Error fetching teams.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error fetching teams: {exc.detail}")
         return
 
     if not teams:
@@ -123,8 +123,8 @@ async def _create_handler(args: str, session: ChatSession) -> None:
         team = await loop.run_in_executor(
             None, session.client.create_team, catalog_entry_id
         )
-    except SystemExit:
-        print("Error creating team.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error creating team: {exc.detail}")
         return
 
     print(f"Created team: {team.name} ({team.team_id})")
@@ -138,8 +138,8 @@ async def _delete_handler(args: str, session: ChatSession) -> None:
 
     try:
         team = await loop.run_in_executor(None, session.client.get_team, target_id)
-    except SystemExit:
-        print("Error fetching team info.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error fetching team info: {exc.detail}")
         return
 
     prompt_text = (
@@ -158,8 +158,8 @@ async def _delete_handler(args: str, session: ChatSession) -> None:
 
     try:
         await loop.run_in_executor(None, session.client.delete_team, target_id)
-    except SystemExit:
-        print("Error deleting team.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error deleting team: {exc.detail}")
         return
 
     print(f"Team {team.name} ({target_id}) deleted.")
@@ -173,8 +173,8 @@ async def _info_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         team = await loop.run_in_executor(None, session.client.get_team, target_id)
-    except SystemExit:
-        print("Error fetching team info.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error fetching team info: {exc.detail}")
         return
 
     print(f"Name: {team.name}")
@@ -201,8 +201,8 @@ async def _events_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         events = await loop.run_in_executor(None, session.client.get_events, session.team_id)
-    except SystemExit:
-        print("Error fetching events.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error fetching events: {exc.detail}")
         return
 
     for evt in events[-limit:]:
@@ -214,8 +214,8 @@ async def _agents_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         events = await loop.run_in_executor(None, session.client.get_events, session.team_id)
-    except SystemExit:
-        print("Error fetching agents.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error fetching agents: {exc.detail}")
         return
 
     seen: dict[str, str] = {}
@@ -256,8 +256,8 @@ async def _history_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         events = await loop.run_in_executor(None, session.client.get_events, session.team_id)
-    except SystemExit:
-        print("Error fetching history.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error fetching history: {exc.detail}")
         return
 
     # Convert EventInfo models to dicts for the rendering pipeline
@@ -290,8 +290,8 @@ async def _files_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         tree = await loop.run_in_executor(None, session.client.workspace_tree, session.team_id)
-    except SystemExit:
-        print("Error fetching file tree.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error fetching file tree: {exc.detail}")
         return
 
     if not tree.entries:
@@ -315,8 +315,8 @@ async def _read_handler(args: str, session: ChatSession) -> None:
         data = await loop.run_in_executor(
             None, session.client.workspace_read, session.team_id, path
         )
-    except SystemExit:
-        print(f"Error reading file: {path}", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error reading file {path}: {exc.detail}")
         return
 
     try:
@@ -345,8 +345,8 @@ async def _upload_handler(args: str, session: ChatSession) -> None:
         result = await loop.run_in_executor(
             None, session.client.workspace_upload, session.team_id, p.name, file_data
         )
-    except SystemExit:
-        print(f"Error uploading file: {local_path}", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error uploading file {local_path}: {exc.detail}")
         return
 
     print(f"Uploaded {result.path} ({result.size} bytes)")
@@ -360,8 +360,8 @@ async def _stop_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, session.client.stop_team, session.team_id)
-    except SystemExit:
-        print("Error stopping team.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error stopping team: {exc.detail}")
         return
 
     print(f"Team {session.team_id} stopped.")
@@ -373,8 +373,8 @@ async def _restore_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         await loop.run_in_executor(None, session.client.restore_team, target_id)
-    except SystemExit:
-        print("Error restoring team.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error restoring team: {exc.detail}")
         return
 
     print(f"Team {target_id} restored. Live events resumed.")
@@ -409,8 +409,8 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
 
     try:
         await new_ws.connect()
-    except (SystemExit, Exception):  # noqa: BLE001
-        print(f"Team {new_team_id} not found.", file=sys.stderr)
+    except (ApiError, WsConnectionError, Exception):  # noqa: BLE001
+        session.renderer.render_error(f"Team {new_team_id} not found.")
         # Restore previous connection
         restored = WsClient(
             base_url=session.server_url,
@@ -421,7 +421,7 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
             await restored.connect()
             session.ws_client = restored
         except Exception:  # noqa: BLE001
-            print("Failed to restore previous connection.", file=sys.stderr)
+            session.renderer.render_error("Failed to restore previous connection.")
         return
 
     # Update session state
@@ -449,8 +449,8 @@ async def _catalog_handler(args: str, session: ChatSession) -> None:
     loop = asyncio.get_running_loop()
     try:
         entries = await loop.run_in_executor(None, session.client.list_catalog_teams)
-    except SystemExit:
-        print("Error fetching catalog.", file=sys.stderr)
+    except ApiError as exc:
+        session.renderer.render_error(f"Error fetching catalog: {exc.detail}")
         return
 
     if not entries:
