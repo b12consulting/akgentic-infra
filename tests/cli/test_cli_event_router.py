@@ -378,11 +378,7 @@ class TestToWidgetErrorMessage:
 class TestToWidgetToolCall:
     def test_returns_tool_call_widget(self) -> None:
         router, registry = _make_widget_router()
-        data = {
-            "event": make_event_message(
-                event=make_tool_call_event(tool_name="search")
-            )
-        }
+        data = {"event": make_event_message(event=make_tool_call_event(tool_name="search"))}
         widget = router.to_widget(data, registry)
         assert isinstance(widget, ToolCallWidget)
 
@@ -438,6 +434,38 @@ class TestToWidgetUnknown:
         data = {"event": make_start_message()}
         widget = router.to_widget(data, registry)
         assert widget is None
+
+
+class TestToWidgetJsonStringEvent:
+    def test_json_string_outer_event(self) -> None:
+        """to_widget handles a JSON-string 'event' field (same as route)."""
+        import json
+
+        router, registry = _make_widget_router()
+        event_payload = json.dumps(
+            {
+                "__model__": "some.module.SentMessage",
+                "sender": "Agent",
+                "message": {"content": "via json string"},
+            }
+        )
+        widget = router.to_widget({"event": event_payload}, registry)
+        assert isinstance(widget, AgentMessage)
+
+    def test_nested_event_json_string_returns_tool_widget(self) -> None:
+        """to_widget handles a JSON-string nested event inside EventMessage."""
+        import json
+
+        router, registry = _make_widget_router()
+        nested = json.dumps({"tool_name": "calc", "arguments": "2+2", "result": "4"})
+        data = {
+            "event": {
+                "__model__": "EventMessage",
+                "event": nested,
+            },
+        }
+        widget = router.to_widget(data, registry)
+        assert isinstance(widget, ToolCallWidget)
 
 
 class TestToWidgetMalformed:
