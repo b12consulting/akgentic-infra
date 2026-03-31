@@ -1,0 +1,32 @@
+Screen {
+    layout: vertical;
+}
+
+StatusHeader {
+    dock: top;
+    height: 1;
+    background: $surface;
+}
+
+#conversation {
+    height: 1fr;
+}
+
+#welcome {
+    margin: 1 2;
+    color: $text-muted;
+}
+
+ChatInput {
+    dock: bottom;
+    height: auto;
+    max-height: 10;
+    min-height: 3;
+    border-top: solid $accent;
+}
+
+HintBar {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+}
