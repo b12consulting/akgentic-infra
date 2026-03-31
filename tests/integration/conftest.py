@@ -8,12 +8,17 @@ by monkey-patching ``akgentic.llm.providers.create_model`` to return
 from __future__ import annotations
 
 import os
+import socket
+import threading
+import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import httpx
 import pytest
+import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -291,3 +296,67 @@ def smoke_app(
 def smoke_client(smoke_app: FastAPI) -> TestClient:
     """Sync HTTP test client hitting a TestModel-backed FastAPI app."""
     return TestClient(smoke_app)
+
+
+# ---------------------------------------------------------------------------
+# Shared CLI/REPL Integration Test Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _get_free_port() -> int:
+    """Bind to port 0 to get a free port from the OS."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port: int = s.getsockname()[1]
+        return port
+
+
+@pytest.fixture(autouse=True)
+def _httpx_follow_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch httpx.Client to follow redirects by default.
+
+    The CLI's ApiClient creates httpx.Client without follow_redirects=True,
+    but FastAPI redirects /teams -> /teams/ (trailing-slash redirect).
+    This patch ensures the CLI tests work against a real server.
+    """
+    _original_init = httpx.Client.__init__
+
+    def _patched_init(self: httpx.Client, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("follow_redirects", True)
+        _original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "__init__", _patched_init)
+
+
+@pytest.fixture()
+def cli_server(integration_app: FastAPI) -> Generator[str, None, None]:
+    """Start the integration app on a real TCP port via uvicorn in a daemon thread.
+
+    Yields the base URL ``http://127.0.0.1:{port}``.
+    """
+    port = _get_free_port()
+    config = uvicorn.Config(
+        app=integration_app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+    server = uvicorn.Server(config)
+
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    # Wait for the server to be ready
+    deadline = time.monotonic() + 10.0
+    url = f"http://127.0.0.1:{port}"
+    while time.monotonic() < deadline:
+        if server.started:
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("uvicorn server did not start within 10 seconds")
+
+    yield url
+
+    server.should_exit = True
+    thread.join(timeout=5)

@@ -10,9 +10,54 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from akgentic.infra.cli.client import ApiClient
+from akgentic.infra.cli.formatters import OutputFormat
+from akgentic.infra.cli.repl import ChatSession
+from akgentic.infra.cli.ws_client import WsClient
+
 CATALOG_ENTRY_ID = "test-team"
 POLL_INTERVAL_S = 1.0
 POLL_TIMEOUT_S = 60.0
+
+
+class StubRenderer:
+    """Lightweight renderer stub that captures agent messages without MagicMock."""
+
+    def __init__(self) -> None:
+        self.agent_messages: list[str] = []
+
+    def render_agent_message(self, sender: str, content: str) -> None:
+        self.agent_messages.append(f"{sender}: {content}")
+
+    def render_system_message(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_error(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_tool_call(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_human_input_request(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def render_history_separator(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
+def make_integration_session(cli_server_url: str, team_id: str) -> ChatSession:
+    """Build a ChatSession for integration tests with StubRenderer."""
+    api_client = ApiClient(base_url=cli_server_url)
+    ws = WsClient(base_url=cli_server_url, team_id=team_id)
+    renderer = StubRenderer()
+    return ChatSession(
+        api_client,
+        ws,
+        team_id,
+        OutputFormat.table,
+        server_url=cli_server_url,
+        renderer=renderer,
+    )
 
 
 def create_team(client: TestClient) -> str:
