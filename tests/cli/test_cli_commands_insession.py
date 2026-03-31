@@ -42,8 +42,6 @@ _PROMPT_PATH = "prompt_toolkit.PromptSession.prompt"
 
 # -- Helpers --
 
-
-
 def _mock_client(**overrides: Any) -> MagicMock:
     """Build a mock ApiClient with in-session-specific defaults."""
     mock = MagicMock()
