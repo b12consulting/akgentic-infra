@@ -21,6 +21,7 @@ from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 _log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from akgentic.infra.cli.client import ApiClient
     from akgentic.infra.cli.commands import CommandRegistry
     from akgentic.infra.cli.connection import ConnectionManager
     from akgentic.infra.cli.event_router import EventRouter
@@ -42,6 +43,7 @@ class ChatApp(App[None]):
         connection_manager: ConnectionManager | None = None,
         event_router: EventRouter | None = None,
         command_registry: CommandRegistry | None = None,
+        client: ApiClient | None = None,
     ) -> None:
         super().__init__()
         self._team_name = team_name
@@ -50,6 +52,7 @@ class ChatApp(App[None]):
         self._connection_manager = connection_manager
         self._event_router = event_router
         self._command_registry = command_registry
+        self._client = client
         self._color_registry = AgentColorRegistry()
 
     def compose(self) -> ComposeResult:
@@ -71,6 +74,31 @@ class ChatApp(App[None]):
 
     def on_mount(self) -> None:
         """Wire connection manager callback and start streaming."""
+        if not self._team_id:
+            self._select_team()
+            return
+        if self._connection_manager is not None:
+            self._connection_manager._on_state_change = self._on_conn_state_change
+        self.stream_events()
+
+    @work(exclusive=True)
+    async def _select_team(self) -> None:
+        """Push TeamSelectScreen and wait for result."""
+        from akgentic.infra.cli.tui.screens.team_select import TeamSelectScreen
+
+        team_id = await self.push_screen_wait(TeamSelectScreen(client=self._client))
+        if team_id is None:
+            self.exit()
+            return
+        # Fetch team info and update header
+        if self._client is not None:
+            team_info = self._client.get_team(team_id)
+            self._team_id = team_id
+            self._team_name = team_info.name
+            self._team_status = team_info.status
+            self.query_one(StatusHeader).update_team(team_info.name, team_id, team_info.status)
+        else:
+            self._team_id = team_id
         if self._connection_manager is not None:
             self._connection_manager._on_state_change = self._on_conn_state_change
         self.stream_events()
