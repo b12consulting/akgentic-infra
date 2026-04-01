@@ -329,7 +329,7 @@ async def test_last_page_no_next() -> None:
         await pilot.pause()
         await _submit_input(app, "n", pilot)
         all_text = _get_team_list_text(app)
-        assert "1-3 of 3" in all_text
+        assert "Running teams (3):" in all_text
 
 
 # -- Task 8: ChatApp integration tests --
