@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Static
@@ -130,6 +130,43 @@ class ChatApp(App[None]):
                 chat_input = self.query_one(ChatInput)
                 chat_input.set_command_text(cmd)
                 chat_input._submit_text()  # noqa: SLF001
+
+    # -- ESC key: return to team select screen --
+
+    def on_key(self, event: events.Key) -> None:
+        """Handle app-level key events."""
+        if event.key == "escape":
+            # Don't intercept ESC when a screen overlay is active
+            if len(self.screen_stack) > 1:
+                return
+            # If command palette is open, let ChatInput handle it
+            chat_input = self.query_one(ChatInput)
+            if chat_input._palette_visible:  # noqa: SLF001
+                return
+            # Return to team select screen
+            event.prevent_default()
+            self._switch_team()
+
+    @work(exclusive=False)
+    async def _switch_team(self) -> None:
+        """Push TeamSelectScreen from chat view and switch to the selected team."""
+        from akgentic.infra.cli.tui.screens.team_select import TeamSelectScreen
+
+        team_id = await self.push_screen_wait(TeamSelectScreen(client=self._client))
+        if team_id is None:
+            return
+        if self._client is not None:
+            team_info = self._client.get_team(team_id)
+            self._team_id = team_id
+            self._team_name = team_info.name
+            self._team_status = team_info.status
+            self.query_one(StatusHeader).update_team(team_info.name, team_id, team_info.status)
+        else:
+            self._team_id = team_id
+        if self._connection_manager is not None:
+            self._connection_manager._on_state_change = self._on_conn_state_change
+            await self._connection_manager.switch_team(team_id)
+        self.stream_events()
 
     def on_mount(self) -> None:
         """Wire connection manager callback and start streaming."""
