@@ -104,6 +104,8 @@ class ChatApp(App[None]):
             self._team_id = team_id
         if self._connection_manager is not None:
             self._connection_manager._on_state_change = self._on_conn_state_change
+            # Switch to the selected team (updates ConnectionManager's team_id)
+            await self._connection_manager.switch_team(team_id)
         self.stream_events()
 
     def _on_conn_state_change(self, state: ConnectionState) -> None:
@@ -138,16 +140,28 @@ class ChatApp(App[None]):
             return
         from akgentic.infra.cli.ws_client import WsConnectionError
 
+        # Ensure WebSocket is connected before entering the receive loop.
+        # ConnectionManager.receive_event() raises immediately if not connected,
+        # unlike the old REPL which called connect() explicitly before looping.
+        if self._connection_manager.state == ConnectionState.DISCONNECTED:
+            try:
+                await self._connection_manager.connect()
+            except WsConnectionError:
+                pass  # Fall through — receive loop will show "Connection lost"
+
         conversation = self.query_one("#conversation", VerticalScroll)
         while True:
             try:
                 event_data = await self._connection_manager.receive_event()
+                _log.debug("WS event received: %s", event_data)
                 widget = self._event_router.to_widget(event_data, self._color_registry)
+                _log.debug("to_widget result: %s", type(widget).__name__ if widget else None)
                 if widget is not None:
                     self._remove_thinking_indicator(conversation)
                     await conversation.mount(widget)
                     widget.scroll_visible(animate=False)
-            except WsConnectionError:
+            except WsConnectionError as exc:
+                _log.debug("WS connection error in stream loop: %s", exc)
                 self._remove_thinking_indicator(conversation)
                 break
 

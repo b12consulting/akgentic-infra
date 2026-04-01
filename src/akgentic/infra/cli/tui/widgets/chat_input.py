@@ -126,9 +126,8 @@ class ChatInput(TextArea):
             return True
         if event.key == "enter":
             event.prevent_default()
-            cmd = self._select_palette_command()
-            if cmd is not None:
-                self._submit_text()
+            self._select_palette_command()
+            self._submit_text()
             return True
         return False
 
@@ -178,7 +177,13 @@ class ChatInput(TextArea):
             self._suppress_palette = False
             return
         text = self.text
-        if text.startswith("/") and self._command_registry is not None:
+        # Only show palette for command name completion (before the first space).
+        # Once the user types a space they are entering arguments — dismiss.
+        if (
+            text.startswith("/")
+            and " " not in text
+            and self._command_registry is not None
+        ):
             if self._palette is None:
                 self._show_palette()
             self._update_palette_filter()

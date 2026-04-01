@@ -162,24 +162,51 @@ def chat(
     ] = None,
 ) -> None:
     """Interactive chat REPL — connect to a team via WebSocket."""
+    from akgentic.infra.cli.commands import build_default_registry
+    from akgentic.infra.cli.connection import ConnectionManager
+    from akgentic.infra.cli.event_router import EventRouter
+
     renderer = RichRenderer()
 
     if create is not None:
         team = _state.client.create_team(create)
         team_id = team.team_id
 
+    # Build shared dependencies for the TUI
+    command_registry = build_default_registry()
+    event_router = EventRouter(renderer)
+
     try:
         if team_id is not None:
             team_info = _state.client.get_team(team_id)
+            conn = ConnectionManager(
+                server_url=_state.server,
+                team_id=team_id,
+                api_key=_state.api_key,
+            )
             tui_app = ChatApp(
                 team_name=team_info.name,
                 team_id=team_id,
                 team_status=team_info.status,
+                connection_manager=conn,
+                event_router=event_router,
+                command_registry=command_registry,
                 client=_state.client,
             )
         else:
-            # No team_id and no --create: let TeamSelectScreen handle it
-            tui_app = ChatApp(client=_state.client)
+            # No team_id and no --create: let TeamSelectScreen handle it.
+            # ConnectionManager will be created after team selection via /switch.
+            conn = ConnectionManager(
+                server_url=_state.server,
+                team_id="",
+                api_key=_state.api_key,
+            )
+            tui_app = ChatApp(
+                connection_manager=conn,
+                event_router=event_router,
+                command_registry=command_registry,
+                client=_state.client,
+            )
         tui_app.run()
     except KeyboardInterrupt:
         pass

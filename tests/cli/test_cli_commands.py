@@ -175,7 +175,12 @@ class TestChat:
             mock_app_cls.return_value.run.return_value = None
             result = _invoke(["chat"], mock)
         assert result.exit_code == 0
-        mock_app_cls.assert_called_once_with(client=mock)
+        mock_app_cls.assert_called_once()
+        call_kwargs = mock_app_cls.call_args.kwargs
+        assert call_kwargs["client"] is mock
+        assert "connection_manager" in call_kwargs
+        assert "event_router" in call_kwargs
+        assert "command_registry" in call_kwargs
         mock_app_cls.return_value.run.assert_called_once()
 
     def test_chat_launches_tui(self) -> None:
