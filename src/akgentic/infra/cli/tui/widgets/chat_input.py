@@ -23,6 +23,8 @@ class ChatInput(TextArea):
         max-height: 10;
         min-height: 3;
         border-top: solid $accent;
+        border-left: solid $accent;
+        border-right: solid $accent;
     }
     """
 
