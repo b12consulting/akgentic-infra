@@ -12,17 +12,15 @@ class HintBar(Static):
 
     DEFAULT_CSS = """
     HintBar {
-        dock: bottom;
-        height: auto;
+        height: 1;
         background: $surface;
-        border-top: solid $accent;
         padding: 0 1;
     }
     """
 
     def __init__(self, hints: str = "") -> None:
         super().__init__()
-        self._hints = hints or "@mention    /command    Enter: send"
+        self._hints = hints or "@mention    /command    Enter: send    Esc: teams"
 
     def render(self) -> RenderableType:
         """Render hint text."""

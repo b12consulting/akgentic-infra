@@ -17,21 +17,21 @@ StatusHeader {
     color: $text-muted;
 }
 
-ChatInput {
+#input-area {
     dock: bottom;
+    height: auto;
+    border: solid $accent;
+}
+
+ChatInput {
     height: auto;
     max-height: 10;
     min-height: 3;
-    border-top: solid $accent;
-    border-left: solid $accent;
-    border-right: solid $accent;
 }
 
 HintBar {
-    dock: bottom;
-    height: auto;
+    height: 1;
     background: $surface;
-    border-top: solid $accent;
 }
 
 ThinkingIndicator {

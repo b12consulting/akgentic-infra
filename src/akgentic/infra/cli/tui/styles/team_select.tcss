@@ -11,19 +11,19 @@
     padding: 1 2;
 }
 
-#team-input {
+#team-input-area {
     dock: bottom;
+    height: auto;
+    border: solid $accent;
+}
+
+#team-input {
     height: 3;
-    border-top: solid $accent;
-    border-left: solid $accent;
-    border-right: solid $accent;
 }
 
 #team-hints {
-    dock: bottom;
-    height: auto;
+    height: 1;
     background: $surface;
-    border-top: solid $accent;
 }
 
 .section-header {

@@ -18,13 +18,9 @@ class ChatInput(TextArea):
 
     DEFAULT_CSS = """
     ChatInput {
-        dock: bottom;
         height: auto;
         max-height: 10;
         min-height: 3;
-        border-top: solid $accent;
-        border-left: solid $accent;
-        border-right: solid $accent;
     }
     """
 

@@ -45,10 +45,13 @@ class TeamSelectScreen(Screen[str | None]):
 
     def compose(self) -> ComposeResult:
         """Compose the team selection layout."""
+        from textual.containers import Container
+
         yield Static("Akgentic -- Team Selection", id="team-header")
         yield VerticalScroll(id="team-list")
-        yield Static("", id="team-hints")
-        yield Input(placeholder="> ", id="team-input")
+        with Container(id="team-input-area"):
+            yield Input(placeholder="> ", id="team-input")
+            yield Static("", id="team-hints")
 
     def on_mount(self) -> None:
         """Fetch data and render the first page."""
@@ -179,7 +182,7 @@ class TeamSelectScreen(Screen[str | None]):
             hints_parts.append("\\[c <name>] create")
         if self._max_pages() > 1:
             hints_parts.append("<-> page")
-        hints_parts.append("\\[q] quit")
+        hints_parts.append("\\[q]/Esc quit")
         hint_text = "  ".join(hints_parts)
         try:
             self.query_one("#team-hints", Static).update(hint_text)
@@ -223,8 +226,10 @@ class TeamSelectScreen(Screen[str | None]):
         self._show_error(f"Unknown command: {text}")
 
     def on_key(self, event: Key) -> None:
-        """Handle arrow key presses for pagination."""
-        if event.key == "right":
+        """Handle key presses for pagination and quit."""
+        if event.key == "escape":
+            self.dismiss(None)
+        elif event.key == "right":
             self._next_page()
         elif event.key == "left":
             self._prev_page()

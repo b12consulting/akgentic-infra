@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from textual import events, work
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll
+from textual.containers import Container, VerticalScroll
 from textual.widgets import Static
 
 from akgentic.infra.cli.client import ApiError
@@ -74,8 +74,9 @@ class ChatApp(App[None]):
             ),
             id="conversation",
         )
-        yield ChatInput(command_registry=self._command_registry)
-        yield HintBar()
+        with Container(id="input-area"):
+            yield ChatInput(command_registry=self._command_registry)
+            yield HintBar()
 
     # -- Command palette management (mounted at app level as overlay) --
 
