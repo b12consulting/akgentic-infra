@@ -21,8 +21,9 @@
 
 #team-hints {
     dock: bottom;
-    height: 1;
+    height: auto;
     background: $surface;
+    border-top: solid $accent;
 }
 
 .section-header {

@@ -13,8 +13,9 @@ class HintBar(Static):
     DEFAULT_CSS = """
     HintBar {
         dock: bottom;
-        height: 1;
+        height: auto;
         background: $surface;
+        border-top: solid $accent;
         padding: 0 1;
     }
     """
