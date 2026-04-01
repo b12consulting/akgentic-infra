@@ -256,6 +256,9 @@ class ChatApp(App[None]):
                     self._remove_thinking_indicator(conversation)
                     await conversation.mount(widget)
                     widget.scroll_visible(animate=False)
+                    # Deferred cleanup: schedule removal after the event loop
+                    # processes any pending mounts from on_chat_input_submitted.
+                    self.call_later(self._remove_thinking_indicator, conversation)
             except WsConnectionError as exc:
                 _log.debug("WS connection error in stream loop: %s", exc)
                 self._remove_thinking_indicator(conversation)
