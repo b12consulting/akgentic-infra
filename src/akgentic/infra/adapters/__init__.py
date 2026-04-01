@@ -1,24 +1,31 @@
-"""Adapters module — community-tier implementations of infrastructure protocols."""
+"""Adapters module — re-exports from shared and community sub-packages.
+
+This top-level ``__init__.py`` provides backwards-compatible imports.
+All adapters can be imported directly from ``akgentic.infra.adapters``
+or from their tier-specific sub-package (``shared/`` or ``community/``).
+"""
 
 from __future__ import annotations
 
-from akgentic.infra.adapters.channel_dispatcher import InteractionChannelDispatcher
-from akgentic.infra.adapters.channel_parser_registry import (
+from akgentic.infra.adapters.community import (
+    LocalIngestion,
+    LocalPlacement,
+    LocalRuntimeCache,
+    LocalTeamHandle,
+    LocalWorkerHandle,
+    NoAuth,
+    NullChannelRegistry,
+    YamlChannelRegistry,
+)
+from akgentic.infra.adapters.shared import (
     ChannelConfig,
     ChannelParserRegistry,
+    InteractionChannelDispatcher,
+    TelegramChannelAdapter,
+    TelegramChannelParser,
+    TelemetrySubscriber,
+    WebSocketEventSubscriber,
 )
-from akgentic.infra.adapters.local_ingestion import LocalIngestion
-from akgentic.infra.adapters.local_placement import LocalPlacement
-from akgentic.infra.adapters.local_runtime_cache import LocalRuntimeCache
-from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
-from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
-from akgentic.infra.adapters.no_auth import NoAuth
-from akgentic.infra.adapters.null_channel_registry import NullChannelRegistry
-from akgentic.infra.adapters.telegram_adapter import TelegramChannelAdapter
-from akgentic.infra.adapters.telegram_parser import TelegramChannelParser
-from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
-from akgentic.infra.adapters.websocket_subscriber import WebSocketEventSubscriber
-from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
 
 __all__ = [
     "ChannelConfig",

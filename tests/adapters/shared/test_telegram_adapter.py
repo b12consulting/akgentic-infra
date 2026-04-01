@@ -10,7 +10,7 @@ import httpx
 from akgentic.core.actor_address_impl import ActorAddressProxy
 from akgentic.core.messages.orchestrator import SentMessage
 
-from akgentic.infra.adapters.telegram_adapter import TelegramChannelAdapter
+from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
 
 
 # ---------------------------------------------------------------------------

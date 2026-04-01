@@ -66,7 +66,7 @@ def _wire_ingestion(services: TierServices, team_service: TeamService) -> None:
     need this — their ingestion adapters communicate over the network (HTTP or
     Dapr), so they arrive fully wired from their own wire_*() functions.
     """
-    from akgentic.infra.adapters.local_ingestion import LocalIngestion
+    from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 
     if isinstance(services.ingestion, LocalIngestion):
         services.ingestion.team_service = team_service

@@ -7,7 +7,8 @@ import uuid
 
 from akgentic.catalog.models.errors import EntryNotFoundError
 from akgentic.core.messages.message import Message
-from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
+from akgentic.infra.protocols.runtime_cache import RuntimeCache
+from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.deps import TierServices
 from akgentic.team.models import PersistedEvent, Process, TeamStatus
 

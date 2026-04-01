@@ -13,14 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 class WebSocketEventSubscriber:
-    """Bridges Pykka actor thread events to async WebSocket via a thread-safe queue.
+    """Bridges events to async WebSocket via a thread-safe queue.
 
     Satisfies the EventSubscriber protocol from akgentic.core.orchestrator
     via structural subtyping (same pattern as TelemetrySubscriber). Each
     WebSocket connection gets its own subscriber instance.
 
-    The producer (on_message) runs in a Pykka actor thread; the consumer
-    (WebSocket route) reads from the queue in an async executor.
     """
 
     def __init__(self) -> None:

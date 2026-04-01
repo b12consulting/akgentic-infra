@@ -9,7 +9,7 @@ import pytest
 from akgentic.core.messages import SentMessage
 from fastapi.testclient import TestClient
 
-from akgentic.infra.adapters.yaml_channel_registry import (
+from akgentic.infra.adapters.community.yaml_channel_registry import (
     YamlChannelRegistry,
 )
 from akgentic.infra.protocols.channels import ChannelMessage, JsonValue

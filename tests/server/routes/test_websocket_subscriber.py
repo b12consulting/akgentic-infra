@@ -9,7 +9,7 @@ import threading
 from akgentic.core.messages import Message
 from akgentic.core.messages.orchestrator import SentMessage
 
-from akgentic.infra.adapters.websocket_subscriber import WebSocketEventSubscriber
+from akgentic.infra.adapters.shared.websocket_subscriber import WebSocketEventSubscriber
 
 
 class TestWebSocketEventSubscriber:

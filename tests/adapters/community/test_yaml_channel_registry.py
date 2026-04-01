@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.protocols import ChannelRegistry
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
+from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 
 
 class TestTelemetryRestoreAwareness:
@@ -16,7 +16,7 @@ class TestTelemetryRestoreAwareness:
         msg = MagicMock()
         msg.__class__.__name__ = "StartMessage"
 
-        with patch("akgentic.infra.adapters.telemetry_subscriber.logfire") as mock_lf:
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
             subscriber.on_message(msg)
             mock_lf.info.assert_called_once()
 
@@ -27,7 +27,7 @@ class TestTelemetryRestoreAwareness:
         msg = MagicMock()
         msg.__class__.__name__ = "StartMessage"
 
-        with patch("akgentic.infra.adapters.telemetry_subscriber.logfire") as mock_lf:
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
             subscriber.on_message(msg)
             mock_lf.info.assert_not_called()
 
@@ -39,7 +39,7 @@ class TestTelemetryRestoreAwareness:
         msg = MagicMock()
         msg.__class__.__name__ = "StartMessage"
 
-        with patch("akgentic.infra.adapters.telemetry_subscriber.logfire") as mock_lf:
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
             subscriber.on_message(msg)
             mock_lf.info.assert_called_once()
 

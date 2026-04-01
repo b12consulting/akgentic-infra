@@ -17,15 +17,15 @@ from akgentic.catalog.services import (
     ToolCatalog,
 )
 from akgentic.core import ActorSystem, EventSubscriber
-from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
-from akgentic.infra.adapters.local_ingestion import LocalIngestion
-from akgentic.infra.adapters.local_placement import LocalPlacement
-from akgentic.infra.adapters.local_runtime_cache import LocalRuntimeCache
-from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
-from akgentic.infra.adapters.no_auth import NoAuth
-from akgentic.infra.adapters.null_channel_registry import NullChannelRegistry
-from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
-from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
+from akgentic.infra.adapters.community.local_placement import LocalPlacement
+from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
+from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
+from akgentic.infra.adapters.community.no_auth import NoAuth
+from akgentic.infra.adapters.community.null_channel_registry import NullChannelRegistry
+from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager

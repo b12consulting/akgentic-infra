@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
+from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.protocols.team_handle import TeamHandle
 
 

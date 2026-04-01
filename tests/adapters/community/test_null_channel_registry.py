@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from akgentic.infra.adapters.null_channel_registry import NullChannelRegistry
+from akgentic.infra.adapters.community.null_channel_registry import NullChannelRegistry
 from akgentic.infra.protocols import ChannelRegistry
 
 

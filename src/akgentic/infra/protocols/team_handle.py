@@ -1,4 +1,4 @@
-"""TeamHandle and RuntimeCache protocols — tier-agnostic team interaction abstractions."""
+"""TeamHandle protocol — tier-agnostic team interaction abstraction."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class TeamHandle(Protocol):
     ``TeamService`` can send messages, route human input, and manage
     event subscriptions without knowing the underlying tier implementation.
 
-    Implementations: LocalTeamHandle (community), RemoteTeamHandle (enterprise).
+    Implementations: LocalTeamHandle (community), RemoteTeamHandle (department/enterprise).
 
     Error contract:
         - ``send()`` / ``send_to()`` raise ``ValueError`` if the team is no
@@ -73,50 +73,5 @@ class TeamHandle(Protocol):
 
         Args:
             subscriber: The event subscriber to remove.
-        """
-        ...
-
-
-@runtime_checkable
-class RuntimeCache(Protocol):
-    """Manages the mapping from team IDs to live TeamHandle instances.
-
-    Provides a simple store/get/remove interface so that ``TeamService``
-    can resolve a ``team_id`` to a usable ``TeamHandle`` for server-to-team
-    interaction without managing the cache structure directly.
-
-    Implementations: LocalRuntimeCache (community), RedisRuntimeCache (enterprise).
-
-    Behavioral contract:
-        - ``get()`` returns ``None`` for unknown team IDs (never raises).
-        - ``remove()`` is idempotent — removing an absent ID is a no-op.
-        - ``store()`` overwrites any existing entry for the same team ID.
-    """
-
-    def store(self, team_id: uuid.UUID, handle: TeamHandle) -> None:
-        """Store a team handle in the cache.
-
-        Args:
-            team_id: ID of the team.
-            handle: The TeamHandle instance to cache.
-        """
-        ...
-
-    def get(self, team_id: uuid.UUID) -> TeamHandle | None:
-        """Retrieve a team handle from the cache.
-
-        Args:
-            team_id: ID of the team to look up.
-
-        Returns:
-            The cached TeamHandle, or None if not found.
-        """
-        ...
-
-    def remove(self, team_id: uuid.UUID) -> None:
-        """Remove a team handle from the cache.
-
-        Args:
-            team_id: ID of the team to remove.
         """
         ...

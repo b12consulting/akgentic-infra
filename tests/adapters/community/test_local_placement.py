@@ -6,8 +6,8 @@ import inspect
 import uuid
 from unittest.mock import MagicMock
 
-from akgentic.infra.adapters.local_placement import LocalPlacement
-from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
+from akgentic.infra.adapters.community.local_placement import LocalPlacement
+from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.protocols.placement import PlacementStrategy
 
 

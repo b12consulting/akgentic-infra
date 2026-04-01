@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from unittest.mock import MagicMock
 
-from akgentic.infra.adapters.telemetry_subscriber import TelemetrySubscriber
+from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 
 
 class TestTelemetrySubscriberProtocolCompliance:
