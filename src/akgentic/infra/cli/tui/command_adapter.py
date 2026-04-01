@@ -7,7 +7,7 @@ import logging
 from contextlib import redirect_stdout
 from typing import TYPE_CHECKING, Any
 
-from akgentic.infra.cli.client import ApiError
+from akgentic.infra.cli.client import ApiClient, ApiError
 from akgentic.infra.cli.commands import CommandRegistry
 from akgentic.infra.cli.renderers import RichRenderer
 
@@ -24,11 +24,11 @@ class _NoOpRenderer(RichRenderer):
         super().__init__()
         self._error_buffer = error_buffer
 
-    def render_error(self, message: str) -> None:  # type: ignore[override]
+    def render_error(self, content: str) -> None:
         """Capture errors instead of printing them."""
-        self._error_buffer.append(message)
+        self._error_buffer.append(content)
 
-    def render_border(self) -> None:
+    def render_border(self, style: str = "bright_black") -> None:
         """No-op in TUI."""
 
     def render_status_bar(self, *_args: object) -> None:
@@ -103,6 +103,19 @@ class TuiCommandAdapter:
       TUI-specific implementations.
     """
 
+    # Commands that need TUI-specific behavior (worker restart, StatusHeader, etc.)
+    _TUI_OVERRIDES = frozenset(
+        {
+            "quit",
+            "switch",
+            "reconnect",
+            "delete",
+            "create",
+            "stop",
+            "restore",
+        }
+    )
+
     def __init__(self, registry: CommandRegistry) -> None:
         self._registry = registry
 
@@ -120,6 +133,19 @@ class TuiCommandAdapter:
         args = parts[1] if len(parts) > 1 else ""
 
         # TUI-overridden commands
+        if cmd_name in self._TUI_OVERRIDES:
+            return await self._dispatch_override(cmd_name, args, app)
+
+        # Generic dispatch: capture stdout + renderer errors
+        return await self._dispatch_generic(cmd_name, args, app)
+
+    async def _dispatch_override(
+        self,
+        cmd_name: str,
+        args: str,
+        app: ChatApp,
+    ) -> bool:
+        """Route to TUI-specific command handlers."""
         if cmd_name == "quit":
             return await self._handle_quit(app)
         if cmd_name == "switch":
@@ -128,17 +154,34 @@ class TuiCommandAdapter:
             return await self._handle_reconnect(app)
         if cmd_name == "delete":
             return await self._handle_delete(args, app)
+        if cmd_name == "create":
+            return await self._handle_create(args, app)
+        if cmd_name == "stop":
+            return await self._handle_stop(app)
+        return await self._handle_restore(args, app)
 
-        # Generic dispatch: capture stdout + renderer errors
+    async def _dispatch_generic(
+        self,
+        cmd_name: str,
+        args: str,
+        app: ChatApp,
+    ) -> bool:
+        """Dispatch via CommandRegistry with stdout capture."""
         if cmd_name not in self._registry.commands:
-            await self._mount_system(app, f"Unknown command: /{cmd_name}. Type /help for available commands.")
+            await self._mount_system(
+                app,
+                f"Unknown command: /{cmd_name}. Type /help for commands.",
+            )
             return True
 
         session = _TuiSession(app, self._registry)
         buffer = io.StringIO()
         try:
             with redirect_stdout(buffer):
-                await self._registry.commands[cmd_name].handler(args, session)  # type: ignore[arg-type]
+                await self._registry.commands[cmd_name].handler(
+                    args,
+                    session,  # type: ignore[arg-type]
+                )
         except ApiError as exc:
             await self._mount_error(app, f"Command error: {exc.detail}")
             return True
@@ -285,7 +328,7 @@ class TuiCommandAdapter:
         self,
         target_id: str,
         app: ChatApp,
-        client: object | None,
+        client: ApiClient | None,
     ) -> bool:
         """Execute the actual team deletion."""
         if client is None:
@@ -293,7 +336,7 @@ class TuiCommandAdapter:
             return True
 
         try:
-            client.delete_team(target_id)  # type: ignore[union-attr]
+            client.delete_team(target_id)
         except ApiError as exc:
             await self._mount_error(app, f"Error deleting team: {exc.detail}")
             return True
@@ -311,6 +354,77 @@ class TuiCommandAdapter:
                 pass
 
         return True
+
+    async def _handle_create(self, args: str, app: ChatApp) -> bool:
+        """Handle /create <catalog_entry> with StatusHeader update and auto-switch."""
+        catalog_entry = args.strip()
+        if not catalog_entry:
+            await self._mount_system(app, "Usage: /create <catalog_entry>")
+            return True
+
+        client = app._client  # noqa: SLF001
+        if client is None:
+            await self._mount_error(app, "No API client available.")
+            return True
+
+        try:
+            team = client.create_team(catalog_entry)
+        except ApiError as exc:
+            await self._mount_error(app, f"Error creating team: {exc.detail}")
+            return True
+
+        await self._mount_system(app, f"Created team: {team.name} ({team.team_id})")
+
+        # Auto-switch to the new team
+        return await self._handle_switch(team.team_id, app)
+
+    async def _handle_stop(self, app: ChatApp) -> bool:
+        """Handle /stop with StatusHeader update."""
+        client = app._client  # noqa: SLF001
+        if client is None:
+            await self._mount_error(app, "No API client available.")
+            return True
+
+        try:
+            client.stop_team(app._team_id)  # noqa: SLF001
+        except ApiError as exc:
+            await self._mount_error(app, f"Error stopping team: {exc.detail}")
+            return True
+
+        app._team_status = "stopped"  # noqa: SLF001
+
+        from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
+
+        try:
+            app.query_one(StatusHeader).update_team(
+                app._team_name,
+                app._team_id,
+                "stopped",  # noqa: SLF001
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        await self._mount_system(app, f"Team {app._team_id} stopped.")  # noqa: SLF001
+        return True
+
+    async def _handle_restore(self, args: str, app: ChatApp) -> bool:
+        """Handle /restore [team_id] with StatusHeader update and auto-switch."""
+        target_id = args.strip() or app._team_id  # noqa: SLF001
+        client = app._client  # noqa: SLF001
+        if client is None:
+            await self._mount_error(app, "No API client available.")
+            return True
+
+        try:
+            client.restore_team(target_id)
+        except ApiError as exc:
+            await self._mount_error(app, f"Error restoring team: {exc.detail}")
+            return True
+
+        await self._mount_system(app, f"Team {target_id} restored. Live events resumed.")
+
+        # Auto-switch to restored team
+        return await self._handle_switch(target_id, app)
 
     async def _mount_system(self, app: ChatApp, text: str) -> None:
         """Mount a SystemMessage widget in the conversation area."""

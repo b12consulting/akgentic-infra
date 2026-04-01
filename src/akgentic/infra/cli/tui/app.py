@@ -207,8 +207,12 @@ class ChatApp(App[None]):
             except ApiError as exc:
                 self.call_from_thread(self._mount_send_error, str(exc.detail))
 
-    async def _mount_send_error(self, detail: str) -> None:
-        """Mount an ErrorWidget for a failed message send (called from thread)."""
+    def _mount_send_error(self, detail: str) -> None:
+        """Schedule ErrorWidget mount for a failed message send (called from thread)."""
+        self.run_worker(self._do_mount_send_error(detail), exclusive=False)
+
+    async def _do_mount_send_error(self, detail: str) -> None:
+        """Mount an ErrorWidget for a failed message send."""
         from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 
         conversation = self.query_one("#conversation", VerticalScroll)
