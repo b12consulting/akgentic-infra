@@ -35,6 +35,32 @@ class ChatInput(TextArea):
             self.text = text
             super().__init__()
 
+    class PaletteRequested(Message):
+        """Fired when the command palette should be shown."""
+
+    class PaletteDismissed(Message):
+        """Fired when the command palette should be hidden."""
+
+    class PaletteFilterChanged(Message):
+        """Fired when the palette filter text changes."""
+
+        def __init__(self, filter_text: str) -> None:
+            self.filter_text = filter_text
+            super().__init__()
+
+    class PaletteNavigate(Message):
+        """Fired when user navigates the palette with arrow keys."""
+
+        def __init__(self, direction: str) -> None:
+            self.direction = direction
+            super().__init__()
+
+    class PaletteSelect(Message):
+        """Fired when user selects a palette command (Tab)."""
+
+    class PaletteSelectAndSubmit(Message):
+        """Fired when user selects a palette command and submits (Enter on palette)."""
+
     def __init__(
         self,
         command_registry: CommandRegistry | None = None,
@@ -45,7 +71,7 @@ class ChatInput(TextArea):
         self._browsing_history: bool = False
         self._reply_target: str = ""
         self._command_registry = command_registry
-        self._palette: CommandPalette | None = None
+        self._palette_visible: bool = False
         self._suppress_palette: bool = False
 
     def watch_input_mode(self, mode: str) -> None:
@@ -58,41 +84,11 @@ class ChatInput(TextArea):
         }
         self.border_title = labels.get(mode, "> ")
 
-    def _show_palette(self) -> None:
-        """Mount the CommandPalette if a registry is available."""
-        if self._command_registry is None or self._palette is not None:
-            return
-        palette = CommandPalette(self._command_registry.commands)
-        self._palette = palette
-        self.mount(palette)
-
-    def _dismiss_palette(self) -> None:
-        """Remove the CommandPalette from the DOM."""
-        if self._palette is not None:
-            self._palette.remove()
-            self._palette = None
-
-    def _update_palette_filter(self) -> None:
-        """Update palette filter based on current input text."""
-        if self._palette is None:
-            return
-        text = self.text
-        if text.startswith("/"):
-            self._palette.filter_text = text[1:]
-        else:
-            self._dismiss_palette()
-
-    def _select_palette_command(self) -> str | None:
-        """Select the highlighted palette command and dismiss palette."""
-        if self._palette is None:
-            return None
-        cmd = self._palette.selected_command
-        self._dismiss_palette()
-        if cmd is not None:
-            self._suppress_palette = True
-            self.text = f"/{cmd} "
-            self.move_cursor_to_end()
-        return cmd
+    def set_command_text(self, cmd: str) -> None:
+        """Set input text to a selected command (called by app after palette select)."""
+        self._suppress_palette = True
+        self.text = f"/{cmd} "
+        self.move_cursor_to_end()
 
     def _submit_text(self) -> None:
         """Submit current text, add to history, and clear input."""
@@ -106,28 +102,28 @@ class ChatInput(TextArea):
 
     def _handle_palette_key(self, event: events.Key) -> bool:
         """Handle key events when the palette is visible. Returns True if handled."""
-        if self._palette is None:
+        if not self._palette_visible:
             return False
         if event.key == "escape":
             event.prevent_default()
-            self._dismiss_palette()
+            self._palette_visible = False
+            self.post_message(self.PaletteDismissed())
             return True
         if event.key == "tab":
             event.prevent_default()
-            self._select_palette_command()
+            self.post_message(self.PaletteSelect())
             return True
         if event.key == "up":
             event.prevent_default()
-            self._palette.move_up()
+            self.post_message(self.PaletteNavigate("up"))
             return True
         if event.key == "down":
             event.prevent_default()
-            self._palette.move_down()
+            self.post_message(self.PaletteNavigate("down"))
             return True
         if event.key == "enter":
             event.prevent_default()
-            self._select_palette_command()
-            self._submit_text()
+            self.post_message(self.PaletteSelectAndSubmit())
             return True
         return False
 
@@ -163,7 +159,9 @@ class ChatInput(TextArea):
         if event.key == "enter":
             event.prevent_default()
             self._submit_text()
-            self._dismiss_palette()
+            if self._palette_visible:
+                self._palette_visible = False
+                self.post_message(self.PaletteDismissed())
             return
         if self._handle_history_key(event):
             return
@@ -178,17 +176,19 @@ class ChatInput(TextArea):
             return
         text = self.text
         # Only show palette for command name completion (before the first space).
-        # Once the user types a space they are entering arguments — dismiss.
         if (
             text.startswith("/")
             and " " not in text
             and self._command_registry is not None
         ):
-            if self._palette is None:
-                self._show_palette()
-            self._update_palette_filter()
+            if not self._palette_visible:
+                self._palette_visible = True
+                self.post_message(self.PaletteRequested())
+            self.post_message(self.PaletteFilterChanged(text[1:]))
         else:
-            self._dismiss_palette()
+            if self._palette_visible:
+                self._palette_visible = False
+                self.post_message(self.PaletteDismissed())
 
     def move_cursor_to_end(self) -> None:
         """Move cursor to the end of the text."""
@@ -196,7 +196,3 @@ class ChatInput(TextArea):
         last_line = len(lines) - 1
         last_col = len(lines[-1])
         self.move_cursor((last_line, last_col))
-
-
-# Import at bottom to avoid circular imports
-from akgentic.infra.cli.tui.widgets.command_palette import CommandPalette  # noqa: E402

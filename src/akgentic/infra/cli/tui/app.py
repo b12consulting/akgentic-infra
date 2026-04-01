@@ -17,6 +17,7 @@ from akgentic.infra.cli.tui.colors import AgentColorRegistry
 from akgentic.infra.cli.tui.command_adapter import TuiCommandAdapter
 from akgentic.infra.cli.tui.messages import ConnectionStateChanged
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
+from akgentic.infra.cli.tui.widgets.command_palette import CommandPalette
 from akgentic.infra.cli.tui.widgets.hint_bar import HintBar
 from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 
@@ -36,6 +37,7 @@ class ChatApp(App[None]):
 
     TITLE = "Akgentic Chat"
     CSS_PATH = _CSS_PATH
+    LAYERS = ("default", "overlay")
 
     def __init__(
         self,
@@ -74,6 +76,60 @@ class ChatApp(App[None]):
         )
         yield ChatInput(command_registry=self._command_registry)
         yield HintBar()
+
+    # -- Command palette management (mounted at app level as overlay) --
+
+    _palette: CommandPalette | None = None
+
+    def on_chat_input_palette_requested(self, _event: ChatInput.PaletteRequested) -> None:
+        """Show the command palette overlay."""
+        if self._palette is not None or self._command_registry is None:
+            return
+        self._palette = CommandPalette(self._command_registry.commands)
+        self.mount(self._palette)
+
+    def on_chat_input_palette_dismissed(self, _event: ChatInput.PaletteDismissed) -> None:
+        """Hide the command palette overlay."""
+        if self._palette is not None:
+            self._palette.remove()
+            self._palette = None
+
+    def on_chat_input_palette_filter_changed(
+        self, event: ChatInput.PaletteFilterChanged
+    ) -> None:
+        """Update the palette filter text."""
+        if self._palette is not None:
+            self._palette.filter_text = event.filter_text
+
+    def on_chat_input_palette_navigate(self, event: ChatInput.PaletteNavigate) -> None:
+        """Navigate the palette up/down."""
+        if self._palette is not None:
+            if event.direction == "up":
+                self._palette.move_up()
+            else:
+                self._palette.move_down()
+
+    def on_chat_input_palette_select(self, _event: ChatInput.PaletteSelect) -> None:
+        """Select the highlighted palette command (Tab)."""
+        if self._palette is not None:
+            cmd = self._palette.selected_command
+            self._palette.remove()
+            self._palette = None
+            if cmd is not None:
+                self.query_one(ChatInput).set_command_text(cmd)
+
+    def on_chat_input_palette_select_and_submit(
+        self, _event: ChatInput.PaletteSelectAndSubmit
+    ) -> None:
+        """Select the highlighted palette command and submit."""
+        if self._palette is not None:
+            cmd = self._palette.selected_command
+            self._palette.remove()
+            self._palette = None
+            if cmd is not None:
+                chat_input = self.query_one(ChatInput)
+                chat_input.set_command_text(cmd)
+                chat_input._submit_text()  # noqa: SLF001
 
     def on_mount(self) -> None:
         """Wire connection manager callback and start streaming."""
