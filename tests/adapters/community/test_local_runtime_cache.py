@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
+from akgentic.team.models import Process, TeamStatus
 
 
 class TestLocalRuntimeCacheProtocolConformance:
@@ -78,3 +79,85 @@ class TestLocalRuntimeCacheStoreCycle:
         cache.remove(id1)
         assert cache.get(id1) is None
         assert cache.get(id2) is h2
+
+
+def _make_process(
+    team_id: uuid.UUID, status: TeamStatus = TeamStatus.RUNNING
+) -> Process:
+    """Create a minimal Process fixture using model_construct to skip validation."""
+    from datetime import UTC, datetime
+
+    return Process.model_construct(
+        team_id=team_id,
+        team_card=MagicMock(),
+        status=status,
+        user_id="u1",
+        user_email="",
+        created_at=datetime.now(tz=UTC),
+        updated_at=datetime.now(tz=UTC),
+    )
+
+
+class TestLocalRuntimeCacheWarm:
+    """warm() auto-restores running teams on startup."""
+
+    def test_warm_restores_running_teams(self) -> None:
+        """Running teams are stopped then resumed, handle stored in cache."""
+        cache = LocalRuntimeCache()
+        team_id = uuid.uuid4()
+        handle = MagicMock()
+
+        worker = MagicMock()
+        worker.resume_team.return_value = handle
+
+        event_store = MagicMock()
+        event_store.list_teams.return_value = [_make_process(team_id, TeamStatus.RUNNING)]
+
+        cache.warm(worker, event_store)
+
+        worker.stop_team.assert_called_once_with(team_id)
+        worker.resume_team.assert_called_once_with(team_id)
+        assert cache.get(team_id) is handle
+
+    def test_warm_skips_stopped_teams(self) -> None:
+        """Stopped teams are not restored."""
+        cache = LocalRuntimeCache()
+        team_id = uuid.uuid4()
+
+        worker = MagicMock()
+        event_store = MagicMock()
+        event_store.list_teams.return_value = [_make_process(team_id, TeamStatus.STOPPED)]
+
+        cache.warm(worker, event_store)
+
+        worker.stop_team.assert_not_called()
+        worker.resume_team.assert_not_called()
+        assert cache.get(team_id) is None
+
+    def test_warm_skips_on_failure(self) -> None:
+        """Failed restores are skipped, cache stays empty for that team."""
+        cache = LocalRuntimeCache()
+        team_id = uuid.uuid4()
+
+        worker = MagicMock()
+        worker.resume_team.side_effect = ValueError("broken")
+
+        event_store = MagicMock()
+        event_store.list_teams.return_value = [_make_process(team_id, TeamStatus.RUNNING)]
+
+        cache.warm(worker, event_store)  # should not raise
+
+        assert cache.get(team_id) is None
+
+    def test_warm_no_running_teams(self) -> None:
+        """No running teams → no calls to worker."""
+        cache = LocalRuntimeCache()
+
+        worker = MagicMock()
+        event_store = MagicMock()
+        event_store.list_teams.return_value = []
+
+        cache.warm(worker, event_store)
+
+        worker.stop_team.assert_not_called()
+        worker.resume_team.assert_not_called()

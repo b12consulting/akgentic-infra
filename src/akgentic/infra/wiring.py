@@ -61,13 +61,16 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
         type(local_placement).__name__,
         type(local_worker_handle).__name__,
     )
+    runtime_cache = LocalRuntimeCache()
+    runtime_cache.warm(local_worker_handle, event_store)
+
     return CommunityServices(
         placement=local_placement,
         worker_handle=local_worker_handle,
         service_registry=service_registry,
         auth=NoAuth(),
         event_store=event_store,
-        runtime_cache=LocalRuntimeCache(),
+        runtime_cache=runtime_cache,
         ingestion=LocalIngestion(),
         channel_registry=(
             YamlChannelRegistry(registry_path=settings.channel_registry_path)
