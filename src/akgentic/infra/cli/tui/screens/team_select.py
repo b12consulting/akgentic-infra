@@ -129,7 +129,7 @@ class TeamSelectScreen(Screen[str | None]):
             for i, team in enumerate(r_page):
                 global_idx = start + i + 1
                 line = Text()
-                line.append(f"  \\[{global_idx}]", style="bold cyan")
+                line.append(f"  [{global_idx}]", style="bold cyan")
                 line.append(f"  {team.name}", style="bold")
                 line.append(f"  {_short_id(team.team_id)}", style="dim")
                 line.append("  > running", style="green")
@@ -155,7 +155,7 @@ class TeamSelectScreen(Screen[str | None]):
             for i, team in enumerate(s_page):
                 global_idx = start + i + 1
                 line = Text()
-                line.append(f"  \\[s{global_idx}]", style="bold yellow")
+                line.append(f"  [s{global_idx}]", style="bold yellow")
                 line.append(f"  {team.name}", style="bold")
                 line.append(f"  {_short_id(team.team_id)}", style="dim")
                 line.append("  || stopped", style="yellow")
@@ -170,7 +170,7 @@ class TeamSelectScreen(Screen[str | None]):
             container.mount(Static("Create new:", classes="section-header"))
             for entry in self._catalog:
                 line = Text()
-                line.append(f"  \\[c {entry.id}]", style="bold magenta")
+                line.append(f"  [c {entry.id}]", style="bold magenta")
                 line.append(f"  {entry.description}", style="dim")
                 container.mount(Static(line, classes="team-entry"))
         else:
@@ -185,19 +185,20 @@ class TeamSelectScreen(Screen[str | None]):
         if self._running_teams:
             start = self._page * PAGE_SIZE + 1
             end = min(start + PAGE_SIZE - 1, len(self._running_teams))
-            hints_parts.append(f"\\[{start}-{end}] connect")
+            hints_parts.append(f"[{start}-{end}] connect")
         if self._stopped_teams:
             start = self._page * PAGE_SIZE + 1
             end = min(start + PAGE_SIZE - 1, len(self._stopped_teams))
-            hints_parts.append(f"\\[s{start}-s{end}] restore")
+            hints_parts.append(f"[s{start}-s{end}] restore")
         if self._catalog:
-            hints_parts.append("\\[c <name>] create")
+            hints_parts.append("[c <name>] create")
         if self._max_pages() > 1:
             hints_parts.append("<-> page")
-        hints_parts.append("\\[q]/Esc quit")
+        hints_parts.append("[q]/Esc quit")
         hint_text = "  ".join(hints_parts)
         try:
-            self.query_one("#team-hints", Static).update(hint_text)
+            # Use Text() to avoid Rich markup interpretation of brackets
+            self.query_one("#team-hints", Static).update(Text(hint_text, style="dim"))
         except LookupError:
             _log.debug("team-hints widget not available for update")
 
