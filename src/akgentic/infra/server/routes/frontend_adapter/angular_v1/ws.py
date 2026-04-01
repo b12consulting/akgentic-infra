@@ -180,8 +180,19 @@ def _build_error_envelope(event: ErrorMessage, timestamp: str) -> ErrorPayload:
     )
 
 
+class _DualFormatWsEvent(WrappedWsEvent):
+    """Extended envelope carrying both V1 payload and raw V2 event.
+
+    Angular V1 frontend reads ``payload`` (V1 format).
+    V2 clients (CLI) read ``event`` (raw V2 format with ``__model__``).
+    Subclasses ``WrappedWsEvent`` so it satisfies the ``FrontendAdapter`` protocol.
+    """
+
+    event: dict[str, Any] = {}
+
+
 def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
-    """Translate a V2 persisted event into a V1 WebSocket envelope.
+    """Translate a V2 persisted event into a dual-format WebSocket envelope.
 
     This is the main entry point called by ``AngularV1Adapter.wrap_ws_event``.
 
@@ -189,7 +200,8 @@ def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
         event: The V2 persisted event to translate.
 
     Returns:
-        A ``WrappedWsEvent`` containing the V1-formatted payload.
+        A ``_DualFormatWsEvent`` containing both V1 payload (for Angular)
+        and raw V2 event data (for CLI and other V2 clients).
     """
     msg = event.event
     timestamp = event.timestamp.isoformat()
@@ -207,4 +219,5 @@ def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
     else:
         payload = _build_message_envelope(msg, timestamp)
 
-    return WrappedWsEvent(payload=payload)
+    raw_v2 = msg.model_dump(mode="json")
+    return _DualFormatWsEvent(payload=payload, event=raw_v2)

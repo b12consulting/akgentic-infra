@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
-
 import pydantic
 import pytest
-from akgentic.core.actor_address import ActorAddress
+from akgentic.core.actor_address_impl import ActorAddressProxy
 from akgentic.core.agent_config import BaseConfig
 from akgentic.core.agent_state import BaseState
 from akgentic.core.messages.message import Message, ResultMessage, UserMessage
@@ -44,11 +42,18 @@ _NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
 _TEAM_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
-def _make_sender(name: str = "@Agent") -> MagicMock:
-    """Create a mock ActorAddress with a name attribute."""
-    sender = MagicMock(spec=ActorAddress)
-    sender.name = name
-    return sender
+def _make_sender(name: str = "@Agent") -> ActorAddressProxy:
+    """Create a serializable ActorAddress with a name attribute."""
+    return ActorAddressProxy({
+        "__actor_address__": "",
+        "agent_id": str(uuid.uuid4()),
+        "name": name,
+        "role": "Agent",
+        "address": "",
+        "team_id": "",
+        "squad_id": "",
+        "user_message": "",
+    })
 
 
 def _make_persisted_event(
