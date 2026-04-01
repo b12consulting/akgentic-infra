@@ -197,11 +197,8 @@ class ChatApp(App[None]):
             self._team_id = team_id
         if self._connection_manager is not None:
             self._connection_manager._on_state_change = self._on_conn_state_change
-            # Set team_id and let stream_events handle the single connect().
-            # Do NOT call switch_team() here — it creates a WS without setting
-            # connection state, then stream_events creates a SECOND WS via
-            # connect(), causing duplicate connections and reconnect loops.
-            self._connection_manager._team_id = team_id  # noqa: SLF001
+            # Switch to the selected team (updates ConnectionManager's team_id)
+            await self._connection_manager.switch_team(team_id)
         self.stream_events()
 
     def _on_conn_state_change(self, state: ConnectionState) -> None:
@@ -256,9 +253,6 @@ class ChatApp(App[None]):
                     self._remove_thinking_indicator(conversation)
                     await conversation.mount(widget)
                     widget.scroll_visible(animate=False)
-                    # Deferred cleanup: schedule removal after the event loop
-                    # processes any pending mounts from on_chat_input_submitted.
-                    self.call_later(self._remove_thinking_indicator, conversation)
             except WsConnectionError as exc:
                 _log.debug("WS connection error in stream loop: %s", exc)
                 self._remove_thinking_indicator(conversation)

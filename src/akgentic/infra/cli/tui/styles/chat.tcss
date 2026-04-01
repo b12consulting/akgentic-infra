@@ -10,7 +10,6 @@ StatusHeader {
 
 #conversation {
     height: 1fr;
-    border-bottom: solid $accent;
 }
 
 #welcome {
