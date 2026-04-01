@@ -115,10 +115,16 @@ class TeamSelectScreen(Screen[str | None]):
 
         # -- Running teams --
         if self._running_teams:
-            r_page = self._running_teams[start:end]
-            r_total = len(self._running_teams)
-            r_end = min(start + len(r_page), r_total)
-            header_text = f"Running teams ({start + 1}-{r_end} of {r_total}):"
+            # If all running teams fit on one page, show all on every page
+            if len(self._running_teams) <= PAGE_SIZE:
+                r_page = self._running_teams
+                r_total = len(self._running_teams)
+                header_text = f"Running teams ({r_total}):"
+            else:
+                r_page = self._running_teams[start:end]
+                r_total = len(self._running_teams)
+                r_end = min(start + len(r_page), r_total)
+                header_text = f"Running teams ({start + 1}-{r_end} of {r_total}):"
             container.mount(Static(header_text, classes="section-header"))
             for i, team in enumerate(r_page):
                 global_idx = start + i + 1
@@ -135,10 +141,16 @@ class TeamSelectScreen(Screen[str | None]):
 
         # -- Stopped teams --
         if self._stopped_teams:
-            s_page = self._stopped_teams[start:end]
-            s_total = len(self._stopped_teams)
-            s_end = min(start + len(s_page), s_total)
-            header_text = f"Stopped teams ({start + 1}-{s_end} of {s_total}):"
+            # If all stopped teams fit on one page, show all on every page
+            if len(self._stopped_teams) <= PAGE_SIZE:
+                s_page = self._stopped_teams
+                s_total = len(self._stopped_teams)
+                header_text = f"Stopped teams ({s_total}):"
+            else:
+                s_page = self._stopped_teams[start:end]
+                s_total = len(self._stopped_teams)
+                s_end = min(start + len(s_page), s_total)
+                header_text = f"Stopped teams ({start + 1}-{s_end} of {s_total}):"
             container.mount(Static(header_text, classes="section-header"))
             for i, team in enumerate(s_page):
                 global_idx = start + i + 1
