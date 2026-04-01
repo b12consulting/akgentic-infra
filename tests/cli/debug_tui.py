@@ -260,8 +260,29 @@ async def send_message(ctx: DebugContext) -> None:
 @scenario
 async def send_and_receive(ctx: DebugContext) -> None:
     """Send a message and receive a mock agent reply."""
-    # This scenario uses events — need to rebuild app with event-producing conn
-    pass  # Placeholder — real implementation below
+    await ctx.pause()
+    await ctx.pilot.click(ChatInput)
+    await ctx.pilot.press("h", "i")
+    await ctx.pilot.press("enter")
+    await ctx.pause()
+    await ctx.screenshot("01-after-send")
+
+    # Wait for events to be processed by stream_events worker
+    await asyncio.sleep(0.5)
+    await ctx.pause()
+    await ctx.pause()
+    await ctx.screenshot("02-after-reply")
+
+    # Check what widgets are in the conversation
+    from textual.containers import VerticalScroll
+    conversation = ctx.app.query_one("#conversation", VerticalScroll)
+    children = list(conversation.children)
+    print(f"  Conversation children: {[type(c).__name__ for c in children]}")
+    for child in children:
+        if hasattr(child, "_content"):
+            print(f"    {type(child).__name__}: {str(child._content)[:80]}")
+        if hasattr(child, "_sender"):
+            print(f"    {type(child).__name__}: sender={child._sender}")
 
 
 @scenario
@@ -285,6 +306,74 @@ async def team_select(ctx: DebugContext) -> None:
     """Launch without team_id to trigger TeamSelectScreen."""
     # This scenario needs a different app setup — no team_id
     pass  # Placeholder — handled specially in run_scenario
+
+
+@scenario
+async def select_running_team(ctx: DebugContext) -> None:
+    """Select a running team from TeamSelectScreen and check chat accessibility.
+
+    Reproduces bug #9: selecting an existing running team causes infinite
+    reconnect loop instead of entering chat.
+    """
+    from textual.widgets import Input
+
+    # --- Step 1: Team select screen ---
+    await ctx.pause()
+    await ctx.pause()
+    await ctx.screenshot("01-team-select")
+
+    # --- Step 2: Type "1" to select first running team ---
+    try:
+        team_input = ctx.app.screen.query_one("#team-input", Input)
+        team_input.value = "1"
+        await ctx.pause()
+        await ctx.screenshot("02-typed-selection")
+
+        await team_input.action_submit()
+    except Exception as exc:
+        print(f"  [WARN] Team input not found: {exc}")
+        await ctx.screenshot("02-input-not-found")
+        return
+
+    # --- Step 3: Wait for screen transition ---
+    await asyncio.sleep(0.5)
+    await ctx.pause()
+    await ctx.pause()
+    await ctx.screenshot("03-after-select")
+
+    # --- Step 4: Check if we're in chat or still on team select ---
+    screen_name = type(ctx.app.screen).__name__
+    print(f"  Active screen: {screen_name}")
+
+    if screen_name == "TeamSelectScreen":
+        print("  [BUG] Still on TeamSelectScreen — transition failed")
+        return
+
+    # --- Step 5: Check connection state ---
+    conn_mgr = ctx.app._connection_manager
+    if conn_mgr is not None:
+        state = getattr(conn_mgr, 'state', None)
+        if hasattr(state, 'value'):
+            print(f"  Connection state: {state.value}")
+        else:
+            print(f"  Connection state: {state}")
+
+    # --- Step 6: Try sending a message ---
+    try:
+        await ctx.pilot.click(ChatInput)
+        await ctx.pilot.press("h", "i")
+        await ctx.pilot.press("enter")
+        await ctx.pause()
+        await ctx.pause()
+        await ctx.screenshot("04-after-send")
+    except Exception as exc:
+        print(f"  [WARN] Could not send message: {exc}")
+        await ctx.screenshot("04-send-failed")
+
+    # --- Step 7: Wait and check for reply ---
+    await asyncio.sleep(0.5)
+    await ctx.pause()
+    await ctx.screenshot("05-final-state")
 
 
 @scenario
@@ -398,7 +487,7 @@ async def run_scenario(name: str) -> None:
 
     print(f"\n=== Scenario: {name} ===")
 
-    if name in ("team_select", "full_user_journey"):
+    if name in ("team_select", "full_user_journey", "select_running_team"):
         # Special: push TeamSelectScreen directly (bypasses @work async delay)
         from akgentic.infra.cli.tui.screens.team_select import TeamSelectScreen
 
