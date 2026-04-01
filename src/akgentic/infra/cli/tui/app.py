@@ -11,8 +11,10 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
+from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.colors import AgentColorRegistry
+from akgentic.infra.cli.tui.command_adapter import TuiCommandAdapter
 from akgentic.infra.cli.tui.messages import ConnectionStateChanged
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
 from akgentic.infra.cli.tui.widgets.hint_bar import HintBar
@@ -54,6 +56,7 @@ class ChatApp(App[None]):
         self._command_registry = command_registry
         self._client = client
         self._color_registry = AgentColorRegistry()
+        self._tui_adapter = TuiCommandAdapter(command_registry) if command_registry else None
 
     def compose(self) -> ComposeResult:
         """Compose the four-zone layout."""
@@ -168,7 +171,8 @@ class ChatApp(App[None]):
         text = event.text
         if text.startswith("/"):
             # Slash commands -- do NOT mount ThinkingIndicator
-            # Slash command dispatch is Story 12.6 -- for now, skip
+            if self._tui_adapter is not None:
+                await self._tui_adapter.dispatch(text, self)
             return
         conversation = self.query_one("#conversation", VerticalScroll)
 
@@ -190,4 +194,24 @@ class ChatApp(App[None]):
         indicator = ThinkingIndicator()
         await conversation.mount(indicator)
         indicator.scroll_visible(animate=False)
-        # TODO (Story 12.6): Actually send message via API
+
+        # Send message via API in background thread
+        self._send_message(text)
+
+    @work(thread=True)
+    def _send_message(self, text: str) -> None:
+        """Send a user message via the REST API in a background thread."""
+        if self._client is not None:
+            try:
+                self._client.send_message(self._team_id, text)
+            except ApiError as exc:
+                self.call_from_thread(self._mount_send_error, str(exc.detail))
+
+    async def _mount_send_error(self, detail: str) -> None:
+        """Mount an ErrorWidget for a failed message send (called from thread)."""
+        from akgentic.infra.cli.tui.widgets.error import ErrorWidget
+
+        conversation = self.query_one("#conversation", VerticalScroll)
+        widget = ErrorWidget(content=f"Failed to send message: {detail}")
+        await conversation.mount(widget)
+        widget.scroll_visible(animate=False)
