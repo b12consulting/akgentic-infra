@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from akgentic.infra.adapters.telegram_parser import TelegramChannelParser
+from akgentic.infra.adapters.shared.telegram_parser import TelegramChannelParser
 
 
 # ---------------------------------------------------------------------------

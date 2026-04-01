@@ -14,11 +14,11 @@ import uuid
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from akgentic.infra.adapters.channel_parser_registry import (
+from akgentic.infra.adapters.shared.channel_parser_registry import (
     ChannelConfig,
     ChannelParserRegistry,
 )
-from akgentic.infra.adapters.telegram_parser import TelegramChannelParser
+from akgentic.infra.adapters.shared.telegram_parser import TelegramChannelParser
 from akgentic.infra.protocols.channels import ChannelParser, InteractionChannelAdapter
 
 
@@ -33,8 +33,8 @@ class TestRegistryResolution:
     def test_resolves_telegram_parser(self) -> None:
         config = {
             "telegram": ChannelConfig(
-                parser_fqcn="akgentic.infra.adapters.telegram_parser.TelegramChannelParser",
-                adapter_fqcn="akgentic.infra.adapters.telegram_adapter.TelegramChannelAdapter",
+                parser_fqcn="akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser",
+                adapter_fqcn="akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter",
                 config={"bot_token": "test-token", "default_catalog_entry": "my-team"},
             ),
         }
@@ -49,8 +49,8 @@ class TestRegistryResolution:
     def test_resolves_telegram_adapter(self) -> None:
         config = {
             "telegram": ChannelConfig(
-                parser_fqcn="akgentic.infra.adapters.telegram_parser.TelegramChannelParser",
-                adapter_fqcn="akgentic.infra.adapters.telegram_adapter.TelegramChannelAdapter",
+                parser_fqcn="akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser",
+                adapter_fqcn="akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter",
                 config={"bot_token": "test-token", "default_catalog_entry": "default"},
             ),
         }
@@ -63,8 +63,8 @@ class TestRegistryResolution:
     def test_channel_names_includes_telegram(self) -> None:
         config = {
             "telegram": ChannelConfig(
-                parser_fqcn="akgentic.infra.adapters.telegram_parser.TelegramChannelParser",
-                adapter_fqcn="akgentic.infra.adapters.telegram_adapter.TelegramChannelAdapter",
+                parser_fqcn="akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser",
+                adapter_fqcn="akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter",
                 config={"bot_token": "test-token"},
             ),
         }

@@ -3,7 +3,7 @@
 Validates ADR-002 remediation for story 6.1 channel subsystem fixes.
 
 Note: TestMultiAdapterDispatch and TestChannelConfigPassthrough were reclassified
-as unit tests and moved to tests/channels/ (story 9.4).
+as unit tests and moved to tests/adapters/shared/ and tests/adapters/community/ (story 9.4).
 """
 
 from __future__ import annotations

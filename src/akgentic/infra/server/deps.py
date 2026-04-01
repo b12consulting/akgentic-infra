@@ -11,11 +11,11 @@ from akgentic.catalog.services import (
     ToolCatalog,
 )
 from akgentic.core import ActorSystem
-from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
 from akgentic.infra.protocols.placement import PlacementStrategy
-from akgentic.infra.protocols.team_handle import RuntimeCache
+from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry

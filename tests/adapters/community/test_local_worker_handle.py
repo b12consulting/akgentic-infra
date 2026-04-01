@@ -6,8 +6,8 @@ import inspect
 import uuid
 from unittest.mock import MagicMock
 
-from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
-from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
+from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
+from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 
 

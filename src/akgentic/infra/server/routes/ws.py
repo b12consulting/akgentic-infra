@@ -14,7 +14,7 @@ from typing import cast
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from akgentic.infra.adapters.websocket_subscriber import WebSocketEventSubscriber
+from akgentic.infra.adapters.shared.websocket_subscriber import WebSocketEventSubscriber
 from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.models import PersistedEvent, TeamStatus

@@ -10,12 +10,12 @@ import pytest
 from akgentic.team.manager import TeamManager
 from akgentic.team.repositories.yaml import YamlEventStore
 
-from akgentic.infra.adapters.local_placement import LocalPlacement
-from akgentic.infra.adapters.local_worker_handle import LocalWorkerHandle
+from akgentic.infra.adapters.community.local_placement import LocalPlacement
+from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.team.ports import NullServiceRegistry, ServiceRegistry
-from akgentic.infra.adapters.no_auth import NoAuth
-from akgentic.infra.adapters.null_channel_registry import NullChannelRegistry
-from akgentic.infra.adapters.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.community.no_auth import NoAuth
+from akgentic.infra.adapters.community.null_channel_registry import NullChannelRegistry
+from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community

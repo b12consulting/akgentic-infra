@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from akgentic.infra.adapters.local_ingestion import LocalIngestion
+from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.protocols.channels import InteractionChannelIngestion
 from akgentic.infra.server.services.team_service import TeamService
 

@@ -8,7 +8,7 @@ from akgentic.core.actor_address_impl import ActorAddressProxy
 from akgentic.core.messages import Message
 from akgentic.core.messages.orchestrator import ReceivedMessage, SentMessage, StartMessage
 
-from akgentic.infra.adapters.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
 
 # ---------------------------------------------------------------------------
 # Stub adapters satisfying InteractionChannelAdapter protocol (structural)

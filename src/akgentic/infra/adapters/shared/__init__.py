@@ -1,0 +1,29 @@
+"""Shared adapters — tier-agnostic implementations reusable by all deployment profiles.
+
+Adapters in this package are independent of deployment topology. They integrate
+with external services, provide dispatch infrastructure, or implement logic that
+every tier needs identically. A future pro or enterprise tier imports from here
+without modification.
+"""
+
+from __future__ import annotations
+
+from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.shared.channel_parser_registry import (
+    ChannelConfig,
+    ChannelParserRegistry,
+)
+from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
+from akgentic.infra.adapters.shared.telegram_parser import TelegramChannelParser
+from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
+from akgentic.infra.adapters.shared.websocket_subscriber import WebSocketEventSubscriber
+
+__all__ = [
+    "ChannelConfig",
+    "ChannelParserRegistry",
+    "InteractionChannelDispatcher",
+    "TelegramChannelAdapter",
+    "TelegramChannelParser",
+    "TelemetrySubscriber",
+    "WebSocketEventSubscriber",
+]

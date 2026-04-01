@@ -6,7 +6,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
-from akgentic.infra.adapters.local_team_handle import LocalTeamHandle
+from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
 

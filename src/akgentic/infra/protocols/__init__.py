@@ -14,7 +14,8 @@ from akgentic.infra.protocols.channels import (
 from akgentic.infra.protocols.health import HealthMonitor
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.recovery import RecoveryPolicy
-from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
+from akgentic.infra.protocols.runtime_cache import RuntimeCache
+from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 
 __all__ = [

@@ -7,7 +7,7 @@ from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from akgentic.infra.adapters.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.channels import (
     ChannelRegistry,
     InteractionChannelIngestion,

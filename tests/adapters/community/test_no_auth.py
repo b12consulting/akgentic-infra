@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-from akgentic.infra.adapters.no_auth import NoAuth
+from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.protocols.auth import AuthStrategy
 
 

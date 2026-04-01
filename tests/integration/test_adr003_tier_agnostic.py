@@ -18,7 +18,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from akgentic.infra.protocols.placement import PlacementStrategy
-from akgentic.infra.protocols.team_handle import RuntimeCache, TeamHandle
+from akgentic.infra.protocols.runtime_cache import RuntimeCache
+from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
