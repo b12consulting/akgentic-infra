@@ -197,8 +197,11 @@ class ChatApp(App[None]):
             self._team_id = team_id
         if self._connection_manager is not None:
             self._connection_manager._on_state_change = self._on_conn_state_change
-            # Switch to the selected team (updates ConnectionManager's team_id)
-            await self._connection_manager.switch_team(team_id)
+            # Set team_id and let stream_events handle the single connect().
+            # Do NOT call switch_team() here — it creates a WS without setting
+            # connection state, then stream_events creates a SECOND WS via
+            # connect(), causing duplicate connections and reconnect loops.
+            self._connection_manager._team_id = team_id  # noqa: SLF001
         self.stream_events()
 
     def _on_conn_state_change(self, state: ConnectionState) -> None:
