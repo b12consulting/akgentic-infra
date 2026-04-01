@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from textual.containers import VerticalScroll
 
-from akgentic.infra.cli.client import ApiClient, ApiError, TeamInfo
+from akgentic.infra.cli.client import ApiClient, ApiError, EventInfo, TeamInfo
 from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.connection import ConnectionManager
 from akgentic.infra.cli.event_router import EventRouter
 from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
 from akgentic.infra.cli.tui.widgets.error import ErrorWidget
-from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 from akgentic.infra.cli.tui.widgets.system_message import SystemMessage
 from akgentic.infra.cli.tui.widgets.user_message import UserMessage
 
@@ -321,3 +319,314 @@ async def test_quit_exits_app() -> None:
         await pilot.pause()
         # App should have received exit request
         # (Textual test runner handles this gracefully)
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: Missing test coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconnect_success_mounts_system_message() -> None:
+    """AC #4: /reconnect success mounts SystemMessage confirming reconnection."""
+    conn = _mock_conn()
+    conn.connect = AsyncMock()  # success (no exception)
+    app = _make_app(client=_mock_client(), connection_manager=conn)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/reconnect"))
+        await pilot.pause()
+        await pilot.pause()
+
+        conn.connect.assert_called_once()
+        msgs = pilot.app.query(SystemMessage)
+        found = any("Reconnected" in m._content for m in msgs)
+        assert found, "Expected SystemMessage confirming reconnection"
+
+
+@pytest.mark.asyncio
+async def test_delete_warning_mounts_system_message() -> None:
+    """AC #7: /delete <id> mounts warning SystemMessage with confirmation instructions."""
+    client = _mock_client()
+    app = _make_app(client=client, connection_manager=_mock_conn())
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/delete some-team"))
+        await pilot.pause()
+        await pilot.pause()
+
+        msgs = pilot.app.query(SystemMessage)
+        found = any("confirm" in m._content.lower() for m in msgs)
+        assert found, "Expected SystemMessage with deletion confirmation instructions"
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_executes_deletion() -> None:
+    """AC #7: /delete confirm <id> executes actual deletion."""
+    client = _mock_client()
+    client.delete_team.return_value = None
+    app = _make_app(client=client, connection_manager=_mock_conn())
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/delete confirm some-team"))
+        await pilot.pause()
+        await pilot.pause()
+
+        client.delete_team.assert_called_once_with("some-team")
+        msgs = pilot.app.query(SystemMessage)
+        found = any("deleted" in m._content.lower() for m in msgs)
+        assert found, "Expected SystemMessage confirming deletion"
+
+
+@pytest.mark.asyncio
+async def test_create_mounts_confirmation_and_switches() -> None:
+    """AC #7: /create mounts confirmation and auto-switches to new team."""
+    client = _mock_client()
+    client.create_team.return_value = _make_team(team_id="new-t", name="new-team")
+    conn = _mock_conn()
+    app = _make_app(client=client, connection_manager=conn)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/create test-catalog"))
+        await pilot.pause()
+        await pilot.pause()
+
+        client.create_team.assert_called_once_with("test-catalog")
+        msgs = pilot.app.query(SystemMessage)
+        found_create = any("Created team" in m._content for m in msgs)
+        assert found_create, "Expected SystemMessage confirming creation"
+
+
+@pytest.mark.asyncio
+async def test_stop_mounts_confirmation() -> None:
+    """AC #7: /stop mounts confirmation SystemMessage."""
+    client = _mock_client()
+    client.stop_team.return_value = None
+    app = _make_app(client=client, connection_manager=_mock_conn())
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/stop"))
+        await pilot.pause()
+        await pilot.pause()
+
+        client.stop_team.assert_called_once_with("t-123")
+        msgs = pilot.app.query(SystemMessage)
+        found = any("stopped" in m._content.lower() for m in msgs)
+        assert found, "Expected SystemMessage confirming stop"
+
+
+@pytest.mark.asyncio
+async def test_restore_mounts_confirmation_and_switches() -> None:
+    """AC #7: /restore mounts confirmation and auto-switches."""
+    client = _mock_client()
+    client.restore_team.return_value = None
+    conn = _mock_conn()
+    app = _make_app(client=client, connection_manager=conn)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/restore t-123"))
+        await pilot.pause()
+        await pilot.pause()
+
+        client.restore_team.assert_called_once_with("t-123")
+        msgs = pilot.app.query(SystemMessage)
+        found = any("restored" in m._content.lower() for m in msgs)
+        assert found, "Expected SystemMessage confirming restore"
+
+
+@pytest.mark.asyncio
+async def test_history_no_events_mounts_message() -> None:
+    """AC #2: /history with no events mounts 'no displayable history' message."""
+    client = _mock_client()
+    client.get_events.return_value = []
+    router = _mock_event_router()
+    app = ChatApp(
+        team_name="test",
+        team_id="t-123",
+        team_status="running",
+        connection_manager=_mock_conn(),
+        event_router=router,
+        command_registry=build_default_registry(),
+        client=client,
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/history"))
+        await pilot.pause()
+        await pilot.pause()
+
+        client.get_events.assert_called_once_with("t-123")
+        msgs = pilot.app.query(SystemMessage)
+        found = any("No displayable" in m._content for m in msgs)
+        assert found, "Expected SystemMessage about no displayable events"
+
+
+@pytest.mark.asyncio
+async def test_history_with_events_mounts_widgets() -> None:
+    """AC #2: /history with displayable events mounts widgets from EventRouter."""
+    from akgentic.infra.cli.tui.widgets.agent_message import AgentMessage
+
+    client = _mock_client()
+    event = EventInfo(
+        team_id="t-123",
+        sequence=1,
+        event={
+            "__model__": "SentMessage",
+            "sender": {"name": "agent1", "role": "Agent"},
+            "message": {"content": "hello from history"},
+        },
+        timestamp="2026-01-01",
+    )
+    client.get_events.return_value = [event]
+
+    # Use real EventRouter for widget generation
+    from akgentic.infra.cli.renderers import RichRenderer
+
+    real_router = EventRouter(RichRenderer())
+    app = ChatApp(
+        team_name="test",
+        team_id="t-123",
+        team_status="running",
+        connection_manager=_mock_conn(),
+        event_router=real_router,
+        command_registry=build_default_registry(),
+        client=client,
+    )
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/history"))
+        await pilot.pause()
+        await pilot.pause()
+
+        agent_msgs = pilot.app.query(AgentMessage)
+        assert len(agent_msgs) >= 1, "Expected at least one AgentMessage from history"
+
+
+@pytest.mark.asyncio
+async def test_history_api_error_mounts_error() -> None:
+    """AC #2, #8: /history with API error mounts ErrorWidget."""
+    client = _mock_client()
+    client.get_events.side_effect = ApiError(500, "events unavailable")
+    app = _make_app(client=client)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/history"))
+        await pilot.pause()
+        await pilot.pause()
+
+        errors = pilot.app.query(ErrorWidget)
+        found = any("history" in e._content.lower() for e in errors)
+        assert found, "Expected ErrorWidget for history fetch failure"
+
+
+@pytest.mark.asyncio
+async def test_history_invalid_arg_mounts_usage() -> None:
+    """AC #2: /history with invalid arg mounts usage message."""
+    app = _make_app(client=_mock_client())
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/history abc"))
+        await pilot.pause()
+        await pilot.pause()
+
+        msgs = pilot.app.query(SystemMessage)
+        found = any("Usage:" in m._content for m in msgs)
+        assert found, "Expected usage message for invalid /history arg"
+
+
+@pytest.mark.asyncio
+async def test_create_no_args_mounts_usage() -> None:
+    """AC #7: /create with no args mounts usage message."""
+    app = _make_app(client=_mock_client())
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/create"))
+        await pilot.pause()
+        await pilot.pause()
+
+        msgs = pilot.app.query(SystemMessage)
+        found = any("Usage:" in m._content for m in msgs)
+        assert found, "Expected usage message for /create with no args"
+
+
+@pytest.mark.asyncio
+async def test_create_api_error_mounts_error() -> None:
+    """AC #7, #8: /create with API error mounts ErrorWidget."""
+    client = _mock_client()
+    client.create_team.side_effect = ApiError(400, "catalog entry not found")
+    app = _make_app(client=client)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/create bad-entry"))
+        await pilot.pause()
+        await pilot.pause()
+
+        errors = pilot.app.query(ErrorWidget)
+        found = any("creating team" in e._content.lower() for e in errors)
+        assert found, "Expected ErrorWidget for create failure"
+
+
+@pytest.mark.asyncio
+async def test_stop_api_error_mounts_error() -> None:
+    """AC #7, #8: /stop with API error mounts ErrorWidget."""
+    client = _mock_client()
+    client.stop_team.side_effect = ApiError(500, "stop failed")
+    app = _make_app(client=client)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/stop"))
+        await pilot.pause()
+        await pilot.pause()
+
+        errors = pilot.app.query(ErrorWidget)
+        found = any("stopping team" in e._content.lower() for e in errors)
+        assert found, "Expected ErrorWidget for stop failure"
+
+
+@pytest.mark.asyncio
+async def test_restore_api_error_mounts_error() -> None:
+    """AC #7, #8: /restore with API error mounts ErrorWidget."""
+    client = _mock_client()
+    client.restore_team.side_effect = ApiError(500, "restore failed")
+    app = _make_app(client=client)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/restore t-123"))
+        await pilot.pause()
+        await pilot.pause()
+
+        errors = pilot.app.query(ErrorWidget)
+        found = any("restoring team" in e._content.lower() for e in errors)
+        assert found, "Expected ErrorWidget for restore failure"
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_api_error_mounts_error() -> None:
+    """AC #7, #8: /delete confirm with API error mounts ErrorWidget."""
+    client = _mock_client()
+    client.delete_team.side_effect = ApiError(500, "delete failed")
+    app = _make_app(client=client)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        chat_input = pilot.app.query_one(ChatInput)
+        chat_input.post_message(ChatInput.Submitted(text="/delete confirm t-123"))
+        await pilot.pause()
+        await pilot.pause()
+
+        errors = pilot.app.query(ErrorWidget)
+        found = any("deleting team" in e._content.lower() for e in errors)
+        assert found, "Expected ErrorWidget for delete failure"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from contextlib import redirect_stdout
@@ -21,7 +22,9 @@ class _NoOpRenderer(RichRenderer):
     """Renderer stub that captures render_error calls to a buffer."""
 
     def __init__(self, error_buffer: list[str]) -> None:
-        super().__init__()
+        from rich.console import Console
+
+        super().__init__(console=Console(file=io.StringIO(), width=80))
         self._error_buffer = error_buffer
 
     def render_error(self, content: str) -> None:
@@ -113,6 +116,7 @@ class TuiCommandAdapter:
             "create",
             "stop",
             "restore",
+            "history",
         }
     )
 
@@ -158,6 +162,8 @@ class TuiCommandAdapter:
             return await self._handle_create(args, app)
         if cmd_name == "stop":
             return await self._handle_stop(app)
+        if cmd_name == "history":
+            return await self._handle_history(args, app)
         return await self._handle_restore(args, app)
 
     async def _dispatch_generic(
@@ -237,8 +243,8 @@ class TuiCommandAdapter:
                 team_status = team_info.status
                 app._team_name = team_name  # noqa: SLF001
                 app._team_status = team_status  # noqa: SLF001
-            except ApiError:
-                pass
+            except ApiError as exc:
+                _log.debug("Failed to fetch team info after switch: %s", exc.detail)
 
         # Update StatusHeader
         from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
@@ -246,7 +252,7 @@ class TuiCommandAdapter:
         try:
             app.query_one(StatusHeader).update_team(team_name, new_team_id, team_status)
         except Exception:  # noqa: BLE001
-            pass
+            _log.debug("StatusHeader not available for team update")
 
         await self._mount_system(app, f"Switched to team {team_name} ({new_team_id})")
 
@@ -270,14 +276,14 @@ class TuiCommandAdapter:
             try:
                 app.query_one(StatusHeader).update_connection("disconnected")
             except Exception:  # noqa: BLE001
-                pass
+                _log.debug("StatusHeader not available for connection update")
             await self._mount_error(app, f"Reconnection failed: {exc}")
             return True
 
         try:
             app.query_one(StatusHeader).update_connection("connected")
         except Exception:  # noqa: BLE001
-            pass
+            _log.debug("StatusHeader not available for connection update")
 
         await self._mount_system(app, "Reconnected to server.")
 
@@ -351,7 +357,7 @@ class TuiCommandAdapter:
             try:
                 app.query_one(StatusHeader).update_team("(deleted)", target_id, "deleted")
             except Exception:  # noqa: BLE001
-                pass
+                _log.debug("StatusHeader not available for delete update")
 
         return True
 
@@ -397,12 +403,12 @@ class TuiCommandAdapter:
 
         try:
             app.query_one(StatusHeader).update_team(
-                app._team_name,
-                app._team_id,
-                "stopped",  # noqa: SLF001
+                app._team_name,  # noqa: SLF001
+                app._team_id,  # noqa: SLF001
+                "stopped",
             )
         except Exception:  # noqa: BLE001
-            pass
+            _log.debug("StatusHeader not available for stop update")
 
         await self._mount_system(app, f"Team {app._team_id} stopped.")  # noqa: SLF001
         return True
@@ -425,6 +431,60 @@ class TuiCommandAdapter:
 
         # Auto-switch to restored team
         return await self._handle_switch(target_id, app)
+
+    async def _handle_history(self, args: str, app: ChatApp) -> bool:
+        """Handle /history by fetching events and mounting them as TUI widgets."""
+        limit = 20
+        if args.strip():
+            try:
+                limit = int(args.strip())
+            except ValueError:
+                await self._mount_system(
+                    app, "Usage: /history [N] — N must be a positive integer."
+                )
+                return True
+            if limit <= 0:
+                await self._mount_system(
+                    app, "Usage: /history [N] — N must be a positive integer."
+                )
+                return True
+
+        client = app._client  # noqa: SLF001
+        if client is None:
+            await self._mount_error(app, "No API client available.")
+            return True
+
+        loop = asyncio.get_running_loop()
+        try:
+            events = await loop.run_in_executor(
+                None, client.get_events, app._team_id  # noqa: SLF001
+            )
+        except ApiError as exc:
+            await self._mount_error(app, f"Error fetching history: {exc.detail}")
+            return True
+
+        event_router = app._event_router  # noqa: SLF001
+        color_registry = app._color_registry  # noqa: SLF001
+        if event_router is None:
+            await self._mount_system(app, "No event router available for history rendering.")
+            return True
+
+        from textual.containers import VerticalScroll
+
+        conversation = app.query_one("#conversation", VerticalScroll)
+        event_dicts = [e.model_dump() for e in events]
+        displayed = 0
+        for evt in event_dicts[-limit:]:
+            widget = event_router.to_widget(evt, color_registry)
+            if widget is not None:
+                await conversation.mount(widget)
+                widget.scroll_visible(animate=False)
+                displayed += 1
+
+        if displayed == 0:
+            await self._mount_system(app, "No displayable history events found.")
+
+        return True
 
     async def _mount_system(self, app: ChatApp, text: str) -> None:
         """Mount a SystemMessage widget in the conversation area."""
