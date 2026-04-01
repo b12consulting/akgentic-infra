@@ -161,8 +161,8 @@ async def test_c_name_creates_team() -> None:
 
 
 @pytest.mark.asyncio
-async def test_q_dismisses_with_none() -> None:
-    """Entering 'q' dismisses the screen with None."""
+async def test_q_dismisses_with_quit() -> None:
+    """Entering 'q' dismisses the screen with __quit__ signal."""
     client = _mock_client(running=1, stopped=0, catalog=0)
     dismissed_with: list[str | None] = []
 
@@ -180,7 +180,7 @@ async def test_q_dismisses_with_none() -> None:
         await pilot.pause()
         await pilot.pause()
         await _submit_input(app, "q", pilot)
-        assert None in dismissed_with
+        assert "__quit__" in dismissed_with
 
 
 @pytest.mark.asyncio
