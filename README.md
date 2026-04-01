@@ -20,7 +20,7 @@ Infrastructure backend for the Akgentic platform. It provides protocol abstracti
 | Persistence       | `YamlEventStore`       | MongoDB                       | MongoDB + Dapr State               |
 | Health monitoring | None (single process)  | `RedisHealthMonitor`          | `DaprHealthMonitor`                |
 | Recovery          | None (single process)  | `MarkStoppedRecovery`         | `AutoRestoreRecovery`              |
-| Channels          | `YamlChannelRegistry`  | Redis-backed                  | Dapr pub/sub                       |
+| Channels          | `YamlChannelRegistry` / `NullChannelRegistry` | Redis-backed       | Dapr pub/sub                       |
 | Worker discovery  | N/A (same process)     | HTTP via Redis-registered URLs| Dapr service invocation            |
 | Observability     | Logfire (direct)       | Logfire (direct)              | Logfire + OTel Collector           |
 | Workspace storage | Local filesystem       | Docker named volume           | NFS / EFS                          |
@@ -235,14 +235,42 @@ graph TB
     style WN_DAPR fill:#E91E63,color:white
 ```
 
+## Source Layout
+
+```
+src/akgentic/infra/
+  protocols/          Protocol definitions (the contracts)
+    auth.py             AuthStrategy
+    placement.py        PlacementStrategy
+    worker_handle.py    WorkerHandle
+    team_handle.py      TeamHandle
+    runtime_cache.py    RuntimeCache
+    channels.py         ChannelAdapter, Ingestion, Parser, Registry
+    health.py           HealthMonitor
+    recovery.py         RecoveryPolicy
+  adapters/           Protocol implementations
+    community/          Single-process adapters (NoAuth, LocalPlacement, etc.)
+    shared/             Tier-agnostic adapters (Telegram, telemetry, WebSocket)
+  server/             FastAPI application
+    routes/             REST, WebSocket, webhook, and frontend adapter routes
+    services/           TeamService (tier-agnostic orchestrator)
+    settings.py         Pydantic-settings configuration classes
+    app.py              Application factory (create_app)
+  cli/                Typer-based CLI (ak-infra)
+  wiring.py           Dependency injection — wires adapters into services
+  worker/             Worker module (planned for department/enterprise tiers)
+```
+
 ## Quick Start
 
 ```bash
 # Start the community-tier server
 ak-infra chat --create my-team-entry
+```
 
-# Or start the server programmatically
-python -c "
+Or start programmatically:
+
+```python
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
@@ -252,26 +280,25 @@ settings = CommunitySettings()
 services = wire_community(settings)
 app = create_app(services, settings)
 uvicorn.run(app, host=settings.host, port=settings.port)
-"
 ```
 
 ## Protocols
 
 These are the contracts that department/enterprise tiers must implement. All use structural subtyping (`typing.Protocol`) — no inheritance required.
 
-| Protocol                       | File              | Abstracts                                     |
-|--------------------------------|-------------------|-----------------------------------------------|
-| `PlacementStrategy`            | `placement.py`    | Worker selection and team creation             |
-| `WorkerHandle`                 | `worker_handle.py`| Team stop / delete / resume / get             |
-| `TeamHandle`                   | `team_handle.py`  | Send messages, route human input, subscribe   |
-| `RuntimeCache`                 | `team_handle.py`  | Map team IDs to live TeamHandle instances      |
-| `AuthStrategy`                 | `auth.py`         | Request authentication and user extraction     |
-| `InteractionChannelAdapter`    | `channels.py`     | Outbound message delivery to external channels |
-| `InteractionChannelIngestion`  | `channels.py`     | Inbound webhook routing to teams               |
-| `ChannelParser`                | `channels.py`     | Parse channel-specific webhook payloads        |
-| `ChannelRegistry`              | `channels.py`     | Map external channel users to active teams     |
-| `HealthMonitor`                | `health.py`       | Worker liveness detection                      |
-| `RecoveryPolicy`               | `recovery.py`     | Recovery behavior on worker failure            |
+| Protocol                       | File                | Abstracts                                     |
+|--------------------------------|---------------------|-----------------------------------------------|
+| `PlacementStrategy`            | `placement.py`      | Worker selection and team creation             |
+| `WorkerHandle`                 | `worker_handle.py`  | Team stop / delete / resume / get             |
+| `TeamHandle`                   | `team_handle.py`    | Send messages, route human input, subscribe   |
+| `RuntimeCache`                 | `runtime_cache.py`  | Map team IDs to live TeamHandle instances      |
+| `AuthStrategy`                 | `auth.py`           | Request authentication and user extraction     |
+| `InteractionChannelAdapter`    | `channels.py`       | Outbound message delivery to external channels |
+| `InteractionChannelIngestion`  | `channels.py`       | Inbound webhook routing to teams               |
+| `ChannelParser`                | `channels.py`       | Parse channel-specific webhook payloads        |
+| `ChannelRegistry`              | `channels.py`       | Map external channel users to active teams     |
+| `HealthMonitor`                | `health.py`         | Worker liveness detection                      |
+| `RecoveryPolicy`               | `recovery.py`       | Recovery behavior on worker failure            |
 
 ## Server Architecture
 
@@ -301,6 +328,19 @@ Catalog endpoints are mounted under `/catalog/` and provided by `akgentic-catalo
 ### Frontend Adapter Plugin
 
 An optional plugin system for translating API responses to legacy frontend formats. Configured via `AKGENTIC_FRONTEND_ADAPTER` (FQDN of the adapter class). When absent, the server serves the native V2 API only.
+
+### Shared Adapters
+
+Tier-agnostic adapters that work across community, department, and enterprise deployments:
+
+| Adapter                      | Description                                                  |
+|------------------------------|--------------------------------------------------------------|
+| `InteractionChannelDispatcher` | Per-team outbound message dispatcher — routes `SentMessage` events to registered channel adapters |
+| `TelegramChannelAdapter`     | Delivers outbound messages via the Telegram Bot API          |
+| `TelegramParser`             | Parses inbound Telegram webhook payloads                     |
+| `ChannelParserRegistry`      | Resolves and holds channel parsers/adapters from config      |
+| `TelemetrySubscriber`        | Event subscriber that traces messages via Logfire            |
+| `WebSocketEventSubscriber`   | Per-connection event subscriber for WebSocket streaming      |
 
 ## CLI
 
@@ -369,7 +409,8 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 |--------------------------------|---------------|----------------------------------|
 | `AKGENTIC_HOST`                | `0.0.0.0`    | Bind address                     |
 | `AKGENTIC_PORT`                | `8000`        | Port number                      |
-| `AKGENTIC_CORS_ORIGINS`        | `["*"]`       | Allowed CORS origins             |
+| `AKGENTIC_LOG_LEVEL`           | `INFO`        | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Invalid values fall back to `INFO`. |
+| `AKGENTIC_CORS_ORIGINS`        | `["*"]`       | Allowed CORS origins (JSON list) |
 | `AKGENTIC_FRONTEND_ADAPTER`    | `None`        | Frontend adapter plugin FQDN     |
 
 ### Community Settings (extends server)
@@ -423,6 +464,21 @@ ruff format packages/akgentic-infra/src/
 ```
 
 Coverage target: **90%** (higher than other packages at 80%).
+
+### Test Markers
+
+| Marker          | Description                                                    |
+|-----------------|----------------------------------------------------------------|
+| `integration`   | Full server flow tests requiring real LLM and API keys         |
+| `llm`           | Tests requiring LLM API keys (auto-skipped when `OPENAI_API_KEY` is absent) |
+| `smoke`         | End-to-end smoke tests using `TestModel` (no API key required) |
+| `e2e`           | Real end-to-end tests requiring a running server and `OPENAI_API_KEY` |
+
+By default, `integration` tests are excluded (`-m 'not integration'`). Run them explicitly:
+
+```bash
+pytest packages/akgentic-infra/tests/ -m integration
+```
 
 ## Dependencies
 
