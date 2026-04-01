@@ -26,8 +26,8 @@ _CSS_PATH = Path(__file__).parent.parent / "styles" / "team_select.tcss"
 
 
 def _short_id(team_id: str) -> str:
-    """Truncate a UUID to the first 13 characters."""
-    return team_id[:13] if len(team_id) > 13 else team_id
+    """Return team ID for display."""
+    return team_id
 
 
 class TeamSelectScreen(Screen[str | None]):

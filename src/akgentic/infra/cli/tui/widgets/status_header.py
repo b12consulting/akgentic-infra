@@ -28,7 +28,7 @@ class StatusHeader(Static):
     ) -> None:
         super().__init__()
         self._team_name = team_name
-        self._team_id = team_id[:13] if team_id else ""
+        self._team_id = team_id
         self._team_status = team_status
         self._connection_state = connection_state
 
@@ -62,6 +62,6 @@ class StatusHeader(Static):
     ) -> None:
         """Update team info and re-render."""
         self._team_name = team_name
-        self._team_id = team_id[:13] if team_id else ""
+        self._team_id = team_id
         self._team_status = team_status
         self.refresh()

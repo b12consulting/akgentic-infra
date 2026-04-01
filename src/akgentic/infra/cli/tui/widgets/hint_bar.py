@@ -21,7 +21,7 @@ class HintBar(Static):
 
     def __init__(self, hints: str = "") -> None:
         super().__init__()
-        self._hints = hints or "@mention    /command    Tab: complete    Enter: send    Esc: scroll"
+        self._hints = hints or "@mention    /command    Enter: send"
 
     def render(self) -> RenderableType:
         """Render hint text."""
