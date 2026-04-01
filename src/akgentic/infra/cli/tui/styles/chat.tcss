@@ -27,6 +27,11 @@ ChatInput {
     height: auto;
     max-height: 10;
     min-height: 3;
+    border: none;
+}
+
+ChatInput:focus {
+    border: none;
 }
 
 HintBar {

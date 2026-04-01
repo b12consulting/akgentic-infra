@@ -37,6 +37,7 @@ class ChatApp(App[None]):
 
     TITLE = "Akgentic Chat"
     CSS_PATH = _CSS_PATH
+
     LAYERS = ("default", "overlay")
 
     def __init__(
@@ -156,6 +157,9 @@ class ChatApp(App[None]):
         team_id = await self.push_screen_wait(TeamSelectScreen(client=self._client))
         if team_id is None:
             return
+        if team_id == "__quit__":
+            self.exit()
+            return
         if self._client is not None:
             team_info = self._client.get_team(team_id)
             self._team_id = team_id
@@ -165,8 +169,15 @@ class ChatApp(App[None]):
         else:
             self._team_id = team_id
         if self._connection_manager is not None:
+            from akgentic.infra.cli.connection import ConnectionManager as ConnMgr
+
+            self._connection_manager = ConnMgr(
+                server_url=self._connection_manager._server_url,  # noqa: SLF001
+                team_id=team_id,
+                api_key=self._connection_manager._api_key,  # noqa: SLF001
+            )
             self._connection_manager._on_state_change = self._on_conn_state_change
-            await self._connection_manager.switch_team(team_id)
+        self.query_one(ChatInput).focus()
         self.stream_events()
 
     def on_mount(self) -> None:
@@ -176,6 +187,7 @@ class ChatApp(App[None]):
             return
         if self._connection_manager is not None:
             self._connection_manager._on_state_change = self._on_conn_state_change
+        self.query_one(ChatInput).focus()
         self.stream_events()
 
     @work(exclusive=True)
@@ -184,7 +196,7 @@ class ChatApp(App[None]):
         from akgentic.infra.cli.tui.screens.team_select import TeamSelectScreen
 
         team_id = await self.push_screen_wait(TeamSelectScreen(client=self._client))
-        if team_id is None:
+        if team_id is None or team_id == "__quit__":
             self.exit()
             return
         # Fetch team info and update header
@@ -197,9 +209,20 @@ class ChatApp(App[None]):
         else:
             self._team_id = team_id
         if self._connection_manager is not None:
+            # Create a fresh ConnectionManager with the correct team_id,
+            # matching the legacy REPL pattern: one ConnectionManager per team,
+            # one connect(), one WebSocket. Do NOT reuse the empty-team_id
+            # ConnectionManager — switch_team creates a WS without setting
+            # state, then stream_events creates a second WS via connect().
+            from akgentic.infra.cli.connection import ConnectionManager as ConnMgr
+
+            self._connection_manager = ConnMgr(
+                server_url=self._connection_manager._server_url,  # noqa: SLF001
+                team_id=team_id,
+                api_key=self._connection_manager._api_key,  # noqa: SLF001
+            )
             self._connection_manager._on_state_change = self._on_conn_state_change
-            # Switch to the selected team (updates ConnectionManager's team_id)
-            await self._connection_manager.switch_team(team_id)
+        self.query_one(ChatInput).focus()
         self.stream_events()
 
     def _on_conn_state_change(self, state: ConnectionState) -> None:
@@ -244,6 +267,10 @@ class ChatApp(App[None]):
                 pass  # Fall through — receive loop will show "Connection lost"
 
         conversation = self.query_one("#conversation", VerticalScroll)
+
+        # Replay conversation history before streaming live events
+        await self._replay_history(conversation)
+
         while True:
             try:
                 event_data = await self._connection_manager.receive_event()
@@ -265,6 +292,44 @@ class ChatApp(App[None]):
         msg = SystemMessage(content="Connection lost. Use /reconnect to try again.")
         await conversation.mount(msg)
         msg.scroll_visible(animate=False)
+
+    async def _replay_history(self, conversation: VerticalScroll) -> None:
+        """Fetch and mount past events as dimmed widgets before live streaming."""
+        if self._client is None or self._event_router is None:
+            return
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        try:
+            events = await loop.run_in_executor(
+                None, self._client.get_events, self._team_id
+            )
+        except ApiError:
+            return
+        if not events:
+            return
+
+        # Remove welcome placeholder
+        for node in conversation.query("#welcome"):
+            node.remove()
+
+        displayed = False
+        for evt in events:
+            widget = self._event_router.to_widget(
+                evt.model_dump(), self._color_registry
+            )
+            if widget is not None:
+                widget.add_class("history")
+                await conversation.mount(widget)
+                displayed = True
+
+        if displayed:
+            from akgentic.infra.cli.tui.widgets.system_message import SystemMessage
+
+            sep = SystemMessage(content="── history ──")
+            sep.add_class("history")
+            await conversation.mount(sep)
+            sep.scroll_visible(animate=False)
 
     def _remove_thinking_indicator(self, conversation: VerticalScroll) -> None:
         """Remove ThinkingIndicator if present."""

@@ -54,8 +54,9 @@ class TeamSelectScreen(Screen[str | None]):
             yield Static("", id="team-hints")
 
     def on_mount(self) -> None:
-        """Fetch data and render the first page."""
+        """Fetch data, render, and focus the input."""
         self._fetch_data_worker()
+        self.query_one("#team-input", Input).focus()
 
     @work(thread=True)
     def _fetch_data_worker(self) -> None:
@@ -93,8 +94,8 @@ class TeamSelectScreen(Screen[str | None]):
         catalog: list[CatalogTeamInfo],
     ) -> None:
         """Store fetched data and render."""
-        self._running_teams = running
-        self._stopped_teams = stopped
+        self._running_teams = sorted(running, key=lambda t: t.created_at, reverse=True)
+        self._stopped_teams = sorted(stopped, key=lambda t: t.created_at, reverse=True)
         self._catalog = catalog
         self._render_page()
 
@@ -140,6 +141,7 @@ class TeamSelectScreen(Screen[str | None]):
             line.append(f"  [{start + i + 1}]", style="bold cyan")
             line.append(f"  {team.name}", style="bold")
             line.append(f"  {_short_id(team.team_id)}", style="dim")
+            line.append(f"  {team.created_at[:16]}", style="dim")
             line.append("  > running", style="green")
             container.mount(Static(line, classes="team-entry"))
 
@@ -163,6 +165,7 @@ class TeamSelectScreen(Screen[str | None]):
             line.append(f"  [s{start + i + 1}]", style="bold yellow")
             line.append(f"  {team.name}", style="bold")
             line.append(f"  {_short_id(team.team_id)}", style="dim")
+            line.append(f"  {team.created_at[:16]}", style="dim")
             line.append("  || stopped", style="yellow")
             container.mount(Static(line, classes="team-entry"))
 
@@ -193,7 +196,7 @@ class TeamSelectScreen(Screen[str | None]):
             hints_parts.append("[c <name>] create")
         if self._max_pages() > 1:
             hints_parts.append("<-> page")
-        hints_parts.append("[q]/Esc quit")
+        hints_parts.append("Esc back  [q] quit")
         hint_text = "  ".join(hints_parts)
         try:
             # Use Text() to avoid Rich markup interpretation of brackets
@@ -210,7 +213,7 @@ class TeamSelectScreen(Screen[str | None]):
             return
 
         if text == "q":
-            self.dismiss(None)
+            self.dismiss("__quit__")
             return
 
         if text == "n":

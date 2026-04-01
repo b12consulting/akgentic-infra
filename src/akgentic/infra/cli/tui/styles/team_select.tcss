@@ -19,6 +19,11 @@
 
 #team-input {
     height: 3;
+    border: none;
+}
+
+#team-input:focus {
+    border: none;
 }
 
 #team-hints {
