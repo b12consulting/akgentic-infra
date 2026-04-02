@@ -144,3 +144,29 @@ def app(
 def client(app: FastAPI) -> TestClient:
     """Sync HTTP test client."""
     return TestClient(app)
+
+
+@pytest.fixture()
+def v1_seeded_settings(tmp_path: Path) -> CommunitySettings:
+    """Server settings with V1 frontend adapter enabled and pre-seeded catalog."""
+    settings = CommunitySettings(
+        workspaces_root=tmp_path / "workspaces",
+        event_store_path=tmp_path / "event_store",
+        catalog_path=tmp_path / "catalog",
+        frontend_adapter=(
+            "akgentic.infra.server.routes.frontend_adapter.angular_v1.AngularV1Adapter"
+        ),
+    )
+    _seed_catalog(settings.catalog_path)
+    return settings
+
+
+@pytest.fixture()
+def v1_client(
+    v1_seeded_settings: CommunitySettings,
+) -> Generator[TestClient, None, None]:
+    """Sync HTTP test client with V1 frontend adapter routes mounted."""
+    services = wire_community(v1_seeded_settings)
+    application = create_app(services, v1_seeded_settings)
+    yield TestClient(application)
+    services.actor_system.shutdown()

@@ -31,6 +31,27 @@ def test_send_message_stopped_team(team_service: TeamService) -> None:
         team_service.send_message(process.team_id, "hello")
 
 
+def test_send_message_to_success(team_service: TeamService) -> None:
+    """send_message_to delivers to a specific agent without error."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    # @Manager is a valid agent in the test-team catalog entry
+    team_service.send_message_to(process.team_id, "@Manager", "hello")
+
+
+def test_send_message_to_not_found_team(team_service: TeamService) -> None:
+    """send_message_to raises ValueError for non-existent team."""
+    with pytest.raises(ValueError, match="not found"):
+        team_service.send_message_to(uuid.uuid4(), "@Manager", "hello")
+
+
+def test_send_message_to_stopped_team(team_service: TeamService) -> None:
+    """send_message_to raises ValueError for stopped team."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+    with pytest.raises(ValueError, match="not running"):
+        team_service.send_message_to(process.team_id, "@Manager", "hello")
+
+
 def test_stop_team_success(team_service: TeamService) -> None:
     """stop_team transitions a running team to stopped."""
     process = team_service.create_team("test-team", user_id="anonymous")
