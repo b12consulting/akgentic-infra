@@ -43,3 +43,8 @@ class AgentMessage(Static):
             header.append(f"  {self._timestamp}", style="dim")
         body = Markdown(self._content)
         return Group(header, body)
+
+    def on_click(self) -> None:
+        """Copy message content to clipboard on click."""
+        self.app.copy_to_clipboard(self._content)
+        self.app.notify("Copied to clipboard", timeout=2)

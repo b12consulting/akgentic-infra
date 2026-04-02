@@ -181,6 +181,7 @@ class ChatApp(App[None]):
                 api_key=self._connection_manager._api_key,  # noqa: SLF001
             )
             self._connection_manager._on_state_change = self._on_conn_state_change
+        self._clear_conversation()
         self.query_one(ChatInput).focus()
         self.stream_events()
 
@@ -213,11 +214,6 @@ class ChatApp(App[None]):
         else:
             self._team_id = team_id
         if self._connection_manager is not None:
-            # Create a fresh ConnectionManager with the correct team_id,
-            # matching the legacy REPL pattern: one ConnectionManager per team,
-            # one connect(), one WebSocket. Do NOT reuse the empty-team_id
-            # ConnectionManager — switch_team creates a WS without setting
-            # state, then stream_events creates a second WS via connect().
             from akgentic.infra.cli.connection import ConnectionManager as ConnMgr
 
             self._connection_manager = ConnMgr(
@@ -226,6 +222,7 @@ class ChatApp(App[None]):
                 api_key=self._connection_manager._api_key,  # noqa: SLF001
             )
             self._connection_manager._on_state_change = self._on_conn_state_change
+        self._clear_conversation()
         self.query_one(ChatInput).focus()
         self.stream_events()
 
@@ -280,6 +277,13 @@ class ChatApp(App[None]):
         conversation.scroll_end(animate=False)
         self.query_one(ScrollIndicator).count = 0  # type: ignore[assignment]
 
+    def _clear_conversation(self) -> None:
+        """Clear conversation area and reset related state for team switch."""
+        conversation = self.query_one("#conversation", VerticalScroll)
+        conversation.remove_children()
+        self._color_registry.reset()
+        self.query_one(ScrollIndicator).count = 0  # type: ignore[assignment]
+
     @work(exclusive=True)
     async def stream_events(self) -> None:
         """Background worker: stream WebSocket events and mount widgets."""
@@ -294,11 +298,8 @@ class ChatApp(App[None]):
                 pass
 
         conversation = self.query_one("#conversation", VerticalScroll)
-        conversation.remove_children()
-        self._color_registry.reset()
-        self.query_one(ScrollIndicator).count = 0  # type: ignore[assignment]
         has_history = await self._replay_history(conversation)
-        if not has_history:
+        if not has_history and not conversation.query(".welcome-msg, #welcome"):
             welcome = Static(
                 "Welcome to Akgentic Chat. Send a message to begin.",
                 classes="welcome-msg",

@@ -73,5 +73,12 @@ class ToolCallWidget(Static):
         self.update(self._build_collapsed() if value else self._build_expanded())
 
     def on_click(self) -> None:
-        """Toggle collapsed state."""
-        self.collapsed = not self.collapsed
+        """Toggle when collapsed; copy content when expanded."""
+        if self.collapsed:
+            self.collapsed = False
+        else:
+            parts = [f"Tool: {self._tool_name}", f"Input: {self._tool_input}"]
+            if self._tool_output is not None:
+                parts.append(f"Output: {self._tool_output}")
+            self.app.copy_to_clipboard("\n".join(parts))
+            self.app.notify("Tool call copied to clipboard", timeout=2)

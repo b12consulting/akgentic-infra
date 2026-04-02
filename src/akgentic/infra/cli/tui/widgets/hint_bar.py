@@ -20,7 +20,9 @@ class HintBar(Static):
 
     def __init__(self, hints: str = "") -> None:
         super().__init__()
-        self._hints = hints or "@mention    /command    Enter: send    Esc: teams    /quit: exit"
+        self._hints = (
+            hints or "@mention  /command  Enter: send  Click: copy  Esc: teams  /quit: exit"
+        )
 
     def render(self) -> RenderableType:
         """Render hint text."""

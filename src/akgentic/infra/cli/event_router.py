@@ -21,27 +21,27 @@ _DISPLAY_EVENTS = {"SentMessage", "ErrorMessage", "EventMessage"}
 
 def _extract_timestamp(data: dict[str, Any]) -> str | None:
     """Extract a HH:MM timestamp from an event dict, trying multiple paths."""
-    event = data.get("event", data)
-    if isinstance(event, str):
-        try:
+    try:
+        event = data.get("event", data)
+        if isinstance(event, str):
             event = json.loads(event)
-        except (json.JSONDecodeError, TypeError):
-            event = {}
-    candidates: list[str | None] = []
-    if isinstance(event, dict):
-        msg = event.get("message", {})
-        if isinstance(msg, dict):
-            candidates.append(msg.get("timestamp"))
-        candidates.append(event.get("timestamp"))
-    candidates.append(data.get("timestamp"))
-    for raw in candidates:
-        if raw is None:
-            continue
-        try:
-            dt = datetime.fromisoformat(str(raw))
-            return dt.strftime("%H:%M")
-        except (ValueError, TypeError):
-            continue
+        candidates: list[object] = []
+        if isinstance(event, dict):
+            msg = event.get("message", {})
+            if isinstance(msg, dict):
+                candidates.append(msg.get("timestamp"))
+            candidates.append(event.get("timestamp"))
+        candidates.append(data.get("timestamp"))
+        for raw in candidates:
+            if raw is None:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(raw))
+                return dt.strftime("%H:%M")
+            except (ValueError, TypeError, OverflowError):
+                continue
+    except Exception:  # noqa: BLE001
+        pass
     return None
 
 
@@ -196,7 +196,7 @@ class EventRouter:
                 return self._sent_to_widget(event, color_registry, timestamp)
             if short_model == "EventMessage":
                 return self._event_to_widget(event)
-        except (KeyError, json.JSONDecodeError, TypeError) as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.debug("to_widget: malformed event skipped: %s", exc)
         return None
 
