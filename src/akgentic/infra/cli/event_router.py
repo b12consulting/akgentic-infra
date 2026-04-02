@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from akgentic.infra.cli.renderers import RichRenderer
@@ -16,6 +17,32 @@ if TYPE_CHECKING:
 
 # Event types to display vs skip
 _DISPLAY_EVENTS = {"SentMessage", "ErrorMessage", "EventMessage"}
+
+
+def _extract_timestamp(data: dict[str, Any]) -> str | None:
+    """Extract a HH:MM timestamp from an event dict, trying multiple paths."""
+    try:
+        event = data.get("event", data)
+        if isinstance(event, str):
+            event = json.loads(event)
+        candidates: list[object] = []
+        if isinstance(event, dict):
+            msg = event.get("message", {})
+            if isinstance(msg, dict):
+                candidates.append(msg.get("timestamp"))
+            candidates.append(event.get("timestamp"))
+        candidates.append(data.get("timestamp"))
+        for raw in candidates:
+            if raw is None:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(raw))
+                return dt.strftime("%H:%M")
+            except (ValueError, TypeError, OverflowError):
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 class EventRouter:
@@ -30,6 +57,7 @@ class EventRouter:
         self._renderer = renderer
         self._on_human_input = on_human_input
         self._log = logger or logging.getLogger(__name__)
+        self._last_agent_color: str | None = None
 
     def route(self, data: dict[str, Any]) -> bool:
         """Parse, classify, and render an event. Returns True if rendered.
@@ -160,13 +188,15 @@ class EventRouter:
             if short_model not in _DISPLAY_EVENTS:
                 return None
 
+            timestamp = _extract_timestamp(data)
+
             if short_model == "ErrorMessage":
                 return self._error_to_widget(event)
             if short_model == "SentMessage":
-                return self._sent_to_widget(event, color_registry)
+                return self._sent_to_widget(event, color_registry, timestamp)
             if short_model == "EventMessage":
                 return self._event_to_widget(event)
-        except (KeyError, json.JSONDecodeError, TypeError) as exc:
+        except Exception as exc:  # noqa: BLE001
             self._log.debug("to_widget: malformed event skipped: %s", exc)
         return None
 
@@ -178,7 +208,10 @@ class EventRouter:
         return ErrorWidget(content=str(content))
 
     def _sent_to_widget(
-        self, event: dict[str, Any], color_registry: AgentColorRegistry
+        self,
+        event: dict[str, Any],
+        color_registry: AgentColorRegistry,
+        timestamp: str | None = None,
     ) -> Widget | None:
         """Convert a SentMessage event to an AgentMessage widget.
 
@@ -197,8 +230,11 @@ class EventRouter:
         content = message.get("content", "") if isinstance(message, dict) else ""
         if not content:
             return None
-        color = color_registry.get(sender)
-        return AgentMessage(sender=sender, content=str(content), color=color)
+        color: str = color_registry.get(sender)
+        self._last_agent_color = color
+        return AgentMessage(
+            sender=sender, content=str(content), color=color, timestamp=timestamp
+        )
 
     def _event_to_widget(self, event: dict[str, Any]) -> Widget | None:
         """Convert an EventMessage event to a ToolCallWidget or HumanInputPrompt."""
@@ -239,4 +275,9 @@ class EventRouter:
             tool_output = json.dumps(raw_output, indent=2)
         else:
             tool_output = str(raw_output)
-        return ToolCallWidget(tool_name=tool_name, tool_input=tool_input, tool_output=tool_output)
+        return ToolCallWidget(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_output=tool_output,
+            agent_color=self._last_agent_color,
+        )

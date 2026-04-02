@@ -18,15 +18,33 @@ class AgentMessage(Static):
     }
     """
 
-    def __init__(self, sender: str, content: str, color: str) -> None:
+    def __init__(
+        self,
+        sender: str,
+        content: str,
+        color: str,
+        timestamp: str | None = None,
+    ) -> None:
         self._sender = sender
         self._content = content
         self._color = color
+        self._timestamp = timestamp
         super().__init__()
 
+    def on_mount(self) -> None:
+        """Apply colored left border matching the agent's assigned color."""
+        self.styles.border_left = ("tall", self._color)
+
     def render(self) -> RenderableType:
-        """Render sender name with color and markdown body."""
+        """Render sender name with color, optional timestamp, and markdown body."""
         name = self._sender.lstrip("@")
-        sender_text = Text(f"[@{name}]", style=f"bold {self._color}")
+        header = Text(f"[@{name}]", style=f"bold {self._color}")
+        if self._timestamp:
+            header.append(f"  {self._timestamp}", style="dim")
         body = Markdown(self._content)
-        return Group(sender_text, body)
+        return Group(header, body)
+
+    def on_click(self) -> None:
+        """Copy message content to clipboard on click."""
+        self.app.copy_to_clipboard(self._content)
+        self.app.notify("Copied to clipboard", timeout=2)

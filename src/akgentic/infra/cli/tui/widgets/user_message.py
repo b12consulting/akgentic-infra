@@ -12,17 +12,25 @@ class UserMessage(Static):
 
     DEFAULT_CSS = """
     UserMessage {
-        margin: 0 0 1 0;
+        margin: 0 0 1 6;
         padding: 0 1;
+        background: $boost;
     }
     """
 
-    def __init__(self, content: str) -> None:
+    def __init__(self, content: str, timestamp: str | None = None) -> None:
         self._content = content
+        self._timestamp = timestamp
         super().__init__()
 
+    def on_mount(self) -> None:
+        """Apply right border accent for visual distinction."""
+        self.styles.border_right = ("tall", "white")
+
     def render(self) -> RenderableType:
-        """Render user message with [You] prefix."""
-        sender = Text("[You]", style="bold white")
+        """Render user message with [You] prefix and optional timestamp."""
+        header = Text("[You]", style="bold white")
+        if self._timestamp:
+            header.append(f"  {self._timestamp}", style="dim")
         body = Text(self._content)
-        return Group(sender, body)
+        return Group(header, body)

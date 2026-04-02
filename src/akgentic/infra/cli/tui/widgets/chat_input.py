@@ -20,7 +20,7 @@ class ChatInput(TextArea):
     ChatInput {
         height: auto;
         max-height: 10;
-        min-height: 3;
+        min-height: 1;
     }
     """
 
