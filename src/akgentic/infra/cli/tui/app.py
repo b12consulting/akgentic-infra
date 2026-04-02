@@ -294,7 +294,16 @@ class ChatApp(App[None]):
                 pass
 
         conversation = self.query_one("#conversation", VerticalScroll)
-        await self._replay_history(conversation)
+        conversation.remove_children()
+        self._color_registry.reset()
+        self.query_one(ScrollIndicator).count = 0  # type: ignore[assignment]
+        has_history = await self._replay_history(conversation)
+        if not has_history:
+            welcome = Static(
+                "Welcome to Akgentic Chat. Send a message to begin.",
+                classes="welcome-msg",
+            )
+            await conversation.mount(welcome)
 
         while True:
             try:
@@ -315,10 +324,10 @@ class ChatApp(App[None]):
         await conversation.mount(msg)
         msg.scroll_visible(animate=False)
 
-    async def _replay_history(self, conversation: VerticalScroll) -> None:
-        """Fetch and mount past events as dimmed widgets before live streaming."""
+    async def _replay_history(self, conversation: VerticalScroll) -> bool:
+        """Fetch and mount past events as dimmed widgets. Returns True if any displayed."""
         if self._client is None or self._event_router is None:
-            return
+            return False
         import asyncio
 
         loop = asyncio.get_running_loop()
@@ -327,13 +336,9 @@ class ChatApp(App[None]):
                 None, self._client.get_events, self._team_id
             )
         except ApiError:
-            return
+            return False
         if not events:
-            return
-
-        # Remove welcome placeholder
-        for node in conversation.query("#welcome"):
-            node.remove()
+            return False
 
         displayed = False
         for evt in events:
@@ -352,6 +357,7 @@ class ChatApp(App[None]):
             sep.add_class("history")
             await conversation.mount(sep)
             sep.scroll_visible(animate=False)
+        return displayed
 
     def _remove_thinking_indicator(self, conversation: VerticalScroll) -> None:
         """Remove ThinkingIndicator if present."""
@@ -372,7 +378,7 @@ class ChatApp(App[None]):
         conversation = self.query_one("#conversation", VerticalScroll)
 
         # Remove welcome placeholder on first message
-        welcome_nodes = conversation.query("#welcome")
+        welcome_nodes = conversation.query("#welcome, .welcome-msg")
         for node in welcome_nodes:
             node.remove()
 
