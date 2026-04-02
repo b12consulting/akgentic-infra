@@ -6,6 +6,8 @@ import os
 import warnings
 from pathlib import Path
 
+import pytest
+
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 
@@ -66,8 +68,9 @@ class TestServerSettingsEnvOverride:
 class TestServerSettingsLogLevel:
     """ServerSettings log_level field — validation and env override."""
 
-    def test_default_log_level(self) -> None:
+    def test_default_log_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default log_level is INFO."""
+        monkeypatch.delenv("AKGENTIC_LOG_LEVEL", raising=False)
         settings = ServerSettings()
         assert settings.log_level == "INFO"
 
@@ -259,8 +262,9 @@ class TestCommunitySettingsDefaults:
         settings = CommunitySettings()
         assert settings.event_store_path == Path("data/event_store")
 
-    def test_default_catalog_path(self) -> None:
+    def test_default_catalog_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Default catalog_path is Path('data/catalog')."""
+        monkeypatch.delenv("AKGENTIC_CATALOG_PATH", raising=False)
         settings = CommunitySettings()
         assert settings.catalog_path == Path("data/catalog")
 

@@ -1026,6 +1026,7 @@ class TestBuildDefaultRegistry:
             "restore",
             "switch",
             "reconnect",
+            "quit",
         }
         assert set(registry.commands.keys()) == expected
 

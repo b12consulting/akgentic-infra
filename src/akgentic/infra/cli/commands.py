@@ -428,6 +428,11 @@ async def _reconnect_handler(args: str, session: ChatSession) -> None:
         session.renderer.render_error(f"Reconnection failed: {exc.reason}")
 
 
+async def _quit_handler(args: str, session: ChatSession) -> None:
+    """Exit the session (TUI overrides this with app.exit())."""
+    print("Goodbye.")
+
+
 async def _catalog_handler(args: str, session: ChatSession) -> None:
     """List available team templates from the catalog."""
     loop = asyncio.get_running_loop()
@@ -469,4 +474,5 @@ def build_default_registry() -> CommandRegistry:
     )
     registry.register("switch", _switch_handler, "Switch to another team", "/switch <team_id>")
     registry.register("reconnect", _reconnect_handler, "Reconnect to server", "/reconnect")
+    registry.register("quit", _quit_handler, "Exit the chat", "/quit")
     return registry
