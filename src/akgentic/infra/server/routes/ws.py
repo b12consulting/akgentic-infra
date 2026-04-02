@@ -116,6 +116,7 @@ async def _run_streaming_loop(
         reader = event_stream.subscribe(team_id, cursor=0)
     except StreamClosed:
         logger.debug("Stream already closed for team %s, entering idle loop", team_id)
+        conn_mgr.clear_restored(team_id)
         await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
         return
 
@@ -135,10 +136,13 @@ async def _run_streaming_loop(
                 else:
                     await websocket.send_text(event.model_dump_json())
                 logger.debug("Event forwarded to client: team_id=%s", team_id)
+            except WebSocketDisconnect:
+                raise
             except Exception:  # noqa: BLE001
                 logger.debug("Skipping unserializable event: team_id=%s", team_id)
     except StreamClosed:
         logger.debug("StreamClosed for team %s, transitioning to idle loop", team_id)
+        conn_mgr.clear_restored(team_id)
         await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected: team_id=%s", team_id)
@@ -167,7 +171,6 @@ async def _run_idle_loop(
                 await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
             except TimeoutError:
                 if conn_mgr.is_restored(team_id):
-                    conn_mgr.clear_restored(team_id)
                     await _run_streaming_loop(websocket, service, team_id, conn_mgr, adapter)
                     return
             except WebSocketDisconnect:

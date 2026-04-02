@@ -204,6 +204,32 @@ class TestNotifyRestore:
         service.get_handle.assert_not_called()
 
 
+class TestRestoredFlagMultiClient:
+    """Tests for the restored-flag race condition fix (AC #9)."""
+
+    def test_multiple_clients_see_restored_flag(self) -> None:
+        """AC #9: All idle loops see the restored flag, not just the first."""
+        mgr = ConnectionManager()
+        tid = uuid.uuid4()
+        # Simulate notify_restore marking the team as restored
+        mgr.mark_restored(tid)
+
+        # Multiple clients should all see the flag (no clearing by readers)
+        assert mgr.is_restored(tid)
+        assert mgr.is_restored(tid)  # second check still returns True
+        assert mgr.is_restored(tid)  # third check still returns True
+
+    def test_clear_restored_only_on_stream_closed(self) -> None:
+        """Restored flag is cleared when stream closes, not by idle loops."""
+        mgr = ConnectionManager()
+        tid = uuid.uuid4()
+        mgr.mark_restored(tid)
+
+        # Simulate StreamClosed clearing the flag
+        mgr.clear_restored(tid)
+        assert not mgr.is_restored(tid)
+
+
 class TestEventStreamWsIntegration:
     """Tests for EventStream-based WebSocket streaming (AC #1, #3, #5, #9)."""
 
