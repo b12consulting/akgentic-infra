@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from rich.console import RenderableType
 from rich.text import Text
 from textual.widgets import Static
 
@@ -21,20 +20,15 @@ class ThinkingIndicator(Static):
     _INTERVAL = 0.1
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(Text(f"{self._FRAMES[0]} Agent is thinking...", style="dim italic"))
         self._frame_idx: int = 0
-        self._timer_handle: object | None = None
 
     def on_mount(self) -> None:
         """Start the animation timer when mounted."""
-        self._timer_handle = self.set_interval(self._INTERVAL, self._advance_frame)
+        self.set_interval(self._INTERVAL, self._advance_frame)
 
     def _advance_frame(self) -> None:
         """Advance to the next spinner frame."""
         self._frame_idx = (self._frame_idx + 1) % len(self._FRAMES)
-        self.refresh()
-
-    def render(self) -> RenderableType:
-        """Render spinner frame with thinking text."""
         frame = self._FRAMES[self._frame_idx]
-        return Text(f"{frame} Agent is thinking...", style="dim italic")
+        self.update(Text(f"{frame} Agent is thinking...", style="dim italic"))

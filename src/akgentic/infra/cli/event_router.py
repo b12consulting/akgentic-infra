@@ -180,13 +180,19 @@ class EventRouter:
     def _sent_to_widget(
         self, event: dict[str, Any], color_registry: AgentColorRegistry
     ) -> Widget | None:
-        """Convert a SentMessage event to an AgentMessage widget."""
+        """Convert a SentMessage event to an AgentMessage widget.
+
+        Skips messages from @Human — those are echoes of the user's own
+        message, already displayed as a UserMessage widget.
+        """
         from akgentic.infra.cli.tui.widgets.agent_message import AgentMessage
 
         raw_sender = event.get("sender", "agent")
         sender = (
             raw_sender.get("name", "agent") if isinstance(raw_sender, dict) else str(raw_sender)
         )
+        if sender == "@Human":
+            return None
         message = event.get("message", {})
         content = message.get("content", "") if isinstance(message, dict) else ""
         if not content:
