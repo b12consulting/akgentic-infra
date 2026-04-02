@@ -8,6 +8,10 @@ replaces these with network-aware alternatives.
 
 from __future__ import annotations
 
+from akgentic.infra.adapters.community.local_event_stream import (
+    LocalEventStream,
+    LocalStreamReader,
+)
 from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
@@ -18,6 +22,8 @@ from akgentic.infra.adapters.community.null_channel_registry import NullChannelR
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 
 __all__ = [
+    "LocalEventStream",
+    "LocalStreamReader",
     "LocalIngestion",
     "LocalPlacement",
     "LocalRuntimeCache",
