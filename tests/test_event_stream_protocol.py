@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from typing import TYPE_CHECKING, Protocol, get_type_hints
-
-if TYPE_CHECKING:
-    from akgentic.team.models import PersistedEvent
-
+from typing import Protocol, get_type_hints
 
 # --- StreamClosed exception (AC3) ---
 
@@ -60,8 +56,9 @@ def test_stream_reader_has_close() -> None:
 
 def test_stream_reader_close_returns_none() -> None:
     """StreamReader.close returns None."""
-    from akgentic.infra.protocols.event_stream import StreamReader
     from akgentic.team.models import PersistedEvent
+
+    from akgentic.infra.protocols.event_stream import StreamReader
 
     hints = get_type_hints(
         StreamReader.close,
@@ -119,8 +116,9 @@ def test_event_stream_has_append() -> None:
 
 def test_event_stream_append_returns_int() -> None:
     """EventStream.append returns int."""
-    from akgentic.infra.protocols.event_stream import EventStream
     from akgentic.team.models import PersistedEvent
+
+    from akgentic.infra.protocols.event_stream import EventStream
 
     hints = get_type_hints(
         EventStream.append,
@@ -162,8 +160,9 @@ def test_event_stream_has_remove() -> None:
 
 def test_event_stream_remove_returns_none() -> None:
     """EventStream.remove returns None."""
-    from akgentic.infra.protocols.event_stream import EventStream
     from akgentic.team.models import PersistedEvent
+
+    from akgentic.infra.protocols.event_stream import EventStream
 
     hints = get_type_hints(
         EventStream.remove,
@@ -177,20 +176,61 @@ def test_event_stream_method_count() -> None:
     from akgentic.infra.protocols.event_stream import EventStream
 
     public_methods = [
-        m
-        for m in dir(EventStream)
-        if not m.startswith("_") and callable(getattr(EventStream, m))
+        m for m in dir(EventStream) if not m.startswith("_") and callable(getattr(EventStream, m))
     ]
     assert len(public_methods) == 4
+
+
+def test_stream_reader_method_count() -> None:
+    """StreamReader has exactly 2 public methods."""
+    from akgentic.infra.protocols.event_stream import StreamReader
+
+    public_methods = [
+        m for m in dir(StreamReader) if not m.startswith("_") and callable(getattr(StreamReader, m))
+    ]
+    assert len(public_methods) == 2
 
 
 # --- Type annotations use PersistedEvent (AC6) ---
 
 
+def test_stream_reader_read_next_return_type() -> None:
+    """StreamReader.read_next return annotation is PersistedEvent | None."""
+    import types
+
+    from akgentic.team.models import PersistedEvent
+
+    from akgentic.infra.protocols.event_stream import StreamReader
+
+    hints = get_type_hints(
+        StreamReader.read_next,
+        localns={"PersistedEvent": PersistedEvent},
+    )
+    ret = hints["return"]
+    assert isinstance(ret, types.UnionType)
+    assert PersistedEvent in ret.__args__
+    assert type(None) in ret.__args__
+
+
+def test_event_stream_read_from_return_type() -> None:
+    """EventStream.read_from return annotation is list[PersistedEvent]."""
+    from akgentic.team.models import PersistedEvent
+
+    from akgentic.infra.protocols.event_stream import EventStream
+
+    hints = get_type_hints(
+        EventStream.read_from,
+        localns={"PersistedEvent": PersistedEvent},
+    )
+    ret = hints["return"]
+    assert ret == list[PersistedEvent]
+
+
 def test_event_stream_append_event_type() -> None:
     """EventStream.append event parameter is annotated as PersistedEvent."""
-    from akgentic.infra.protocols.event_stream import EventStream
     from akgentic.team.models import PersistedEvent
+
+    from akgentic.infra.protocols.event_stream import EventStream
 
     hints = get_type_hints(
         EventStream.append,
@@ -253,3 +293,17 @@ def test_null_stream_reader_read_next_returns_none() -> None:
     from akgentic.infra.adapters.shared.null_event_stream import NullStreamReader
 
     assert NullStreamReader().read_next() is None
+
+
+def test_null_stream_reader_close_is_noop() -> None:
+    """NullStreamReader.close does not raise."""
+    from akgentic.infra.adapters.shared.null_event_stream import NullStreamReader
+
+    NullStreamReader().close()  # should not raise
+
+
+def test_null_event_stream_remove_is_noop() -> None:
+    """NullEventStream.remove does not raise."""
+    from akgentic.infra.adapters.shared.null_event_stream import NullEventStream
+
+    NullEventStream().remove(uuid.uuid4())  # should not raise
