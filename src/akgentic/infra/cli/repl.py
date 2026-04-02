@@ -213,10 +213,22 @@ class ChatSession:
                 continue
 
             # Send message via REST API (run in executor to avoid blocking)
+            # @mention routing: "@Agent hello" sends directly to that agent
             try:
-                await loop.run_in_executor(
-                    None, self.client.send_message, self._state.team_id, line
-                )
+                s = line.strip()
+                if s.startswith("@") and " " in s:
+                    parts = s.split(None, 1)
+                    await loop.run_in_executor(
+                        None,
+                        self.client.send_message_to,
+                        self._state.team_id,
+                        parts[0],
+                        parts[1],
+                    )
+                else:
+                    await loop.run_in_executor(
+                        None, self.client.send_message, self._state.team_id, line
+                    )
             except ApiError:
                 self.renderer.render_error("Error sending message.")
 

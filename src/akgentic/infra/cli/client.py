@@ -193,6 +193,12 @@ class ApiClient:
         """POST /teams/{team_id}/message."""
         self._request("POST", f"/teams/{team_id}/message", json={"content": content})
 
+    def send_message_to(self, team_id: str, agent_name: str, content: str) -> None:
+        """POST /teams/{team_id}/message/{agent_name}."""
+        self._request(
+            "POST", f"/teams/{team_id}/message/{agent_name}", json={"content": content}
+        )
+
     def human_input(self, team_id: str, content: str, message_id: str) -> None:
         """POST /teams/{team_id}/human-input."""
         self._request(
