@@ -11,6 +11,7 @@ from akgentic.infra.protocols.channels import (
     InteractionChannelIngestion,
     JsonValue,
 )
+from akgentic.infra.protocols.event_stream import EventStream, StreamClosed, StreamReader
 from akgentic.infra.protocols.health import HealthMonitor
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.recovery import RecoveryPolicy
@@ -23,6 +24,7 @@ __all__ = [
     "ChannelMessage",
     "ChannelParser",
     "ChannelRegistry",
+    "EventStream",
     "HealthMonitor",
     "InteractionChannelAdapter",
     "InteractionChannelIngestion",
@@ -30,6 +32,8 @@ __all__ = [
     "PlacementStrategy",
     "RecoveryPolicy",
     "RuntimeCache",
+    "StreamClosed",
+    "StreamReader",
     "TeamHandle",
     "WorkerHandle",
 ]

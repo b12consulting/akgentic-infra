@@ -14,6 +14,7 @@ from akgentic.core import ActorSystem
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
+from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.worker_handle import WorkerHandle
@@ -41,6 +42,9 @@ class TierServices(BaseModel):
     event_store: YamlEventStore = Field(description="Persistence backend for team event sourcing")
     runtime_cache: RuntimeCache = Field(
         description="Cache mapping team IDs to live TeamHandle instances"
+    )
+    event_stream: EventStream = Field(
+        description="Ephemeral event bus for cursor-based replay and fan-out"
     )
     ingestion: InteractionChannelIngestion = Field(
         description="Inbound channel message ingestion handler"
