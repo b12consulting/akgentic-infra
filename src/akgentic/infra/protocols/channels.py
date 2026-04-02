@@ -35,9 +35,8 @@ class InteractionChannelAdapter(Protocol):
         ``deliver()`` runs inside a Pykka actor thread (called from
         ``InteractionChannelDispatcher.on_message``). Implementations
         must not block and must not perform unguarded async I/O.
-        If async delivery is needed, use a thread-safe bridge — see
-        ``WebSocketEventSubscriber`` for the correct pattern (enqueue
-        to a ``queue.Queue`` consumed by an asyncio task).
+        If async delivery is needed, use a thread-safe bridge (e.g.
+        enqueue to a ``queue.Queue`` consumed by an asyncio task).
     """
 
     def matches(self, msg: SentMessage) -> bool:

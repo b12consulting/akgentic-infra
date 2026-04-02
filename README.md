@@ -340,7 +340,6 @@ Tier-agnostic adapters that work across community, department, and enterprise de
 | `TelegramParser`             | Parses inbound Telegram webhook payloads                     |
 | `ChannelParserRegistry`      | Resolves and holds channel parsers/adapters from config      |
 | `TelemetrySubscriber`        | Event subscriber that traces messages via Logfire            |
-| `WebSocketEventSubscriber`   | Per-connection event subscriber for WebSocket streaming      |
 
 ## CLI
 
