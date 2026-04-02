@@ -213,24 +213,27 @@ class ChatSession:
                 continue
 
             # Send message via REST API (run in executor to avoid blocking)
-            # @mention routing: "@Agent hello" sends directly to that agent
             try:
-                s = line.strip()
-                if s.startswith("@") and " " in s:
-                    parts = s.split(None, 1)
-                    await loop.run_in_executor(
-                        None,
-                        self.client.send_message_to,
-                        self._state.team_id,
-                        parts[0],
-                        parts[1],
-                    )
-                else:
-                    await loop.run_in_executor(
-                        None, self.client.send_message, self._state.team_id, line
-                    )
+                await self._send_or_mention(loop, line)
             except ApiError:
                 self.renderer.render_error("Error sending message.")
+
+    async def _send_or_mention(self, loop: asyncio.AbstractEventLoop, line: str) -> None:
+        """Send a message, routing @mentions to a specific agent."""
+        s = line.strip()
+        if s.startswith("@") and " " in s:
+            parts = s.split(None, 1)
+            await loop.run_in_executor(
+                None,
+                self.client.send_message_to,
+                self._state.team_id,
+                parts[0],
+                parts[1],
+            )
+        else:
+            await loop.run_in_executor(
+                None, self.client.send_message, self._state.team_id, line
+            )
 
     async def _receive_loop(self) -> None:
         """Background coroutine: read WebSocket events and render them."""
