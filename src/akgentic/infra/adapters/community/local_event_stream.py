@@ -142,6 +142,9 @@ class LocalEventStream:
                 self._streams[team_id] = ts
 
         with ts.condition:
+            if ts.closed:
+                logger.warning("append() on removed stream team_id=%s — discarding", team_id)
+                return -1
             ts.events.append(event)
             seq = ts.base_offset + len(ts.events)
 
@@ -174,6 +177,8 @@ class LocalEventStream:
                 return []
 
         with ts.condition:
+            if ts.closed:
+                return []
             base = ts.base_offset
             if cursor < base:
                 cursor = base
@@ -201,6 +206,8 @@ class LocalEventStream:
                 self._streams[team_id] = ts
 
         with ts.condition:
+            if ts.closed:
+                raise StreamClosed()
             reader = LocalStreamReader(ts, cursor)
             ts.readers.append(reader)
             return reader
