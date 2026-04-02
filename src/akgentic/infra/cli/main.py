@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Annotated
@@ -11,12 +10,10 @@ import typer
 from pydantic import BaseModel
 
 from akgentic.infra.cli.client import ApiClient, ApiError
-from akgentic.infra.cli.connection import ConnectionManager
 from akgentic.infra.cli.formatters import OutputFormat, format_output
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.repl import ChatSession
 from akgentic.infra.cli.team_selector import TeamSelector
-from akgentic.infra.cli.ws_client import WsConnectionError
+from akgentic.infra.cli.tui.app import ChatApp
 
 app = typer.Typer(name="ak-infra", help="Akgentic Infrastructure CLI")
 team_app = typer.Typer(name="team", help="Manage agent teams")
@@ -178,33 +175,22 @@ def chat(
         if team_id is None:
             raise typer.Exit(code=0)
 
-    conn = ConnectionManager(
-        server_url=_state.server,
-        team_id=team_id,
-        api_key=_state.api_key,
-    )
-    session = ChatSession(
-        _state.client,
-        conn,
-        team_id,
-        _state.fmt,
-        server_url=_state.server,
-        api_key=_state.api_key,
-        renderer=renderer,
-    )
     try:
-        asyncio.run(session.run())
+        team_info = _state.client.get_team(team_id)
+        tui_app = ChatApp(
+            team_name=team_info.name,
+            team_id=team_id,
+            team_status=team_info.status,
+        )
+        tui_app.run()
     except KeyboardInterrupt:
         pass
-    except WsConnectionError as exc:
-        renderer.render_error(f"Connection failed: {exc.reason}")
-        raise typer.Exit(code=1) from exc
     except ApiError as exc:
         renderer.render_error(f"Server error: {exc}")
         raise typer.Exit(code=1) from exc
     except Exception as exc:
         renderer.render_error(f"Unexpected error: {exc}")
-        logging.getLogger(__name__).exception("Unhandled exception in REPL")
+        logging.getLogger(__name__).exception("Unhandled exception in TUI")
         raise typer.Exit(code=1) from exc
     finally:
         _state.client.close()

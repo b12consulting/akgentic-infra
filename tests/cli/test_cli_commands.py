@@ -173,29 +173,20 @@ class TestChat:
         result = _invoke(["chat"])
         assert result.exit_code != 0
 
-    def test_chat_invokes_session(self) -> None:
+    def test_chat_launches_tui(self) -> None:
         mock = _mock_client()
-        with (
-            patch("akgentic.infra.cli.main.ChatSession") as mock_session_cls,
-            patch("akgentic.infra.cli.main.ConnectionManager") as mock_ws_cls,
-            patch("akgentic.infra.cli.main.asyncio.run") as mock_run,
-        ):
-            mock_session = MagicMock()
-            mock_session_cls.return_value = mock_session
+        with patch("akgentic.infra.cli.main.ChatApp") as mock_app_cls:
+            mock_app_cls.return_value.run.return_value = None
             result = _invoke(["chat", "t1"], mock)
         assert result.exit_code == 0
-        mock_ws_cls.assert_called_once()
-        mock_session_cls.assert_called_once()
-        mock_run.assert_called_once_with(mock_session.run())
+        mock.get_team.assert_called_once_with("t1")
+        mock_app_cls.assert_called_once()
+        mock_app_cls.return_value.run.assert_called_once()
 
     def test_chat_create_flag_no_team_id(self) -> None:
         mock = _mock_client()
-        with (
-            patch("akgentic.infra.cli.main.ChatSession") as mock_session_cls,
-            patch("akgentic.infra.cli.main.ConnectionManager"),
-            patch("akgentic.infra.cli.main.asyncio.run"),
-        ):
-            mock_session_cls.return_value = MagicMock()
+        with patch("akgentic.infra.cli.main.ChatApp") as mock_app_cls:
+            mock_app_cls.return_value.run.return_value = None
             result = _invoke(["chat", "--create", "my-catalog"], mock)
         assert result.exit_code == 0
         mock.create_team.assert_called_once_with("my-catalog")
