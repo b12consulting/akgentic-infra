@@ -26,6 +26,7 @@ class AgentMessage(Static):
 
     def render(self) -> RenderableType:
         """Render sender name with color and markdown body."""
-        sender_text = Text(f"[@{self._sender}]", style=f"bold {self._color}")
+        name = self._sender.lstrip("@")
+        sender_text = Text(f"[@{name}]", style=f"bold {self._color}")
         body = Markdown(self._content)
         return Group(sender_text, body)
