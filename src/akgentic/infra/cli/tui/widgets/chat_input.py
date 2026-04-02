@@ -42,3 +42,4 @@ class ChatInput(TextArea):
                 self.post_message(self.Submitted(text))
                 self.clear()
         # Shift+Enter is "shift+enter" key name -- let it pass through for newline
+
