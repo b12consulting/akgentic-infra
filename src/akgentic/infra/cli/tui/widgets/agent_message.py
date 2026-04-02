@@ -24,11 +24,13 @@ class AgentMessage(Static):
         content: str,
         color: str,
         timestamp: str | None = None,
+        recipient: str | None = None,
     ) -> None:
         self._sender = sender
         self._content = content
         self._color = color
         self._timestamp = timestamp
+        self._recipient = recipient
         super().__init__()
 
     def on_mount(self) -> None:
@@ -36,9 +38,13 @@ class AgentMessage(Static):
         self.styles.border_left = ("tall", self._color)
 
     def render(self) -> RenderableType:
-        """Render sender name with color, optional timestamp, and markdown body."""
+        """Render sender name with color, optional recipient, timestamp, and markdown body."""
         name = self._sender.lstrip("@")
         header = Text(f"[@{name}]", style=f"bold {self._color}")
+        if self._recipient:
+            recipient_name = self._recipient.lstrip("@")
+            header.append(" \u2192 ", style="dim")
+            header.append(f"[@{recipient_name}]", style="bold")
         if self._timestamp:
             header.append(f"  {self._timestamp}", style="dim")
         body = Markdown(self._content)

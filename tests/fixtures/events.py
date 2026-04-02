@@ -139,7 +139,11 @@ def make_processed_message(**overrides: Any) -> dict[str, Any]:
 
 
 def make_tool_call_event(**overrides: Any) -> dict[str, Any]:
-    """Create a ``ToolCallEvent`` fixture dict from a real dataclass instance."""
+    """Create a ``ToolCallEvent`` fixture dict from a real dataclass instance.
+
+    Adds ``__model__`` to match the real serialization contract
+    (``akgentic.core.utils.serializer.serialize`` adds it for dataclasses).
+    """
     defaults: dict[str, Any] = {
         "run_id": "run-001",
         "tool_name": "test_tool",
@@ -147,11 +151,16 @@ def make_tool_call_event(**overrides: Any) -> dict[str, Any]:
         "arguments": '{"key": "value"}',
     }
     defaults.update(overrides)
-    return dataclasses.asdict(ToolCallEvent(**defaults))
+    result = dataclasses.asdict(ToolCallEvent(**defaults))
+    result["__model__"] = "akgentic.llm.event.ToolCallEvent"
+    return result
 
 
 def make_tool_return_event(**overrides: Any) -> dict[str, Any]:
-    """Create a ``ToolReturnEvent`` fixture dict from a real dataclass instance."""
+    """Create a ``ToolReturnEvent`` fixture dict from a real dataclass instance.
+
+    Adds ``__model__`` to match the real serialization contract.
+    """
     defaults: dict[str, Any] = {
         "run_id": "run-001",
         "tool_name": "test_tool",
@@ -159,7 +168,9 @@ def make_tool_return_event(**overrides: Any) -> dict[str, Any]:
         "success": True,
     }
     defaults.update(overrides)
-    return dataclasses.asdict(ToolReturnEvent(**defaults))
+    result = dataclasses.asdict(ToolReturnEvent(**defaults))
+    result["__model__"] = "akgentic.llm.event.ToolReturnEvent"
+    return result
 
 
 def make_llm_usage_event(**overrides: Any) -> dict[str, Any]:

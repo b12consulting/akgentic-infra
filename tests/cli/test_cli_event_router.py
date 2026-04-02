@@ -18,6 +18,7 @@ from tests.fixtures.events import (
     make_sent_message,
     make_start_message,
     make_tool_call_event,
+    make_tool_return_event,
 )
 
 from .conftest import captured_renderer as _captured_renderer
@@ -256,6 +257,7 @@ class TestToolCallArgFormats:
             "event": {
                 "__model__": "EventMessage",
                 "event": {
+                    "__model__": "akgentic.llm.event.ToolCallEvent",
                     "tool_name": "search",
                     "arguments": {"query": "test", "limit": 10},
                     "result": {"items": ["a", "b"]},
@@ -274,6 +276,7 @@ class TestToolCallArgFormats:
             "event": {
                 "__model__": "EventMessage",
                 "event": {
+                    "__model__": "akgentic.llm.event.ToolCallEvent",
                     "tool_name": "multi_search",
                     "arguments": ["query1", "query2"],
                     "result": None,
@@ -293,7 +296,14 @@ class TestNestedEventJsonString:
 
         renderer, buf = _captured_renderer()
         router = EventRouter(renderer)
-        nested = json.dumps({"tool_name": "calc", "arguments": "2+2", "result": "4"})
+        nested = json.dumps(
+            {
+                "__model__": "akgentic.llm.event.ToolCallEvent",
+                "tool_name": "calc",
+                "arguments": "2+2",
+                "result": "4",
+            }
+        )
         data = {
             "event": {
                 "__model__": "EventMessage",
@@ -366,6 +376,54 @@ class TestToWidgetSentMessage:
         # sender from make_sent_message defaults to "sender"
         assert "sender" in registry._map
 
+    def test_recipient_extracted_from_dict(self) -> None:
+        """AC #1/#4: recipient dict is extracted and passed to AgentMessage."""
+        router, registry = _make_widget_router()
+        data = {"event": make_sent_message(content="hello")}
+        widget = router.to_widget(data, registry)
+        assert isinstance(widget, AgentMessage)
+        # make_sent_message default recipient is _make_proxy(name="recipient")
+        assert widget._recipient == "recipient"
+
+    def test_recipient_none_when_absent(self) -> None:
+        """AC #3: when recipient is absent, AgentMessage._recipient is None."""
+        router, registry = _make_widget_router()
+        event = {
+            "__model__": "some.module.SentMessage",
+            "sender": {"name": "@Manager"},
+            "message": {"content": "no recipient here"},
+        }
+        widget = router.to_widget({"event": event}, registry)
+        assert isinstance(widget, AgentMessage)
+        assert widget._recipient is None
+
+    def test_recipient_string_form(self) -> None:
+        """AC #4: recipient as a plain string is extracted."""
+        router, registry = _make_widget_router()
+        event = {
+            "__model__": "some.module.SentMessage",
+            "sender": {"name": "@Manager"},
+            "message": {"content": "with string recipient"},
+            "recipient": "@Developer",
+        }
+        widget = router.to_widget({"event": event}, registry)
+        assert isinstance(widget, AgentMessage)
+        assert widget._recipient == "@Developer"
+
+    def test_human_sender_produces_widget(self) -> None:
+        """AC #5: @Human SentMessage events are no longer filtered."""
+        router, registry = _make_widget_router()
+        event = {
+            "__model__": "some.module.SentMessage",
+            "sender": {"name": "@Human"},
+            "message": {"content": "directed message"},
+            "recipient": {"name": "@Developer"},
+        }
+        widget = router.to_widget({"event": event}, registry)
+        assert isinstance(widget, AgentMessage)
+        assert widget._sender == "@Human"
+        assert widget._recipient == "@Developer"
+
 
 class TestToWidgetErrorMessage:
     def test_returns_error_widget(self) -> None:
@@ -388,6 +446,7 @@ class TestToWidgetToolCall:
             "event": {
                 "__model__": "EventMessage",
                 "event": {
+                    "__model__": "akgentic.llm.event.ToolCallEvent",
                     "tool_name": "calc",
                     "arguments": {"x": 1},
                     "result": {"answer": 42},
@@ -396,6 +455,25 @@ class TestToWidgetToolCall:
         }
         widget = router.to_widget(data, registry)
         assert isinstance(widget, ToolCallWidget)
+
+    def test_tool_return_event_does_not_produce_widget(self) -> None:
+        """AC #6: ToolReturnEvent must NOT produce a ToolCallWidget (no duplicates)."""
+        router, registry = _make_widget_router()
+        data = {
+            "event": make_event_message(event=make_tool_return_event(tool_name="search")),
+        }
+        widget = router.to_widget(data, registry)
+        assert widget is None
+
+    def test_tool_return_event_not_routed(self) -> None:
+        """AC #6: ToolReturnEvent must NOT be rendered via route() either."""
+        renderer, _buf = _captured_renderer()
+        router = EventRouter(renderer)
+        data = {
+            "event": make_event_message(event=make_tool_return_event(tool_name="search")),
+        }
+        result = router.route(data)
+        assert result is False
 
 
 class TestToWidgetHumanInput:
@@ -457,7 +535,14 @@ class TestToWidgetJsonStringEvent:
         import json
 
         router, registry = _make_widget_router()
-        nested = json.dumps({"tool_name": "calc", "arguments": "2+2", "result": "4"})
+        nested = json.dumps(
+            {
+                "__model__": "akgentic.llm.event.ToolCallEvent",
+                "tool_name": "calc",
+                "arguments": "2+2",
+                "result": "4",
+            }
+        )
         data = {
             "event": {
                 "__model__": "EventMessage",
