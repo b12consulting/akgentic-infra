@@ -136,7 +136,8 @@ async def test_tool_call_expanded_shows_input() -> None:
         tool = ToolCallWidget("calc", '{"x": 1}', "result: 42")
         await conv.mount(tool)
         tool.collapsed = False
-        rendered = _render_to_str(tool.render())
+        await pilot.pause()
+        rendered = _render_to_str(tool._build_expanded())
         assert "calc" in rendered
         assert "result: 42" in rendered
 
@@ -150,7 +151,8 @@ async def test_tool_call_invalid_json_input() -> None:
         tool = ToolCallWidget("run", "not json", None)
         await conv.mount(tool)
         tool.collapsed = False
-        rendered = _render_to_str(tool.render())
+        await pilot.pause()
+        rendered = _render_to_str(tool._build_expanded())
         assert "not json" in rendered
 
 

@@ -29,12 +29,14 @@ class ToolCallWidget(Static):
         self._tool_name = tool_name
         self._tool_input = tool_input
         self._tool_output = tool_output
-        super().__init__()
+        super().__init__(Text(f"\u25b8 Tool: {tool_name}", style="dim"))
 
-    def render(self) -> RenderableType:
-        """Render collapsed summary or expanded panel with JSON input/output."""
-        if self.collapsed:
-            return Text(f"\u25b8 Tool: {self._tool_name}", style="dim")
+    def _build_collapsed(self) -> RenderableType:
+        """Build the collapsed one-line summary."""
+        return Text(f"\u25b8 Tool: {self._tool_name}", style="dim")
+
+    def _build_expanded(self) -> RenderableType:
+        """Build the expanded panel with JSON input/output."""
         parts: list[Text | Syntax] = [Text("Input:")]
         try:
             parsed = json.loads(self._tool_input)
@@ -50,6 +52,10 @@ class ToolCallWidget(Static):
             title=f"Tool: {self._tool_name}",
             border_style="dim",
         )
+
+    def watch_collapsed(self, value: bool) -> None:
+        """Re-render when collapsed state changes."""
+        self.update(self._build_collapsed() if value else self._build_expanded())
 
     def on_click(self) -> None:
         """Toggle collapsed state."""
