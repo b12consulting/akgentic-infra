@@ -368,15 +368,27 @@ class ChatApp(App[None]):
         await conversation.mount(indicator)
         indicator.scroll_visible(animate=False)
 
+        # Parse @mention for directed messages
+        agent_name: str | None = None
+        send_text = text
+        stripped = text.strip()
+        if stripped.startswith("@") and " " in stripped:
+            parts = stripped.split(None, 1)
+            agent_name = parts[0]
+            send_text = parts[1]
+
         # Send message via API in background thread
-        self._send_message(text)
+        self._send_message(send_text, agent_name=agent_name)
 
     @work(thread=True)
-    def _send_message(self, text: str) -> None:
+    def _send_message(self, text: str, agent_name: str | None = None) -> None:
         """Send a user message via the REST API in a background thread."""
         if self._client is not None:
             try:
-                self._client.send_message(self._team_id, text)
+                if agent_name is not None:
+                    self._client.send_message_to(self._team_id, agent_name, text)
+                else:
+                    self._client.send_message(self._team_id, text)
             except ApiError as exc:
                 self.call_from_thread(self._mount_send_error, str(exc.detail))
 
