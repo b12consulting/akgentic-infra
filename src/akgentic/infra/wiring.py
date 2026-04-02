@@ -26,7 +26,9 @@ from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.null_channel_registry import NullChannelRegistry
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
+from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager
@@ -51,7 +53,8 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     logger.info("Wiring community services")
     event_store = YamlEventStore(data_dir=settings.event_store_path)
     service_registry = NullServiceRegistry()
-    actor_system, team_manager = _build_actor_layer(event_store, service_registry)
+    event_stream = LocalEventStream()
+    actor_system, team_manager = _build_actor_layer(event_store, service_registry, event_stream)
     catalogs = _build_catalogs(settings)
 
     local_placement = LocalPlacement(team_manager, service_registry)
@@ -72,7 +75,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
         auth=NoAuth(),
         event_store=event_store,
         runtime_cache=runtime_cache,
-        event_stream=LocalEventStream(),
+        event_stream=event_stream,
         ingestion=LocalIngestion(),
         channel_registry=(
             YamlChannelRegistry(registry_path=settings.channel_registry_path)
@@ -92,10 +95,14 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
 def _build_actor_layer(
     event_store: YamlEventStore,
     service_registry: ServiceRegistry,
+    event_stream: EventStream,
 ) -> tuple[ActorSystem, TeamManager]:
     """Build ActorSystem and TeamManager."""
     logger.debug("Building actor layer: event_store=%s", type(event_store).__name__)
-    shared_subscribers: list[EventSubscriber] = [TelemetrySubscriber()]
+    shared_subscribers: list[EventSubscriber] = [
+        TelemetrySubscriber(),
+        EventStreamSubscriber(event_stream=event_stream),
+    ]
     actor_system = ActorSystem()
     team_manager = TeamManager(
         actor_system=actor_system,

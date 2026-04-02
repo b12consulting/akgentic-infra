@@ -10,8 +10,10 @@ import pytest
 from akgentic.team.manager import TeamManager
 from akgentic.team.repositories.yaml import YamlEventStore
 
+from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
+from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.team.ports import NullServiceRegistry, ServiceRegistry
 from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.null_channel_registry import NullChannelRegistry
@@ -149,3 +151,32 @@ class TestWireCommunity:
             assert isinstance(services.channel_registry, YamlChannelRegistry)
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
+
+
+class TestWireCommunityEventStream:
+    """AC4: EventStreamSubscriber is wired as shared subscriber with LocalEventStream."""
+
+    @pytest.fixture()
+    def services(self, tmp_path: Path) -> Generator[CommunityServices, None, None]:
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
+        svc = wire_community(settings)
+        yield svc
+        svc.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_event_stream_is_local(self, services: CommunityServices) -> None:
+        """AC4: CommunityServices.event_stream is a LocalEventStream."""
+        assert isinstance(services.event_stream, LocalEventStream)
+
+    def test_event_stream_subscriber_in_shared_subscribers(
+        self, services: CommunityServices
+    ) -> None:
+        """AC4: EventStreamSubscriber is present in TeamManager shared_subscribers."""
+        subscribers = services.team_manager._shared_subscribers
+        has_event_stream_sub = any(
+            isinstance(s, EventStreamSubscriber) for s in subscribers
+        )
+        assert has_event_stream_sub

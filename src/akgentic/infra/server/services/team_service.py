@@ -77,6 +77,11 @@ class TeamService:
         if process.status == TeamStatus.RUNNING:
             self._services.worker_handle.stop_team(team_id)
         self._cache.remove(team_id)
+        # Safety net: remove ephemeral stream if not already removed on stop
+        try:
+            self._services.event_stream.remove(team_id)
+        except Exception:
+            logger.debug("event_stream.remove() on delete — stream may already be removed")
         self._services.worker_handle.delete_team(team_id)
         logger.info("Team deleted: team_id=%s", team_id)
 
