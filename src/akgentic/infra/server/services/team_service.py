@@ -7,6 +7,7 @@ import uuid
 
 from akgentic.catalog.models.errors import EntryNotFoundError
 from akgentic.core.messages.message import Message
+from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.deps import TierServices
@@ -178,6 +179,10 @@ class TeamService:
             raise ValueError(msg)
         logger.debug("Loading events for team %s", team_id)
         return self._services.event_store.load_events(team_id)
+
+    def get_event_stream(self) -> EventStream:
+        """Return the tier's EventStream for cursor-based replay and fan-out."""
+        return self._services.event_stream
 
     def get_handle(self, team_id: uuid.UUID) -> TeamHandle | None:
         """Return the cached TeamHandle for a team, or None if not cached.

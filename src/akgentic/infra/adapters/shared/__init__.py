@@ -18,7 +18,6 @@ from akgentic.infra.adapters.shared.null_event_stream import NullEventStream, Nu
 from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
 from akgentic.infra.adapters.shared.telegram_parser import TelegramChannelParser
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
-from akgentic.infra.adapters.shared.websocket_subscriber import WebSocketEventSubscriber
 
 __all__ = [
     "ChannelConfig",
@@ -30,5 +29,4 @@ __all__ = [
     "TelegramChannelAdapter",
     "TelegramChannelParser",
     "TelemetrySubscriber",
-    "WebSocketEventSubscriber",
 ]

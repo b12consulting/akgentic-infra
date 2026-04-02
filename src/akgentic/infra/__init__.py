@@ -20,7 +20,6 @@ from akgentic.infra.adapters import (
     TelegramChannelAdapter,
     TelegramChannelParser,
     TelemetrySubscriber,
-    WebSocketEventSubscriber,
     YamlChannelRegistry,
 )
 from akgentic.infra.protocols import (
@@ -95,7 +94,6 @@ __all__ = [
     "TelegramChannelAdapter",
     "TelegramChannelParser",
     "TelemetrySubscriber",
-    "WebSocketEventSubscriber",
     "YamlChannelRegistry",
     # Server
     "CommunitySettings",

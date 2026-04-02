@@ -26,7 +26,6 @@ from akgentic.infra.adapters.shared import (
     TelegramChannelAdapter,
     TelegramChannelParser,
     TelemetrySubscriber,
-    WebSocketEventSubscriber,
 )
 
 __all__ = [
@@ -45,6 +44,5 @@ __all__ = [
     "TelegramChannelAdapter",
     "TelegramChannelParser",
     "TelemetrySubscriber",
-    "WebSocketEventSubscriber",
     "YamlChannelRegistry",
 ]
