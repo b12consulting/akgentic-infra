@@ -139,22 +139,6 @@ class ChatSession:
             return f"Reply to {self._state.reply_context.agent_name}: "
         return "> "
 
-    @staticmethod
-    def _parse_mention(line: str) -> tuple[str | None, str]:
-        """Parse an @mention prefix from user input.
-
-        Returns (agent_name, content) if line starts with @AgentName,
-        otherwise (None, original_line).
-        """
-        stripped = line.strip()
-        if stripped.startswith("@"):
-            parts = stripped.split(None, 1)
-            agent_name = parts[0]
-            content = parts[1] if len(parts) > 1 else ""
-            if content:
-                return agent_name, content
-        return None, line
-
     def _read_input(self) -> str:
         """Render bottom border, prompt for input, then status bar below."""
         self.renderer.render_border()
@@ -228,23 +212,11 @@ class ChatSession:
             if self._check_connection_gate(line):
                 continue
 
-            # Parse @mention for directed messaging
-            agent_name, content = self._parse_mention(line)
-
             # Send message via REST API (run in executor to avoid blocking)
             try:
-                if agent_name:
-                    await loop.run_in_executor(
-                        None,
-                        self.client.send_message_to,
-                        self._state.team_id,
-                        agent_name,
-                        content,
-                    )
-                else:
-                    await loop.run_in_executor(
-                        None, self.client.send_message, self._state.team_id, line
-                    )
+                await loop.run_in_executor(
+                    None, self.client.send_message, self._state.team_id, line
+                )
             except ApiError:
                 self.renderer.render_error("Error sending message.")
 
