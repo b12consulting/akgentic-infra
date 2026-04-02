@@ -130,15 +130,17 @@ class TeamSelectScreen(Screen[str | None]):
             return
         if len(self._running_teams) <= PAGE_SIZE:
             page = self._running_teams
+            label_start = 0
             header = f"Running teams ({len(self._running_teams)}):"
         else:
             page = self._running_teams[start:end]
+            label_start = start
             r_end = min(start + len(page), len(self._running_teams))
             header = f"Running teams ({start + 1}-{r_end} of {len(self._running_teams)}):"
         container.mount(Static(header, classes="section-header"))
         for i, team in enumerate(page):
             line = Text()
-            line.append(f"  [{start + i + 1}]", style="bold cyan")
+            line.append(f"  [{label_start + i + 1}]", style="bold cyan")
             line.append(f"  {team.name}", style="bold")
             line.append(f"  {_short_id(team.team_id)}", style="dim")
             line.append(f"  {team.created_at[:16]}", style="dim")
@@ -154,15 +156,17 @@ class TeamSelectScreen(Screen[str | None]):
             return
         if len(self._stopped_teams) <= PAGE_SIZE:
             page = self._stopped_teams
+            label_start = 0
             header = f"Stopped teams ({len(self._stopped_teams)}):"
         else:
             page = self._stopped_teams[start:end]
+            label_start = start
             s_end = min(start + len(page), len(self._stopped_teams))
             header = f"Stopped teams ({start + 1}-{s_end} of {len(self._stopped_teams)}):"
         container.mount(Static(header, classes="section-header"))
         for i, team in enumerate(page):
             line = Text()
-            line.append(f"  [s{start + i + 1}]", style="bold yellow")
+            line.append(f"  [s{label_start + i + 1}]", style="bold yellow")
             line.append(f"  {team.name}", style="bold")
             line.append(f"  {_short_id(team.team_id)}", style="dim")
             line.append(f"  {team.created_at[:16]}", style="dim")
@@ -185,13 +189,19 @@ class TeamSelectScreen(Screen[str | None]):
         """Update the hint bar based on current page state."""
         hints_parts: list[str] = []
         if self._running_teams:
-            start = self._page * PAGE_SIZE + 1
-            end = min(start + PAGE_SIZE - 1, len(self._running_teams))
-            hints_parts.append(f"[{start}-{end}] connect")
+            if len(self._running_teams) <= PAGE_SIZE:
+                hints_parts.append(f"[1-{len(self._running_teams)}] connect")
+            else:
+                start = self._page * PAGE_SIZE + 1
+                end = min(start + PAGE_SIZE - 1, len(self._running_teams))
+                hints_parts.append(f"[{start}-{end}] connect")
         if self._stopped_teams:
-            start = self._page * PAGE_SIZE + 1
-            end = min(start + PAGE_SIZE - 1, len(self._stopped_teams))
-            hints_parts.append(f"[s{start}-s{end}] restore")
+            if len(self._stopped_teams) <= PAGE_SIZE:
+                hints_parts.append(f"[s1-s{len(self._stopped_teams)}] restore")
+            else:
+                start = self._page * PAGE_SIZE + 1
+                end = min(start + PAGE_SIZE - 1, len(self._stopped_teams))
+                hints_parts.append(f"[s{start}-s{end}] restore")
         if self._catalog:
             hints_parts.append("[c <name>] create")
         if self._max_pages() > 1:
