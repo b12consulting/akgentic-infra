@@ -30,3 +30,8 @@ HintBar {
     height: 1;
     background: $surface;
 }
+
+/* History replay -- dimmed widgets */
+.history {
+    opacity: 60%;
+}
