@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from akgentic.infra.cli.client import ApiClient, ApiError
 from akgentic.infra.cli.formatters import OutputFormat, format_output
 from akgentic.infra.cli.renderers import RichRenderer
-from akgentic.infra.cli.team_selector import TeamSelector
 from akgentic.infra.cli.tui.app import ChatApp
 
 app = typer.Typer(name="ak-infra", help="Akgentic Infrastructure CLI")
@@ -169,19 +168,18 @@ def chat(
         team = _state.client.create_team(create)
         team_id = team.team_id
 
-    if team_id is None:
-        selector = TeamSelector(_state.client, renderer)
-        team_id = selector.run()
-        if team_id is None:
-            raise typer.Exit(code=0)
-
     try:
-        team_info = _state.client.get_team(team_id)
-        tui_app = ChatApp(
-            team_name=team_info.name,
-            team_id=team_id,
-            team_status=team_info.status,
-        )
+        if team_id is not None:
+            team_info = _state.client.get_team(team_id)
+            tui_app = ChatApp(
+                team_name=team_info.name,
+                team_id=team_id,
+                team_status=team_info.status,
+                client=_state.client,
+            )
+        else:
+            # No team_id and no --create: let TeamSelectScreen handle it
+            tui_app = ChatApp(client=_state.client)
         tui_app.run()
     except KeyboardInterrupt:
         pass
