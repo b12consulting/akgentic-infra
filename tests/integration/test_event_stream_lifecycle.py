@@ -110,6 +110,10 @@ class TestEventStreamLifecycle:
 
         events_after_restore = event_stream.read_from(team_id)
         assert len(events_after_restore) > 0, "Expected events after restore"
+        assert len(events_after_restore) >= count_before, (
+            f"Restored stream should have at least {count_before} events, "
+            f"got {len(events_after_restore)}"
+        )
 
         # Cleanup
         team_service.stop_team(team_id)
@@ -151,11 +155,14 @@ class TestEventStreamLifecycle:
         team_service.delete_team(team_id)
 
         # Drain existing buffered events first, then expect StreamClosed
-        while True:
+        got_stream_closed = False
+        for _ in range(100):  # safety limit to prevent infinite loop
             try:
                 result = reader.read_next(timeout=0.5)
                 if result is None:
-                    # Stream was removed but not via close -- check manually
+                    # Timeout — stream may have been removed without close signal
                     break
             except StreamClosed:
+                got_stream_closed = True
                 break
+        assert got_stream_closed, "Expected StreamClosed after team deletion"

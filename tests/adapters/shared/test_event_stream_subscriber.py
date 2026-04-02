@@ -7,6 +7,7 @@ import uuid
 from unittest.mock import MagicMock
 
 from akgentic.core.messages import Message
+
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 
@@ -60,12 +61,15 @@ class TestOnMessage:
         """AC2: Messages with team_id=None are silently skipped."""
         stream = LocalEventStream()
         subscriber = EventStreamSubscriber(event_stream=stream)
+        team_id = uuid.uuid4()
         msg = _make_message(team_id=None)
 
         subscriber.on_message(msg)
 
-        # No streams should have been created
-        assert len(stream._streams) == 0
+        # Verify no events were appended for any team — use public API
+        assert stream.read_from(team_id) == []
+        # Subscriber should not have tracked any teams
+        assert len(subscriber._seen_teams) == 0
 
     def test_sequence_numbers_are_per_team_monotonic(self) -> None:
         """AC9: Two teams get independently incrementing sequence numbers."""

@@ -22,8 +22,8 @@ from akgentic.infra.adapters.shared.websocket_subscriber import WebSocketEventSu
 
 __all__ = [
     "ChannelConfig",
-    "EventStreamSubscriber",
     "ChannelParserRegistry",
+    "EventStreamSubscriber",
     "InteractionChannelDispatcher",
     "NullEventStream",
     "NullStreamReader",
