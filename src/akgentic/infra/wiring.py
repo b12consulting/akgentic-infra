@@ -25,6 +25,7 @@ from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.null_channel_registry import NullChannelRegistry
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.shared.null_event_stream import NullEventStream
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
@@ -71,6 +72,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
         auth=NoAuth(),
         event_store=event_store,
         runtime_cache=runtime_cache,
+        event_stream=NullEventStream(),
         ingestion=LocalIngestion(),
         channel_registry=(
             YamlChannelRegistry(registry_path=settings.channel_registry_path)
