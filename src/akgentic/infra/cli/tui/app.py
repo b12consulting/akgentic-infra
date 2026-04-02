@@ -267,7 +267,7 @@ class ChatApp(App[None]):
         if at_bottom:
             widget.scroll_visible(animate=False)
         else:
-            self.query_one(ScrollIndicator).count += 1  # type: ignore[operator]
+            self.query_one(ScrollIndicator).count += 1
 
     def on_scroll_indicator_scroll_to_bottom(
         self, _event: ScrollIndicator.ScrollToBottom
@@ -275,14 +275,14 @@ class ChatApp(App[None]):
         """Handle click on scroll indicator — jump to bottom."""
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.scroll_end(animate=False)
-        self.query_one(ScrollIndicator).count = 0  # type: ignore[assignment]
+        self.query_one(ScrollIndicator).count = 0
 
     def _clear_conversation(self) -> None:
         """Clear conversation area and reset related state for team switch."""
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.remove_children()
         self._color_registry.reset()
-        self.query_one(ScrollIndicator).count = 0  # type: ignore[assignment]
+        self.query_one(ScrollIndicator).count = 0
 
     @work(exclusive=True)
     async def stream_events(self) -> None:
