@@ -33,6 +33,40 @@ def test_send_message_stopped_team(client: TestClient) -> None:
     assert resp.status_code == 409
 
 
+def test_send_message_to_agent_success(client: TestClient) -> None:
+    """POST /teams/{id}/message/{agent} on running team returns 204."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    resp = client.post(f"/teams/{team_id}/message/@Manager", json={"content": "hello"})
+    assert resp.status_code == 204
+
+
+def test_send_message_to_agent_not_found_team(client: TestClient) -> None:
+    """POST /teams/{id}/message/{agent} on non-existent team returns 404."""
+    resp = client.post(
+        f"/teams/{uuid.uuid4()}/message/@Manager",
+        json={"content": "hello"},
+    )
+    assert resp.status_code == 404
+
+
+def test_send_message_to_agent_stopped_team(client: TestClient) -> None:
+    """POST /teams/{id}/message/{agent} on stopped team returns 409."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    client.post(f"/teams/{team_id}/stop")
+    resp = client.post(f"/teams/{team_id}/message/@Manager", json={"content": "hello"})
+    assert resp.status_code == 409
+
+
+def test_send_message_to_agent_unknown_agent(client: TestClient) -> None:
+    """POST /teams/{id}/message/{agent} with unknown agent returns 404."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    resp = client.post(f"/teams/{team_id}/message/ghost", json={"content": "hello"})
+    assert resp.status_code == 404
+
+
 def test_human_input_not_found_team(client: TestClient) -> None:
     """POST /teams/{id}/human-input on non-existent team returns 404."""
     resp = client.post(

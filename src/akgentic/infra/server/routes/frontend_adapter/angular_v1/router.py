@@ -395,10 +395,10 @@ def update_agent_state(
 ) -> V1StatusResponse:
     """PATCH /state/{id}/of/{agent} -> send content to specific agent."""
     team_id = _parse_uuid(id)
-    handle = service.get_handle(team_id)
-    if handle is None:
-        raise HTTPException(status_code=404, detail="Team not found or not running")
-    handle.send_to(agent, body.content)
+    try:
+        service.send_message_to(team_id, agent, body.content)
+    except ValueError as exc:
+        _raise_action_error(exc)
     return V1StatusResponse(status="ok")
 
 
