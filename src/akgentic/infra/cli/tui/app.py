@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Container, VerticalScroll
+from textual.widget import Widget
 from textual.widgets import Static
 
 from akgentic.infra.cli.client import ApiError
@@ -19,6 +21,7 @@ from akgentic.infra.cli.tui.messages import ConnectionStateChanged
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
 from akgentic.infra.cli.tui.widgets.command_palette import CommandPalette
 from akgentic.infra.cli.tui.widgets.hint_bar import HintBar
+from akgentic.infra.cli.tui.widgets.scroll_indicator import ScrollIndicator
 from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 
 _log = logging.getLogger(__name__)
@@ -75,6 +78,7 @@ class ChatApp(App[None]):
             ),
             id="conversation",
         )
+        yield ScrollIndicator()
         with Container(id="input-area"):
             yield ChatInput(command_registry=self._command_registry)
             yield HintBar()
@@ -250,6 +254,32 @@ class ChatApp(App[None]):
         except Exception:  # noqa: BLE001
             _log.debug("ChatInput not available for connection state update")
 
+    def _is_at_bottom(self, conversation: VerticalScroll) -> bool:
+        """Check if the conversation is scrolled to (or near) the bottom."""
+        return conversation.scroll_y >= conversation.max_scroll_y - 2
+
+    async def _mount_event_widget(
+        self,
+        widget: Widget,
+        conversation: VerticalScroll,
+    ) -> None:
+        """Mount an event widget with scroll-aware unread tracking."""
+        self._remove_thinking_indicator(conversation)
+        at_bottom = self._is_at_bottom(conversation)
+        await conversation.mount(widget)
+        if at_bottom:
+            widget.scroll_visible(animate=False)
+        else:
+            self.query_one(ScrollIndicator).count += 1  # type: ignore[operator]
+
+    def on_scroll_indicator_scroll_to_bottom(
+        self, _event: ScrollIndicator.ScrollToBottom
+    ) -> None:
+        """Handle click on scroll indicator — jump to bottom."""
+        conversation = self.query_one("#conversation", VerticalScroll)
+        conversation.scroll_end(animate=False)
+        self.query_one(ScrollIndicator).count = 0  # type: ignore[assignment]
+
     @work(exclusive=True)
     async def stream_events(self) -> None:
         """Background worker: stream WebSocket events and mount widgets."""
@@ -257,18 +287,13 @@ class ChatApp(App[None]):
             return
         from akgentic.infra.cli.ws_client import WsConnectionError
 
-        # Ensure WebSocket is connected before entering the receive loop.
-        # ConnectionManager.receive_event() raises immediately if not connected,
-        # unlike the old REPL which called connect() explicitly before looping.
         if self._connection_manager.state == ConnectionState.DISCONNECTED:
             try:
                 await self._connection_manager.connect()
             except WsConnectionError:
-                pass  # Fall through — receive loop will show "Connection lost"
+                pass
 
         conversation = self.query_one("#conversation", VerticalScroll)
-
-        # Replay conversation history before streaming live events
         await self._replay_history(conversation)
 
         while True:
@@ -278,15 +303,12 @@ class ChatApp(App[None]):
                 widget = self._event_router.to_widget(event_data, self._color_registry)
                 _log.debug("to_widget result: %s", type(widget).__name__ if widget else None)
                 if widget is not None:
-                    self._remove_thinking_indicator(conversation)
-                    await conversation.mount(widget)
-                    widget.scroll_visible(animate=False)
+                    await self._mount_event_widget(widget, conversation)
             except WsConnectionError as exc:
                 _log.debug("WS connection error in stream loop: %s", exc)
                 self._remove_thinking_indicator(conversation)
                 break
 
-        # Mount disconnection message after worker exits
         from akgentic.infra.cli.tui.widgets.system_message import SystemMessage
 
         msg = SystemMessage(content="Connection lost. Use /reconnect to try again.")
@@ -357,7 +379,7 @@ class ChatApp(App[None]):
         # Mount user message widget
         from akgentic.infra.cli.tui.widgets.user_message import UserMessage
 
-        user_msg = UserMessage(content=text)
+        user_msg = UserMessage(content=text, timestamp=datetime.now().strftime("%H:%M"))
         await conversation.mount(user_msg)
         user_msg.scroll_visible(animate=False)
 

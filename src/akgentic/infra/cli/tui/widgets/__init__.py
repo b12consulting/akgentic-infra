@@ -6,6 +6,7 @@ from akgentic.infra.cli.tui.widgets.command_palette import CommandPalette
 from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 from akgentic.infra.cli.tui.widgets.hint_bar import HintBar
 from akgentic.infra.cli.tui.widgets.human_input import HumanInputPrompt
+from akgentic.infra.cli.tui.widgets.scroll_indicator import ScrollIndicator
 from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 from akgentic.infra.cli.tui.widgets.system_message import HistorySeparator, SystemMessage
 from akgentic.infra.cli.tui.widgets.thinking import ThinkingIndicator
@@ -20,6 +21,7 @@ __all__ = [
     "HintBar",
     "HistorySeparator",
     "HumanInputPrompt",
+    "ScrollIndicator",
     "StatusHeader",
     "SystemMessage",
     "ThinkingIndicator",

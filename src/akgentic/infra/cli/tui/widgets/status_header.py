@@ -35,6 +35,8 @@ class StatusHeader(Static):
     def render(self) -> RenderableType:
         """Render team info and connection state as a single-line bar."""
         status_icon = "\u25b6" if self._team_status == "running" else "\u23f8"
+        status_colors = {"running": "green", "stopped": "yellow", "deleted": "red"}
+        status_style = status_colors.get(self._team_status, "dim")
         conn_indicators: dict[str, tuple[str, str]] = {
             "connected": ("\u25cf", "green"),
             "disconnected": ("\u2716", "red"),
@@ -42,11 +44,15 @@ class StatusHeader(Static):
             "connecting": ("\u27f3", "yellow"),
         }
         icon, color = conn_indicators.get(self._connection_state, ("?", "white"))
+        sep = " \u2502 "
         parts = Text()
         parts.append(f"  {self._team_name}", style="bold")
-        parts.append(f"   {self._team_id}", style="dim")
-        parts.append(f"   {status_icon} {self._team_status}", style="dim")
-        parts.append(f"   {icon} {self._connection_state}", style=color)
+        parts.append(sep, style="dim")
+        parts.append(self._team_id, style="dim")
+        parts.append(sep, style="dim")
+        parts.append(f"{status_icon} {self._team_status}", style=status_style)
+        parts.append(sep, style="dim")
+        parts.append(f"{icon} {self._connection_state}", style=color)
         return parts
 
     def update_connection(self, state: str) -> None:

@@ -56,6 +56,20 @@ CommandPalette {
     padding: 0 1;
 }
 
+ScrollIndicator {
+    layer: overlay;
+    dock: bottom;
+    offset-y: -4;
+    height: 1;
+    width: auto;
+    min-width: 24;
+    content-align: center middle;
+    text-align: center;
+    background: $accent;
+    color: $text;
+    display: none;
+}
+
 /* History replay -- dimmed widgets */
 .history {
     opacity: 60%;

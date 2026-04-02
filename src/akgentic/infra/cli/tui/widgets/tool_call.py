@@ -25,15 +25,30 @@ class ToolCallWidget(Static):
 
     collapsed: reactive[bool] = reactive(True)
 
-    def __init__(self, tool_name: str, tool_input: str, tool_output: str | None) -> None:
+    def __init__(
+        self,
+        tool_name: str,
+        tool_input: str,
+        tool_output: str | None,
+        agent_color: str | None = None,
+    ) -> None:
         self._tool_name = tool_name
         self._tool_input = tool_input
         self._tool_output = tool_output
-        super().__init__(Text(f"\u25b8 Tool: {tool_name}", style="dim"))
+        self._agent_color = agent_color
+        super().__init__(self._build_collapsed())
+
+    def on_mount(self) -> None:
+        """Apply colored left border matching the parent agent's color."""
+        if self._agent_color is not None:
+            self.styles.border_left = ("tall", self._agent_color)
 
     def _build_collapsed(self) -> RenderableType:
         """Build the collapsed one-line summary."""
-        return Text(f"\u25b8 Tool: {self._tool_name}", style="dim")
+        line = Text(f"\u25b8 Tool: {self._tool_name}", style="dim")
+        if self._tool_output is not None:
+            line.append(" \u2713", style="green")
+        return line
 
     def _build_expanded(self) -> RenderableType:
         """Build the expanded panel with JSON input/output."""
@@ -50,7 +65,7 @@ class ToolCallWidget(Static):
         return Panel(
             Group(*parts),
             title=f"Tool: {self._tool_name}",
-            border_style="dim",
+            border_style=self._agent_color or "dim",
         )
 
     def watch_collapsed(self, value: bool) -> None:
