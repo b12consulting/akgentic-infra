@@ -47,7 +47,10 @@ class TeamSelectScreen(Screen[str | None]):
         """Compose the team selection layout."""
         from textual.containers import Container
 
-        yield Static("Akgentic -- Team Selection", id="team-header")
+        header = Text()
+        header.append("Akgentic -- Team Selection", style="bold")
+        header.append("   \u25cf connecting", style="yellow")
+        yield Static(header, id="team-header")
         yield VerticalScroll(id="team-list")
         with Container(id="team-input-area"):
             yield Input(placeholder="> ", id="team-input")
@@ -97,7 +100,21 @@ class TeamSelectScreen(Screen[str | None]):
         self._running_teams = sorted(running, key=lambda t: t.created_at, reverse=True)
         self._stopped_teams = sorted(stopped, key=lambda t: t.created_at, reverse=True)
         self._catalog = catalog
+        self._update_header(bool(running or stopped or catalog))
         self._render_page()
+
+    def _update_header(self, server_reachable: bool) -> None:
+        """Update the header with connection indicator."""
+        header = Text()
+        header.append("Akgentic -- Team Selection", style="bold")
+        if server_reachable:
+            header.append("   \u25cf connected", style="green")
+        else:
+            header.append("   \u2716 disconnected", style="red")
+        try:
+            self.query_one("#team-header", Static).update(header)
+        except LookupError:
+            pass
 
     def _max_pages(self) -> int:
         """Return total number of pages based on running and stopped lists."""
