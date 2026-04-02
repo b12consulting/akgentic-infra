@@ -256,6 +256,7 @@ class TestToolCallArgFormats:
             "event": {
                 "__model__": "EventMessage",
                 "event": {
+                    "__model__": "akgentic.llm.event.ToolCallEvent",
                     "tool_name": "search",
                     "arguments": {"query": "test", "limit": 10},
                     "result": {"items": ["a", "b"]},
@@ -274,6 +275,7 @@ class TestToolCallArgFormats:
             "event": {
                 "__model__": "EventMessage",
                 "event": {
+                    "__model__": "akgentic.llm.event.ToolCallEvent",
                     "tool_name": "multi_search",
                     "arguments": ["query1", "query2"],
                     "result": None,
@@ -293,7 +295,12 @@ class TestNestedEventJsonString:
 
         renderer, buf = _captured_renderer()
         router = EventRouter(renderer)
-        nested = json.dumps({"tool_name": "calc", "arguments": "2+2", "result": "4"})
+        nested = json.dumps({
+            "__model__": "akgentic.llm.event.ToolCallEvent",
+            "tool_name": "calc",
+            "arguments": "2+2",
+            "result": "4",
+        })
         data = {
             "event": {
                 "__model__": "EventMessage",
@@ -388,6 +395,7 @@ class TestToWidgetToolCall:
             "event": {
                 "__model__": "EventMessage",
                 "event": {
+                    "__model__": "akgentic.llm.event.ToolCallEvent",
                     "tool_name": "calc",
                     "arguments": {"x": 1},
                     "result": {"answer": 42},
@@ -457,7 +465,12 @@ class TestToWidgetJsonStringEvent:
         import json
 
         router, registry = _make_widget_router()
-        nested = json.dumps({"tool_name": "calc", "arguments": "2+2", "result": "4"})
+        nested = json.dumps({
+            "__model__": "akgentic.llm.event.ToolCallEvent",
+            "tool_name": "calc",
+            "arguments": "2+2",
+            "result": "4",
+        })
         data = {
             "event": {
                 "__model__": "EventMessage",

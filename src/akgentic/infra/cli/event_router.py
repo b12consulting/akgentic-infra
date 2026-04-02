@@ -123,7 +123,7 @@ class EventRouter:
 
         nested_model = nested.get("__model__", "")
 
-        if "tool_name" in nested:
+        if "ToolCallEvent" in nested_model:
             self._handle_tool_call(nested)
             return True
 
@@ -213,27 +213,33 @@ class EventRouter:
         color_registry: AgentColorRegistry,
         timestamp: str | None = None,
     ) -> Widget | None:
-        """Convert a SentMessage event to an AgentMessage widget.
-
-        Skips messages from @Human — those are echoes of the user's own
-        message, already displayed as a UserMessage widget.
-        """
+        """Convert a SentMessage event to an AgentMessage widget."""
         from akgentic.infra.cli.tui.widgets.agent_message import AgentMessage
 
         raw_sender = event.get("sender", "agent")
         sender = (
             raw_sender.get("name", "agent") if isinstance(raw_sender, dict) else str(raw_sender)
         )
-        if sender == "@Human":
-            return None
         message = event.get("message", {})
         content = message.get("content", "") if isinstance(message, dict) else ""
         if not content:
             return None
+
+        raw_recipient = event.get("recipient")
+        recipient: str | None = None
+        if isinstance(raw_recipient, dict):
+            recipient = raw_recipient.get("name")
+        elif isinstance(raw_recipient, str) and raw_recipient:
+            recipient = raw_recipient
+
         color: str = color_registry.get(sender)
         self._last_agent_color = color
         return AgentMessage(
-            sender=sender, content=str(content), color=color, timestamp=timestamp
+            sender=sender,
+            content=str(content),
+            color=color,
+            timestamp=timestamp,
+            recipient=recipient,
         )
 
     def _event_to_widget(self, event: dict[str, Any]) -> Widget | None:
@@ -247,10 +253,11 @@ class EventRouter:
         if not isinstance(nested, dict):
             return None
 
-        if "tool_name" in nested:
+        nested_model = nested.get("__model__", "")
+
+        if "ToolCallEvent" in nested_model:
             return self._tool_call_to_widget(nested)
 
-        nested_model = nested.get("__model__", "")
         if "HumanInput" in nested_model or "RequestInput" in nested_model:
             from akgentic.infra.cli.tui.widgets.human_input import HumanInputPrompt
 

@@ -176,12 +176,14 @@ class TestToolCallEventFactory:
 
     def test_round_trip_defaults(self) -> None:
         data = make_tool_call_event()
-        event = ToolCallEvent(**data)
+        fields = {k: v for k, v in data.items() if k != "__model__"}
+        event = ToolCallEvent(**fields)
         assert event.tool_name == "test_tool"
 
     def test_round_trip_with_overrides(self) -> None:
         data = make_tool_call_event(tool_name="search", arguments='{"q": "hello"}')
-        event = ToolCallEvent(**data)
+        fields = {k: v for k, v in data.items() if k != "__model__"}
+        event = ToolCallEvent(**fields)
         assert event.tool_name == "search"
         assert event.arguments == '{"q": "hello"}'
 
@@ -189,23 +191,33 @@ class TestToolCallEventFactory:
         data = make_tool_call_event(tool_name="my_tool")
         assert data["tool_name"] == "my_tool"
 
+    def test_model_tag_present(self) -> None:
+        data = make_tool_call_event()
+        assert data["__model__"] == "akgentic.llm.event.ToolCallEvent"
+
 
 class TestToolReturnEventFactory:
     """Round-trip tests for make_tool_return_event."""
 
     def test_round_trip_defaults(self) -> None:
         data = make_tool_return_event()
-        event = ToolReturnEvent(**data)
+        fields = {k: v for k, v in data.items() if k != "__model__"}
+        event = ToolReturnEvent(**fields)
         assert event.success is True
 
     def test_round_trip_with_overrides(self) -> None:
         data = make_tool_return_event(success=False)
-        event = ToolReturnEvent(**data)
+        fields = {k: v for k, v in data.items() if k != "__model__"}
+        event = ToolReturnEvent(**fields)
         assert event.success is False
 
     def test_override_appears_in_output(self) -> None:
         data = make_tool_return_event(success=False)
         assert data["success"] is False
+
+    def test_model_tag_present(self) -> None:
+        data = make_tool_return_event()
+        assert data["__model__"] == "akgentic.llm.event.ToolReturnEvent"
 
 
 class TestLlmUsageEventFactory:
