@@ -39,7 +39,12 @@ from akgentic.infra.cli.commands import (
     build_default_registry,
 )
 from akgentic.infra.cli.ws_client import WsConnectionError
-from tests.fixtures.events import _make_proxy, make_sent_message, make_start_message
+from tests.fixtures.events import (
+    _make_proxy,
+    build_start_message,
+    make_sent_message,
+    make_start_message,
+)
 
 from .conftest import captured_renderer as _captured_renderer
 from .conftest import make_session as _make_session
@@ -470,15 +475,19 @@ class TestEventsHandler:
 
 class TestAgentsHandler:
     async def test_shows_agents_from_events(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from akgentic.core.agent_config import BaseConfig
+
         client = _mock_client()
+        typed_start = build_start_message(
+            config=BaseConfig(name="@Manager", role="Manager"),
+            sender=_make_proxy(name="@Manager", role="Manager"),
+        )
         client.get_events.return_value = [
             EventInfo(
                 team_id="t1",
                 sequence=1,
                 timestamp="2026-01-01T00:00:00",
-                event=make_start_message(
-                    sender=_make_proxy(name="@Manager", role="Manager"),
-                ),
+                event=typed_start,
             ),
         ]
         session = _make_session(client=client)

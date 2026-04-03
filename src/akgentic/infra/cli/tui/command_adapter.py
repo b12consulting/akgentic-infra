@@ -6,7 +6,7 @@ import asyncio
 import io
 import logging
 from contextlib import redirect_stdout
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from akgentic.infra.cli.client import ApiClient, ApiError
 from akgentic.infra.cli.commands import CommandRegistry
@@ -84,7 +84,7 @@ class _TuiSession:
     def _fetch_team_info(self) -> None:
         """No-op stub -- TUI uses StatusHeader.update_team() instead."""
 
-    def _render_event(self, _data: dict[str, Any]) -> bool:
+    def _render_event(self, _event: object) -> bool:
         """No-op stub -- TUI uses EventRouter.to_widget() instead."""
         return False
 

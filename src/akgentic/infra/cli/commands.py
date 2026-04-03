@@ -8,7 +8,7 @@ import json as json_mod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.ws_client import WsConnectionError
@@ -211,6 +211,8 @@ async def _events_handler(args: str, session: ChatSession) -> None:
 
 async def _agents_handler(args: str, session: ChatSession) -> None:
     """List team members with roles and state."""
+    from akgentic.core.messages.orchestrator import StartMessage
+
     loop = asyncio.get_running_loop()
     try:
         events = await loop.run_in_executor(None, session.client.get_events, session.team_id)
@@ -220,11 +222,9 @@ async def _agents_handler(args: str, session: ChatSession) -> None:
 
     seen: dict[str, str] = {}
     for e in events:
-        evt = e.model_dump().get("event", {})
-        if evt.get("__model__", "").endswith("StartMessage"):
-            sender = evt.get("sender", {})
-            name = sender.get("name", "")
-            role = sender.get("role", "")
+        if isinstance(e.event, StartMessage):
+            name = e.event.config.name
+            role = e.event.config.role
             if name and name != "orchestrator":
                 seen[name] = role
 
@@ -273,20 +273,6 @@ async def _history_handler(args: str, session: ChatSession) -> None:
         if isinstance(evt, Message):
             session._render_event(evt)
 
-
-def _is_displayable(data: dict[str, Any]) -> bool:
-    """Check if an event is displayable (SentMessage or ErrorMessage)."""
-    event = data.get("event", data)
-    if isinstance(event, str):
-        try:
-            event = json_mod.loads(event)
-        except (json_mod.JSONDecodeError, TypeError):
-            return False
-    model = event.get("__model__", "")
-    # Match short suffix from fully qualified model names
-    model = model.rsplit(".", 1)[-1] if model else ""
-    # Keep in sync with repl._DISPLAY_EVENTS
-    return model in {"SentMessage", "ErrorMessage", "EventMessage"}
 
 
 # -- Workspace commands --
