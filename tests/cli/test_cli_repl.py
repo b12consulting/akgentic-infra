@@ -40,9 +40,7 @@ _PROMPT_PATH = "prompt_toolkit.PromptSession.prompt"
 
 def _mock_client(**overrides: Any) -> MagicMock:
     """Build a mock ApiClient with minimal defaults for REPL tests."""
-    defaults: dict[str, Any] = {"get_events": MagicMock(return_value=[])}
-    defaults.update(overrides)
-    return _shared_mock_client(**defaults)
+    return _shared_mock_client(**overrides)
 
 
 def _make_session(
