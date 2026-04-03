@@ -6,25 +6,10 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
-from akgentic.core.messages.message import Message
-from akgentic.team.models import PersistedEvent, Process, TeamCard, TeamStatus
+from akgentic.team.models import Process, TeamCard, TeamStatus
 
 _NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
 _TEAM_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-
-
-def make_persisted_event(
-    event: Message,
-    team_id: uuid.UUID = _TEAM_ID,
-    sequence: int = 1,
-) -> PersistedEvent:
-    """Create a PersistedEvent fixture."""
-    return PersistedEvent(
-        team_id=team_id,
-        sequence=sequence,
-        event=event,
-        timestamp=_NOW,
-    )
 
 
 def make_team_card(name: str = "Test Team") -> MagicMock:

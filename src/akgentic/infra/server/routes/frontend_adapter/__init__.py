@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 from fastapi import FastAPI
 from pydantic import BaseModel, Discriminator, Field, Tag
 
-from akgentic.team.models import PersistedEvent
+from akgentic.core.messages import Message
 
 __all__ = [
     "ErrorPayload",
@@ -133,11 +133,11 @@ class FrontendAdapter(Protocol):
         """
         ...
 
-    def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
-        """Translate a persisted event into a frontend-specific payload.
+    def wrap_ws_event(self, event: Message) -> WrappedWsEvent:
+        """Translate a message into a frontend-specific payload.
 
         Args:
-            event: The V2 persisted event to translate.
+            event: The V2 message to translate.
 
         Returns:
             A WrappedWsEvent containing the event in the frontend's expected format.

@@ -1,6 +1,6 @@
 """WebSocket event wrapping for the Angular V1 frontend adapter.
 
-Translates V2 ``PersistedEvent`` instances into V1 envelope format so
+Translates V2 ``Message`` instances into V1 envelope format so
 the existing Angular V1 frontend's WebSocket handling works unchanged.
 """
 
@@ -28,7 +28,6 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1._helpers import (
     extract_message_content,
     get_sender_name,
 )
-from akgentic.team.models import PersistedEvent
 
 
 def _classify_envelope_type(event: Message) -> str:
@@ -191,20 +190,19 @@ class _DualFormatWsEvent(WrappedWsEvent):
     event: dict[str, Any] = {}
 
 
-def wrap_event(event: PersistedEvent) -> WrappedWsEvent:
-    """Translate a V2 persisted event into a dual-format WebSocket envelope.
+def wrap_event(msg: Message) -> WrappedWsEvent:
+    """Translate a V2 message into a dual-format WebSocket envelope.
 
     This is the main entry point called by ``AngularV1Adapter.wrap_ws_event``.
 
     Args:
-        event: The V2 persisted event to translate.
+        msg: The V2 message to translate.
 
     Returns:
         A ``_DualFormatWsEvent`` containing both V1 payload (for Angular)
         and raw V2 event data (for CLI and other V2 clients).
     """
-    msg = event.event
-    timestamp = event.timestamp.isoformat()
+    timestamp = msg.timestamp.isoformat()
     envelope_type = _classify_envelope_type(msg)
 
     payload: MessagePayload | StatePayload | ToolUpdatePayload | LlmContextPayload | ErrorPayload

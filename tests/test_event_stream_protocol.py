@@ -1,4 +1,7 @@
-"""Tests for EventStream and StreamReader protocols (AC1, AC2, AC3, AC5, AC6)."""
+"""Tests for EventStream and StreamReader protocols (AC1, AC2, AC3, AC5, AC6).
+
+Updated for Story 13.7: protocols typed on Message instead of PersistedEvent.
+"""
 
 from __future__ import annotations
 
@@ -56,13 +59,13 @@ def test_stream_reader_has_close() -> None:
 
 def test_stream_reader_close_returns_none() -> None:
     """StreamReader.close returns None."""
-    from akgentic.team.models import PersistedEvent
+    from akgentic.core.messages import Message
 
     from akgentic.infra.protocols.event_stream import StreamReader
 
     hints = get_type_hints(
         StreamReader.close,
-        localns={"PersistedEvent": PersistedEvent},
+        localns={"Message": Message},
     )
     assert hints["return"] is type(None)
 
@@ -116,13 +119,13 @@ def test_event_stream_has_append() -> None:
 
 def test_event_stream_append_returns_int() -> None:
     """EventStream.append returns int."""
-    from akgentic.team.models import PersistedEvent
+    from akgentic.core.messages import Message
 
     from akgentic.infra.protocols.event_stream import EventStream
 
     hints = get_type_hints(
         EventStream.append,
-        localns={"PersistedEvent": PersistedEvent},
+        localns={"Message": Message},
     )
     assert hints["return"] is int
 
@@ -160,13 +163,13 @@ def test_event_stream_has_remove() -> None:
 
 def test_event_stream_remove_returns_none() -> None:
     """EventStream.remove returns None."""
-    from akgentic.team.models import PersistedEvent
+    from akgentic.core.messages import Message
 
     from akgentic.infra.protocols.event_stream import EventStream
 
     hints = get_type_hints(
         EventStream.remove,
-        localns={"PersistedEvent": PersistedEvent},
+        localns={"Message": Message},
     )
     assert hints["return"] is type(None)
 
@@ -191,52 +194,52 @@ def test_stream_reader_method_count() -> None:
     assert len(public_methods) == 2
 
 
-# --- Type annotations use PersistedEvent (AC6) ---
+# --- Type annotations use Message (Story 13.7 AC1) ---
 
 
 def test_stream_reader_read_next_return_type() -> None:
-    """StreamReader.read_next return annotation is PersistedEvent | None."""
+    """StreamReader.read_next return annotation is Message | None."""
     import types
 
-    from akgentic.team.models import PersistedEvent
+    from akgentic.core.messages import Message
 
     from akgentic.infra.protocols.event_stream import StreamReader
 
     hints = get_type_hints(
         StreamReader.read_next,
-        localns={"PersistedEvent": PersistedEvent},
+        localns={"Message": Message},
     )
     ret = hints["return"]
     assert isinstance(ret, types.UnionType)
-    assert PersistedEvent in ret.__args__
+    assert Message in ret.__args__
     assert type(None) in ret.__args__
 
 
 def test_event_stream_read_from_return_type() -> None:
-    """EventStream.read_from return annotation is list[PersistedEvent]."""
-    from akgentic.team.models import PersistedEvent
+    """EventStream.read_from return annotation is list[Message]."""
+    from akgentic.core.messages import Message
 
     from akgentic.infra.protocols.event_stream import EventStream
 
     hints = get_type_hints(
         EventStream.read_from,
-        localns={"PersistedEvent": PersistedEvent},
+        localns={"Message": Message},
     )
     ret = hints["return"]
-    assert ret == list[PersistedEvent]
+    assert ret == list[Message]
 
 
 def test_event_stream_append_event_type() -> None:
-    """EventStream.append event parameter is annotated as PersistedEvent."""
-    from akgentic.team.models import PersistedEvent
+    """EventStream.append event parameter is annotated as Message."""
+    from akgentic.core.messages import Message
 
     from akgentic.infra.protocols.event_stream import EventStream
 
     hints = get_type_hints(
         EventStream.append,
-        localns={"PersistedEvent": PersistedEvent},
+        localns={"Message": Message},
     )
-    assert hints["event"] is PersistedEvent
+    assert hints["event"] is Message
 
 
 def test_event_stream_subscribe_returns_stream_reader() -> None:

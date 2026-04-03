@@ -6,7 +6,7 @@ import uuid
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from akgentic.team.models import PersistedEvent
+    from akgentic.core.messages import Message
 
 
 class StreamClosed(Exception):  # noqa: N818 — ADR-010 specifies this name
@@ -16,7 +16,7 @@ class StreamClosed(Exception):  # noqa: N818 — ADR-010 specifies this name
 class StreamReader(Protocol):
     """Cursor-based blocking reader for a team's event stream."""
 
-    def read_next(self, timeout: float = 0.5) -> PersistedEvent | None:
+    def read_next(self, timeout: float = 0.5) -> Message | None:
         """Read next event from cursor position.
 
         Args:
@@ -43,12 +43,12 @@ class EventStream(Protocol):
     per team that supports cursor-based reads from any offset.
     """
 
-    def append(self, team_id: uuid.UUID, event: PersistedEvent) -> int:
+    def append(self, team_id: uuid.UUID, event: Message) -> int:
         """Append event to the team's stream.
 
         Args:
             team_id: ID of the team.
-            event: The persisted event to append.
+            event: The message to append.
 
         Returns:
             Monotonically increasing sequence number.
@@ -57,7 +57,7 @@ class EventStream(Protocol):
 
     def read_from(
         self, team_id: uuid.UUID, cursor: int = 0
-    ) -> list[PersistedEvent]:
+    ) -> list[Message]:
         """Read all events from cursor position (non-blocking snapshot).
 
         Args:

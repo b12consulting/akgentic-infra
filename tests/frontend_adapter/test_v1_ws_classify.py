@@ -62,11 +62,7 @@ class TestWebSocketErrorEnvelope:
 
     def test_wrap_event_error_produces_error_payload(self) -> None:
         """wrap_event with ErrorMessage produces ErrorPayload with type=='error'."""
-        import uuid
-        from datetime import UTC, datetime
-
         from akgentic.core.messages.orchestrator import ErrorMessage
-        from akgentic.team.models import PersistedEvent
 
         from akgentic.infra.server.routes.frontend_adapter import ErrorPayload
         from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import (
@@ -74,13 +70,7 @@ class TestWebSocketErrorEnvelope:
         )
 
         msg = ErrorMessage(exception_value="something broke", exception_type="RuntimeError")
-        ev = PersistedEvent(
-            team_id=uuid.uuid4(),
-            sequence=1,
-            event=msg,
-            timestamp=datetime.now(tz=UTC),
-        )
-        wrapped = wrap_event(ev)
+        wrapped = wrap_event(msg)
         assert isinstance(wrapped.payload, ErrorPayload)
         assert wrapped.payload.type == "error"
         assert wrapped.payload.message == "something broke"

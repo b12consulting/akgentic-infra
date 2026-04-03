@@ -1,15 +1,13 @@
-"""Tests for LocalEventStream and LocalStreamReader (Story 13.2)."""
+"""Tests for LocalEventStream and LocalStreamReader (Story 13.2, updated 13.7)."""
 
 from __future__ import annotations
 
 import threading
 import time
 import uuid
-from datetime import UTC, datetime
 
 import pytest
-from akgentic.core.messages import UserMessage
-from akgentic.team.models import PersistedEvent
+from akgentic.core.messages import Message, UserMessage
 
 from akgentic.infra.adapters.community.local_event_stream import (
     LocalEventStream,
@@ -17,17 +15,11 @@ from akgentic.infra.adapters.community.local_event_stream import (
 from akgentic.infra.protocols.event_stream import EventStream, StreamClosed
 
 _TEAM_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-_NOW = datetime(2026, 4, 1, 12, 0, 0, tzinfo=UTC)
 
 
-def _make_event(seq: int = 1, team_id: uuid.UUID = _TEAM_ID) -> PersistedEvent:
-    """Create a PersistedEvent fixture."""
-    return PersistedEvent(
-        team_id=team_id,
-        sequence=seq,
-        event=UserMessage(content=f"msg-{seq}"),
-        timestamp=_NOW,
-    )
+def _make_event(seq: int = 1, team_id: uuid.UUID = _TEAM_ID) -> Message:
+    """Create a Message fixture."""
+    return UserMessage(content=f"msg-{seq}", team_id=team_id)
 
 
 # --- Task 9: Protocol conformance (AC1) ---
@@ -170,7 +162,7 @@ def test_reader_receives_live_events_via_thread() -> None:
     """Reader blocks and receives live events appended from another thread."""
     stream = LocalEventStream()
     reader = stream.subscribe(_TEAM_ID, cursor=0)
-    received: list[PersistedEvent | None] = []
+    received: list[Message | None] = []
 
     def producer() -> None:
         time.sleep(0.05)

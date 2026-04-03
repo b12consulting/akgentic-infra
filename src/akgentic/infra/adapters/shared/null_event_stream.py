@@ -6,13 +6,13 @@ import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from akgentic.team.models import PersistedEvent
+    from akgentic.core.messages import Message
 
 
 class NullStreamReader:
     """No-op StreamReader — always returns None and never raises."""
 
-    def read_next(self, timeout: float = 0.5) -> PersistedEvent | None:
+    def read_next(self, timeout: float = 0.5) -> Message | None:
         """Return None immediately (no events available)."""
         return None
 
@@ -27,13 +27,13 @@ class NullEventStream:
     NullStreamReader. Satisfies the EventStream protocol contract.
     """
 
-    def append(self, team_id: uuid.UUID, event: PersistedEvent) -> int:
+    def append(self, team_id: uuid.UUID, event: Message) -> int:
         """Discard event, return 0."""
         return 0
 
     def read_from(
         self, team_id: uuid.UUID, cursor: int = 0
-    ) -> list[PersistedEvent]:
+    ) -> list[Message]:
         """Return empty list."""
         return []
 

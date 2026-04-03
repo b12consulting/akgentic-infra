@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from akgentic.infra.protocols.event_stream import StreamClosed
 
 if TYPE_CHECKING:
-    from akgentic.team.models import PersistedEvent
+    from akgentic.core.messages import Message
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 class _TeamStream:
     """Per-team stream state grouping events, condition, readers, and bookkeeping."""
 
-    events: list[PersistedEvent] = field(default_factory=list)
+    events: list[Message] = field(default_factory=list)
     condition: threading.Condition = field(default_factory=threading.Condition)
     readers: list[LocalStreamReader] = field(default_factory=list)
     closed: bool = False
@@ -60,7 +60,7 @@ class LocalStreamReader:
         self._cursor = cursor
         self._closed = False
 
-    def read_next(self, timeout: float = 0.5) -> PersistedEvent | None:
+    def read_next(self, timeout: float = 0.5) -> Message | None:
         """Read the next event from the cursor position.
 
         Blocks up to *timeout* seconds waiting for a new event. Returns
@@ -122,7 +122,7 @@ class LocalEventStream:
         self._lock = threading.Lock()
         self._maxlen = maxlen
 
-    def append(self, team_id: uuid.UUID, event: PersistedEvent) -> int:
+    def append(self, team_id: uuid.UUID, event: Message) -> int:
         """Append an event to the team's stream.
 
         Creates the stream implicitly if it does not exist. Returns a
@@ -130,7 +130,7 @@ class LocalEventStream:
 
         Args:
             team_id: ID of the team.
-            event: The persisted event to append.
+            event: The message to append.
 
         Returns:
             Monotonically increasing sequence number.
@@ -161,7 +161,7 @@ class LocalEventStream:
 
     def read_from(
         self, team_id: uuid.UUID, cursor: int = 0
-    ) -> list[PersistedEvent]:
+    ) -> list[Message]:
         """Read all events from cursor position (non-blocking snapshot).
 
         Args:
