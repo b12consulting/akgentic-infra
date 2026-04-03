@@ -1,4 +1,4 @@
-"""Tests for EventStreamSubscriber adapter."""
+"""Tests for EventStreamSubscriber adapter (updated for Story 13.7)."""
 
 from __future__ import annotations
 
@@ -39,10 +39,10 @@ class TestEventStreamSubscriberProtocolCompliance:
 
 
 class TestOnMessage:
-    """AC2, AC9: on_message wraps and appends, per-team sequences."""
+    """AC4: on_message forwards Message directly -- no PersistedEvent wrapping."""
 
-    def test_valid_team_id_creates_persisted_event_and_appends(self) -> None:
-        """AC2: on_message with valid team_id creates PersistedEvent and calls append."""
+    def test_valid_team_id_forwards_message_directly(self) -> None:
+        """AC4: on_message with valid team_id forwards Message to event stream."""
         stream = LocalEventStream()
         subscriber = EventStreamSubscriber(event_stream=stream)
         team_id = uuid.uuid4()
@@ -52,13 +52,11 @@ class TestOnMessage:
 
         events = stream.read_from(team_id)
         assert len(events) == 1
+        assert events[0].id == msg.id
         assert events[0].team_id == team_id
-        assert events[0].sequence == 1
-        assert events[0].event.id == msg.id
-        assert events[0].timestamp is not None
 
     def test_team_id_none_is_silently_skipped(self) -> None:
-        """AC2: Messages with team_id=None are silently skipped."""
+        """AC4: Messages with team_id=None are silently skipped."""
         stream = LocalEventStream()
         subscriber = EventStreamSubscriber(event_stream=stream)
         team_id = uuid.uuid4()
@@ -66,13 +64,13 @@ class TestOnMessage:
 
         subscriber.on_message(msg)
 
-        # Verify no events were appended for any team — use public API
+        # Verify no events were appended for any team
         assert stream.read_from(team_id) == []
         # Subscriber should not have tracked any teams
         assert len(subscriber._seen_teams) == 0
 
-    def test_sequence_numbers_are_per_team_monotonic(self) -> None:
-        """AC9: Two teams get independently incrementing sequence numbers."""
+    def test_multiple_messages_appended_in_order(self) -> None:
+        """Messages are appended in order to the event stream."""
         stream = LocalEventStream()
         subscriber = EventStreamSubscriber(event_stream=stream)
         team_a = uuid.uuid4()
@@ -88,24 +86,24 @@ class TestOnMessage:
         events_a = stream.read_from(team_a)
         events_b = stream.read_from(team_b)
 
-        assert [e.sequence for e in events_a] == [1, 2, 3]
-        assert [e.sequence for e in events_b] == [1, 2]
+        assert len(events_a) == 3
+        assert len(events_b) == 2
 
-    def test_persisted_event_fields(self) -> None:
-        """AC2: PersistedEvent has correct team_id, incrementing sequence, non-None timestamp."""
+    def test_forwarded_message_is_original(self) -> None:
+        """AC4: Forwarded event is the original Message, not a wrapper."""
         stream = LocalEventStream()
         subscriber = EventStreamSubscriber(event_stream=stream)
         team_id = uuid.uuid4()
 
-        subscriber.on_message(_make_message(team_id=team_id))
-        subscriber.on_message(_make_message(team_id=team_id))
+        msg1 = _make_message(team_id=team_id)
+        msg2 = _make_message(team_id=team_id)
+        subscriber.on_message(msg1)
+        subscriber.on_message(msg2)
 
         events = stream.read_from(team_id)
         assert len(events) == 2
-        for i, ev in enumerate(events, start=1):
-            assert ev.team_id == team_id
-            assert ev.sequence == i
-            assert ev.timestamp is not None
+        assert events[0].id == msg1.id
+        assert events[1].id == msg2.id
 
 
 class TestOnStop:

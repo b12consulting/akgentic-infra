@@ -1,18 +1,11 @@
 """Integration tests -- EventStream population during team lifecycle.
 
 AC5: stream populated during normal operation
-AC6: stream repopulated during team restore
-AC7: stream removed on team stop (via on_stop when orchestrator shuts down)
+AC6: stream repopulated on restore (replay refills stream for WS clients)
+AC7: stream removed on team stop (via TeamService.stop_team)
 AC8: stream removed on team delete (safety net in TeamService.delete_team)
 
 Uses smoke fixtures (TestModel) -- no OPENAI_API_KEY required.
-
-NOTE on on_stop() behavior:
-TeamManager._teardown_team() UNSUBSCRIBES shared subscribers before stopping
-the orchestrator, so the orchestrator's on_stop() does NOT propagate to shared
-subscribers for individual team stops. The EventStreamSubscriber.on_stop() is
-invoked during full process shutdown. For individual team lifecycle, stream
-cleanup relies on TeamService.delete_team()'s explicit event_stream.remove().
 """
 
 from __future__ import annotations
@@ -60,13 +53,12 @@ class TestEventStreamLifecycle:
         # Cleanup
         team_service.stop_team(team_id)
 
-    def test_stream_persists_after_team_stop(
+    def test_stream_removed_after_team_stop(
         self,
         team_service: TeamService,
         event_stream: LocalEventStream,
     ) -> None:
-        """AC5 corollary: stream persists after stop (shared subscriber is unsubscribed before
-        orchestrator on_stop, so on_stop does not propagate). Cleanup via delete_team."""
+        """AC7: stream is removed on stop via TeamService.stop_team()."""
         process = team_service.create_team("test-team", "test-user")
         team_id = process.team_id
 
@@ -78,16 +70,20 @@ class TestEventStreamLifecycle:
 
         team_service.stop_team(team_id)
 
-        # Stream persists -- shared subscriber was unsubscribed before orchestrator stop
+        # Stream removed on stop — read_from returns empty for removed streams
         events_after = event_stream.read_from(team_id)
-        assert len(events_after) > 0
+        assert events_after == []
 
     def test_stream_repopulated_on_restore(
         self,
         team_service: TeamService,
         event_stream: LocalEventStream,
     ) -> None:
-        """AC6: restoring a team repopulates the stream from persisted events."""
+        """AC6: restoring a team repopulates the EventStream from persisted events.
+
+        The restore replay feeds events through EventStreamSubscriber (which has
+        no set_restoring guard) so the stream is refilled for WS cursor-based replay.
+        """
         process = team_service.create_team("test-team", "test-user")
         team_id = process.team_id
 
@@ -100,8 +96,7 @@ class TestEventStreamLifecycle:
 
         team_service.stop_team(team_id)
 
-        # Manually remove stream to simulate process restart
-        event_stream.remove(team_id)
+        # Stream removed on stop
         assert event_stream.read_from(team_id) == []
 
         # Restore team -- stream should be repopulated from persisted events

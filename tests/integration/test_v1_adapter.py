@@ -377,10 +377,7 @@ class TestV1WebSocketEnvelopes:
         The wrap_event function is exercised by the real adapter, so this
         validates the envelope shape produced by real code.
         """
-        from datetime import UTC, datetime
-
         from akgentic.core.messages.orchestrator import ErrorMessage
-        from akgentic.team.models import PersistedEvent
 
         from akgentic.infra.server.routes.frontend_adapter import ErrorPayload
         from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import wrap_event
@@ -389,13 +386,7 @@ class TestV1WebSocketEnvelopes:
             exception_type="ValueError",
             exception_value="test error",
         )
-        event = PersistedEvent(
-            team_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
-            sequence=1,
-            event=msg,
-            timestamp=datetime.now(tz=UTC),
-        )
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "error"
         assert isinstance(result.payload, ErrorPayload)
         assert result.payload.message == "test error"
@@ -407,22 +398,13 @@ class TestV1WebSocketEnvelopes:
         EventMessage events produce tool_update envelopes. Validated via
         wrap_event exercising the real adapter code.
         """
-        from datetime import UTC, datetime
-
         from akgentic.core.messages.orchestrator import EventMessage
-        from akgentic.team.models import PersistedEvent
 
         from akgentic.infra.server.routes.frontend_adapter import ToolUpdatePayload
         from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import wrap_event
 
         msg = EventMessage(event={"tool_name": "search", "result": "found"})
-        event = PersistedEvent(
-            team_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
-            sequence=1,
-            event=msg,
-            timestamp=datetime.now(tz=UTC),
-        )
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "tool_update"
         assert isinstance(result.payload, ToolUpdatePayload)
         assert result.payload.event is not None
@@ -434,13 +416,10 @@ class TestV1WebSocketEnvelopes:
         StateChangedMessage events produce state envelopes. Validated via
         wrap_event exercising the real adapter code.
         """
-        from datetime import UTC, datetime
-
         from akgentic.core.actor_address_impl import ActorAddressProxy
         from akgentic.core.agent_state import BaseState
         from akgentic.core.messages.orchestrator import StateChangedMessage
         from akgentic.core.utils.deserializer import ActorAddressDict
-        from akgentic.team.models import PersistedEvent
 
         from akgentic.infra.server.routes.frontend_adapter import StatePayload
         from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import wrap_event
@@ -459,13 +438,7 @@ class TestV1WebSocketEnvelopes:
         )
         msg = StateChangedMessage(state=BaseState())
         msg.sender = sender
-        event = PersistedEvent(
-            team_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
-            sequence=1,
-            event=msg,
-            timestamp=datetime.now(tz=UTC),
-        )
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "state"
         assert isinstance(result.payload, StatePayload)
         assert result.payload.agent == "@TestAgent"

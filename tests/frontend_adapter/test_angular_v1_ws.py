@@ -1,15 +1,16 @@
-"""Tests for Angular V1 adapter — WebSocket event wrapping."""
+"""Tests for Angular V1 adapter — WebSocket event wrapping (updated for Story 13.7)."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+
 import pydantic
 import pytest
 from akgentic.core.actor_address_impl import ActorAddressProxy
 from akgentic.core.agent_config import BaseConfig
 from akgentic.core.agent_state import BaseState
-from akgentic.core.messages.message import Message, ResultMessage, UserMessage
+from akgentic.core.messages.message import ResultMessage, UserMessage
 from akgentic.core.messages.orchestrator import (
     ErrorMessage,
     EventMessage,
@@ -20,7 +21,6 @@ from akgentic.core.messages.orchestrator import (
     StateChangedMessage,
     StopMessage,
 )
-from akgentic.team.models import PersistedEvent
 
 from akgentic.infra.server.routes.frontend_adapter import (
     ErrorPayload,
@@ -56,20 +56,6 @@ def _make_sender(name: str = "@Agent") -> ActorAddressProxy:
     })
 
 
-def _make_persisted_event(
-    event: Message,
-    team_id: uuid.UUID = _TEAM_ID,
-    sequence: int = 1,
-) -> PersistedEvent:
-    """Create a PersistedEvent fixture."""
-    return PersistedEvent(
-        team_id=team_id,
-        sequence=sequence,
-        event=event,
-        timestamp=_NOW,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Task 4.2: UserMessage → type: "message", message_type: "user"
 # ---------------------------------------------------------------------------
@@ -82,16 +68,14 @@ class TestWrapUserMessage:
         """AC #1: UserMessage produces type: 'message' envelope."""
         msg = UserMessage(content="hello world")
         msg.sender = _make_sender("@Human")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "message"
 
     def test_user_message_fields(self) -> None:
         """AC #1: UserMessage envelope has V1-compatible fields."""
-        msg = UserMessage(content="hello world")
+        msg = UserMessage(content="hello world", timestamp=_NOW)
         msg.sender = _make_sender("@Human")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert isinstance(result.payload, MessagePayload)
         assert result.payload.message_type == "user"
         assert result.payload.content == "hello world"
@@ -112,16 +96,14 @@ class TestWrapResultMessage:
         """AC #2: ResultMessage produces type: 'message' envelope."""
         msg = ResultMessage(content="AI response")
         msg.sender = _make_sender("@Manager")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "message"
 
     def test_result_message_classified_as_agent(self) -> None:
         """AC #2: ResultMessage message_type is 'agent'."""
         msg = ResultMessage(content="AI response")
         msg.sender = _make_sender("@Manager")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.message_type == "agent"
         assert result.payload.content == "AI response"
         assert result.payload.sender == "@Manager"
@@ -142,8 +124,7 @@ class TestWrapSentMessageUser:
         recipient = _make_sender("@Worker")
         sent = SentMessage(message=inner, recipient=recipient)
         sent.sender = _make_sender("@Router")
-        event = _make_persisted_event(sent)
-        result = wrap_event(event)
+        result = wrap_event(sent)
         assert result.payload.type == "message"
         assert result.payload.content == "routed user msg"
         assert result.payload.sender == "@Human"
@@ -155,8 +136,7 @@ class TestWrapSentMessageUser:
         recipient = _make_sender("@Worker")
         sent = SentMessage(message=inner, recipient=recipient)
         sent.sender = _make_sender("@Router")
-        event = _make_persisted_event(sent)
-        result = wrap_event(event)
+        result = wrap_event(sent)
         assert result.payload.message_type == "user"
 
 
@@ -175,8 +155,7 @@ class TestWrapSentMessageResult:
         recipient = _make_sender("@User")
         sent = SentMessage(message=inner, recipient=recipient)
         sent.sender = _make_sender("@Router")
-        event = _make_persisted_event(sent)
-        result = wrap_event(event)
+        result = wrap_event(sent)
         assert result.payload.message_type == "agent"
         assert result.payload.content == "agent reply"
         assert result.payload.sender == "@Agent"
@@ -195,16 +174,14 @@ class TestWrapStateChanged:
         """AC #3: StateChangedMessage produces type: 'state' envelope."""
         msg = StateChangedMessage(state=BaseState())
         msg.sender = _make_sender("@Manager")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "state"
 
     def test_state_envelope_fields(self) -> None:
         """AC #3: State envelope has V1-compatible fields."""
-        msg = StateChangedMessage(state=BaseState())
+        msg = StateChangedMessage(state=BaseState(), timestamp=_NOW)
         msg.sender = _make_sender("@Manager")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert isinstance(result.payload, StatePayload)
         assert result.payload.agent == "@Manager"
         assert isinstance(result.payload.state, dict)
@@ -222,15 +199,13 @@ class TestWrapEventMessage:
     def test_tool_update_envelope_type(self) -> None:
         """AC #1: EventMessage produces type: 'tool_update' envelope."""
         msg = EventMessage(event={"tool_name": "search", "result": "found"})
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "tool_update"
 
     def test_tool_update_envelope_fields(self) -> None:
         """EventMessage envelope has event and timestamp fields."""
-        msg = EventMessage(event={"tool_name": "search", "result": "found"})
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        msg = EventMessage(event={"tool_name": "search", "result": "found"}, timestamp=_NOW)
+        result = wrap_event(msg)
         assert isinstance(result.payload, ToolUpdatePayload)
         assert result.payload.timestamp == _NOW.isoformat()
         assert result.payload.event is not None
@@ -239,15 +214,13 @@ class TestWrapEventMessage:
         """EventMessage with a Pydantic model event serializes via model_dump."""
         state = BaseState()
         msg = EventMessage(event=state)
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert isinstance(result.payload.event, dict)
 
     def test_tool_update_with_string_event(self) -> None:
         """EventMessage with a plain string event falls back to str()."""
         msg = EventMessage(event="simple event")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.event == "simple event"
 
 
@@ -262,8 +235,7 @@ class TestWrapNonContentEvents:
     def test_received_message_fallback(self) -> None:
         """ReceivedMessage produces valid message envelope with empty content."""
         msg = ReceivedMessage(message_id=uuid.uuid4())
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert isinstance(result.payload, MessagePayload)
         assert result.payload.message_type == "system"
         assert result.payload.content is not None
@@ -271,24 +243,21 @@ class TestWrapNonContentEvents:
     def test_processed_message_fallback(self) -> None:
         """ProcessedMessage produces valid message envelope."""
         msg = ProcessedMessage(message_id=uuid.uuid4())
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "message"
         assert result.payload.message_type == "system"
 
     def test_start_message_fallback(self) -> None:
         """StartMessage produces valid message envelope with system type."""
         msg = StartMessage(config=BaseConfig())
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "message"
         assert result.payload.message_type == "system"
 
     def test_stop_message_fallback(self) -> None:
         """StopMessage produces valid message envelope with system type."""
         msg = StopMessage()
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "message"
         assert result.payload.message_type == "system"
 
@@ -308,8 +277,7 @@ class TestWrapSentMessageNonContent:
         recipient = _make_sender("@Worker")
         sent = SentMessage(message=inner, recipient=recipient)
         sent.sender = _make_sender("@Router")
-        event = _make_persisted_event(sent)
-        result = wrap_event(event)
+        result = wrap_event(sent)
         assert result.payload.type == "message"
         assert result.payload.message_type == "system"
         assert result.payload.sender == "@Orchestrator"
@@ -330,8 +298,7 @@ class TestWrapErrorMessage:
             exception_type="ValueError",
             exception_value="something went wrong",
         )
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.type == "error"
 
     def test_error_message_has_message_field(self) -> None:
@@ -340,8 +307,7 @@ class TestWrapErrorMessage:
             exception_type="ValueError",
             exception_value="something went wrong",
         )
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.message == "something went wrong"
 
 
@@ -357,16 +323,14 @@ class TestAdapterWrapWsEvent:
         """wrap_ws_event returns WrappedWsEvent instance."""
         adapter = AngularV1Adapter()
         msg = UserMessage(content="test")
-        event = _make_persisted_event(msg)
-        result = adapter.wrap_ws_event(event)
+        result = adapter.wrap_ws_event(msg)
         assert isinstance(result, WrappedWsEvent)
 
     def test_adapter_produces_v1_envelope(self) -> None:
         """wrap_ws_event produces V1 envelope, not raw passthrough."""
         adapter = AngularV1Adapter()
         msg = UserMessage(content="test content")
-        event = _make_persisted_event(msg)
-        result = adapter.wrap_ws_event(event)
+        result = adapter.wrap_ws_event(msg)
         assert result.payload.type == "message"
         assert result.payload.content == "test content"
         assert result.payload.message_type == "user"
@@ -376,8 +340,7 @@ class TestAdapterWrapWsEvent:
         adapter = AngularV1Adapter()
         msg = StateChangedMessage(state=BaseState())
         msg.sender = _make_sender("@Agent")
-        event = _make_persisted_event(msg)
-        result = adapter.wrap_ws_event(event)
+        result = adapter.wrap_ws_event(msg)
         assert isinstance(result.payload, StatePayload)
         assert result.payload.agent == "@Agent"
 
@@ -393,8 +356,7 @@ class TestWrappedEventSerialization:
     def test_user_message_json_serializable(self) -> None:
         """WrappedWsEvent from UserMessage serializes to valid JSON."""
         msg = UserMessage(content="hello")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         json_str = result.model_dump_json()
         assert '"type":"message"' in json_str
         assert '"content":"hello"' in json_str
@@ -403,8 +365,7 @@ class TestWrappedEventSerialization:
         """WrappedWsEvent from StateChangedMessage serializes to valid JSON."""
         msg = StateChangedMessage(state=BaseState())
         msg.sender = _make_sender("@Bot")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         json_str = result.model_dump_json()
         assert '"type":"state"' in json_str
 
@@ -414,8 +375,7 @@ class TestWrappedEventSerialization:
             exception_type="RuntimeError",
             exception_value="oops",
         )
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         json_str = result.model_dump_json()
         assert '"type":"error"' in json_str
         assert '"oops"' in json_str
@@ -423,16 +383,14 @@ class TestWrappedEventSerialization:
     def test_tool_update_json_serializable(self) -> None:
         """WrappedWsEvent from EventMessage serializes to valid JSON."""
         msg = EventMessage(event={"tool": "search"})
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         json_str = result.model_dump_json()
         assert '"type":"tool_update"' in json_str
 
     def test_no_sender_defaults_to_system(self) -> None:
         """Event with no sender uses 'system' as sender name."""
         msg = UserMessage(content="orphan")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         assert result.payload.sender == "system"
 
 
@@ -642,8 +600,7 @@ class TestSerializationRoundTrip:
         """model_dump(mode='json') produces the same structure as the old dicts."""
         msg = UserMessage(content="wire test")
         msg.sender = _make_sender("@Human")
-        event = _make_persisted_event(msg)
-        result = wrap_event(event)
+        result = wrap_event(msg)
         dumped = result.model_dump(mode="json")
         payload = dumped["payload"]
         assert payload["type"] == "message"

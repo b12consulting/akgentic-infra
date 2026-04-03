@@ -6,7 +6,7 @@ import types
 from unittest.mock import MagicMock, patch
 
 import pytest
-from akgentic.team.models import PersistedEvent
+from akgentic.core.messages import Message
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -34,11 +34,11 @@ class _StubAdapter:
         self.registered = True
         self.routes_app = app
 
-    def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
+    def wrap_ws_event(self, event: Message) -> WrappedWsEvent:
         return WrappedWsEvent(
             payload=UnknownPayload(
                 type="stub",
-                data={"wrapped": True, "sequence": event.sequence},
+                data={"wrapped": True},
             ),
         )
 
@@ -150,7 +150,7 @@ class TestLoadFrontendAdapter:
             def register_routes(self, app: FastAPI) -> None:
                 pass
 
-            def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
+            def wrap_ws_event(self, event: Message) -> WrappedWsEvent:
                 return WrappedWsEvent(
                     payload=UnknownPayload(type="stub", data={}),
                 )

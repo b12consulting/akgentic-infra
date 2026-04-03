@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from akgentic.core.messages import Message
 from akgentic.infra.server.routes.frontend_adapter import WrappedWsEvent
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.router import (
     auth_router,
@@ -25,7 +26,6 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1.router import (
     team_configs_router,
 )
 from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import wrap_event
-from akgentic.team.models import PersistedEvent
 
 __all__ = ["AngularV1Adapter"]
 
@@ -52,6 +52,6 @@ class AngularV1Adapter:
         app.include_router(state_update_router)
         app.include_router(auth_router)
 
-    def wrap_ws_event(self, event: PersistedEvent) -> WrappedWsEvent:
-        """Translate a V2 persisted event into a V1 WebSocket envelope."""
+    def wrap_ws_event(self, event: Message) -> WrappedWsEvent:
+        """Translate a V2 message into a V1 WebSocket envelope."""
         return wrap_event(event)

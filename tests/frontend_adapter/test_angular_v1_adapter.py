@@ -10,7 +10,6 @@ import uuid
 from datetime import UTC, datetime
 
 from akgentic.core.messages.message import UserMessage
-from akgentic.team.models import PersistedEvent
 from fastapi import FastAPI
 
 from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter, WrappedWsEvent
@@ -31,20 +30,6 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
 
 _NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
 _TEAM_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-
-
-def _make_persisted_event(
-    event: UserMessage,
-    team_id: uuid.UUID = _TEAM_ID,
-    sequence: int = 1,
-) -> PersistedEvent:
-    """Create a PersistedEvent fixture."""
-    return PersistedEvent(
-        team_id=team_id,
-        sequence=sequence,
-        event=event,
-        timestamp=_NOW,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +191,7 @@ class TestAngularV1Adapter:
         """wrap_ws_event returns a WrappedWsEvent with payload."""
         adapter = AngularV1Adapter()
         msg = UserMessage(content="hello")
-        event = _make_persisted_event(msg)
-        result = adapter.wrap_ws_event(event)
+        result = adapter.wrap_ws_event(msg)
         assert isinstance(result, WrappedWsEvent)
         assert hasattr(result.payload, "type")
 
