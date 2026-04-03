@@ -202,7 +202,7 @@ def wrap_event(msg: Message) -> WrappedWsEvent:
         A ``_DualFormatWsEvent`` containing both V1 payload (for Angular)
         and raw V2 event data (for CLI and other V2 clients).
     """
-    timestamp = msg.timestamp.isoformat()
+    timestamp = msg.timestamp.isoformat() if msg.timestamp else ""
     envelope_type = _classify_envelope_type(msg)
 
     payload: MessagePayload | StatePayload | ToolUpdatePayload | LlmContextPayload | ErrorPayload
