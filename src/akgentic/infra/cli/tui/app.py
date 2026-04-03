@@ -13,6 +13,7 @@ from textual.containers import Container, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Static
 
+from akgentic.core.messages.message import Message
 from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.colors import AgentColorRegistry
@@ -343,8 +344,10 @@ class ChatApp(App[None]):
 
         displayed = False
         for evt in events:
+            if not isinstance(evt.event, Message):
+                continue
             widget = self._event_router.to_widget(
-                evt.model_dump(), self._color_registry
+                evt.event, self._color_registry
             )
             if widget is not None:
                 widget.add_class("history")

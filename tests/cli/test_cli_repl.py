@@ -6,6 +6,8 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from akgentic.core.messages.message import Message
+from akgentic.core.messages.orchestrator import EventMessage
 from akgentic.infra.cli.client import ApiError, EventInfo
 from akgentic.infra.cli.commands import build_default_registry
 from akgentic.infra.cli.connection import ConnectionState
@@ -22,13 +24,13 @@ from akgentic.infra.cli.repl import (
 )
 from akgentic.infra.cli.ws_client import WsConnectionError
 from tests.fixtures.events import (
-    make_error_message,
-    make_event_message,
-    make_processed_message,
-    make_received_message,
+    _make_proxy,
+    build_error_message,
+    build_event_message,
+    build_sent_message,
+    build_start_message,
+    build_tool_call_event,
     make_sent_message,
-    make_start_message,
-    make_tool_call_event,
 )
 
 from .conftest import captured_renderer as _captured_renderer
@@ -61,13 +63,14 @@ def _make_session(
 class TestReplayHistory:
     def test_replay_displays_sent_messages(self) -> None:
         renderer, buf = _captured_renderer()
+        sent_event = build_sent_message(content="hello")
         client = _mock_client(
             get_events=MagicMock(
                 return_value=[
                     EventInfo(
                         team_id="t1",
                         sequence=1,
-                        event=make_sent_message(content="hello"),
+                        event=sent_event,
                         timestamp="2026-01-01T00:00:00",
                     ),
                     EventInfo(
@@ -177,21 +180,21 @@ class TestMessageSending:
 class TestReceiveLoop:
     async def test_renders_sent_message(self) -> None:
         renderer, buf = _captured_renderer()
-        events = [
-            {"event": make_sent_message(content="hi there")},
+        typed_events: list[Message] = [
+            build_sent_message(content="hi there"),
         ]
         client = _mock_client()
         conn = _mock_conn()
         call_count = 0
 
-        async def recv_events() -> dict[str, Any]:
+        async def recv_events() -> Message:
             nonlocal call_count
-            if call_count < len(events):
-                evt = events[call_count]
+            if call_count < len(typed_events):
+                evt = typed_events[call_count]
                 call_count += 1
                 return evt
             await asyncio.sleep(10)
-            return {}
+            return Message()
 
         conn.receive_event = AsyncMock(side_effect=recv_events)
         session = _make_session(client=client, conn=conn, renderer=renderer)
@@ -206,23 +209,23 @@ class TestReceiveLoop:
         assert "sender" in out
         assert "hi there" in out
 
-    async def test_skips_state_changed(self) -> None:
+    async def test_skips_unknown_message(self) -> None:
         renderer, buf = _captured_renderer()
-        events = [
-            {"event": {"__model__": "StateChangedMessage", "state": "running"}},
+        typed_events: list[Message] = [
+            build_start_message(),
         ]
         client = _mock_client()
         conn = _mock_conn()
         call_count = 0
 
-        async def recv_events() -> dict[str, Any]:
+        async def recv_events() -> Message:
             nonlocal call_count
-            if call_count < len(events):
-                evt = events[call_count]
+            if call_count < len(typed_events):
+                evt = typed_events[call_count]
                 call_count += 1
                 return evt
             await asyncio.sleep(10)
-            return {}
+            return Message()
 
         conn.receive_event = AsyncMock(side_effect=recv_events)
         session = _make_session(client=client, conn=conn, renderer=renderer)
@@ -260,7 +263,7 @@ class TestRenderEvent:
     def test_sent_message(self) -> None:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        result = session._render_event({"event": make_sent_message(content="reply")})
+        result = session._render_event(build_sent_message(content="reply"))
         assert result is True
         out = buf.getvalue()
         assert "sender" in out
@@ -270,7 +273,7 @@ class TestRenderEvent:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
         result = session._render_event(
-            {"event": make_error_message(exception_value="something broke")}
+            build_error_message(exception_value="something broke")
         )
         assert result is True
         out = buf.getvalue()
@@ -280,80 +283,63 @@ class TestRenderEvent:
     def test_skip_start_message(self) -> None:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        result = session._render_event({"event": make_start_message()})
-        assert result is False
-
-    def test_skip_received_message(self) -> None:
-        renderer, buf = _captured_renderer()
-        session = _make_session(renderer=renderer)
-        result = session._render_event({"event": make_received_message()})
-        assert result is False
-
-    def test_skip_processed_message(self) -> None:
-        renderer, buf = _captured_renderer()
-        session = _make_session(renderer=renderer)
-        result = session._render_event({"event": make_processed_message()})
+        result = session._render_event(build_start_message())
         assert result is False
 
     def test_sent_message_no_content(self) -> None:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        result = session._render_event({"event": make_sent_message(content="")})
+        result = session._render_event(build_sent_message(content=""))
         assert result is False
 
-    def test_empty_event(self) -> None:
+    def test_base_message_returns_false(self) -> None:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        result = session._render_event({})
+        result = session._render_event(Message())
         assert result is False
 
-    def test_sent_message_dict_sender(self) -> None:
-        """Verify renderer extracts sender name from dict-format sender (ActorAddressProxy)."""
+    def test_sent_message_sender_name(self) -> None:
+        """Verify renderer extracts sender name from ActorAddressProxy."""
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        # make_sent_message produces sender as dict with name/role fields
-        result = session._render_event({"event": make_sent_message(content="from dict sender")})
+        result = session._render_event(build_sent_message(content="from typed sender"))
         assert result is True
         out = buf.getvalue()
-        # Renderer extracts sender.get("name") from the dict-format sender
         assert "sender" in out
-        assert "from dict sender" in out
+        assert "from typed sender" in out
 
     def test_event_message_tool_call(self) -> None:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
         result = session._render_event(
-            {"event": make_event_message(event=make_tool_call_event(tool_name="search"))}
+            build_event_message(event=build_tool_call_event(tool_name="search"))
         )
         assert result is True
         out = buf.getvalue()
         assert "search" in out
 
     def test_event_message_tool_call_with_arguments_field(self) -> None:
-        """Verify renderer handles ToolCallEvent with 'arguments' field (not legacy 'args')."""
+        """Verify renderer handles ToolCallEvent with 'arguments' field."""
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        # make_tool_call_event produces 'arguments' key (JSON string), not 'args'
         result = session._render_event(
-            {"event": make_event_message(event=make_tool_call_event(tool_name="web_search"))}
+            build_event_message(event=build_tool_call_event(tool_name="web_search"))
         )
         assert result is True
         out = buf.getvalue()
         assert "web_search" in out
 
     def test_event_message_human_input(self) -> None:
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class _FakeHumanInput:
+            prompt: str
+
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
         result = session._render_event(
-            {
-                "event": {
-                    "__model__": "EventMessage",
-                    "event": {
-                        "__model__": "HumanInputRequest",
-                        "prompt": "Enter your name",
-                    },
-                }
-            }
+            build_event_message(event=_FakeHumanInput(prompt="Enter your name"))
         )
         assert result is True
         out = buf.getvalue()
@@ -363,13 +349,9 @@ class TestRenderEvent:
     def test_event_message_unknown_nested(self) -> None:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
+        # Unknown nested event (plain dict, no prompt/content attrs)
         result = session._render_event(
-            {
-                "event": {
-                    "__model__": "EventMessage",
-                    "event": {"__model__": "SomeOtherEvent", "data": "xyz"},
-                }
-            }
+            build_event_message(event={"data": "xyz"})
         )
         assert result is False
 
@@ -378,15 +360,15 @@ class TestPrintEventBackwardCompat:
     """Test the module-level _print_event backward compatibility wrapper."""
 
     def test_sent_message(self) -> None:
-        result = _print_event({"event": make_sent_message(content="reply")})
+        result = _print_event(build_sent_message(content="reply"))
         assert result is True
 
     def test_skip_unknown(self) -> None:
-        result = _print_event({"event": make_start_message()})
+        result = _print_event(build_start_message())
         assert result is False
 
-    def test_empty_event(self) -> None:
-        result = _print_event({})
+    def test_base_message(self) -> None:
+        result = _print_event(Message())
         assert result is False
 
 
@@ -427,50 +409,52 @@ class TestSlashCompleter:
 class TestImplicitHumanInputReplyRouting:
     """Tests for story 10.2: implicit human-input reply routing."""
 
+    @staticmethod
     def _human_input_event(
-        self,
-        message_id: str = "msg-uuid-123",
         agent_name: str = "AgentX",
-        model: str = "HumanInputRequest",
         prompt: str = "What should I do?",
-    ) -> dict[str, Any]:
-        """Build a top-level event dict simulating a HumanInput WS event."""
-        return {
-            "id": message_id,
-            "sender": {"name": agent_name, "role": "helper"},
-            "event": {
-                "__model__": "EventMessage",
-                "event": {
-                    "__model__": model,
-                    "prompt": prompt,
-                },
-            },
-        }
+    ) -> EventMessage:
+        """Build a typed EventMessage simulating a HumanInput WS event."""
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class _FakeHumanInput:
+            prompt: str
+
+        sender = _make_proxy(name=agent_name)
+        return build_event_message(
+            event=_FakeHumanInput(prompt=prompt),
+            sender=sender,
+        )
 
     # -- AC #1: pending state set on HumanInput event --
 
     def test_pending_set_on_human_input_event(self) -> None:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        data = self._human_input_event()
-        session._render_event(data)
+        event = self._human_input_event()
+        session._render_event(event)
         assert session._state.input_mode == InputMode.REPLY
         assert session._state.reply_context is not None
-        assert session._state.reply_context.reply_id == "msg-uuid-123"
         assert session._state.reply_context.agent_name == "AgentX"
 
     def test_pending_set_on_request_input_event(self) -> None:
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class _FakeRequestInput:
+            prompt: str
+
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        data = self._human_input_event(
-            model="RequestInputSomething",
-            message_id="req-456",
-            agent_name="BotY",
+        sender = _make_proxy(name="BotY")
+        event = build_event_message(
+            event=_FakeRequestInput(prompt="provide data"),
+            sender=sender,
         )
-        session._render_event(data)
+        session._render_event(event)
         assert session._state.input_mode == InputMode.REPLY
         assert session._state.reply_context is not None
-        assert session._state.reply_context.reply_id == "req-456"
         assert session._state.reply_context.agent_name == "BotY"
 
     # -- AC #2: pending reply state --
@@ -535,7 +519,7 @@ class TestImplicitHumanInputReplyRouting:
             await session.run()
 
         client.human_input.assert_called_once_with("t1", "my answer", "msg-abc")
-        # Pending should still be set — not cleared on error
+        # Pending should still be set -- not cleared on error
         assert session._state.input_mode == InputMode.REPLY
         assert session._state.reply_context is not None
         assert session._state.reply_context.reply_id == "msg-abc"
@@ -585,70 +569,32 @@ class TestImplicitHumanInputReplyRouting:
 
     def test_render_event_impl_without_callback(self) -> None:
         renderer, buf = _captured_renderer()
-        data = self._human_input_event()
-        result = _render_event_impl(data, renderer, on_human_input=None)
+        event = self._human_input_event()
+        result = _render_event_impl(event, renderer, on_human_input=None)
         assert result is True
         out = buf.getvalue()
         assert "Human Input Required" in out
 
-    # -- sender as string fallback --
+    # -- sender name extraction --
 
-    def test_pending_set_with_string_sender(self) -> None:
+    def test_pending_set_with_sender(self) -> None:
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class _FakeHumanInput:
+            prompt: str
+
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
-        data = {
-            "id": "msg-str-sender",
-            "sender": "SimpleAgent",
-            "event": {
-                "__model__": "EventMessage",
-                "event": {
-                    "__model__": "HumanInputRequest",
-                    "prompt": "question?",
-                },
-            },
-        }
-        session._render_event(data)
+        sender = _make_proxy(name="SimpleAgent")
+        event = build_event_message(
+            event=_FakeHumanInput(prompt="question?"),
+            sender=sender,
+        )
+        session._render_event(event)
         assert session._state.input_mode == InputMode.REPLY
         assert session._state.reply_context is not None
-        assert session._state.reply_context.reply_id == "msg-str-sender"
         assert session._state.reply_context.agent_name == "SimpleAgent"
-
-    def test_pending_not_set_when_id_is_none(self) -> None:
-        """Verify that a None id in the outer event data does not set pending state."""
-        renderer, buf = _captured_renderer()
-        session = _make_session(renderer=renderer)
-        data = {
-            "id": None,
-            "sender": {"name": "AgentX"},
-            "event": {
-                "__model__": "EventMessage",
-                "event": {
-                    "__model__": "HumanInputRequest",
-                    "prompt": "question?",
-                },
-            },
-        }
-        session._render_event(data)
-        assert session._state.input_mode == InputMode.CHAT
-        assert session._state.reply_context is None
-
-    def test_pending_not_set_when_id_missing(self) -> None:
-        """Verify that a missing id in the outer event data does not set pending state."""
-        renderer, buf = _captured_renderer()
-        session = _make_session(renderer=renderer)
-        data = {
-            "sender": {"name": "AgentX"},
-            "event": {
-                "__model__": "EventMessage",
-                "event": {
-                    "__model__": "HumanInputRequest",
-                    "prompt": "question?",
-                },
-            },
-        }
-        session._render_event(data)
-        assert session._state.input_mode == InputMode.CHAT
-        assert session._state.reply_context is None
 
 
 

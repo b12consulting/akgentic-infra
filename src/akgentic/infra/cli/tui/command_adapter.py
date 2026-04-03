@@ -13,7 +13,10 @@ from akgentic.infra.cli.commands import CommandRegistry
 from akgentic.infra.cli.renderers import RichRenderer
 
 if TYPE_CHECKING:
+    from akgentic.infra.cli.client import EventInfo
+    from akgentic.infra.cli.event_router import EventRouter
     from akgentic.infra.cli.tui.app import ChatApp
+    from akgentic.infra.cli.tui.colors import AgentColorRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -434,20 +437,12 @@ class TuiCommandAdapter:
 
     async def _handle_history(self, args: str, app: ChatApp) -> bool:
         """Handle /history by fetching events and mounting them as TUI widgets."""
-        limit = 20
-        if args.strip():
-            try:
-                limit = int(args.strip())
-            except ValueError:
-                await self._mount_system(
-                    app, "Usage: /history [N] — N must be a positive integer."
-                )
-                return True
-            if limit <= 0:
-                await self._mount_system(
-                    app, "Usage: /history [N] — N must be a positive integer."
-                )
-                return True
+        limit = self._parse_history_limit(args)
+        if limit is None:
+            await self._mount_system(
+                app, "Usage: /history [N] — N must be a positive integer."
+            )
+            return True
 
         client = app._client  # noqa: SLF001
         if client is None:
@@ -469,22 +464,49 @@ class TuiCommandAdapter:
             await self._mount_system(app, "No event router available for history rendering.")
             return True
 
-        from textual.containers import VerticalScroll
-
-        conversation = app.query_one("#conversation", VerticalScroll)
-        event_dicts = [e.model_dump() for e in events]
-        displayed = 0
-        for evt in event_dicts[-limit:]:
-            widget = event_router.to_widget(evt, color_registry)
-            if widget is not None:
-                await conversation.mount(widget)
-                widget.scroll_visible(animate=False)
-                displayed += 1
-
+        displayed = await self._render_history_events(
+            app, events[-limit:], event_router, color_registry
+        )
         if displayed == 0:
             await self._mount_system(app, "No displayable history events found.")
 
         return True
+
+    @staticmethod
+    def _parse_history_limit(args: str) -> int | None:
+        """Parse the optional limit argument for /history. Returns None on invalid input."""
+        stripped = args.strip()
+        if not stripped:
+            return 20
+        try:
+            value = int(stripped)
+        except ValueError:
+            return None
+        return value if value > 0 else None
+
+    @staticmethod
+    async def _render_history_events(
+        app: ChatApp,
+        events: list[EventInfo],
+        event_router: EventRouter,
+        color_registry: AgentColorRegistry,
+    ) -> int:
+        """Render history events as TUI widgets. Returns count of displayed widgets."""
+        from textual.containers import VerticalScroll
+
+        from akgentic.core.messages.message import Message
+
+        conversation = app.query_one("#conversation", VerticalScroll)
+        displayed = 0
+        for e in events:
+            if not isinstance(e.event, Message):
+                continue
+            widget = event_router.to_widget(e.event, color_registry)
+            if widget is not None:
+                await conversation.mount(widget)
+                widget.scroll_visible(animate=False)
+                displayed += 1
+        return displayed
 
     async def _mount_system(self, app: ChatApp, text: str) -> None:
         """Mount a SystemMessage widget in the conversation area."""

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import websockets.exceptions
 
+from akgentic.core.messages.message import Message
 from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
 
 
@@ -144,23 +145,87 @@ class TestConnect:
 
 
 class TestReceiveEvent:
-    async def test_receive_json(self) -> None:
-        event = {"__model__": "SentMessage", "content": "hello"}
+    async def test_receive_json_returns_message(self) -> None:
+        """receive_event() deserializes JSON string into a typed Message."""
+        raw = {"__model__": "SomeModel", "data": "hello"}
         mock_ws = AsyncMock()
-        mock_ws.recv = AsyncMock(return_value=json.dumps(event))
+        mock_ws.recv = AsyncMock(return_value=json.dumps(raw))
+        mock_msg = MagicMock(spec=Message)
         client = WsClient("http://localhost:8000", "t1")
         client._ws = mock_ws
-        result = await client.receive_event()
-        assert result == event
+        with patch(
+            "akgentic.infra.cli.ws_client.deserialize_object",
+            return_value=mock_msg,
+        ) as mock_deser:
+            result = await client.receive_event()
+        assert result is mock_msg
+        mock_deser.assert_called_once_with(raw)
 
-    async def test_receive_bytes(self) -> None:
-        event = {"__model__": "SentMessage", "content": "hi"}
+    async def test_receive_bytes_returns_message(self) -> None:
+        """receive_event() handles bytes input and returns typed Message."""
+        raw = {"__model__": "SomeModel", "data": "hi"}
         mock_ws = AsyncMock()
-        mock_ws.recv = AsyncMock(return_value=json.dumps(event).encode("utf-8"))
+        mock_ws.recv = AsyncMock(return_value=json.dumps(raw).encode("utf-8"))
+        mock_msg = MagicMock(spec=Message)
         client = WsClient("http://localhost:8000", "t1")
         client._ws = mock_ws
-        result = await client.receive_event()
-        assert result == event
+        with patch(
+            "akgentic.infra.cli.ws_client.deserialize_object",
+            return_value=mock_msg,
+        ):
+            result = await client.receive_event()
+        assert result is mock_msg
+
+    async def test_v1_envelope_unwraps_event_key(self) -> None:
+        """V1 dual-format envelope: extracts 'event' dict before deserializing."""
+        inner = {"__model__": "FQN.SentMessage", "content": "hi"}
+        envelope = {"payload": {"type": "v1-stuff"}, "event": inner}
+        mock_ws = AsyncMock()
+        mock_ws.recv = AsyncMock(return_value=json.dumps(envelope))
+        mock_msg = MagicMock(spec=Message)
+        client = WsClient("http://localhost:8000", "t1")
+        client._ws = mock_ws
+        with patch(
+            "akgentic.infra.cli.ws_client.deserialize_object",
+            return_value=mock_msg,
+        ) as mock_deser:
+            result = await client.receive_event()
+        assert result is mock_msg
+        mock_deser.assert_called_once_with(inner)
+
+    async def test_deserialization_failure_skips_event(self) -> None:
+        """ValueError from deserialize_object skips event and retries."""
+        bad_raw = {"__model__": "Unknown"}
+        good_raw = {"__model__": "Good"}
+        mock_ws = AsyncMock()
+        mock_ws.recv = AsyncMock(
+            side_effect=[json.dumps(bad_raw), json.dumps(good_raw)]
+        )
+        mock_msg = MagicMock(spec=Message)
+        client = WsClient("http://localhost:8000", "t1")
+        client._ws = mock_ws
+        with patch(
+            "akgentic.infra.cli.ws_client.deserialize_object",
+            side_effect=[ValueError("unknown"), mock_msg],
+        ):
+            result = await client.receive_event()
+        assert result is mock_msg
+
+    async def test_non_message_result_skips_event(self) -> None:
+        """If deserialize_object returns a non-Message, event is skipped."""
+        mock_ws = AsyncMock()
+        mock_ws.recv = AsyncMock(
+            side_effect=[json.dumps({"a": 1}), json.dumps({"b": 2})]
+        )
+        mock_msg = MagicMock(spec=Message)
+        client = WsClient("http://localhost:8000", "t1")
+        client._ws = mock_ws
+        with patch(
+            "akgentic.infra.cli.ws_client.deserialize_object",
+            side_effect=["not-a-message", mock_msg],
+        ):
+            result = await client.receive_event()
+        assert result is mock_msg
 
     async def test_receive_not_connected_raises(self) -> None:
         client = WsClient("http://localhost:8000", "t1")

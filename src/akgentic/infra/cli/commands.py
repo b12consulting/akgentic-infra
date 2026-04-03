@@ -260,11 +260,18 @@ async def _history_handler(args: str, session: ChatSession) -> None:
         session.renderer.render_error(f"Error fetching history: {exc.detail}")
         return
 
-    # Convert EventInfo models to dicts for the rendering pipeline
-    event_dicts = [e.model_dump() for e in events]
-    displayable = [e for e in event_dicts if _is_displayable(e)]
+    # Pass typed Message instances to the rendering pipeline
+    from akgentic.core.messages.message import Message
+    from akgentic.core.messages.orchestrator import ErrorMessage, EventMessage, SentMessage
+
+    displayable = [
+        e.event
+        for e in events
+        if isinstance(e.event, (SentMessage, ErrorMessage, EventMessage))
+    ]
     for evt in displayable[-limit:]:
-        session._render_event(evt)
+        if isinstance(evt, Message):
+            session._render_event(evt)
 
 
 def _is_displayable(data: dict[str, Any]) -> bool:
