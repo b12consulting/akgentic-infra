@@ -140,6 +140,10 @@ class TeamService:
             raise ValueError(msg)
         self._services.worker_handle.stop_team(team_id)
         self._cache.remove(team_id)
+        try:
+            self._services.event_stream.remove(team_id)
+        except Exception:
+            logger.debug("event_stream.remove() on stop — stream may already be removed")
         logger.info("Team stopped: team_id=%s", team_id)
 
     def restore_team(self, team_id: uuid.UUID) -> Process:

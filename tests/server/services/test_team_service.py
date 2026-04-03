@@ -88,6 +88,58 @@ def test_delete_team_not_found_raises(team_service: TeamService) -> None:
 # ---------------------------------------------------------------------------
 
 
+class TestStopTeam:
+    """Story 13.9 AC1: stop_team cleans up the event stream."""
+
+    def test_stop_team_removes_event_stream(self, team_service: TeamService) -> None:
+        """AC1: stop_team calls event_stream.remove(team_id)."""
+        from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
+        from akgentic.infra.protocols.event_stream import StreamClosed
+
+        process = team_service.create_team("test-team", user_id="anonymous")
+        team_id = process.team_id
+
+        event_stream = team_service.get_event_stream()
+        assert isinstance(event_stream, LocalEventStream)
+
+        # Verify stream has events (team creation generates StartMessage events)
+        events = event_stream.read_from(team_id)
+        assert len(events) > 0
+
+        team_service.stop_team(team_id)
+
+        # After stop, subscribing should raise StreamClosed or return empty
+        # The stream was removed — read_from returns [] for non-existent streams
+        events_after = event_stream.read_from(team_id)
+        assert events_after == []
+
+    def test_stop_team_errors_are_non_fatal(self, team_service: TeamService) -> None:
+        """AC1: event_stream.remove() failure does not prevent stop."""
+        process = team_service.create_team("test-team", user_id="anonymous")
+        team_id = process.team_id
+
+        # Replace event_stream.remove with one that raises
+        original_remove = team_service._services.event_stream.remove
+        call_count = 0
+
+        def failing_remove(tid: uuid.UUID) -> None:
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("simulated failure")
+
+        team_service._services.event_stream.remove = failing_remove  # type: ignore[assignment]
+        try:
+            team_service.stop_team(team_id)  # Should not raise
+            assert call_count == 1
+        finally:
+            team_service._services.event_stream.remove = original_remove  # type: ignore[assignment]
+
+        # Team should still be stopped
+        stopped = team_service.get_team(team_id)
+        assert stopped is not None
+        assert stopped.status == TeamStatus.STOPPED
+
+
 class TestTeamServiceImports:
     """Verify TeamService module does not import actor internals."""
 
