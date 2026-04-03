@@ -85,9 +85,6 @@ class _TuiSession:
         """No-op stub -- TUI uses EventRouter.to_widget() instead."""
         return False
 
-    async def replay_history_async(self) -> None:
-        """No-op stub -- TUI replays via stream_events()."""
-
 
 class _MinimalState:
     """Minimal state object exposing team_id for command handlers."""

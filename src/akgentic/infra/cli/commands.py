@@ -402,7 +402,7 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
 
     session.team_id = new_team_id
 
-    # Cancel old receive loop before replaying history
+    # Cancel old receive loop before starting new one
     if session._receive_task is not None:
         session._receive_task.cancel()
         try:
@@ -410,10 +410,9 @@ async def _switch_handler(args: str, session: ChatSession) -> None:
         except asyncio.CancelledError:
             pass
 
-    # Refresh team info for status bar and replay history
+    # Refresh team info for status bar
     session._fetch_team_info()
     session.renderer.render_border()
-    await session.replay_history_async()
 
     session._receive_task = asyncio.create_task(session._receive_loop())
 

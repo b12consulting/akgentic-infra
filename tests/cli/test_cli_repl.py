@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from akgentic.infra.cli.client import ApiError, EventInfo
+from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.commands import build_default_registry
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.formatters import OutputFormat
@@ -56,54 +56,6 @@ def _make_session(
     if conn is None:
         conn = _mock_conn()
     return ChatSession(client, conn, "t1", OutputFormat.table, renderer=renderer)
-
-
-class TestReplayHistory:
-    def test_replay_displays_sent_messages(self) -> None:
-        renderer, buf = _captured_renderer()
-        client = _mock_client(
-            get_events=MagicMock(
-                return_value=[
-                    EventInfo(
-                        team_id="t1",
-                        sequence=1,
-                        event=make_sent_message(content="hello"),
-                        timestamp="2026-01-01T00:00:00",
-                    ),
-                    EventInfo(
-                        team_id="t1",
-                        sequence=2,
-                        event={
-                            "__model__": "StateChangedMessage",
-                            "state": "running",
-                        },
-                        timestamp="2026-01-01T00:00:00",
-                    ),
-                ]
-            )
-        )
-        session = _make_session(client=client, renderer=renderer)
-        session._replay_history()
-        out = buf.getvalue()
-        assert "sender" in out
-        assert "hello" in out
-        assert "history" in out  # separator
-        assert "StateChanged" not in out
-
-    def test_replay_no_events(self) -> None:
-        renderer, buf = _captured_renderer()
-        client = _mock_client()
-        session = _make_session(client=client, renderer=renderer)
-        session._replay_history()
-        out = buf.getvalue()
-        assert "history" not in out
-
-    def test_replay_handles_error(self) -> None:
-        renderer, buf = _captured_renderer()
-        client = _mock_client()
-        client.get_events.side_effect = ApiError(500, "test error")
-        session = _make_session(client=client, renderer=renderer)
-        session._replay_history()  # Should not raise
 
 
 class TestQuitHandling:

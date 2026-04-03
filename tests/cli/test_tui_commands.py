@@ -462,7 +462,7 @@ async def test_history_no_events_mounts_message() -> None:
         await pilot.pause()
         await pilot.pause()
 
-        # get_events called by both _replay_history and /history command
+        # get_events called by /history command
         assert client.get_events.call_count >= 1
         msgs = pilot.app.query(SystemMessage)
         found = any("No displayable" in m._content for m in msgs)

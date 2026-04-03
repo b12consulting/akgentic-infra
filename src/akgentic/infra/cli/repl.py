@@ -107,11 +107,10 @@ class ChatSession:
             pass  # Keep defaults "(unknown)" and "?"
 
     async def run(self) -> None:
-        """Main REPL loop: connect WS, replay history, read input, stream events."""
+        """Main REPL loop: connect WS, read input, stream events."""
         async with self.conn:
             self._fetch_team_info()
             self.renderer.render_border()
-            self._replay_history()
 
             self._receive_task = asyncio.create_task(self._receive_loop())
             try:
@@ -255,32 +254,6 @@ class ChatSession:
                 self.client.send_message(self._state.team_id, msg)
             except ApiError:
                 self.renderer.render_error(f"Failed to send buffered message: {msg[:50]}")
-
-    def _replay_history(self) -> None:
-        """Fetch and display past events before starting the REPL."""
-        try:
-            events = self.client.get_events(self._state.team_id)
-        except ApiError:
-            return
-        self._display_events([e.model_dump() for e in events])
-
-    async def replay_history_async(self) -> None:
-        """Async version of _replay_history — uses run_in_executor to avoid blocking."""
-        loop = asyncio.get_running_loop()
-        try:
-            events = await loop.run_in_executor(None, self.client.get_events, self._state.team_id)
-        except ApiError:
-            return
-        self._display_events([e.model_dump() for e in events])
-
-    def _display_events(self, events: list[dict[str, Any]]) -> None:
-        """Render a list of events, adding a history separator if any were displayed."""
-        displayed = False
-        for evt in events:
-            if self._render_event(evt):
-                displayed = True
-        if displayed:
-            self.renderer.render_history_separator()
 
     def _render_event(self, data: dict[str, Any]) -> bool:
         """Format and render a single event. Returns True if something was rendered."""
