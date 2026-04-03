@@ -35,34 +35,19 @@ class EventStreamSubscriber:
         self._event_stream = event_stream
         self._seen_teams: set[uuid.UUID] = set()
         self._lock = threading.Lock()
-        self._restoring = False
         logger.debug("EventStreamSubscriber initialized")
 
-    def set_restoring(self, restoring: bool) -> None:  # noqa: FBT001
-        """Toggle restore-replay guard.
-
-        When ``True``, ``on_message()`` silently skips all events so that
-        the restore replay does not flood the ephemeral EventStream with
-        historical events that are already available via the EventStore.
-
-        Args:
-            restoring: Whether a restore replay is in progress.
-        """
-        self._restoring = restoring
+    def set_restoring(self, restoring: bool) -> None:  # noqa: FBT001, ARG002
+        """No-op — EventStream must be repopulated during restore replay."""
 
     def on_message(self, msg: Message) -> None:
         """Forward message directly to the event stream.
 
         Messages with ``team_id=None`` are silently skipped (logged at DEBUG).
-        All messages are skipped during restore replay (``_restoring=True``).
 
         Args:
             msg: Orchestrator message.
         """
-        if self._restoring:
-            logger.debug("EventStreamSubscriber: skipping message during restore replay")
-            return
-
         team_id = msg.team_id
         if team_id is None:
             logger.debug("EventStreamSubscriber: skipping message with team_id=None")

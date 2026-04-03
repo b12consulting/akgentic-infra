@@ -1,7 +1,7 @@
 """Integration tests -- EventStream population during team lifecycle.
 
 AC5: stream populated during normal operation
-AC6: stream empty after restore (set_restoring guard prevents replay flooding)
+AC6: stream repopulated on restore (replay refills stream for WS clients)
 AC7: stream removed on team stop (via TeamService.stop_team)
 AC8: stream removed on team delete (safety net in TeamService.delete_team)
 
@@ -74,16 +74,15 @@ class TestEventStreamLifecycle:
         events_after = event_stream.read_from(team_id)
         assert events_after == []
 
-    def test_stream_empty_after_restore(
+    def test_stream_repopulated_on_restore(
         self,
         team_service: TeamService,
         event_stream: LocalEventStream,
     ) -> None:
-        """AC6: restoring a team does NOT repopulate the EventStream with historical events.
+        """AC6: restoring a team repopulates the EventStream from persisted events.
 
-        The set_restoring() guard prevents replay flooding. Only new live events
-        after restore should appear in the stream. Historical events are available
-        via REST (EventStore) only.
+        The restore replay feeds events through EventStreamSubscriber (which has
+        no set_restoring guard) so the stream is refilled for WS cursor-based replay.
         """
         process = team_service.create_team("test-team", "test-user")
         team_id = process.team_id
@@ -92,20 +91,23 @@ class TestEventStreamLifecycle:
         time.sleep(1.0)
 
         events_before_stop = event_stream.read_from(team_id)
-        assert len(events_before_stop) > 0
+        count_before = len(events_before_stop)
+        assert count_before > 0
 
         team_service.stop_team(team_id)
 
         # Stream removed on stop
         assert event_stream.read_from(team_id) == []
 
-        # Restore team -- stream should be empty (no replay flooding)
+        # Restore team -- stream should be repopulated from persisted events
         team_service.restore_team(team_id)
         time.sleep(0.5)
 
         events_after_restore = event_stream.read_from(team_id)
-        assert events_after_restore == [], (
-            f"Expected empty stream after restore, got {len(events_after_restore)} events"
+        assert len(events_after_restore) > 0, "Expected events after restore"
+        assert len(events_after_restore) >= count_before, (
+            f"Restored stream should have at least {count_before} events, "
+            f"got {len(events_after_restore)}"
         )
 
         # Cleanup
