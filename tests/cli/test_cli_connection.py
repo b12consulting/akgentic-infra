@@ -348,7 +348,8 @@ class TestCheckHealth:
         mock_ws.ping = AsyncMock(side_effect=ConnectionError("dead"))
         cm._ws_client = mock_ws
         cm._state = ConnectionState.CONNECTED
-        cm._last_event_time = 0.0
+        # Ensure the 60s idle threshold is exceeded even on fresh CI runners
+        cm._last_event_time = time.monotonic() - 120.0
 
         cm._reconnect = AsyncMock()  # type: ignore[method-assign]
 

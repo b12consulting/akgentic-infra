@@ -1,16 +1,21 @@
 """Shared fixture factories for core and LLM event types.
 
-Each factory creates a real model/dataclass instance, then returns
-``model.model_dump()`` (Pydantic) or ``dataclasses.asdict()`` (dataclass).
-This guarantees the dict shape always matches the real serialization contract.
+Each factory creates a real model/dataclass instance. The ``make_*``
+functions return ``model.model_dump()`` dicts (for legacy / API tests).
+The ``build_*`` functions return the real typed instances (for typed
+pipeline tests).
 
 Usage::
 
-    from tests.fixtures.events import make_sent_message
+    from tests.fixtures.events import make_sent_message, build_sent_message
 
-    def test_something():
+    def test_dict_shape():
         event = make_sent_message(content="custom")
         # event is a plain dict matching SentMessage.model_dump()
+
+    def test_typed():
+        event = build_sent_message(content="custom")
+        # event is a SentMessage instance
 """
 
 from __future__ import annotations
@@ -63,16 +68,12 @@ def _make_proxy(**overrides: Any) -> ActorAddressProxy:
 
 
 # ---------------------------------------------------------------------------
-# Core event factories
+# Core event factories (dict output -- legacy)
 # ---------------------------------------------------------------------------
 
 
 def make_sent_message(**overrides: Any) -> dict[str, Any]:
-    """Create a ``SentMessage`` fixture dict from a real model instance.
-
-    The inner ``message`` defaults to a ``UserMessage`` with ``content``
-    taken from *overrides* (default ``"Hello from test"``).
-    """
+    """Create a ``SentMessage`` fixture dict from a real model instance."""
     content = overrides.pop("content", "Hello from test")
     inner = overrides.pop("message", UserMessage(content=content))
     recipient = overrides.pop("recipient", _make_proxy(name="recipient"))
@@ -134,16 +135,12 @@ def make_processed_message(**overrides: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# LLM event factories (dataclasses → dataclasses.asdict)
+# LLM event factories (dataclasses -> dataclasses.asdict)
 # ---------------------------------------------------------------------------
 
 
 def make_tool_call_event(**overrides: Any) -> dict[str, Any]:
-    """Create a ``ToolCallEvent`` fixture dict from a real dataclass instance.
-
-    Adds ``__model__`` to match the real serialization contract
-    (``akgentic.core.utils.serializer.serialize`` adds it for dataclasses).
-    """
+    """Create a ``ToolCallEvent`` fixture dict from a real dataclass instance."""
     defaults: dict[str, Any] = {
         "run_id": "run-001",
         "tool_name": "test_tool",
@@ -157,10 +154,7 @@ def make_tool_call_event(**overrides: Any) -> dict[str, Any]:
 
 
 def make_tool_return_event(**overrides: Any) -> dict[str, Any]:
-    """Create a ``ToolReturnEvent`` fixture dict from a real dataclass instance.
-
-    Adds ``__model__`` to match the real serialization contract.
-    """
+    """Create a ``ToolReturnEvent`` fixture dict from a real dataclass instance."""
     defaults: dict[str, Any] = {
         "run_id": "run-001",
         "tool_name": "test_tool",
@@ -187,3 +181,76 @@ def make_llm_usage_event(**overrides: Any) -> dict[str, Any]:
     }
     defaults.update(overrides)
     return dataclasses.asdict(LlmUsageEvent(**defaults))
+
+
+# ---------------------------------------------------------------------------
+# Typed instance factories (for typed pipeline tests)
+# ---------------------------------------------------------------------------
+
+
+def build_sent_message(**overrides: Any) -> SentMessage:
+    """Create a ``SentMessage`` typed instance."""
+    content = overrides.pop("content", "Hello from test")
+    inner = overrides.pop("message", UserMessage(content=content))
+    recipient = overrides.pop("recipient", _make_proxy(name="recipient"))
+    sender = overrides.pop("sender", _make_proxy(name="sender"))
+    defaults: dict[str, Any] = {
+        "message": inner,
+        "recipient": recipient,
+        "sender": sender,
+    }
+    defaults.update(overrides)
+    return SentMessage(**defaults)
+
+
+def build_error_message(**overrides: Any) -> ErrorMessage:
+    """Create an ``ErrorMessage`` typed instance."""
+    defaults: dict[str, Any] = {
+        "exception_type": "ValueError",
+        "exception_value": "something went wrong",
+    }
+    defaults.update(overrides)
+    return ErrorMessage(**defaults)
+
+
+def build_event_message(**overrides: Any) -> EventMessage:
+    """Create an ``EventMessage`` typed instance."""
+    defaults: dict[str, Any] = {
+        "event": overrides.pop("event", {"type": "test-event", "data": "sample"}),
+    }
+    defaults.update(overrides)
+    return EventMessage(**defaults)
+
+
+def build_start_message(**overrides: Any) -> StartMessage:
+    """Create a ``StartMessage`` typed instance."""
+    config = overrides.pop("config", BaseConfig(name="test-agent", role="tester"))
+    defaults: dict[str, Any] = {
+        "config": config,
+    }
+    defaults.update(overrides)
+    return StartMessage(**defaults)
+
+
+def build_tool_call_event(**overrides: Any) -> ToolCallEvent:
+    """Create a ``ToolCallEvent`` typed instance."""
+    defaults: dict[str, Any] = {
+        "run_id": "run-001",
+        "tool_name": "test_tool",
+        "tool_call_id": "call-001",
+        "arguments": '{"key": "value"}',
+    }
+    defaults.update(overrides)
+    return ToolCallEvent(**defaults)
+
+
+def build_tool_return_event(**overrides: Any) -> ToolReturnEvent:
+    """Create a ``ToolReturnEvent`` typed instance."""
+    defaults: dict[str, Any] = {
+        "run_id": "run-001",
+        "tool_name": "test_tool",
+        "tool_call_id": "call-001",
+        "success": True,
+    }
+    defaults.update(overrides)
+    return ToolReturnEvent(**defaults)

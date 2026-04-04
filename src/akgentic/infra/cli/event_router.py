@@ -5,48 +5,21 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from akgentic.core.messages.message import Message
+from akgentic.core.messages.orchestrator import ErrorMessage, EventMessage, SentMessage
 from akgentic.infra.cli.renderers import RichRenderer
+from akgentic.llm.event import ToolCallEvent, ToolReturnEvent
 
 if TYPE_CHECKING:
     from textual.widget import Widget
 
     from akgentic.infra.cli.tui.colors import AgentColorRegistry
 
-# Event types to display vs skip
-_DISPLAY_EVENTS = {"SentMessage", "ErrorMessage", "EventMessage"}
-
-
-def _extract_timestamp(data: dict[str, Any]) -> str | None:
-    """Extract a HH:MM timestamp from an event dict, trying multiple paths."""
-    try:
-        event = data.get("event", data)
-        if isinstance(event, str):
-            event = json.loads(event)
-        candidates: list[object] = []
-        if isinstance(event, dict):
-            msg = event.get("message", {})
-            if isinstance(msg, dict):
-                candidates.append(msg.get("timestamp"))
-            candidates.append(event.get("timestamp"))
-        candidates.append(data.get("timestamp"))
-        for raw in candidates:
-            if raw is None:
-                continue
-            try:
-                dt = datetime.fromisoformat(str(raw))
-                return dt.strftime("%H:%M")
-            except (ValueError, TypeError, OverflowError):
-                continue
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
 
 class EventRouter:
-    """Parse raw event dicts and dispatch to the renderer."""
+    """Route typed Message instances and dispatch to the renderer."""
 
     def __init__(
         self,
@@ -59,92 +32,69 @@ class EventRouter:
         self._log = logger or logging.getLogger(__name__)
         self._last_agent_color: str | None = None
 
-    def route(self, data: dict[str, Any]) -> bool:
-        """Parse, classify, and render an event. Returns True if rendered.
+    def route(self, event: Message) -> bool:
+        """Classify and render a typed event. Returns True if rendered.
 
         Malformed events are logged at DEBUG and skipped -- never raised.
         """
         try:
-            return self._route_inner(data)
-        except (KeyError, json.JSONDecodeError, TypeError) as exc:
+            if isinstance(event, SentMessage):
+                return self._handle_sent_message(event)
+            if isinstance(event, ErrorMessage):
+                return self._handle_error_message(event)
+            if isinstance(event, EventMessage):
+                return self._handle_event_message(event)
+            return False
+        except Exception as exc:  # noqa: BLE001
             self._log.debug("Malformed event skipped: %s", exc)
             return False
 
-    def _route_inner(self, data: dict[str, Any]) -> bool:
-        """Core dispatch logic -- classify by __model__ suffix and delegate."""
-        event = data.get("event", data)
-        if isinstance(event, str):
-            event = json.loads(event)
-
-        model = event.get("__model__", "")
-        short_model = model.rsplit(".", 1)[-1] if model else ""
-        if short_model not in _DISPLAY_EVENTS:
-            return False
-
-        if short_model == "ErrorMessage":
-            return self._handle_error_message(event)
-
-        if short_model == "EventMessage":
-            return self._handle_event_message(event, data)
-
-        # SentMessage
-        return self._handle_sent_message(event)
-
-    def _handle_error_message(self, event: dict[str, Any]) -> bool:
+    def _handle_error_message(self, event: ErrorMessage) -> bool:
         """Render an ErrorMessage event."""
-        content = event.get("exception_value", event.get("content", event.get("error", "")))
-        self._renderer.render_error(str(content))
+        self._renderer.render_error(event.exception_value)
         return True
 
-    def _handle_sent_message(self, event: dict[str, Any]) -> bool:
+    def _handle_sent_message(self, event: SentMessage) -> bool:
         """Render a SentMessage -- agent response with sender and content."""
-        raw_sender = event.get("sender", "agent")
-        sender = (
-            raw_sender.get("name", "agent") if isinstance(raw_sender, dict) else str(raw_sender)
-        )
-        message = event.get("message", {})
-        content = message.get("content", "") if isinstance(message, dict) else ""
+        sender_name = event.sender.name if event.sender else "agent"
+        content = getattr(event.message, "content", "")
         if content:
-            self._renderer.render_agent_message(sender, str(content))
+            self._renderer.render_agent_message(sender_name, str(content))
             return True
         return False
 
-    def _handle_event_message(self, event: dict[str, Any], outer_data: dict[str, Any]) -> bool:
+    def _handle_event_message(self, event: EventMessage) -> bool:
         """Handle EventMessage -- inspect nested event for tool calls / human input."""
-        nested = event.get("event", {})
-        if isinstance(nested, str):
-            try:
-                nested = json.loads(nested)
-            except (json.JSONDecodeError, TypeError):
-                return False
+        nested = event.event
 
-        if not isinstance(nested, dict):
-            return False
-
-        nested_model = nested.get("__model__", "")
-
-        if "ToolCallEvent" in nested_model:
+        if isinstance(nested, ToolCallEvent):
             self._handle_tool_call(nested)
             return True
 
-        if "HumanInput" in nested_model or "RequestInput" in nested_model:
-            prompt_text = str(nested.get("prompt", nested.get("content", "Input requested")))
+        if isinstance(nested, ToolReturnEvent):
+            return False
+
+        # Duck-type check for HumanInput / RequestInput
+        if hasattr(nested, "prompt") or hasattr(nested, "content"):
+            prompt_text = str(
+                getattr(nested, "prompt", None) or getattr(nested, "content", "Input requested")
+            )
             self._renderer.render_human_input_request(prompt_text)
             if self._on_human_input is not None:
-                self._notify_human_input(outer_data)
+                self._notify_human_input(event)
             return True
 
         return False
 
-    def _handle_tool_call(self, nested: dict[str, Any]) -> None:
+    def _handle_tool_call(self, tool_event: ToolCallEvent) -> None:
         """Extract and render a tool call event."""
-        tool_name = str(nested["tool_name"])
-        raw_input = nested.get("arguments", nested.get("args", nested.get("input", "")))
+        tool_name = tool_event.tool_name
+        raw_input = tool_event.arguments
         if isinstance(raw_input, dict | list):
             tool_input = json.dumps(raw_input, indent=2)
         else:
             tool_input = str(raw_input)
-        raw_output = nested.get("result")
+        raw_output = getattr(tool_event, "result", None)
         if raw_output is None:
             tool_output = None
         elif isinstance(raw_output, dict | list):
@@ -153,84 +103,62 @@ class EventRouter:
             tool_output = str(raw_output)
         self._renderer.render_tool_call(tool_name, tool_input, tool_output)
 
-    def _notify_human_input(self, outer_data: dict[str, Any]) -> None:
-        """Extract message_id and agent_name from outer event data and invoke callback."""
-        raw_id = outer_data.get("id")
+    def _notify_human_input(self, event: Message) -> None:
+        """Extract message_id and agent_name from the event and invoke callback."""
+        raw_id = str(event.id)
         if not raw_id:
             return
-        message_id = str(raw_id)
-        raw_sender = outer_data.get("sender", "Agent")
-        if isinstance(raw_sender, dict):
-            agent_name = str(raw_sender.get("name", "Agent"))
-        else:
-            agent_name = str(raw_sender)
+        sender_name = event.sender.name if event.sender else "Agent"
         if self._on_human_input is not None:
-            self._on_human_input(message_id, agent_name)
+            self._on_human_input(raw_id, sender_name)
 
     def to_widget(
         self,
-        data: dict[str, Any],
+        event: Message,
         color_registry: AgentColorRegistry,
     ) -> Widget | None:
-        """Parse a raw event dict and return the appropriate Textual widget.
+        """Parse a typed event and return the appropriate Textual widget.
 
         Returns ``None`` for unrecognized or malformed events.
         This method does NOT invoke callbacks or use the renderer -- it is
         a pure event-to-widget translation for TUI usage.
         """
         try:
-            event = data.get("event", data)
-            if isinstance(event, str):
-                event = json.loads(event)
-
-            model = event.get("__model__", "")
-            short_model = model.rsplit(".", 1)[-1] if model else ""
-            if short_model not in _DISPLAY_EVENTS:
-                return None
-
-            timestamp = _extract_timestamp(data)
-
-            if short_model == "ErrorMessage":
+            if isinstance(event, ErrorMessage):
                 return self._error_to_widget(event)
-            if short_model == "SentMessage":
-                return self._sent_to_widget(event, color_registry, timestamp)
-            if short_model == "EventMessage":
+            if isinstance(event, SentMessage):
+                return self._sent_to_widget(event, color_registry)
+            if isinstance(event, EventMessage):
                 return self._event_to_widget(event)
         except Exception as exc:  # noqa: BLE001
             self._log.debug("to_widget: malformed event skipped: %s", exc)
         return None
 
-    def _error_to_widget(self, event: dict[str, Any]) -> Widget:
+    def _error_to_widget(self, event: ErrorMessage) -> Widget:
         """Convert an ErrorMessage event to an ErrorWidget."""
         from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 
-        content = event.get("exception_value", event.get("content", event.get("error", "")))
-        return ErrorWidget(content=str(content))
+        return ErrorWidget(content=event.exception_value)
 
     def _sent_to_widget(
         self,
-        event: dict[str, Any],
+        event: SentMessage,
         color_registry: AgentColorRegistry,
-        timestamp: str | None = None,
     ) -> Widget | None:
         """Convert a SentMessage event to an AgentMessage widget."""
         from akgentic.infra.cli.tui.widgets.agent_message import AgentMessage
 
-        raw_sender = event.get("sender", "agent")
-        sender = (
-            raw_sender.get("name", "agent") if isinstance(raw_sender, dict) else str(raw_sender)
-        )
-        message = event.get("message", {})
-        content = message.get("content", "") if isinstance(message, dict) else ""
+        sender = event.sender.name if event.sender else "agent"
+        content = getattr(event.message, "content", "")
         if not content:
             return None
 
-        raw_recipient = event.get("recipient")
-        recipient: str | None = None
-        if isinstance(raw_recipient, dict):
-            recipient = raw_recipient.get("name")
-        elif isinstance(raw_recipient, str) and raw_recipient:
-            recipient = raw_recipient
+        recipient: str | None = event.recipient.name if event.recipient else None
+
+        timestamp: str | None = None
+        ts = event.message.timestamp or event.timestamp
+        if ts is not None:
+            timestamp = ts.strftime("%H:%M")
 
         color: str = color_registry.get(sender)
         self._last_agent_color = color
@@ -242,40 +170,37 @@ class EventRouter:
             recipient=recipient,
         )
 
-    def _event_to_widget(self, event: dict[str, Any]) -> Widget | None:
+    def _event_to_widget(self, event: EventMessage) -> Widget | None:
         """Convert an EventMessage event to a ToolCallWidget or HumanInputPrompt."""
-        nested = event.get("event", {})
-        if isinstance(nested, str):
-            try:
-                nested = json.loads(nested)
-            except (json.JSONDecodeError, TypeError):
-                return None
-        if not isinstance(nested, dict):
-            return None
+        nested = event.event
 
-        nested_model = nested.get("__model__", "")
-
-        if "ToolCallEvent" in nested_model:
+        if isinstance(nested, ToolCallEvent):
             return self._tool_call_to_widget(nested)
 
-        if "HumanInput" in nested_model or "RequestInput" in nested_model:
+        if isinstance(nested, ToolReturnEvent):
+            return None
+
+        # Duck-type check for HumanInput / RequestInput
+        if hasattr(nested, "prompt") or hasattr(nested, "content"):
             from akgentic.infra.cli.tui.widgets.human_input import HumanInputPrompt
 
-            prompt_text = str(nested.get("prompt", nested.get("content", "Input requested")))
+            prompt_text = str(
+                getattr(nested, "prompt", None) or getattr(nested, "content", "Input requested")
+            )
             return HumanInputPrompt(prompt_text=prompt_text)
         return None
 
-    def _tool_call_to_widget(self, nested: dict[str, Any]) -> Widget:
-        """Convert a tool call nested event to a ToolCallWidget."""
+    def _tool_call_to_widget(self, tool_event: ToolCallEvent) -> Widget:
+        """Convert a ToolCallEvent dataclass to a ToolCallWidget."""
         from akgentic.infra.cli.tui.widgets.tool_call import ToolCallWidget
 
-        tool_name = str(nested["tool_name"])
-        raw_input = nested.get("arguments", nested.get("args", nested.get("input", "")))
+        tool_name = tool_event.tool_name
+        raw_input = tool_event.arguments
         if isinstance(raw_input, dict | list):
             tool_input = json.dumps(raw_input, indent=2)
         else:
             tool_input = str(raw_input)
-        raw_output = nested.get("result")
+        raw_output = getattr(tool_event, "result", None)
         if raw_output is None:
             tool_output = None
         elif isinstance(raw_output, dict | list):

@@ -13,6 +13,7 @@ from textual.containers import Container, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Static
 
+from akgentic.core.messages.message import Message
 from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.colors import AgentColorRegistry

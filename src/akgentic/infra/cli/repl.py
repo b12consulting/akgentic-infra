@@ -13,7 +13,8 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
 from pydantic import BaseModel
 
-from akgentic.infra.cli.client import ApiClient, ApiError
+from akgentic.core.messages.message import Message
+from akgentic.infra.cli.client import ApiClient, ApiError, EventInfo
 from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.connection import ConnectionManager, ConnectionState
 from akgentic.infra.cli.event_router import EventRouter
@@ -255,7 +256,7 @@ class ChatSession:
             except ApiError:
                 self.renderer.render_error(f"Failed to send buffered message: {msg[:50]}")
 
-    def _render_event(self, data: dict[str, Any]) -> bool:
+    def _render_event(self, event: Message) -> bool:
         """Format and render a single event. Returns True if something was rendered."""
 
         def _set_pending(message_id: str, agent_name: str) -> None:
@@ -269,7 +270,7 @@ class ChatSession:
             )
 
         self._event_router._on_human_input = _set_pending
-        return self._event_router.route(data)
+        return self._event_router.route(event)
 
 
 class _SlashCompleter(Completer):
@@ -297,19 +298,19 @@ class _SlashCompleter(Completer):
 
 
 def _render_event_impl(
-    data: dict[str, Any],
+    event: Message,
     renderer: RichRenderer,
     on_human_input: Callable[[str, str], None] | None = None,
 ) -> bool:
     """Backward-compatible wrapper -- delegates to EventRouter."""
     router = EventRouter(renderer, on_human_input=on_human_input)
-    return router.route(data)
+    return router.route(event)
 
 
 _default_renderer = RichRenderer()
 _default_event_router = EventRouter(_default_renderer)
 
 
-def _print_event(data: dict[str, Any]) -> bool:
+def _print_event(event: Message) -> bool:
     """Backward-compatible module-level event printer."""
-    return _default_event_router.route(data)
+    return _default_event_router.route(event)

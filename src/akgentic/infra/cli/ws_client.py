@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import logging
+import warnings
 
 import websockets.asyncio.client
 import websockets.exceptions
+
+from akgentic.core.messages.message import Message
+from akgentic.core.utils.deserializer import deserialize_object
+
+_log = logging.getLogger(__name__)
 
 
 class WsConnectionError(Exception):
@@ -28,6 +34,7 @@ class WsClient:
         if api_key:
             self._headers.append(("Authorization", f"Bearer {api_key}"))
         self._ws: websockets.asyncio.client.ClientConnection | None = None
+        self._v1_warned: bool = False
 
     @property
     def url(self) -> str:
@@ -60,13 +67,49 @@ class WsClient:
             ) from exc
         return self
 
-    async def receive_event(self) -> dict[str, Any]:
-        """Read next JSON message from WebSocket."""
+    async def receive_event(self) -> Message:
+        """Read next JSON message from WebSocket and deserialize to a typed Message.
+
+        Returns:
+            Deserialized ``Message`` instance.
+
+        Raises:
+            RuntimeError: If not connected.
+            WsConnectionError: If deserialization fails persistently (event skipped
+                internally; this is only raised by the caller for connection issues).
+        """
         if self._ws is None:
             raise RuntimeError("Not connected")
-        raw = await self._ws.recv()
-        text = raw if isinstance(raw, str) else raw.decode("utf-8")
-        return json.loads(text)  # type: ignore[no-any-return]
+        while True:
+            raw = await self._ws.recv()
+            text = raw if isinstance(raw, str) else raw.decode("utf-8")
+            parsed = json.loads(text)
+
+            # DEPRECATED: V1 dual-format envelope unwrapping — remove when
+            # AngularV1Adapter is retired.
+            if isinstance(parsed, dict) and "payload" in parsed:
+                if not self._v1_warned:
+                    warnings.warn(
+                        "V1 dual-format envelope detected; this path is deprecated",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                    self._v1_warned = True
+                raw_dict = parsed.get("event", parsed)
+            else:
+                raw_dict = parsed
+
+            try:
+                result = deserialize_object(raw_dict)
+            except ValueError:
+                _log.warning("Skipping malformed event: deserialization failed", exc_info=True)
+                continue
+
+            if not isinstance(result, Message):
+                _log.warning("Skipping event: deserialized to %s, expected Message", type(result))
+                continue
+
+            return result
 
     async def ping(self) -> None:
         """Send a WebSocket ping frame. Raises if not connected."""

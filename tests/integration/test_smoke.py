@@ -15,6 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 from rich.console import Console
 
+from akgentic.core.messages.message import Message
+from akgentic.core.utils.deserializer import deserialize_object
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import _render_event_impl
 
@@ -144,7 +146,9 @@ def test_smoke_send_message_receive_response(smoke_client: TestClient) -> None:
         buf = _StringCapture()
         console = Console(file=buf, highlight=False, force_terminal=True)
         renderer = RichRenderer(console=console)
-        rendered = _render_event_impl(ev, renderer)
+        typed_event = deserialize_object(ev["event"])
+        assert isinstance(typed_event, Message), "Deserialized event must be a Message"
+        rendered = _render_event_impl(typed_event, renderer)
         assert rendered is True, "_render_event_impl should return True for SentMessage"
         rendered_text = buf.getvalue()
         assert "@Manager" in rendered_text, "Rendered output must contain @Manager"
@@ -213,10 +217,16 @@ def test_smoke_history_renders_messages(smoke_client: TestClient) -> None:
         # Render each event through _render_event_impl and capture output
         rendered_outputs: list[str] = []
         for ev in events:
+            try:
+                typed_event = deserialize_object(ev["event"])
+            except (ValueError, KeyError):
+                continue
+            if not isinstance(typed_event, Message):
+                continue
             buf = _StringCapture()
             console = Console(file=buf, highlight=False, force_terminal=True)
             renderer = RichRenderer(console=console)
-            was_rendered = _render_event_impl(ev, renderer)
+            was_rendered = _render_event_impl(typed_event, renderer)
             if was_rendered:
                 rendered_outputs.append(buf.getvalue())
 
