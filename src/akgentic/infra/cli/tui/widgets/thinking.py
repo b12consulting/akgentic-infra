@@ -25,8 +25,10 @@ class ThinkingIndicator(Static):
         self._agent_names: list[str] = []
 
     def update_agents(self, agent_names: list[str]) -> None:
-        """Update the list of agents currently thinking."""
+        """Update the list of agents currently thinking and refresh display."""
         self._agent_names = agent_names
+        frame = self._FRAMES[self._frame_idx]
+        self.update(Text(f"{frame} {self._format_agent_names()}", style="dim italic"))
 
     def _format_agent_names(self) -> str:
         """Format agent names into a human-readable thinking message."""

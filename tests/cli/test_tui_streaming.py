@@ -7,9 +7,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from akgentic.core.actor_address import ActorAddress
 from akgentic.core.messages.orchestrator import ProcessedMessage, ReceivedMessage
+
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.messages import ConnectionStateChanged
@@ -374,14 +374,27 @@ async def test_welcome_removed_on_first_message() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_shown_on_received_message() -> None:
     """ThinkingIndicator appears when ReceivedMessage event arrives (AC #1, #2, #5)."""
+    import asyncio
+
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
 
+    gate = asyncio.Event()
+    call_count = 0
+
+    async def _receive_side_effect() -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return received
+        if call_count == 2:
+            # Wait so the test can verify indicator is present before disconnect
+            await gate.wait()
+        raise WsConnectionError("done", retryable=False)
+
     mock_cm = MagicMock()
     mock_cm._on_state_change = None
-    mock_cm.receive_event = AsyncMock(
-        side_effect=[received, WsConnectionError("done", retryable=False)]
-    )
+    mock_cm.receive_event = AsyncMock(side_effect=_receive_side_effect)
 
     mock_router = MagicMock()
     mock_router.to_widget = MagicMock(return_value=None)
@@ -394,16 +407,17 @@ async def test_thinking_indicator_shown_on_received_message() -> None:
 
         # ThinkingIndicator should be mounted after ReceivedMessage
         indicators = pilot.app.query(ThinkingIndicator)
-        # After WsConnectionError the indicator is removed by the disconnect handler,
-        # but pending_messages should have had the entry added
-        assert msg_id in pilot.app._pending_messages or len(indicators) >= 0
-        # Verify the pending dict was populated (may be cleared by disconnect handler)
-        # The key assertion is that no crash occurred and the flow worked
+        assert len(indicators) == 1, "ThinkingIndicator must be mounted after ReceivedMessage"
+        # Pending dict should have the entry
+        assert msg_id in pilot.app._pending_messages
+
+        # Release gate to let disconnect happen
+        gate.set()
 
 
 @pytest.mark.asyncio
 async def test_thinking_indicator_hidden_on_processed_message() -> None:
-    """ThinkingIndicator appears on ReceivedMessage and disappears on ProcessedMessage (AC #3, #6)."""
+    """ThinkingIndicator appears on ReceivedMessage, disappears on ProcessedMessage."""
     import asyncio
 
     msg_id = uuid.uuid4()
@@ -503,11 +517,12 @@ async def test_thinking_indicator_stays_for_multi_agent() -> None:
         await pilot.pause()
         await pilot.pause()
 
-        # After first ProcessedMessage, one agent still pending
-        # The disconnect handler will have removed the indicator after WsConnectionError,
-        # but before that the indicator should have stayed
-        # Check pending_messages was reduced to 1 (then cleared by disconnect)
-        # The key assertion is no crash and the flow completed
+        # After first ProcessedMessage + disconnect, pending should be reduced
+        # The WsConnectionError handler removes the indicator widget but
+        # the dict should have had msg_id_1 removed before disconnect
+        assert msg_id_1 not in pilot.app._pending_messages, (
+            "Processed agent's message_id must be removed from pending"
+        )
 
 
 @pytest.mark.asyncio
@@ -565,7 +580,10 @@ async def test_thinking_indicator_always_below_response() -> None:
         agent_msg_indices = [
             i for i, c in enumerate(children) if isinstance(c, AgentMessage)
         ]
-        if indicator_indices and agent_msg_indices:
+        assert agent_msg_indices, "AgentMessage must be mounted after response event"
+        # The indicator may have been removed by the disconnect handler,
+        # but if present it must be below the response widget
+        if indicator_indices:
             assert indicator_indices[-1] > agent_msg_indices[-1], (
                 "ThinkingIndicator should be below the response widget"
             )
