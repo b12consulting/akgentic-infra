@@ -14,7 +14,7 @@ from prompt_toolkit.history import InMemoryHistory
 from pydantic import BaseModel
 
 from akgentic.core.messages.message import Message
-from akgentic.infra.cli.client import ApiClient, ApiError, EventInfo
+from akgentic.infra.cli.client import ApiClient, ApiError
 from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.connection import ConnectionManager, ConnectionState
 from akgentic.infra.cli.event_router import EventRouter
@@ -231,9 +231,7 @@ class ChatSession:
                 parts[1],
             )
         else:
-            await loop.run_in_executor(
-                None, self.client.send_message, self._state.team_id, line
-            )
+            await loop.run_in_executor(None, self.client.send_message, self._state.team_id, line)
 
     async def _receive_loop(self) -> None:
         """Background coroutine: read WebSocket events and render them."""

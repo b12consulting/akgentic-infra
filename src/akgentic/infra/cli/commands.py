@@ -120,9 +120,7 @@ async def _create_handler(args: str, session: ChatSession) -> None:
 
     loop = asyncio.get_running_loop()
     try:
-        team = await loop.run_in_executor(
-            None, session.client.create_team, catalog_entry_id
-        )
+        team = await loop.run_in_executor(None, session.client.create_team, catalog_entry_id)
     except ApiError as exc:
         session.renderer.render_error(f"Error creating team: {exc.detail}")
         return
@@ -142,10 +140,7 @@ async def _delete_handler(args: str, session: ChatSession) -> None:
         session.renderer.render_error(f"Error fetching team info: {exc.detail}")
         return
 
-    prompt_text = (
-        f"Delete team {team.name} ({target_id})? "
-        "All event history will be lost. [y/N] "
-    )
+    prompt_text = f"Delete team {team.name} ({target_id})? All event history will be lost. [y/N] "
     try:
         response = await loop.run_in_executor(None, builtins.input, prompt_text)
     except (EOFError, KeyboardInterrupt):
@@ -265,14 +260,11 @@ async def _history_handler(args: str, session: ChatSession) -> None:
     from akgentic.core.messages.orchestrator import ErrorMessage, EventMessage, SentMessage
 
     displayable = [
-        e.event
-        for e in events
-        if isinstance(e.event, (SentMessage, ErrorMessage, EventMessage))
+        e.event for e in events if isinstance(e.event, (SentMessage, ErrorMessage, EventMessage))
     ]
     for evt in displayable[-limit:]:
         if isinstance(evt, Message):
             session._render_event(evt)
-
 
 
 # -- Workspace commands --
@@ -461,9 +453,7 @@ def build_default_registry() -> CommandRegistry:
     registry.register("read", _read_handler, "Read a workspace file", "/read <path>")
     registry.register("upload", _upload_handler, "Upload a file to workspace", "/upload <path>")
     registry.register("stop", _stop_handler, "Stop the team", "/stop")
-    registry.register(
-        "restore", _restore_handler, "Restore a stopped team", "/restore [team_id]"
-    )
+    registry.register("restore", _restore_handler, "Restore a stopped team", "/restore [team_id]")
     registry.register("switch", _switch_handler, "Switch to another team", "/switch <team_id>")
     registry.register("reconnect", _reconnect_handler, "Reconnect to server", "/reconnect")
     registry.register("quit", _quit_handler, "Exit the chat", "/quit")

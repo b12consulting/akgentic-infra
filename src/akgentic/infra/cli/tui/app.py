@@ -13,7 +13,6 @@ from textual.containers import Container, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Static
 
-from akgentic.core.messages.message import Message
 from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.colors import AgentColorRegistry
@@ -101,9 +100,7 @@ class ChatApp(App[None]):
             self._palette.remove()
             self._palette = None
 
-    def on_chat_input_palette_filter_changed(
-        self, event: ChatInput.PaletteFilterChanged
-    ) -> None:
+    def on_chat_input_palette_filter_changed(self, event: ChatInput.PaletteFilterChanged) -> None:
         """Update the palette filter text."""
         if self._palette is not None:
             self._palette.filter_text = event.filter_text
@@ -270,9 +267,7 @@ class ChatApp(App[None]):
         else:
             self.query_one(ScrollIndicator).count += 1
 
-    def on_scroll_indicator_scroll_to_bottom(
-        self, _event: ScrollIndicator.ScrollToBottom
-    ) -> None:
+    def on_scroll_indicator_scroll_to_bottom(self, _event: ScrollIndicator.ScrollToBottom) -> None:
         """Handle click on scroll indicator — jump to bottom."""
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.scroll_end(animate=False)

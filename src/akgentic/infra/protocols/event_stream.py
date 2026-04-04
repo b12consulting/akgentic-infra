@@ -55,9 +55,7 @@ class EventStream(Protocol):
         """
         ...
 
-    def read_from(
-        self, team_id: uuid.UUID, cursor: int = 0
-    ) -> list[Message]:
+    def read_from(self, team_id: uuid.UUID, cursor: int = 0) -> list[Message]:
         """Read all events from cursor position (non-blocking snapshot).
 
         Args:
@@ -69,9 +67,7 @@ class EventStream(Protocol):
         """
         ...
 
-    def subscribe(
-        self, team_id: uuid.UUID, cursor: int = 0
-    ) -> StreamReader:
+    def subscribe(self, team_id: uuid.UUID, cursor: int = 0) -> StreamReader:
         """Create a cursor-based blocking reader.
 
         Args:

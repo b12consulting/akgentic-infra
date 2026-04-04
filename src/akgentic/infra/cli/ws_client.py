@@ -49,22 +49,14 @@ class WsClient:
                 additional_headers=self._headers,
             )
         except (ConnectionRefusedError, OSError) as exc:
-            raise WsConnectionError(
-                f"Connection error: {exc}", retryable=True
-            ) from exc
+            raise WsConnectionError(f"Connection error: {exc}", retryable=True) from exc
         except websockets.exceptions.InvalidStatus as exc:
             status = exc.response.status_code
             if status == 404 or status == 403:
-                raise WsConnectionError(
-                    "Team not found", retryable=False
-                ) from exc
-            raise WsConnectionError(
-                f"WebSocket rejected: HTTP {status}", retryable=True
-            ) from exc
+                raise WsConnectionError("Team not found", retryable=False) from exc
+            raise WsConnectionError(f"WebSocket rejected: HTTP {status}", retryable=True) from exc
         except websockets.exceptions.InvalidHandshake as exc:
-            raise WsConnectionError(
-                f"WebSocket handshake failed: {exc}", retryable=True
-            ) from exc
+            raise WsConnectionError(f"WebSocket handshake failed: {exc}", retryable=True) from exc
         return self
 
     async def receive_event(self) -> Message:

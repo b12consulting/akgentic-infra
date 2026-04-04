@@ -174,11 +174,7 @@ class ChatInput(TextArea):
             return
         text = self.text
         # Only show palette for command name completion (before the first space).
-        if (
-            text.startswith("/")
-            and " " not in text
-            and self._command_registry is not None
-        ):
+        if text.startswith("/") and " " not in text and self._command_registry is not None:
             if not self._palette_visible:
                 self._palette_visible = True
                 self.post_message(self.PaletteRequested())
