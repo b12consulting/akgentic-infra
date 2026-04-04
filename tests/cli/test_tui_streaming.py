@@ -1,7 +1,8 @@
-"""Pilot tests for WebSocket streaming worker, ThinkingIndicator, and connection state."""
+"""Pilot tests for WebSocket streaming, ThinkingIndicator, connection state, and state cleanup."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -374,8 +375,6 @@ async def test_welcome_removed_on_first_message() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_shown_on_received_message() -> None:
     """ThinkingIndicator appears when ReceivedMessage event arrives (AC #1, #2, #5)."""
-    import asyncio
-
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
 
@@ -418,8 +417,6 @@ async def test_thinking_indicator_shown_on_received_message() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_hidden_on_processed_message() -> None:
     """ThinkingIndicator appears on ReceivedMessage, disappears on ProcessedMessage."""
-    import asyncio
-
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
     processed = ProcessedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
@@ -469,8 +466,6 @@ async def test_thinking_indicator_hidden_on_processed_message() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_stays_for_multi_agent() -> None:
     """Indicator stays while any agent is still processing (AC #7, #8)."""
-    import asyncio
-
     msg_id_1 = uuid.uuid4()
     msg_id_2 = uuid.uuid4()
     received_1 = ReceivedMessage(message_id=msg_id_1, sender=_fake_sender("Assistant"))
@@ -528,8 +523,6 @@ async def test_thinking_indicator_stays_for_multi_agent() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_always_below_response() -> None:
     """Indicator re-mounts below the response widget during remove-and-remount (AC #7)."""
-    import asyncio
-
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
 
@@ -686,8 +679,6 @@ async def test_thinking_indicator_format_strips_at_prefix() -> None:
 @pytest.mark.asyncio
 async def test_team_switch_clears_thinking_state() -> None:
     """_clear_conversation() clears _pending_messages and ThinkingIndicator (AC #1, #4)."""
-    import asyncio
-
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
 
@@ -719,7 +710,7 @@ async def test_team_switch_clears_thinking_state() -> None:
         # Indicator should be mounted and pending dict non-empty
         indicators = pilot.app.query(ThinkingIndicator)
         assert len(indicators) == 1, "ThinkingIndicator must be present before clear"
-        assert len(pilot.app._pending_messages) > 0
+        assert msg_id in pilot.app._pending_messages
 
         # Simulate team switch: call _clear_conversation() directly
         pilot.app._clear_conversation()
@@ -742,8 +733,6 @@ async def test_team_switch_clears_thinking_state() -> None:
 @pytest.mark.asyncio
 async def test_disconnect_clears_thinking_state() -> None:
     """Disconnect clears _pending_messages and ThinkingIndicator (AC #2, #3, #4)."""
-    import asyncio
-
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
 
