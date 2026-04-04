@@ -6,10 +6,10 @@ import asyncio
 import time
 from collections.abc import Callable
 from enum import Enum
-from typing import Any
 
 import websockets.exceptions
 
+from akgentic.core.messages.message import Message
 from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
 
 
@@ -95,7 +95,7 @@ class ConnectionManager:
             retryable=False,
         )
 
-    async def receive_event(self) -> dict[str, Any]:
+    async def receive_event(self) -> Message:
         """Read next event. Triggers reconnect on disconnect.
 
         Raises WsConnectionError only after max_retries exhausted.

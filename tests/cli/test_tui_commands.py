@@ -472,17 +472,16 @@ async def test_history_no_events_mounts_message() -> None:
 @pytest.mark.asyncio
 async def test_history_with_events_mounts_widgets() -> None:
     """AC #2: /history with displayable events mounts widgets from EventRouter."""
+    from tests.fixtures.events import build_sent_message
+
     from akgentic.infra.cli.tui.widgets.agent_message import AgentMessage
 
     client = _mock_client()
+    typed_event = build_sent_message(content="hello from history")
     event = EventInfo(
         team_id="t-123",
         sequence=1,
-        event={
-            "__model__": "SentMessage",
-            "sender": {"name": "agent1", "role": "Agent"},
-            "message": {"content": "hello from history"},
-        },
+        event=typed_event,
         timestamp="2026-01-01",
     )
     client.get_events.return_value = [event]

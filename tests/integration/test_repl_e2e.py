@@ -18,6 +18,7 @@ import time
 
 import pytest
 
+from akgentic.core.messages.message import Message
 from akgentic.infra.cli.client import ApiClient
 from akgentic.infra.cli.commands import (
     _create_handler,
@@ -111,7 +112,7 @@ def _cleanup_team(server_url: str, team_id: str) -> None:
 async def _wait_for_ws_event(
     conn: ConnectionManager | WsClient,
     timeout: float = POLL_TIMEOUT_S,
-) -> dict[str, object]:
+) -> object:
     """Wait for a single WebSocket event with timeout."""
     return await asyncio.wait_for(conn.receive_event(), timeout=timeout)
 
@@ -158,7 +159,7 @@ class TestStateTransitionWS:
                 session.client.send_message(team_id, "hello")
                 event = await _wait_for_ws_event(session.conn)
                 assert event is not None
-                assert isinstance(event, dict)
+                assert isinstance(event, Message)
         finally:
             _cleanup_team(smoke_server, team_id)
 

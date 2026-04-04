@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from akgentic.core.messages.message import Message
+from akgentic.core.utils.deserializer import deserialize_object
+
+_log = logging.getLogger(__name__)
 
 # -- CLI-side response models (independent of server models) --
 
@@ -32,8 +38,20 @@ class EventInfo(BaseModel):
 
     team_id: str
     sequence: int
-    event: dict[str, object]
+    event: dict[str, object] | Message
     timestamp: str
+
+    @model_validator(mode="after")
+    def _deserialize_event(self) -> EventInfo:
+        """Deserialize raw event dict into a typed Message if possible."""
+        if isinstance(self.event, dict) and "__model__" in self.event:
+            try:
+                result = deserialize_object(dict(self.event))
+                if isinstance(result, Message):
+                    self.event = result
+            except ValueError:
+                _log.debug("EventInfo: failed to deserialize event dict", exc_info=True)
+        return self
 
 
 class EventListInfo(BaseModel):
