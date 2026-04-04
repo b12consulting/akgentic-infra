@@ -13,7 +13,6 @@ from textual.containers import Container, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Static
 
-from akgentic.core.messages.message import Message
 from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.colors import AgentColorRegistry
@@ -101,9 +100,7 @@ class ChatApp(App[None]):
             self._palette.remove()
             self._palette = None
 
-    def on_chat_input_palette_filter_changed(
-        self, event: ChatInput.PaletteFilterChanged
-    ) -> None:
+    def on_chat_input_palette_filter_changed(self, event: ChatInput.PaletteFilterChanged) -> None:
         """Update the palette filter text."""
         if self._palette is not None:
             self._palette.filter_text = event.filter_text
@@ -270,9 +267,7 @@ class ChatApp(App[None]):
         else:
             self.query_one(ScrollIndicator).count += 1
 
-    def on_scroll_indicator_scroll_to_bottom(
-        self, _event: ScrollIndicator.ScrollToBottom
-    ) -> None:
+    def on_scroll_indicator_scroll_to_bottom(self, _event: ScrollIndicator.ScrollToBottom) -> None:
         """Handle click on scroll indicator — jump to bottom."""
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.scroll_end(animate=False)
@@ -299,8 +294,7 @@ class ChatApp(App[None]):
                 pass
 
         conversation = self.query_one("#conversation", VerticalScroll)
-        has_history = await self._replay_history(conversation)
-        if not has_history and not conversation.query(".welcome-msg, #welcome"):
+        if not conversation.query(".welcome-msg, #welcome"):
             welcome = Static(
                 "Welcome to Akgentic Chat. Send a message to begin.",
                 classes="welcome-msg",
@@ -325,43 +319,6 @@ class ChatApp(App[None]):
         msg = SystemMessage(content="Connection lost. Use /reconnect to try again.")
         await conversation.mount(msg)
         msg.scroll_visible(animate=False)
-
-    async def _replay_history(self, conversation: VerticalScroll) -> bool:
-        """Fetch and mount past events as dimmed widgets. Returns True if any displayed."""
-        if self._client is None or self._event_router is None:
-            return False
-        import asyncio
-
-        loop = asyncio.get_running_loop()
-        try:
-            events = await loop.run_in_executor(
-                None, self._client.get_events, self._team_id
-            )
-        except ApiError:
-            return False
-        if not events:
-            return False
-
-        displayed = False
-        for evt in events:
-            if not isinstance(evt.event, Message):
-                continue
-            widget = self._event_router.to_widget(
-                evt.event, self._color_registry
-            )
-            if widget is not None:
-                widget.add_class("history")
-                await conversation.mount(widget)
-                displayed = True
-
-        if displayed:
-            from akgentic.infra.cli.tui.widgets.system_message import SystemMessage
-
-            sep = SystemMessage(content="── history ──")
-            sep.add_class("history")
-            await conversation.mount(sep)
-            sep.scroll_visible(animate=False)
-        return displayed
 
     def _remove_thinking_indicator(self, conversation: VerticalScroll) -> None:
         """Remove ThinkingIndicator if present."""

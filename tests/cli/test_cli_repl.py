@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from akgentic.core.messages.message import Message
 from akgentic.core.messages.orchestrator import EventMessage
-from akgentic.infra.cli.client import ApiError, EventInfo
+
+from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.commands import build_default_registry
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.formatters import OutputFormat
@@ -42,9 +43,7 @@ _PROMPT_PATH = "prompt_toolkit.PromptSession.prompt"
 
 def _mock_client(**overrides: Any) -> MagicMock:
     """Build a mock ApiClient with minimal defaults for REPL tests."""
-    defaults: dict[str, Any] = {"get_events": MagicMock(return_value=[])}
-    defaults.update(overrides)
-    return _shared_mock_client(**defaults)
+    return _shared_mock_client(**overrides)
 
 
 def _make_session(
@@ -58,55 +57,6 @@ def _make_session(
     if conn is None:
         conn = _mock_conn()
     return ChatSession(client, conn, "t1", OutputFormat.table, renderer=renderer)
-
-
-class TestReplayHistory:
-    def test_replay_displays_sent_messages(self) -> None:
-        renderer, buf = _captured_renderer()
-        sent_event = build_sent_message(content="hello")
-        client = _mock_client(
-            get_events=MagicMock(
-                return_value=[
-                    EventInfo(
-                        team_id="t1",
-                        sequence=1,
-                        event=sent_event,
-                        timestamp="2026-01-01T00:00:00",
-                    ),
-                    EventInfo(
-                        team_id="t1",
-                        sequence=2,
-                        event={
-                            "__model__": "StateChangedMessage",
-                            "state": "running",
-                        },
-                        timestamp="2026-01-01T00:00:00",
-                    ),
-                ]
-            )
-        )
-        session = _make_session(client=client, renderer=renderer)
-        session._replay_history()
-        out = buf.getvalue()
-        assert "sender" in out
-        assert "hello" in out
-        assert "history" in out  # separator
-        assert "StateChanged" not in out
-
-    def test_replay_no_events(self) -> None:
-        renderer, buf = _captured_renderer()
-        client = _mock_client()
-        session = _make_session(client=client, renderer=renderer)
-        session._replay_history()
-        out = buf.getvalue()
-        assert "history" not in out
-
-    def test_replay_handles_error(self) -> None:
-        renderer, buf = _captured_renderer()
-        client = _mock_client()
-        client.get_events.side_effect = ApiError(500, "test error")
-        session = _make_session(client=client, renderer=renderer)
-        session._replay_history()  # Should not raise
 
 
 class TestQuitHandling:
@@ -752,6 +702,7 @@ class TestConnectionAwareSending:
         session = _make_session(client=client)
         session._message_buffer = ["msg1", "msg2"]
         # Trigger the on_state_change callback with CONNECTED
+        assert session.conn._on_state_change is not None
         session.conn._on_state_change(ConnectionState.CONNECTED)
         assert session._message_buffer == []
         assert client.send_message.call_count == 2

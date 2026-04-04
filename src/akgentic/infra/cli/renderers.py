@@ -139,10 +139,7 @@ class RichRenderer:
         self._console.print("  [bold]Create new:[/bold]")
         for entry_id, description in entries:
             desc = description or ""
-            self._console.print(
-                f"    [bold white]\\[c {entry_id}][/bold white]  "
-                f"[dim]{desc}[/dim]"
-            )
+            self._console.print(f"    [bold white]\\[c {entry_id}][/bold white]  [dim]{desc}[/dim]")
         self._console.print()
 
     def render_startup_hints(self, max_num: int, has_stopped: bool) -> None:

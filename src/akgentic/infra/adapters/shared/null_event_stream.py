@@ -31,15 +31,11 @@ class NullEventStream:
         """Discard event, return 0."""
         return 0
 
-    def read_from(
-        self, team_id: uuid.UUID, cursor: int = 0
-    ) -> list[Message]:
+    def read_from(self, team_id: uuid.UUID, cursor: int = 0) -> list[Message]:
         """Return empty list."""
         return []
 
-    def subscribe(
-        self, team_id: uuid.UUID, cursor: int = 0
-    ) -> NullStreamReader:
+    def subscribe(self, team_id: uuid.UUID, cursor: int = 0) -> NullStreamReader:
         """Return a NullStreamReader."""
         return NullStreamReader()
 

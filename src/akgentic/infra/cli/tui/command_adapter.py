@@ -88,9 +88,6 @@ class _TuiSession:
         """No-op stub -- TUI uses EventRouter.to_widget() instead."""
         return False
 
-    async def replay_history_async(self) -> None:
-        """No-op stub -- TUI replays via stream_events()."""
-
 
 class _MinimalState:
     """Minimal state object exposing team_id for command handlers."""
@@ -439,9 +436,7 @@ class TuiCommandAdapter:
         """Handle /history by fetching events and mounting them as TUI widgets."""
         limit = self._parse_history_limit(args)
         if limit is None:
-            await self._mount_system(
-                app, "Usage: /history [N] — N must be a positive integer."
-            )
+            await self._mount_system(app, "Usage: /history [N] — N must be a positive integer.")
             return True
 
         client = app._client  # noqa: SLF001
@@ -452,7 +447,9 @@ class TuiCommandAdapter:
         loop = asyncio.get_running_loop()
         try:
             events = await loop.run_in_executor(
-                None, client.get_events, app._team_id  # noqa: SLF001
+                None,
+                client.get_events,
+                app._team_id,  # noqa: SLF001
             )
         except ApiError as exc:
             await self._mount_error(app, f"Error fetching history: {exc.detail}")

@@ -14,7 +14,7 @@ from prompt_toolkit.history import InMemoryHistory
 from pydantic import BaseModel
 
 from akgentic.core.messages.message import Message
-from akgentic.infra.cli.client import ApiClient, ApiError, EventInfo
+from akgentic.infra.cli.client import ApiClient, ApiError
 from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.connection import ConnectionManager, ConnectionState
 from akgentic.infra.cli.event_router import EventRouter
@@ -108,11 +108,10 @@ class ChatSession:
             pass  # Keep defaults "(unknown)" and "?"
 
     async def run(self) -> None:
-        """Main REPL loop: connect WS, replay history, read input, stream events."""
+        """Main REPL loop: connect WS, read input, stream events."""
         async with self.conn:
             self._fetch_team_info()
             self.renderer.render_border()
-            self._replay_history()
 
             self._receive_task = asyncio.create_task(self._receive_loop())
             try:
@@ -232,9 +231,7 @@ class ChatSession:
                 parts[1],
             )
         else:
-            await loop.run_in_executor(
-                None, self.client.send_message, self._state.team_id, line
-            )
+            await loop.run_in_executor(None, self.client.send_message, self._state.team_id, line)
 
     async def _receive_loop(self) -> None:
         """Background coroutine: read WebSocket events and render them."""
@@ -257,34 +254,8 @@ class ChatSession:
             except ApiError:
                 self.renderer.render_error(f"Failed to send buffered message: {msg[:50]}")
 
-    def _replay_history(self) -> None:
-        """Fetch and display past events before starting the REPL."""
-        try:
-            events = self.client.get_events(self._state.team_id)
-        except ApiError:
-            return
-        self._display_events(events)
-
-    async def replay_history_async(self) -> None:
-        """Async version of _replay_history — uses run_in_executor to avoid blocking."""
-        loop = asyncio.get_running_loop()
-        try:
-            events = await loop.run_in_executor(None, self.client.get_events, self._state.team_id)
-        except ApiError:
-            return
-        self._display_events(events)
-
-    def _display_events(self, events: list[EventInfo]) -> None:
-        """Render a list of events, adding a history separator if any were displayed."""
-        displayed = False
-        for evt in events:
-            if isinstance(evt.event, Message) and self._render_event(evt.event):
-                displayed = True
-        if displayed:
-            self.renderer.render_history_separator()
-
     def _render_event(self, event: Message) -> bool:
-        """Format and render a single typed event. Returns True if something was rendered."""
+        """Format and render a single event. Returns True if something was rendered."""
 
         def _set_pending(message_id: str, agent_name: str) -> None:
             self._state = self._state.model_copy(

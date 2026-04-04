@@ -138,9 +138,7 @@ class TeamSelectScreen(Screen[str | None]):
         self._render_catalog_section(container)
         self._update_hints()
 
-    def _render_running_section(
-        self, container: VerticalScroll, start: int, end: int
-    ) -> None:
+    def _render_running_section(self, container: VerticalScroll, start: int, end: int) -> None:
         """Render the running teams section."""
         if not self._running_teams:
             container.mount(Static("Running teams: (none)", classes="section-header"))
@@ -164,9 +162,7 @@ class TeamSelectScreen(Screen[str | None]):
             line.append("  > running", style="green")
             container.mount(Static(line, classes="team-entry"))
 
-    def _render_stopped_section(
-        self, container: VerticalScroll, start: int, end: int
-    ) -> None:
+    def _render_stopped_section(self, container: VerticalScroll, start: int, end: int) -> None:
         """Render the stopped teams section."""
         if not self._stopped_teams:
             container.mount(Static("Stopped teams: (none)", classes="section-header"))
