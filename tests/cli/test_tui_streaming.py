@@ -1,7 +1,8 @@
-"""Pilot tests for WebSocket streaming worker, ThinkingIndicator, and connection state."""
+"""Pilot tests for WebSocket streaming, ThinkingIndicator, connection state, and state cleanup."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -374,8 +375,6 @@ async def test_welcome_removed_on_first_message() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_shown_on_received_message() -> None:
     """ThinkingIndicator appears when ReceivedMessage event arrives (AC #1, #2, #5)."""
-    import asyncio
-
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
 
@@ -418,8 +417,6 @@ async def test_thinking_indicator_shown_on_received_message() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_hidden_on_processed_message() -> None:
     """ThinkingIndicator appears on ReceivedMessage, disappears on ProcessedMessage."""
-    import asyncio
-
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
     processed = ProcessedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
@@ -469,8 +466,6 @@ async def test_thinking_indicator_hidden_on_processed_message() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_stays_for_multi_agent() -> None:
     """Indicator stays while any agent is still processing (AC #7, #8)."""
-    import asyncio
-
     msg_id_1 = uuid.uuid4()
     msg_id_2 = uuid.uuid4()
     received_1 = ReceivedMessage(message_id=msg_id_1, sender=_fake_sender("Assistant"))
@@ -528,8 +523,6 @@ async def test_thinking_indicator_stays_for_multi_agent() -> None:
 @pytest.mark.asyncio
 async def test_thinking_indicator_always_below_response() -> None:
     """Indicator re-mounts below the response widget during remove-and-remount (AC #7)."""
-    import asyncio
-
     msg_id = uuid.uuid4()
     received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
 
@@ -676,3 +669,119 @@ async def test_thinking_indicator_format_strips_at_prefix() -> None:
         indicator = ThinkingIndicator()
         indicator.update_agents(["@Assistant"])
         assert indicator._format_agent_names() == "@Assistant is thinking..."
+
+
+# ---------------------------------------------------------------------------
+# Clear thinking state on disconnect and team switch tests (Story 14.2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_team_switch_clears_thinking_state() -> None:
+    """_clear_conversation() clears _pending_messages and ThinkingIndicator (AC #1, #4)."""
+    msg_id = uuid.uuid4()
+    received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
+
+    gate = asyncio.Event()
+    call_count = 0
+
+    async def _receive_side_effect() -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return received
+        # Block until gate is released so test can verify intermediate state
+        await gate.wait()
+        raise WsConnectionError("done", retryable=False)
+
+    mock_cm = MagicMock()
+    mock_cm._on_state_change = None
+    mock_cm.receive_event = AsyncMock(side_effect=_receive_side_effect)
+
+    mock_router = MagicMock()
+    mock_router.to_widget = MagicMock(return_value=None)
+
+    app = _make_app(connection_manager=mock_cm, event_router=mock_router)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.pause()
+
+        # Indicator should be mounted and pending dict non-empty
+        indicators = pilot.app.query(ThinkingIndicator)
+        assert len(indicators) == 1, "ThinkingIndicator must be present before clear"
+        assert msg_id in pilot.app._pending_messages
+
+        # Simulate team switch: call _clear_conversation() directly
+        pilot.app._clear_conversation()
+        await pilot.pause()
+
+        # Pending messages must be cleared
+        assert len(pilot.app._pending_messages) == 0, (
+            "_pending_messages must be empty after _clear_conversation"
+        )
+        # ThinkingIndicator widget must be removed (remove_children destroys all)
+        indicators = pilot.app.query(ThinkingIndicator)
+        assert len(indicators) == 0, (
+            "ThinkingIndicator must be removed after _clear_conversation"
+        )
+
+        # Release gate to let stream worker finish cleanly
+        gate.set()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_clears_thinking_state() -> None:
+    """Disconnect clears _pending_messages and ThinkingIndicator (AC #2, #3, #4)."""
+    msg_id = uuid.uuid4()
+    received = ReceivedMessage(message_id=msg_id, sender=_fake_sender("Assistant"))
+
+    gate = asyncio.Event()
+    call_count = 0
+
+    async def _receive_side_effect() -> Any:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return received
+        # Wait for test to verify indicator is present, then disconnect
+        await gate.wait()
+        raise WsConnectionError("disconnected", retryable=False)
+
+    mock_cm = MagicMock()
+    mock_cm._on_state_change = None
+    mock_cm.receive_event = AsyncMock(side_effect=_receive_side_effect)
+
+    mock_router = MagicMock()
+    mock_router.to_widget = MagicMock(return_value=None)
+
+    app = _make_app(connection_manager=mock_cm, event_router=mock_router)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.pause()
+
+        # Indicator should be present and pending dict non-empty
+        indicators = pilot.app.query(ThinkingIndicator)
+        assert len(indicators) == 1, "ThinkingIndicator must be present before disconnect"
+        assert len(pilot.app._pending_messages) > 0
+
+        # Release gate to trigger WsConnectionError (disconnect)
+        gate.set()
+        await pilot.pause()
+        await pilot.pause()
+        await pilot.pause()
+
+        # Pending messages must be cleared by disconnect handler
+        assert len(pilot.app._pending_messages) == 0, (
+            "_pending_messages must be empty after disconnect"
+        )
+        # ThinkingIndicator widget must be removed
+        indicators = pilot.app.query(ThinkingIndicator)
+        assert len(indicators) == 0, (
+            "ThinkingIndicator must be removed after disconnect"
+        )
+        # "Connection lost" SystemMessage must be mounted (confirms disconnect path)
+        sys_msgs = pilot.app.query(SystemMessage)
+        found = any("Connection lost" in m._content for m in sys_msgs)
+        assert found, "Expected 'Connection lost' SystemMessage after disconnect"

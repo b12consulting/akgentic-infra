@@ -281,6 +281,7 @@ class ChatApp(App[None]):
 
     def _clear_conversation(self) -> None:
         """Clear conversation area and reset related state for team switch."""
+        self._pending_messages.clear()
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.remove_children()
         self._color_registry.reset()
@@ -324,6 +325,7 @@ class ChatApp(App[None]):
             except WsConnectionError as exc:
                 _log.debug("WS connection error in stream loop: %s", exc)
                 self._remove_thinking_indicator(conversation)
+                self._pending_messages.clear()
                 break
 
         from akgentic.infra.cli.tui.widgets.system_message import SystemMessage
