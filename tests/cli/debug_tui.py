@@ -307,9 +307,9 @@ async def send_and_receive(ctx: DebugContext) -> None:
         if hasattr(child, "_sender"):
             print(f"    {type(child).__name__}: sender={child._sender}")
 
-    # Verify expected order: UserMessage → AgentMessage (ThinkingIndicator removed)
-    expected = ["UserMessage", "AgentMessage"]
-    actual_msg_types = [n for n in child_names if n in ("UserMessage", "AgentMessage")]
+    # Verify expected order: AgentMessage only (UserMessage widget removed in 12.9)
+    expected = ["AgentMessage"]
+    actual_msg_types = [n for n in child_names if n == "AgentMessage"]
     if actual_msg_types == expected:
         has_thinking = "ThinkingIndicator" in child_names
         if has_thinking:
@@ -317,7 +317,7 @@ async def send_and_receive(ctx: DebugContext) -> None:
         else:
             print("  [OK] Correct order and ThinkingIndicator removed")
     else:
-        print(f"  [INFO] Message order: {actual_msg_types} (expected {expected})")
+        print(f"  [INFO] Message types: {actual_msg_types} (expected {expected})")
         print("  Note: mock delivers reply before user types — timing artifact, not prod bug")
 
 

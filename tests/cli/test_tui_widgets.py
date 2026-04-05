@@ -14,7 +14,6 @@ from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 from akgentic.infra.cli.tui.widgets.human_input import HumanInputPrompt
 from akgentic.infra.cli.tui.widgets.system_message import HistorySeparator, SystemMessage
 from akgentic.infra.cli.tui.widgets.tool_call import ToolCallWidget
-from akgentic.infra.cli.tui.widgets.user_message import UserMessage
 
 
 def _render_to_str(renderable: object) -> str:
@@ -167,19 +166,6 @@ async def test_human_input_prompt_renders() -> None:
         rendered = _render_to_str(prompt.render())
         assert "Enter your name" in rendered
         assert "Human Input Required" in rendered
-
-
-@pytest.mark.asyncio
-async def test_user_message_renders() -> None:
-    app = _make_app()
-    async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause()
-        conv = pilot.app.query_one("#conversation")
-        msg = UserMessage(content="Hi there")
-        await conv.mount(msg)
-        rendered = _render_to_str(msg.render())
-        assert "[You]" in rendered
-        assert "Hi there" in rendered
 
 
 @pytest.mark.asyncio

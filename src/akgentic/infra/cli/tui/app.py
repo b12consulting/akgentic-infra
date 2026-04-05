@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -342,13 +341,6 @@ class ChatApp(App[None]):
         welcome_nodes = conversation.query("#welcome, .welcome-msg")
         for node in welcome_nodes:
             node.remove()
-
-        # Mount user message widget
-        from akgentic.infra.cli.tui.widgets.user_message import UserMessage
-
-        user_msg = UserMessage(content=text, timestamp=datetime.now().strftime("%H:%M"))
-        await conversation.mount(user_msg)
-        user_msg.scroll_visible(animate=False)
 
         # Mount ThinkingIndicator
         from akgentic.infra.cli.tui.widgets.thinking import ThinkingIndicator

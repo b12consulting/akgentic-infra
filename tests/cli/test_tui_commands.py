@@ -15,7 +15,6 @@ from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
 from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 from akgentic.infra.cli.tui.widgets.system_message import SystemMessage
-from akgentic.infra.cli.tui.widgets.user_message import UserMessage
 
 
 def _make_team(
@@ -266,8 +265,8 @@ async def test_message_send_calls_api() -> None:
 
 
 @pytest.mark.asyncio
-async def test_message_send_mounts_user_message() -> None:
-    """AC #10: non-slash text mounts UserMessage widget."""
+async def test_message_send_dispatches_without_local_widget() -> None:
+    """Non-slash text sends via API and does NOT mount a local UserMessage widget (12.9 AC #1, #3)."""
     client = _mock_client()
     app = _make_app(client=client)
     async with app.run_test(size=(100, 30)) as pilot:
@@ -276,9 +275,17 @@ async def test_message_send_mounts_user_message() -> None:
         await pilot.press("h", "i")
         await pilot.press("enter")
         await pilot.pause()
+        await pilot.pause()
+        await pilot.pause()
 
-        user_msgs = pilot.app.query(UserMessage)
-        assert len(user_msgs) >= 1
+        # Verify API was called
+        client.send_message.assert_called_once_with("t-123", "hi")
+        # Verify no UserMessage widget exists in conversation
+        from textual.containers import VerticalScroll
+
+        conversation = pilot.app.query_one("#conversation", VerticalScroll)
+        child_types = [type(c).__name__ for c in conversation.children]
+        assert "UserMessage" not in child_types
 
 
 @pytest.mark.asyncio
