@@ -277,11 +277,13 @@ class TestCommunitySettingsDefaults:
         assert settings.catalog_path == Path("data/catalog")
 
     def test_inherits_base_fields(self) -> None:
-        """CommunitySettings inherits host, port, cors_origins from ServerSettings."""
+        """CommunitySettings inherits host, port, cors_origins, shutdown fields."""
         settings = CommunitySettings()
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
         assert settings.cors_origins == ["*"]
+        assert settings.shutdown_drain_timeout == 30
+        assert settings.shutdown_pre_drain_delay == 0
 
     def test_event_store_path_from_env(self) -> None:
         """AKGENTIC_EVENT_STORE_PATH overrides event_store_path field."""
@@ -366,3 +368,17 @@ class TestShutdownSettings:
         fields = ServerSettings.model_fields
         assert fields["shutdown_drain_timeout"].description is not None
         assert fields["shutdown_pre_drain_delay"].description is not None
+
+    def test_shutdown_drain_timeout_rejects_negative(self) -> None:
+        """shutdown_drain_timeout rejects negative values (ge=0 constraint)."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="shutdown_drain_timeout"):
+            ServerSettings(shutdown_drain_timeout=-1)
+
+    def test_shutdown_pre_drain_delay_rejects_negative(self) -> None:
+        """shutdown_pre_drain_delay rejects negative values (ge=0 constraint)."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="shutdown_pre_drain_delay"):
+            ServerSettings(shutdown_pre_drain_delay=-1)

@@ -59,10 +59,12 @@ class ServerSettings(BaseSettings):
     )
     shutdown_drain_timeout: int = Field(
         default=30,
+        ge=0,
         description="Max seconds for stop_all() to complete during graceful shutdown",
     )
     shutdown_pre_drain_delay: int = Field(
         default=0,
+        ge=0,
         description=(
             "Seconds to wait after marking draining before starting teardown "
             "(0 for standalone, 5-10 for LB deployments)"
