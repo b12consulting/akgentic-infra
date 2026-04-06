@@ -8,7 +8,7 @@ lifespan) with TestModel LLM injection.  No mocks except targeted patching in
 from __future__ import annotations
 
 import uuid
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -57,7 +57,7 @@ def test_stop_all_skips_failures_integration(
     smoke_services: CommunityServices,
     smoke_client: TestClient,
 ) -> None:
-    """Create two teams, make first stop fail, verify second still stopped."""
+    """Create two teams, make first stop fail, verify second still stopped and shutdown called."""
     team_id_1 = create_team(smoke_client)
     team_id_2 = create_team(smoke_client)
 
@@ -70,8 +70,15 @@ def test_stop_all_skips_failures_integration(
             raise RuntimeError("Simulated stop failure")
         original_stop(team_id)
 
-    with patch.object(
-        smoke_services.worker_handle, "stop_team", side_effect=_failing_stop
+    with (
+        patch.object(
+            smoke_services.worker_handle, "stop_team", side_effect=_failing_stop
+        ),
+        patch.object(
+            smoke_services.worker_handle._actor_system,
+            "shutdown",
+            wraps=smoke_services.worker_handle._actor_system.shutdown,
+        ) as mock_shutdown,
     ):
         smoke_services.worker_handle.stop_all()
 
@@ -80,6 +87,9 @@ def test_stop_all_skips_failures_integration(
     resp2 = smoke_client.get(f"/teams/{team_id_2}")
     assert resp2.status_code == 200
     assert resp2.json()["status"] == "stopped"
+
+    # ActorSystem.shutdown() must always be called, even after team stop failures
+    mock_shutdown.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +142,6 @@ async def test_websocket_receives_1001_on_shutdown() -> None:
     close code without the threading complexity of TestClient WebSocket.
     This validates the same code path that the lifespan shutdown invokes.
     """
-    from unittest.mock import AsyncMock
-
     conn_mgr = ConnectionManager()
     ws = AsyncMock()
     conn_mgr.track(ws)
