@@ -152,6 +152,13 @@ class TestStopAll:
         adapter.stop_all()
         assert call_order == ["stop_team", "shutdown"]
 
+    def test_stop_all_calls_shutdown_with_default_timeout(self) -> None:
+        """stop_all() calls ActorSystem.shutdown() with no explicit timeout (uses default)."""
+        adapter, tm, actor_system = _make_adapter()
+        tm._runtimes = {}
+        adapter.stop_all()
+        actor_system.shutdown.assert_called_once_with()
+
     def test_stop_all_calls_shutdown_even_if_all_stop_team_fail(self) -> None:
         """ActorSystem.shutdown() is called even when every stop_team() raises."""
         adapter, tm, actor_system = _make_adapter()
