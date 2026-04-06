@@ -57,15 +57,12 @@ class LocalWorkerHandle:
         return self._team_manager.get_team(team_id)
 
     def stop_all(self) -> None:
-        """Stop all teams and shut down the actor system for graceful shutdown."""
-        logger.info("stop_all: stopping all teams on this worker node")
-        team_ids = list(self._team_manager._runtimes.keys())
-        for team_id in team_ids:
-            try:
-                self.stop_team(team_id)
-            except Exception:
-                logger.exception(
-                    "Failed to stop team %s during stop_all, skipping", team_id
-                )
+        """Shut down the actor system, force-stopping all actors.
+
+        Teams keep their RUNNING status in the event store so they can be
+        resumed on next server start.  Graceful per-team teardown is skipped
+        to avoid blocking on stuck actors during server shutdown.
+        """
+        logger.info("stop_all: shutting down actor system (teams remain RUNNING for resume)")
         self._actor_system.shutdown()
-        logger.info("stop_all: completed — %d teams processed", len(team_ids))
+        logger.info("stop_all: actor system shut down")
