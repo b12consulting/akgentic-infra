@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,7 @@ from textual.containers import Container, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import Static
 
+from akgentic.core.messages.orchestrator import ProcessedMessage, ReceivedMessage
 from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.colors import AgentColorRegistry
@@ -62,6 +64,7 @@ class ChatApp(App[None]):
         self._client = client
         self._color_registry = AgentColorRegistry()
         self._tui_adapter = TuiCommandAdapter(command_registry) if command_registry else None
+        self._pending_messages: dict[uuid.UUID, str] = {}
 
     def compose(self) -> ComposeResult:
         """Compose the four-zone layout."""
@@ -257,10 +260,14 @@ class ChatApp(App[None]):
         widget: Widget,
         conversation: VerticalScroll,
     ) -> None:
-        """Mount an event widget with scroll-aware unread tracking."""
-        self._remove_thinking_indicator(conversation)
+        """Mount an event widget with remove-and-remount thinking indicator cycle."""
+        is_thinking = len(self._pending_messages) > 0
+        if is_thinking:
+            self._remove_thinking_indicator(conversation)
         at_bottom = self._is_at_bottom(conversation)
         await conversation.mount(widget)
+        if is_thinking:
+            await self._mount_thinking_indicator(conversation)
         if at_bottom:
             widget.scroll_visible(animate=False)
         else:
@@ -274,6 +281,7 @@ class ChatApp(App[None]):
 
     def _clear_conversation(self) -> None:
         """Clear conversation area and reset related state for team switch."""
+        self._pending_messages.clear()
         conversation = self.query_one("#conversation", VerticalScroll)
         conversation.remove_children()
         self._color_registry.reset()
@@ -304,6 +312,12 @@ class ChatApp(App[None]):
             try:
                 event_data = await self._connection_manager.receive_event()
                 _log.debug("WS event received: %s", event_data)
+                if isinstance(event_data, ReceivedMessage):
+                    await self._on_received_message(event_data, conversation)
+                    continue
+                if isinstance(event_data, ProcessedMessage):
+                    self._on_processed_message(event_data, conversation)
+                    continue
                 widget = self._event_router.to_widget(event_data, self._color_registry)
                 _log.debug("to_widget result: %s", type(widget).__name__ if widget else None)
                 if widget is not None:
@@ -311,6 +325,7 @@ class ChatApp(App[None]):
             except WsConnectionError as exc:
                 _log.debug("WS connection error in stream loop: %s", exc)
                 self._remove_thinking_indicator(conversation)
+                self._pending_messages.clear()
                 break
 
         from akgentic.infra.cli.tui.widgets.system_message import SystemMessage
@@ -327,6 +342,45 @@ class ChatApp(App[None]):
         for indicator in indicators:
             indicator.remove()
 
+    async def _on_received_message(
+        self, msg: ReceivedMessage, conversation: VerticalScroll
+    ) -> None:
+        """Handle ReceivedMessage telemetry -- track pending agent processing."""
+        agent_name = msg.sender.name if msg.sender else "Agent"
+        was_empty = len(self._pending_messages) == 0
+        self._pending_messages[msg.message_id] = agent_name
+        if was_empty:
+            await self._mount_thinking_indicator(conversation)
+        else:
+            self._update_thinking_indicator()
+
+    def _on_processed_message(
+        self, msg: ProcessedMessage, conversation: VerticalScroll
+    ) -> None:
+        """Handle ProcessedMessage telemetry -- remove pending agent processing."""
+        self._pending_messages.pop(msg.message_id, None)
+        if not self._pending_messages:
+            self._remove_thinking_indicator(conversation)
+        else:
+            self._update_thinking_indicator()
+
+    async def _mount_thinking_indicator(self, conversation: VerticalScroll) -> None:
+        """Mount a ThinkingIndicator at the bottom of the conversation."""
+        from akgentic.infra.cli.tui.widgets.thinking import ThinkingIndicator
+
+        indicator = ThinkingIndicator()
+        indicator.update_agents(list(self._pending_messages.values()))
+        await conversation.mount(indicator)
+        indicator.scroll_visible(animate=False)
+
+    def _update_thinking_indicator(self) -> None:
+        """Update the displayed agent names on the existing ThinkingIndicator."""
+        from akgentic.infra.cli.tui.widgets.thinking import ThinkingIndicator
+
+        indicators = self.query(ThinkingIndicator)
+        if indicators:
+            indicators[0].update_agents(list(self._pending_messages.values()))
+
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle user message submission."""
         text = event.text
@@ -341,13 +395,6 @@ class ChatApp(App[None]):
         welcome_nodes = conversation.query("#welcome, .welcome-msg")
         for node in welcome_nodes:
             node.remove()
-
-        # Mount ThinkingIndicator
-        from akgentic.infra.cli.tui.widgets.thinking import ThinkingIndicator
-
-        indicator = ThinkingIndicator()
-        await conversation.mount(indicator)
-        indicator.scroll_visible(animate=False)
 
         # Parse @mention for directed messages
         agent_name: str | None = None

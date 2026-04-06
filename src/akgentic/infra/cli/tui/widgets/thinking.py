@@ -22,6 +22,22 @@ class ThinkingIndicator(Static):
     def __init__(self) -> None:
         super().__init__(Text(f"{self._FRAMES[0]} Agent is thinking...", style="dim italic"))
         self._frame_idx: int = 0
+        self._agent_names: list[str] = []
+
+    def update_agents(self, agent_names: list[str]) -> None:
+        """Update the list of agents currently thinking and refresh display."""
+        self._agent_names = agent_names
+        frame = self._FRAMES[self._frame_idx]
+        self.update(Text(f"{frame} {self._format_agent_names()}", style="dim italic"))
+
+    def _format_agent_names(self) -> str:
+        """Format agent names into a human-readable thinking message."""
+        if not self._agent_names:
+            return "Agent is thinking..."
+        cleaned = [f"@{n.lstrip('@')}" for n in self._agent_names]
+        if len(cleaned) == 1:
+            return f"{cleaned[0]} is thinking..."
+        return f"{', '.join(cleaned[:-1])} and {cleaned[-1]} are thinking..."
 
     def on_mount(self) -> None:
         """Start the animation timer when mounted."""
@@ -31,4 +47,4 @@ class ThinkingIndicator(Static):
         """Advance to the next spinner frame."""
         self._frame_idx = (self._frame_idx + 1) % len(self._FRAMES)
         frame = self._FRAMES[self._frame_idx]
-        self.update(Text(f"{frame} Agent is thinking...", style="dim italic"))
+        self.update(Text(f"{frame} {self._format_agent_names()}", style="dim italic"))
