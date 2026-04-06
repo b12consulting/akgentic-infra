@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,6 +75,44 @@ def _wire_ingestion(services: TierServices, team_service: TeamService) -> None:
         services.ingestion.team_service = team_service
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """FastAPI lifespan handler implementing ADR-013 graceful shutdown sequence.
+
+    Startup: sets ``app.state.draining = False``.
+    Shutdown: sets draining flag, waits pre-drain delay, disconnects all
+    WebSocket clients, then stops all teams via ``worker_handle.stop_all()``.
+    """
+    app.state.draining = False
+    logger.info("Lifespan startup: draining=False")
+    yield
+    # --- Shutdown sequence (ADR-013 Decision 2) ---
+    app.state.draining = True
+    logger.info("Lifespan shutdown: draining=True")
+
+    delay = app.state.settings.shutdown_pre_drain_delay
+    if delay > 0:
+        logger.info("Pre-drain delay: sleeping %ds", delay)
+        await asyncio.sleep(delay)
+
+    logger.info("Disconnecting all WebSocket clients")
+    await app.state.connection_manager.disconnect_all()
+
+    timeout = app.state.settings.shutdown_drain_timeout
+    logger.info("Stopping all teams (timeout=%ds)", timeout)
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(app.state.services.worker_handle.stop_all),
+            timeout=timeout,
+        )
+        logger.info("stop_all() completed successfully")
+    except TimeoutError:
+        logger.warning(
+            "stop_all() exceeded shutdown_drain_timeout=%ds, proceeding with exit",
+            timeout,
+        )
+
+
 def _build_app(
     services: TierServices,
     team_service: TeamService,
@@ -87,7 +128,7 @@ def _build_app(
     Returns:
         Configured FastAPI application instance.
     """
-    app = FastAPI(title="Akgentic Platform API")
+    app = FastAPI(title="Akgentic Platform API", lifespan=_lifespan)
     _add_cors(app, settings.cors_origins)
     _store_state(app, services, team_service, settings)
     _inject_catalogs(services)

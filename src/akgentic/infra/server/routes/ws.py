@@ -31,6 +31,15 @@ class ConnectionManager:
     def __init__(self) -> None:
         self._waiting: dict[uuid.UUID, list[WebSocket]] = {}
         self._restored: set[uuid.UUID] = set()
+        self._active: set[WebSocket] = set()
+
+    def track(self, ws: WebSocket) -> None:
+        """Register an active WebSocket connection for shutdown tracking."""
+        self._active.add(ws)
+
+    def untrack(self, ws: WebSocket) -> None:
+        """Remove an active WebSocket connection from shutdown tracking."""
+        self._active.discard(ws)
 
     def add_waiting(self, team_id: uuid.UUID, ws: WebSocket) -> None:
         """Register an idle WebSocket waiting for a team to be restored."""
@@ -63,6 +72,24 @@ class ConnectionManager:
         """Clear the restored flag for a team."""
         self._restored.discard(team_id)
 
+    async def disconnect_all(self) -> None:
+        """Close all active WebSocket connections with code 1001 (Going Away).
+
+        Iterates a snapshot of ``_active`` to avoid mutation during iteration.
+        Individual failures are logged and skipped so one broken connection
+        does not block the rest.
+        """
+        snapshot = set(self._active)
+        closed = 0
+        for ws in snapshot:
+            try:
+                await ws.close(code=1001, reason="Server shutting down")
+                closed += 1
+            except Exception:  # noqa: BLE001
+                logger.warning("Failed to close WebSocket during disconnect_all")
+        self._active.clear()
+        logger.info("disconnect_all: closed %d connection(s)", closed)
+
 
 def _get_team_service(ws: WebSocket) -> TeamService:
     """Extract TeamService from app.state."""
@@ -92,14 +119,18 @@ async def websocket_events(websocket: WebSocket, team_id: uuid.UUID) -> None:
         return
 
     await websocket.accept()
+    conn_mgr.track(websocket)
     logger.info("WebSocket connected: team_id=%s", team_id)
 
     adapter: FrontendAdapter | None = getattr(websocket.app.state, "frontend_adapter", None)
 
-    if process.status == TeamStatus.RUNNING:
-        await _run_streaming_loop(websocket, service, team_id, conn_mgr, adapter)
-    else:
-        await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
+    try:
+        if process.status == TeamStatus.RUNNING:
+            await _run_streaming_loop(websocket, service, team_id, conn_mgr, adapter)
+        else:
+            await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
+    finally:
+        conn_mgr.untrack(websocket)
 
 
 async def _run_streaming_loop(
