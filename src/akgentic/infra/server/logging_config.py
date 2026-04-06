@@ -17,6 +17,20 @@ _FORMAT = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
+class _DowngradeGracefulShutdownFilter(logging.Filter):
+    """Downgrade Uvicorn's 'Cancel N running task(s)' from ERROR to WARNING.
+
+    This message is expected when ``timeout_graceful_shutdown`` cancels
+    WebSocket streaming tasks during shutdown (see ADR-015).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.ERROR and "timeout graceful shutdown exceeded" in record.msg:
+            record.levelno = logging.WARNING
+            record.levelname = "WARNING"
+        return True
+
+
 def configure_logging(level: str) -> None:
     """Configure the root logger with a human-readable StreamHandler.
 
@@ -35,3 +49,5 @@ def configure_logging(level: str) -> None:
 
     for name in _THIRD_PARTY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+
+    logging.getLogger("uvicorn.error").addFilter(_DowngradeGracefulShutdownFilter())

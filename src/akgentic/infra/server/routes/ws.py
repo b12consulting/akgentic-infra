@@ -181,8 +181,8 @@ async def _run_streaming_loop(
         logger.debug("StreamClosed for team %s, transitioning to idle loop", team_id)
         conn_mgr.clear_restored(team_id)
         await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
-    except WebSocketDisconnect:
-        logger.info("WebSocket disconnected: team_id=%s", team_id)
+    except (WebSocketDisconnect, asyncio.CancelledError):
+        logger.info("WebSocket streaming stopped: team_id=%s", team_id)
     finally:
         reader.close()
 

@@ -263,23 +263,33 @@ src/akgentic/infra/
 
 ## Quick Start
 
-```bash
-# Start the community-tier server
-ak-infra chat --create my-team-entry
-```
-
-Or start programmatically:
+**1. Start the server** (from the `akgentic-framework` root):
 
 ```python
+# src/infra_server.py
+from pathlib import Path
+import uvicorn
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
-import uvicorn
 
-settings = CommunitySettings()
+settings = CommunitySettings(catalog_path=Path("./src/catalog"))
 services = wire_community(settings)
 app = create_app(services, settings)
-uvicorn.run(app, host=settings.host, port=settings.port)
+
+if __name__ == "__main__":
+    uvicorn.run(app, host=settings.host, port=settings.port, timeout_graceful_shutdown=1)
+```
+
+```bash
+python src/infra_server.py
+```
+
+**2. Connect with the CLI** (in a second terminal):
+
+```bash
+# Create a team from the catalog and open the chat TUI
+ak-infra chat --create agent-team
 ```
 
 ## Protocols
@@ -297,6 +307,8 @@ These are the contracts that department/enterprise tiers must implement. All use
 | `InteractionChannelIngestion`  | `channels.py`       | Inbound webhook routing to teams               |
 | `ChannelParser`                | `channels.py`       | Parse channel-specific webhook payloads        |
 | `ChannelRegistry`              | `channels.py`       | Map external channel users to active teams     |
+| `EventStream`                  | `event_stream.py`   | Tier-agnostic event streaming with replay and fan-out (ADR-010) |
+| `StreamReader`                 | `event_stream.py`   | Cursor-based blocking reader for a team's event stream |
 | `HealthMonitor`                | `health.py`         | Worker liveness detection                      |
 | `RecoveryPolicy`               | `recovery.py`       | Recovery behavior on worker failure            |
 
