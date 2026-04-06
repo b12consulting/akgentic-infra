@@ -21,11 +21,15 @@ router = APIRouter()
 
 
 class ConnectionManager:
-    """Tracks idle WebSocket connections waiting for team restore.
+    """Manages WebSocket connections for restore notification and graceful shutdown.
 
-    Stored on ``app.state.connection_manager`` so the restore endpoint
-    can notify waiting connections. Uses a ``_restored`` set to signal
-    idle loops that a team has been restored.
+    Stored on ``app.state.connection_manager``. Tracks:
+    - **active connections** (``_active``) -- every accepted WebSocket, for
+      ``disconnect_all()`` during graceful shutdown (ADR-013).
+    - **waiting connections** (``_waiting``) -- idle WebSockets waiting for
+      a stopped team to be restored.
+    - **restored flags** (``_restored``) -- signals idle loops that a team
+      has been restored so they can transition to streaming.
     """
 
     def __init__(self) -> None:
@@ -81,14 +85,16 @@ class ConnectionManager:
         """
         snapshot = set(self._active)
         closed = 0
+        failed = 0
         for ws in snapshot:
             try:
                 await ws.close(code=1001, reason="Server shutting down")
                 closed += 1
             except Exception:  # noqa: BLE001
-                logger.warning("Failed to close WebSocket during disconnect_all")
+                failed += 1
+                logger.warning("Failed to close WebSocket during disconnect_all", exc_info=True)
         self._active.clear()
-        logger.info("disconnect_all: closed %d connection(s)", closed)
+        logger.info("disconnect_all: closed %d, failed %d connection(s)", closed, failed)
 
 
 def _get_team_service(ws: WebSocket) -> TeamService:
