@@ -53,3 +53,16 @@ async def test_readiness_response_content_type_is_json() -> None:
     async with AsyncClient(transport=transport_drain, base_url="http://test") as client:
         resp_drain = await client.get("/readiness")
     assert resp_drain.headers["content-type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_readiness_defaults_to_ready_when_draining_attr_missing() -> None:
+    """GET /readiness returns 200 when app.state.draining is not set (defensive getattr)."""
+    app = FastAPI()
+    # Intentionally do NOT set app.state.draining
+    app.include_router(router)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/readiness")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ready"}
