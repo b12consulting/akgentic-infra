@@ -58,7 +58,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     catalogs = _build_catalogs(settings)
 
     local_placement = LocalPlacement(team_manager, service_registry)
-    local_worker_handle = LocalWorkerHandle(team_manager, service_registry)
+    local_worker_handle = LocalWorkerHandle(team_manager, service_registry, actor_system)
 
     logger.info(
         "Community services wired: placement=%s, worker=%s",

@@ -67,3 +67,21 @@ class WorkerHandle(Protocol):
             The Process metadata, or None if not found.
         """
         ...
+
+    def stop_all(self) -> None:
+        """Stop all teams on this worker node during graceful shutdown.
+
+        Called by the lifespan handler to drain every team before the process
+        exits.  Implementations iterate all running teams and call
+        ``stop_team()`` for each, logging and skipping individual failures so
+        that one broken team cannot block shutdown of the rest.
+
+        Remote / stub handles implement this as a no-op — only the local
+        handle that owns the ``TeamManager`` performs real work.
+
+        Error contract (ADR-013):
+            Individual ``stop_team()`` failures are logged and skipped.
+            ``ActorSystem.shutdown()`` is called after all teams are processed
+            as an orphan sweep for leaked actors.
+        """
+        ...

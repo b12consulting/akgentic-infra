@@ -6,6 +6,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from akgentic.core import ActorSystem
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
@@ -29,9 +30,11 @@ class LocalWorkerHandle:
         self,
         team_manager: TeamManager,
         service_registry: ServiceRegistry,
+        actor_system: ActorSystem,
     ) -> None:
         self._team_manager = team_manager
         self._service_registry = service_registry
+        self._actor_system = actor_system
 
     def stop_team(self, team_id: uuid.UUID) -> None:
         """Stop a running team by delegating to TeamManager."""
@@ -52,3 +55,17 @@ class LocalWorkerHandle:
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         """Get team metadata by delegating to TeamManager."""
         return self._team_manager.get_team(team_id)
+
+    def stop_all(self) -> None:
+        """Stop all teams and shut down the actor system for graceful shutdown."""
+        logger.info("stop_all: stopping all teams on this worker node")
+        team_ids = list(self._team_manager._runtimes.keys())
+        for team_id in team_ids:
+            try:
+                self.stop_team(team_id)
+            except Exception:
+                logger.exception(
+                    "Failed to stop team %s during stop_all, skipping", team_id
+                )
+        self._actor_system.shutdown()
+        logger.info("stop_all: completed — %d teams processed", len(team_ids))
