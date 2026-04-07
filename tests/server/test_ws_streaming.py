@@ -34,7 +34,6 @@ def _make_mocks() -> tuple[AsyncMock, MagicMock, uuid.UUID, ConnectionManager]:
     return websocket, service, team_id, conn_mgr
 
 
-@pytest.mark.asyncio
 async def test_cancelled_error_closes_reader() -> None:
     """CancelledError triggers reader.close() -- no resource leak (AC4)."""
     websocket, service, team_id, conn_mgr = _make_mocks()
@@ -54,7 +53,6 @@ async def test_cancelled_error_closes_reader() -> None:
     reader.close.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_cancelled_error_logs_streaming_stopped(caplog: pytest.LogCaptureFixture) -> None:
     """CancelledError emits 'WebSocket streaming stopped' log message (AC4)."""
     websocket, service, team_id, conn_mgr = _make_mocks()
@@ -73,7 +71,6 @@ async def test_cancelled_error_logs_streaming_stopped(caplog: pytest.LogCaptureF
     assert any("WebSocket streaming stopped" in msg for msg in caplog.messages)
 
 
-@pytest.mark.asyncio
 async def test_cancelled_error_does_not_propagate() -> None:
     """CancelledError is caught -- no unhandled exception escapes (AC4)."""
     websocket, service, team_id, conn_mgr = _make_mocks()

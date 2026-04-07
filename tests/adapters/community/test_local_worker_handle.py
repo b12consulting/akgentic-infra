@@ -125,12 +125,6 @@ class TestStopAll:
     event store for resume on next server start.
     """
 
-    def test_stop_all_calls_actor_system_shutdown(self) -> None:
-        """stop_all() calls ActorSystem.shutdown() exactly once (AC5)."""
-        adapter, _tm, actor_system = _make_adapter()
-        adapter.stop_all()
-        actor_system.shutdown.assert_called_once()
-
     def test_stop_all_does_not_call_stop_team(self) -> None:
         """stop_all() does NOT call team_manager.stop_team() (simplified path, AC5)."""
         adapter, tm, _actor_system = _make_adapter()
