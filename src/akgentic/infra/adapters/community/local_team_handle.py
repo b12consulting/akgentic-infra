@@ -37,6 +37,10 @@ class LocalTeamHandle:
         """Send a message to a specific agent within the team."""
         self._runtime.send_to(agent_name, content)
 
+    def send_from_to(self, sender_name: str, recipient_name: str, content: str) -> None:
+        """Send a message from a specific agent to another agent."""
+        self._runtime.send_from_to(sender_name, recipient_name, content)
+
     def process_human_input(self, content: str, message: Message) -> None:
         """Route human input to the team's HumanProxy agent.
 

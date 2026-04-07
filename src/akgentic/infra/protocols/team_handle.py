@@ -51,6 +51,16 @@ class TeamHandle(Protocol):
         """
         ...
 
+    def send_from_to(self, sender_name: str, recipient_name: str, content: str) -> None:
+        """Send a message from a specific agent to another agent.
+
+        Args:
+            sender_name: Name of the agent to send from.
+            recipient_name: Name of the agent to send to.
+            content: The message content to send.
+        """
+        ...
+
     def process_human_input(self, content: str, message: Message) -> None:
         """Route human input to the team's HumanProxy agent.
 
