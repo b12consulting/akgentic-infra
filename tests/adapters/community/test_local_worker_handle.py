@@ -118,60 +118,27 @@ class TestLocalWorkerHandleBehavior:
 
 
 class TestStopAll:
-    """AC #1-3, #8: stop_all() stops all teams and shuts down ActorSystem."""
+    """ADR-015 Decision 2: stop_all() calls actor_system.shutdown() directly.
 
-    def test_stop_all_calls_stop_team_for_each_runtime(self) -> None:
-        """stop_all() calls stop_team() for every team in _runtimes."""
-        adapter, tm, _ = _make_adapter()
-        tid1, tid2 = uuid.uuid4(), uuid.uuid4()
-        tm._runtimes = {tid1: MagicMock(), tid2: MagicMock()}
-        adapter.stop_all()
-        tm.stop_team.assert_any_call(tid1)
-        tm.stop_team.assert_any_call(tid2)
-        assert tm.stop_team.call_count == 2
+    Per ADR-015, stop_all() skips per-team graceful teardown and calls
+    actor_system.shutdown() directly. Teams keep RUNNING status in the
+    event store for resume on next server start.
+    """
 
-    def test_stop_all_logs_and_skips_on_failure(self) -> None:
-        """stop_all() logs and skips when one stop_team() raises."""
-        adapter, tm, actor_system = _make_adapter()
-        tid1, tid2 = uuid.uuid4(), uuid.uuid4()
-        tm._runtimes = {tid1: MagicMock(), tid2: MagicMock()}
-        tm.stop_team.side_effect = [RuntimeError("boom"), None]
-        adapter.stop_all()
-        # Both were attempted
-        assert tm.stop_team.call_count == 2
-        # ActorSystem.shutdown() still called
-        actor_system.shutdown.assert_called_once()
-
-    def test_stop_all_calls_actor_system_shutdown_after_teams(self) -> None:
-        """stop_all() calls ActorSystem.shutdown() after all teams processed."""
-        adapter, tm, actor_system = _make_adapter()
-        call_order: list[str] = []
-        tm._runtimes = {uuid.uuid4(): MagicMock()}
-        tm.stop_team.side_effect = lambda _tid: call_order.append("stop_team")
-        actor_system.shutdown.side_effect = lambda: call_order.append("shutdown")
-        adapter.stop_all()
-        assert call_order == ["stop_team", "shutdown"]
-
-    def test_stop_all_calls_shutdown_with_default_timeout(self) -> None:
-        """stop_all() calls ActorSystem.shutdown() with no explicit timeout (uses default)."""
-        adapter, tm, actor_system = _make_adapter()
-        tm._runtimes = {}
-        adapter.stop_all()
-        actor_system.shutdown.assert_called_once_with()
-
-    def test_stop_all_calls_shutdown_even_if_all_stop_team_fail(self) -> None:
-        """ActorSystem.shutdown() is called even when every stop_team() raises."""
-        adapter, tm, actor_system = _make_adapter()
-        tid1, tid2 = uuid.uuid4(), uuid.uuid4()
-        tm._runtimes = {tid1: MagicMock(), tid2: MagicMock()}
-        tm.stop_team.side_effect = RuntimeError("all fail")
+    def test_stop_all_calls_actor_system_shutdown(self) -> None:
+        """stop_all() calls ActorSystem.shutdown() exactly once (AC5)."""
+        adapter, _tm, actor_system = _make_adapter()
         adapter.stop_all()
         actor_system.shutdown.assert_called_once()
 
-    def test_stop_all_with_no_runtimes(self) -> None:
-        """stop_all() with empty _runtimes just calls ActorSystem.shutdown()."""
-        adapter, tm, actor_system = _make_adapter()
-        tm._runtimes = {}
+    def test_stop_all_does_not_call_stop_team(self) -> None:
+        """stop_all() does NOT call team_manager.stop_team() (simplified path, AC5)."""
+        adapter, tm, _actor_system = _make_adapter()
         adapter.stop_all()
         tm.stop_team.assert_not_called()
-        actor_system.shutdown.assert_called_once()
+
+    def test_stop_all_calls_shutdown_with_no_arguments(self) -> None:
+        """stop_all() calls ActorSystem.shutdown() with no explicit timeout."""
+        adapter, _tm, actor_system = _make_adapter()
+        adapter.stop_all()
+        actor_system.shutdown.assert_called_once_with()

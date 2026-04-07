@@ -1,13 +1,15 @@
-"""Integration tests — graceful shutdown sequence (Story 14.5, AC #1-3, #5).
+"""Integration tests — graceful shutdown sequence (Story 14.5 + ADR-015).
 
 Exercises the real wired shutdown stack (LocalWorkerHandle, ConnectionManager,
-lifespan) with TestModel LLM injection.  No mocks except targeted patching in
-``test_stop_all_skips_failures_integration``.
+lifespan) with TestModel LLM injection.
+
+ADR-015 Decision 2 simplified stop_all(): it calls actor_system.shutdown()
+directly without per-team stop_team() calls.  Teams keep RUNNING status so
+they can be resumed on next server start.
 """
 
 from __future__ import annotations
 
-import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,15 +25,15 @@ pytestmark = [pytest.mark.smoke]
 
 
 # ---------------------------------------------------------------------------
-# AC #1 — stop_all stops running teams and calls ActorSystem.shutdown()
+# AC #1 — stop_all shuts down actor system, teams stay RUNNING for resume
 # ---------------------------------------------------------------------------
 
 
-def test_stop_all_stops_running_teams_integration(
+def test_stop_all_shuts_down_actor_system_teams_stay_running(
     smoke_services: CommunityServices,
     smoke_client: TestClient,
 ) -> None:
-    """Create a team, verify running, call stop_all(), verify stopped."""
+    """stop_all() shuts down the actor system; teams remain 'running' for resume."""
     team_id = create_team(smoke_client)
 
     # Verify team is running
@@ -39,41 +41,39 @@ def test_stop_all_stops_running_teams_integration(
     assert resp.status_code == 200
     assert resp.json()["status"] == "running"
 
-    # stop_all should stop team and shut down actor system
-    smoke_services.worker_handle.stop_all()
+    with patch.object(
+        smoke_services.worker_handle._actor_system,
+        "shutdown",
+        wraps=smoke_services.worker_handle._actor_system.shutdown,
+    ) as mock_shutdown:
+        smoke_services.worker_handle.stop_all()
 
-    # After stop_all, team should be stopped (or absent from runtimes)
+    # Actor system must be shut down
+    mock_shutdown.assert_called_once()
+
+    # ADR-015: teams keep RUNNING status for resume on next server start
     resp = smoke_client.get(f"/teams/{team_id}")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "stopped"
+    assert resp.json()["status"] == "running"
 
 
 # ---------------------------------------------------------------------------
-# AC #2 — stop_all skips failures without blocking remaining teams
+# AC #2 — stop_all uses simplified path: no per-team stop_team() calls
 # ---------------------------------------------------------------------------
 
 
-def test_stop_all_skips_failures_integration(
+def test_stop_all_does_not_call_stop_team(
     smoke_services: CommunityServices,
     smoke_client: TestClient,
 ) -> None:
-    """Create two teams, make first stop fail, verify second still stopped and shutdown called."""
-    team_id_1 = create_team(smoke_client)
-    team_id_2 = create_team(smoke_client)
-
-    tid_1 = uuid.UUID(team_id_1)
-
-    original_stop = smoke_services.worker_handle.stop_team
-
-    def _failing_stop(team_id: uuid.UUID) -> None:
-        if team_id == tid_1:
-            raise RuntimeError("Simulated stop failure")
-        original_stop(team_id)
+    """stop_all() calls actor_system.shutdown() directly, never stop_team()."""
+    create_team(smoke_client)
+    create_team(smoke_client)
 
     with (
         patch.object(
-            smoke_services.worker_handle, "stop_team", side_effect=_failing_stop
-        ),
+            smoke_services.worker_handle, "stop_team",
+        ) as mock_stop_team,
         patch.object(
             smoke_services.worker_handle._actor_system,
             "shutdown",
@@ -82,14 +82,9 @@ def test_stop_all_skips_failures_integration(
     ):
         smoke_services.worker_handle.stop_all()
 
-    # First team: stop failed, but stop_all should have continued
-    # Second team: should be stopped
-    resp2 = smoke_client.get(f"/teams/{team_id_2}")
-    assert resp2.status_code == 200
-    assert resp2.json()["status"] == "stopped"
-
-    # ActorSystem.shutdown() must always be called, even after team stop failures
+    # Simplified path: actor_system.shutdown() only, no per-team teardown
     mock_shutdown.assert_called_once()
+    mock_stop_team.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

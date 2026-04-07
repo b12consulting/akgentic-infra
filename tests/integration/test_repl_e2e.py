@@ -147,8 +147,15 @@ def _poll_events_have_content(server_url: str, team_id: str) -> bool:
 # ===========================================================================
 
 
+@pytest.mark.integration
 class TestStateTransitionWS:
-    """Verify WebSocket event delivery after REPL state transitions."""
+    """Verify WebSocket event delivery after REPL state transitions.
+
+    Requires a real TCP server with async WebSocket connections.
+    Excluded from default test run (``-m 'not integration'``) because
+    the daemon-thread uvicorn + async websockets client combination
+    hangs without a dedicated event-loop setup.
+    """
 
     async def test_t1_basic_send_and_receive(self, smoke_server: str) -> None:
         """T1: Send message → verify WS event arrives."""
