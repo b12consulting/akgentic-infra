@@ -37,10 +37,15 @@ class TelemetrySubscriber:
         """
         if self._restoring:
             return
-        msg_type = type(msg).__name__
+        
+        sender = msg.sender.name if msg.sender else "unknown"
+        msg_type = msg.__class__.__name__
+        team_id = msg.team_id
         logfire.info(
-            "orchestrator event: {msg_type}",
+            "{sender} event: {msg_type} - {team_id}",
+            sender=sender,
             msg_type=msg_type,
+            team_id=team_id,
         )
         logger.debug("Telemetry event: %s", msg_type)
 
