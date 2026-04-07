@@ -696,6 +696,9 @@ def test_worker_handle_is_runtime_checkable() -> None:
         def get_team(self, team_id: uuid.UUID) -> object:
             return None
 
+        def stop_all(self) -> None:
+            pass
+
     assert isinstance(FakeWorkerHandle(), WorkerHandle)
 
 
@@ -775,11 +778,29 @@ def test_worker_handle_get_team_returns_process_or_none() -> None:
     assert hints["return"] == Process | None
 
 
+def test_worker_handle_has_stop_all() -> None:
+    """WorkerHandle defines stop_all with no parameters (besides self)."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    assert hasattr(WorkerHandle, "stop_all")
+    sig = inspect.signature(WorkerHandle.stop_all)
+    params = [p for p in sig.parameters if p != "self"]
+    assert params == []
+
+
+def test_worker_handle_stop_all_returns_none() -> None:
+    """WorkerHandle.stop_all returns None."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    hints = get_type_hints(WorkerHandle.stop_all)
+    assert hints["return"] is type(None)
+
+
 def test_worker_handle_method_count() -> None:
-    """WorkerHandle has exactly 4 public methods."""
+    """WorkerHandle has exactly 5 public methods."""
     from akgentic.infra.protocols import WorkerHandle
 
     public_methods = [
         m for m in dir(WorkerHandle) if not m.startswith("_") and callable(getattr(WorkerHandle, m))
     ]
-    assert len(public_methods) == 4
+    assert len(public_methods) == 5

@@ -134,7 +134,15 @@ class TestSettingsHierarchy:
     def test_server_settings_has_only_tier_agnostic_fields(self) -> None:
         """ServerSettings has only tier-agnostic fields."""
         server_fields = set(ServerSettings.model_fields.keys())
-        expected = {"host", "port", "log_level", "cors_origins", "frontend_adapter"}
+        expected = {
+            "host",
+            "port",
+            "log_level",
+            "cors_origins",
+            "frontend_adapter",
+            "shutdown_drain_timeout",
+            "shutdown_pre_drain_delay",
+        }
         assert server_fields == expected, (
             f"ServerSettings fields mismatch: got {server_fields}, expected {expected}"
         )
@@ -269,11 +277,13 @@ class TestCommunitySettingsDefaults:
         assert settings.catalog_path == Path("data/catalog")
 
     def test_inherits_base_fields(self) -> None:
-        """CommunitySettings inherits host, port, cors_origins from ServerSettings."""
+        """CommunitySettings inherits host, port, cors_origins, shutdown fields."""
         settings = CommunitySettings()
         assert settings.host == "0.0.0.0"
         assert settings.port == 8000
         assert settings.cors_origins == ["*"]
+        assert settings.shutdown_drain_timeout == 30
+        assert settings.shutdown_pre_drain_delay == 0
 
     def test_event_store_path_from_env(self) -> None:
         """AKGENTIC_EVENT_STORE_PATH overrides event_store_path field."""
@@ -320,3 +330,55 @@ class TestCommunitySettingsDefaults:
         """All CommunitySettings fields have descriptions."""
         for name, field_info in CommunitySettings.model_fields.items():
             assert field_info.description is not None, f"Field {name} missing description"
+
+
+class TestShutdownSettings:
+    """Tests for shutdown_drain_timeout and shutdown_pre_drain_delay fields."""
+
+    def test_default_shutdown_drain_timeout(self) -> None:
+        """Default shutdown_drain_timeout is 30."""
+        settings = ServerSettings()
+        assert settings.shutdown_drain_timeout == 30
+
+    def test_default_shutdown_pre_drain_delay(self) -> None:
+        """Default shutdown_pre_drain_delay is 0."""
+        settings = ServerSettings()
+        assert settings.shutdown_pre_drain_delay == 0
+
+    def test_shutdown_drain_timeout_from_env(self) -> None:
+        """AKGENTIC_SHUTDOWN_DRAIN_TIMEOUT overrides shutdown_drain_timeout field."""
+        os.environ["AKGENTIC_SHUTDOWN_DRAIN_TIMEOUT"] = "60"
+        try:
+            settings = ServerSettings()
+            assert settings.shutdown_drain_timeout == 60
+        finally:
+            del os.environ["AKGENTIC_SHUTDOWN_DRAIN_TIMEOUT"]
+
+    def test_shutdown_pre_drain_delay_from_env(self) -> None:
+        """AKGENTIC_SHUTDOWN_PRE_DRAIN_DELAY overrides shutdown_pre_drain_delay field."""
+        os.environ["AKGENTIC_SHUTDOWN_PRE_DRAIN_DELAY"] = "5"
+        try:
+            settings = ServerSettings()
+            assert settings.shutdown_pre_drain_delay == 5
+        finally:
+            del os.environ["AKGENTIC_SHUTDOWN_PRE_DRAIN_DELAY"]
+
+    def test_shutdown_fields_have_descriptions(self) -> None:
+        """Both shutdown fields have non-None descriptions."""
+        fields = ServerSettings.model_fields
+        assert fields["shutdown_drain_timeout"].description is not None
+        assert fields["shutdown_pre_drain_delay"].description is not None
+
+    def test_shutdown_drain_timeout_rejects_negative(self) -> None:
+        """shutdown_drain_timeout rejects negative values (ge=0 constraint)."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="shutdown_drain_timeout"):
+            ServerSettings(shutdown_drain_timeout=-1)
+
+    def test_shutdown_pre_drain_delay_rejects_negative(self) -> None:
+        """shutdown_pre_drain_delay rejects negative values (ge=0 constraint)."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="shutdown_pre_drain_delay"):
+            ServerSettings(shutdown_pre_drain_delay=-1)
