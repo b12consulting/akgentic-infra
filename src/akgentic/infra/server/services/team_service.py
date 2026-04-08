@@ -106,6 +106,20 @@ class TeamService:
         handle.send_to(agent_name, content)
         logger.debug("Message sent to agent '%s' in team %s", agent_name, team_id)
 
+    def send_message_from_to(
+        self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str
+    ) -> None:
+        """Send a message from a specific agent to another agent in a running team.
+
+        Raises:
+            ValueError: If team not found, not running, sender not found, or recipient not found.
+        """
+        handle = self._get_running_handle(team_id)
+        handle.send_from_to(sender_name, recipient_name, content)
+        logger.debug(
+            "Message sent from '%s' to '%s' in team %s", sender_name, recipient_name, team_id
+        )
+
     def process_human_input(
         self,
         team_id: uuid.UUID,
