@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,6 +43,77 @@ class TestConnectionManager:
         assert mgr.is_restored(tid)
         mgr.clear_restored(tid)
         assert not mgr.is_restored(tid)
+
+
+class TestConnectionManagerActiveTracking:
+    """Unit tests for ConnectionManager active tracking and disconnect_all (AC #4, #6, #7, #9)."""
+
+    def test_track_adds_websocket(self) -> None:
+        """AC #7: track() adds a WebSocket to the active set."""
+        mgr = ConnectionManager()
+        ws = MagicMock()
+        mgr.track(ws)
+        assert ws in mgr._active
+
+    def test_untrack_removes_websocket(self) -> None:
+        """AC #7: untrack() removes a WebSocket from the active set."""
+        mgr = ConnectionManager()
+        ws = MagicMock()
+        mgr.track(ws)
+        mgr.untrack(ws)
+        assert ws not in mgr._active
+
+    def test_untrack_nonexistent_no_error(self) -> None:
+        """untrack() does not raise for untracked WebSocket."""
+        mgr = ConnectionManager()
+        mgr.untrack(MagicMock())  # no error
+
+    @pytest.mark.asyncio
+    async def test_disconnect_all_closes_with_1001(self) -> None:
+        """AC #4: disconnect_all sends close code 1001 to all tracked connections."""
+        mgr = ConnectionManager()
+        ws1 = AsyncMock()
+        ws2 = AsyncMock()
+        mgr.track(ws1)
+        mgr.track(ws2)
+
+        await mgr.disconnect_all()
+
+        ws1.close.assert_awaited_once_with(code=1001, reason="Server shutting down")
+        ws2.close.assert_awaited_once_with(code=1001, reason="Server shutting down")
+
+    @pytest.mark.asyncio
+    async def test_disconnect_all_clears_active_set(self) -> None:
+        """AC #9: disconnect_all clears the active set after closing."""
+        mgr = ConnectionManager()
+        ws = AsyncMock()
+        mgr.track(ws)
+
+        await mgr.disconnect_all()
+
+        assert len(mgr._active) == 0
+
+    @pytest.mark.asyncio
+    async def test_disconnect_all_logs_and_skips_broken_connections(self) -> None:
+        """AC #9: disconnect_all logs and skips broken connections."""
+        mgr = ConnectionManager()
+        ws_good = AsyncMock()
+        ws_broken = AsyncMock()
+        ws_broken.close.side_effect = RuntimeError("already closed")
+        mgr.track(ws_good)
+        mgr.track(ws_broken)
+
+        await mgr.disconnect_all()  # should not raise
+
+        ws_good.close.assert_awaited_once_with(code=1001, reason="Server shutting down")
+        assert len(mgr._active) == 0
+
+    @pytest.mark.asyncio
+    async def test_disconnect_all_empty_set(self) -> None:
+        """disconnect_all on empty set completes without error."""
+        mgr = ConnectionManager()
+        await mgr.disconnect_all()
+        assert len(mgr._active) == 0
 
 
 class TestWebSocketRoute:
