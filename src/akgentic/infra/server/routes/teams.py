@@ -132,6 +132,24 @@ def send_message_to_agent(
         _raise_action_error(exc)
 
 
+@router.post("/{team_id}/message/from/{sender_name}/to/{recipient_name}", status_code=204)
+def send_message_from_to(
+    team_id: uuid.UUID,
+    sender_name: str,
+    recipient_name: str,
+    body: SendMessageRequest,
+    service: TeamService = Depends(get_team_service),
+) -> None:
+    """Send a message from a specific agent to another agent in a running team."""
+    logger.info(
+        "POST /teams/%s/message/from/%s/to/%s", team_id, sender_name, recipient_name
+    )
+    try:
+        service.send_message_from_to(team_id, sender_name, recipient_name, body.content)
+    except ValueError as exc:
+        _raise_action_error(exc)
+
+
 @router.post("/{team_id}/human-input", status_code=204)
 def human_input(
     team_id: uuid.UUID,

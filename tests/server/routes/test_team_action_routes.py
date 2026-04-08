@@ -67,6 +67,60 @@ def test_send_message_to_agent_unknown_agent(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def test_send_message_from_to_success(client: TestClient) -> None:
+    """POST /teams/{id}/message/from/{sender}/to/{recipient} returns 204."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    resp = client.post(
+        f"/teams/{team_id}/message/from/@Human/to/@Manager",
+        json={"content": "hello"},
+    )
+    assert resp.status_code == 204
+
+
+def test_send_message_from_to_not_found_team(client: TestClient) -> None:
+    """POST send_from_to on non-existent team returns 404."""
+    resp = client.post(
+        f"/teams/{uuid.uuid4()}/message/from/@Human/to/@Manager",
+        json={"content": "hello"},
+    )
+    assert resp.status_code == 404
+
+
+def test_send_message_from_to_stopped_team(client: TestClient) -> None:
+    """POST send_from_to on stopped team returns 409."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    client.post(f"/teams/{team_id}/stop")
+    resp = client.post(
+        f"/teams/{team_id}/message/from/@Human/to/@Manager",
+        json={"content": "hello"},
+    )
+    assert resp.status_code == 409
+
+
+def test_send_message_from_to_unknown_sender(client: TestClient) -> None:
+    """POST send_from_to with unknown sender returns 404."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    resp = client.post(
+        f"/teams/{team_id}/message/from/@Ghost/to/@Manager",
+        json={"content": "hello"},
+    )
+    assert resp.status_code == 404
+
+
+def test_send_message_from_to_unknown_recipient(client: TestClient) -> None:
+    """POST send_from_to with unknown recipient returns 404."""
+    create_resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    resp = client.post(
+        f"/teams/{team_id}/message/from/@Human/to/@Ghost",
+        json={"content": "hello"},
+    )
+    assert resp.status_code == 404
+
+
 def test_human_input_not_found_team(client: TestClient) -> None:
     """POST /teams/{id}/human-input on non-existent team returns 404."""
     resp = client.post(

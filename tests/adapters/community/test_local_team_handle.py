@@ -49,6 +49,17 @@ class TestLocalTeamHandleSendTo:
         runtime.send_to.assert_called_once_with("analyst", "do analysis")
 
 
+class TestLocalTeamHandleSendFromTo:
+    """AC2: send_from_to() delegates to TeamRuntime.send_from_to()."""
+
+    def test_send_from_to_delegates_to_runtime(self) -> None:
+        """send_from_to(sender, recipient, content) calls runtime.send_from_to()."""
+        runtime = MagicMock()
+        handle = LocalTeamHandle(runtime)
+        handle.send_from_to("@Developer", "@Manager", "hello")
+        runtime.send_from_to.assert_called_once_with("@Developer", "@Manager", "hello")
+
+
 class TestLocalTeamHandleProcessHumanInput:
     """AC1: process_human_input() encapsulates HumanProxy lookup + delegation."""
 

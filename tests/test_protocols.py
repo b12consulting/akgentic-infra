@@ -464,6 +464,9 @@ def test_team_handle_is_runtime_checkable() -> None:
         def send_to(self, agent_name: str, content: str) -> None:
             pass
 
+        def send_from_to(self, sender_name: str, recipient_name: str, content: str) -> None:
+            pass
+
         def process_human_input(self, content: str, message: object) -> None:
             pass
 
@@ -495,6 +498,25 @@ def test_team_handle_has_send_to() -> None:
     assert "content" in sig.parameters
 
 
+def test_team_handle_has_send_from_to() -> None:
+    """TeamHandle defines send_from_to with sender_name, recipient_name, and content parameters."""
+    from akgentic.infra.protocols import TeamHandle
+
+    assert hasattr(TeamHandle, "send_from_to")
+    sig = inspect.signature(TeamHandle.send_from_to)
+    assert "sender_name" in sig.parameters
+    assert "recipient_name" in sig.parameters
+    assert "content" in sig.parameters
+
+
+def test_team_handle_send_from_to_returns_none() -> None:
+    """TeamHandle.send_from_to returns None."""
+    from akgentic.infra.protocols import TeamHandle
+
+    hints = get_type_hints(TeamHandle.send_from_to)
+    assert hints["return"] is type(None)
+
+
 def test_team_handle_has_process_human_input() -> None:
     """TeamHandle defines process_human_input with content and message parameters."""
     from akgentic.infra.protocols import TeamHandle
@@ -524,13 +546,13 @@ def test_team_handle_has_unsubscribe() -> None:
 
 
 def test_team_handle_method_count() -> None:
-    """TeamHandle has exactly 5 public methods."""
+    """TeamHandle has exactly 6 public methods."""
     from akgentic.infra.protocols import TeamHandle
 
     public_methods = [
         m for m in dir(TeamHandle) if not m.startswith("_") and callable(getattr(TeamHandle, m))
     ]
-    assert len(public_methods) == 5
+    assert len(public_methods) == 6
 
 
 def test_team_handle_send_returns_none() -> None:
