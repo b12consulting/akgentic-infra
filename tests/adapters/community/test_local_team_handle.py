@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.protocols.team_handle import TeamHandle
 
@@ -61,133 +59,36 @@ class TestLocalTeamHandleSendFromTo:
 
 
 class TestLocalTeamHandleProcessHumanInput:
-    """AC1: process_human_input() encapsulates HumanProxy lookup + delegation."""
+    """AC1: process_human_input() delegates to TeamRuntime."""
 
-    def test_process_human_input_delegates(self) -> None:
-        """Finds HumanProxy in agent_cards, resolves addr, calls proxy."""
-        from akgentic.agent import HumanProxy
-
+    def test_process_human_input_delegates_to_runtime(self) -> None:
+        """process_human_input(content, message) calls runtime.process_human_input()."""
         runtime = MagicMock()
-        mock_card = MagicMock()
-        mock_card.get_agent_class.return_value = HumanProxy
-        runtime.team.agent_cards = {"human": mock_card}
-
-        mock_addr = MagicMock()
-        runtime.addrs = {"human": mock_addr}
-
-        mock_proxy = MagicMock()
-        runtime.actor_system.proxy_ask.return_value = mock_proxy
-
         message = MagicMock()
         handle = LocalTeamHandle(runtime)
         handle.process_human_input("user input", message)
-
-        runtime.actor_system.proxy_ask.assert_called_once_with(mock_addr, HumanProxy)
-        mock_proxy.process_human_input.assert_called_once_with("user input", message)
-
-    def test_process_human_input_raises_if_no_human_proxy(self) -> None:
-        """Raises ValueError when no HumanProxy agent exists in team."""
-        runtime = MagicMock()
-        mock_card = MagicMock()
-        mock_card.get_agent_class.return_value = type("OtherAgent", (), {})
-        runtime.team.agent_cards = {"other": mock_card}
-
-        handle = LocalTeamHandle(runtime)
-        message = MagicMock()
-        with pytest.raises(ValueError, match="No HumanProxy found in team"):
-            handle.process_human_input("input", message)
-
-    def test_process_human_input_raises_if_addr_missing(self) -> None:
-        """Raises ValueError when HumanProxy exists but has no resolved address."""
-        from akgentic.agent import HumanProxy
-
-        runtime = MagicMock()
-        mock_card = MagicMock()
-        mock_card.get_agent_class.return_value = HumanProxy
-        runtime.team.agent_cards = {"human": mock_card}
-        runtime.addrs = {}  # no addr for "human"
-
-        handle = LocalTeamHandle(runtime)
-        message = MagicMock()
-        with pytest.raises(
-            ValueError, match="HumanProxy 'human' found but has no resolved address"
-        ):
-            handle.process_human_input("input", message)
-
-    def test_process_human_input_raises_for_empty_agent_cards(self) -> None:
-        """Raises ValueError when agent_cards is empty."""
-        runtime = MagicMock()
-        runtime.team.agent_cards = {}
-
-        handle = LocalTeamHandle(runtime)
-        message = MagicMock()
-        with pytest.raises(ValueError, match="No HumanProxy found in team"):
-            handle.process_human_input("input", message)
-
-    def test_process_human_input_finds_human_proxy_among_multiple_cards(self) -> None:
-        """Finds HumanProxy when it is not the first card in the dict."""
-        from akgentic.agent import HumanProxy
-
-        runtime = MagicMock()
-        other_card = MagicMock()
-        other_card.get_agent_class.return_value = type("OtherAgent", (), {})
-        human_card = MagicMock()
-        human_card.get_agent_class.return_value = HumanProxy
-        runtime.team.agent_cards = {"analyst": other_card, "human": human_card}
-
-        mock_addr = MagicMock()
-        runtime.addrs = {"analyst": MagicMock(), "human": mock_addr}
-
-        mock_proxy = MagicMock()
-        runtime.actor_system.proxy_ask.return_value = mock_proxy
-
-        message = MagicMock()
-        handle = LocalTeamHandle(runtime)
-        handle.process_human_input("user input", message)
-
-        runtime.actor_system.proxy_ask.assert_called_once_with(mock_addr, HumanProxy)
-        mock_proxy.process_human_input.assert_called_once_with("user input", message)
+        runtime.process_human_input.assert_called_once_with("user input", message)
 
 
 class TestLocalTeamHandleSubscribe:
-    """AC1: subscribe() delegates via orchestrator proxy."""
+    """AC2: subscribe() delegates via runtime.orchestrator_proxy."""
 
-    def test_subscribe_delegates_to_orchestrator(self) -> None:
-        """Gets orchestrator proxy and calls subscribe(subscriber)."""
-        from akgentic.core.orchestrator import Orchestrator
-
+    def test_subscribe_delegates_via_orchestrator_proxy(self) -> None:
+        """subscribe(subscriber) calls runtime.orchestrator_proxy.subscribe()."""
         runtime = MagicMock()
-        mock_orch_proxy = MagicMock()
-        runtime.actor_system.proxy_ask.return_value = mock_orch_proxy
-
         subscriber = MagicMock()
         handle = LocalTeamHandle(runtime)
         handle.subscribe(subscriber)
-
-        runtime.actor_system.proxy_ask.assert_called_once_with(
-            runtime.orchestrator_addr,
-            Orchestrator,
-        )
-        mock_orch_proxy.subscribe.assert_called_once_with(subscriber)
+        runtime.orchestrator_proxy.subscribe.assert_called_once_with(subscriber)
 
 
 class TestLocalTeamHandleUnsubscribe:
-    """AC1: unsubscribe() delegates via orchestrator proxy."""
+    """AC3: unsubscribe() delegates via runtime.orchestrator_proxy."""
 
-    def test_unsubscribe_delegates_to_orchestrator(self) -> None:
-        """Gets orchestrator proxy and calls unsubscribe(subscriber)."""
-        from akgentic.core.orchestrator import Orchestrator
-
+    def test_unsubscribe_delegates_via_orchestrator_proxy(self) -> None:
+        """unsubscribe(subscriber) calls runtime.orchestrator_proxy.unsubscribe()."""
         runtime = MagicMock()
-        mock_orch_proxy = MagicMock()
-        runtime.actor_system.proxy_ask.return_value = mock_orch_proxy
-
         subscriber = MagicMock()
         handle = LocalTeamHandle(runtime)
         handle.unsubscribe(subscriber)
-
-        runtime.actor_system.proxy_ask.assert_called_once_with(
-            runtime.orchestrator_addr,
-            Orchestrator,
-        )
-        mock_orch_proxy.unsubscribe.assert_called_once_with(subscriber)
+        runtime.orchestrator_proxy.unsubscribe.assert_called_once_with(subscriber)
