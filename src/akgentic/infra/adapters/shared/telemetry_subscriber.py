@@ -37,7 +37,7 @@ class TelemetrySubscriber:
         """
         if self._restoring:
             return
-        
+
         sender = msg.sender.name if msg.sender else "unknown"
         msg_type = msg.__class__.__name__
         team_id = msg.team_id
