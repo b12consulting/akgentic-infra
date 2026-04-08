@@ -149,14 +149,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-packages --all-extras
 
-      # Coverage disabled: ActorAddressImpl.name resolves live actors via
-      # _actor_weakref(), which deadlocks under pytest-cov sys.settrace()
-      # when called from the orchestrator thread. Unit-tests job already
-      # gates coverage at 80%.
+      # --cov-fail-under=0 overrides pyproject.toml fail_under=90
+      # so integration coverage is reported without a gate.
       - name: Run integration tests
         run: >
           uv run pytest packages/akgentic-infra/tests/integration/ -v
           -o "addopts="
+          --cov=akgentic.infra
+          --cov-report=term-missing
+          --cov-fail-under=0
 
   # Optional job — not required for PR merge. Succeeds (skipped) when
   # OPENAI_API_KEY is absent; runs real-LLM integration tests when present.
