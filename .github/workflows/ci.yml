@@ -28,12 +28,6 @@ jobs:
           git fetch origin ${{ github.head_ref || github.ref_name }}
           git checkout FETCH_HEAD
 
-      - name: Override akgentic-team submodule for process_human_input
-        working-directory: packages/akgentic-team
-        run: |
-          git fetch origin feat/85-add-teamruntime-process-human-input
-          git checkout FETCH_HEAD
-
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -92,12 +86,6 @@ jobs:
           git fetch origin ${{ github.head_ref || github.ref_name }}
           git checkout FETCH_HEAD
 
-      - name: Override akgentic-team submodule for process_human_input
-        working-directory: packages/akgentic-team
-        run: |
-          git fetch origin feat/85-add-teamruntime-process-human-input
-          git checkout FETCH_HEAD
-
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -151,12 +139,6 @@ jobs:
           git fetch origin ${{ github.head_ref || github.ref_name }}
           git checkout FETCH_HEAD
 
-      - name: Override akgentic-team submodule for process_human_input
-        working-directory: packages/akgentic-team
-        run: |
-          git fetch origin feat/85-add-teamruntime-process-human-input
-          git checkout FETCH_HEAD
-
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:
@@ -205,13 +187,6 @@ jobs:
         run: |
           git fetch origin master
           git fetch origin ${{ github.head_ref || github.ref_name }}
-          git checkout FETCH_HEAD
-
-      - name: Override akgentic-team submodule for process_human_input
-        if: env.OPENAI_API_KEY != ''
-        working-directory: packages/akgentic-team
-        run: |
-          git fetch origin feat/85-add-teamruntime-process-human-input
           git checkout FETCH_HEAD
 
       - name: Install uv
