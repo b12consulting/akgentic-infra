@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from akgentic.infra.worker.settings import WorkerSettings
 
@@ -12,7 +13,14 @@ from akgentic.infra.worker.settings import WorkerSettings
 class TestDefaultValues:
     """WorkerSettings must have sensible defaults matching ADR-017 Decision 2."""
 
-    def test_default_values(self) -> None:
+    def test_default_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AKGENTIC_WORKER_HOST", raising=False)
+        monkeypatch.delenv("AKGENTIC_WORKER_PORT", raising=False)
+        monkeypatch.delenv("AKGENTIC_WORKER_LOG_LEVEL", raising=False)
+        monkeypatch.delenv("AKGENTIC_WORKER_WORKSPACES_ROOT", raising=False)
+        monkeypatch.delenv("AKGENTIC_WORKER_SHUTDOWN_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.delenv("AKGENTIC_WORKER_SHUTDOWN_PRE_DRAIN_DELAY", raising=False)
+        monkeypatch.delenv("AKGENTIC_WORKER_WORKER_LABELS", raising=False)
         settings = WorkerSettings()
         assert settings.host == "0.0.0.0"
         assert settings.port == 8001
@@ -64,3 +72,43 @@ class TestLogLevelNormalization:
         with pytest.warns(UserWarning, match="Invalid AKGENTIC_WORKER_LOG_LEVEL"):
             settings = WorkerSettings()
         assert settings.log_level == "INFO"
+
+
+class TestConstraintValidation:
+    """Constrained fields must reject invalid values."""
+
+    def test_shutdown_drain_timeout_rejects_negative(self) -> None:
+        with pytest.raises(ValidationError, match="shutdown_drain_timeout"):
+            WorkerSettings(shutdown_drain_timeout=-1)
+
+    def test_shutdown_pre_drain_delay_rejects_negative(self) -> None:
+        with pytest.raises(ValidationError, match="shutdown_pre_drain_delay"):
+            WorkerSettings(shutdown_pre_drain_delay=-1)
+
+
+class TestModelStructure:
+    """WorkerSettings model metadata and structure."""
+
+    def test_is_base_settings_subclass(self) -> None:
+        from pydantic_settings import BaseSettings
+
+        assert issubclass(WorkerSettings, BaseSettings)
+
+    def test_field_descriptions_present(self) -> None:
+        for name, field_info in WorkerSettings.model_fields.items():
+            assert field_info.description is not None, f"Field {name} missing description"
+
+    def test_has_only_tier_agnostic_fields(self) -> None:
+        fields = set(WorkerSettings.model_fields.keys())
+        expected = {
+            "host",
+            "port",
+            "log_level",
+            "workspaces_root",
+            "shutdown_drain_timeout",
+            "shutdown_pre_drain_delay",
+            "worker_labels",
+        }
+        assert fields == expected, (
+            f"WorkerSettings fields mismatch: got {fields}, expected {expected}"
+        )
