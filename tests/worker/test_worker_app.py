@@ -155,6 +155,268 @@ class TestSendMessage:
         assert resp.status_code == 404
 
 
+class TestGetTeam:
+    """GET /teams/{team_id} route tests (AC #1)."""
+
+    @pytest.mark.asyncio
+    async def test_get_team_returns_team_response(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        process = _make_mock_process(team_id)
+        mock_services.worker_handle.get_team.return_value = process  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(f"/teams/{team_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["team_id"] == str(team_id)
+        assert data["name"] == "Test Team"
+        assert data["status"] == "running"
+
+    @pytest.mark.asyncio
+    async def test_get_team_returns_404_when_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.worker_handle.get_team.return_value = None  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get(f"/teams/{team_id}")
+        assert resp.status_code == 404
+
+
+class TestSendMessageToAgent:
+    """POST /teams/{team_id}/message/{agent_name} route tests (AC #2)."""
+
+    @pytest.mark.asyncio
+    async def test_send_to_agent_returns_204(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/TestAgent",
+                json={"content": "hello agent"},
+            )
+        assert resp.status_code == 204
+        mock_handle.send_to.assert_called_once_with("TestAgent", "hello agent")
+
+    @pytest.mark.asyncio
+    async def test_send_to_agent_returns_404_when_not_in_cache(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.runtime_cache.get.return_value = None  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/TestAgent",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_send_to_agent_returns_409_on_state_conflict(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_handle.send_to.side_effect = ValueError("team is stopped")
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/TestAgent",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_send_to_agent_returns_404_on_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_handle.send_to.side_effect = ValueError("agent not found")
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/TestAgent",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 404
+
+
+class TestSendMessageFromTo:
+    """POST /teams/{team_id}/message/from/{sender}/to/{recipient} route tests (AC #3)."""
+
+    @pytest.mark.asyncio
+    async def test_send_from_to_returns_204(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/from/Alice/to/Bob",
+                json={"content": "hello bob"},
+            )
+        assert resp.status_code == 204
+        mock_handle.send_from_to.assert_called_once_with("Alice", "Bob", "hello bob")
+
+    @pytest.mark.asyncio
+    async def test_send_from_to_returns_404_when_not_in_cache(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.runtime_cache.get.return_value = None  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/from/Alice/to/Bob",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_send_from_to_returns_409_on_state_conflict(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_handle.send_from_to.side_effect = ValueError("team is stopped")
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/from/Alice/to/Bob",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_send_from_to_returns_404_on_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_handle.send_from_to.side_effect = ValueError("recipient not found")
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/from/Alice/to/Bob",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 404
+
+
+class TestHumanInput:
+    """POST /teams/{team_id}/human-input route tests (AC #4)."""
+
+    @pytest.mark.asyncio
+    async def test_human_input_returns_204(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        message_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        # Two events: first doesn't match, second does — exercises loop iteration branch
+        non_matching_event = MagicMock()
+        non_matching_event.event.id = uuid.uuid4()
+        matching_event = MagicMock()
+        matching_event.event.id = message_id
+        mock_services.event_store.load_events.return_value = [  # type: ignore[attr-defined]
+            non_matching_event,
+            matching_event,
+        ]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/human-input",
+                json={"content": "user reply", "message_id": str(message_id)},
+            )
+        assert resp.status_code == 204
+        mock_services.event_store.load_events.assert_called_once_with(team_id)  # type: ignore[attr-defined]
+        mock_handle.process_human_input.assert_called_once_with(
+            "user reply", matching_event.event
+        )
+
+    @pytest.mark.asyncio
+    async def test_human_input_returns_404_when_not_in_cache(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.runtime_cache.get.return_value = None  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/human-input",
+                json={"content": "reply", "message_id": str(uuid.uuid4())},
+            )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_human_input_returns_404_when_message_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+        mock_services.event_store.load_events.return_value = []  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/human-input",
+                json={"content": "reply", "message_id": str(uuid.uuid4())},
+            )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_human_input_returns_409_on_state_conflict(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        message_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_handle.process_human_input.side_effect = ValueError("team is stopped")
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        mock_event = MagicMock()
+        mock_event.event.id = message_id
+        mock_services.event_store.load_events.return_value = [mock_event]  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/human-input",
+                json={"content": "reply", "message_id": str(message_id)},
+            )
+        assert resp.status_code == 409
+
+
 class TestStopTeam:
     """POST /teams/{team_id}/stop route tests (AC #4)."""
 
