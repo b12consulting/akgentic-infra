@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from unittest.mock import MagicMock, patch
@@ -96,10 +95,6 @@ class TestShutdown:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """TimeoutError from stop_all() is caught and logged, not raised."""
-
-        def hang() -> None:
-            raise TimeoutError
-
         with patch(
             "akgentic.infra.worker.services.lifecycle.asyncio.wait_for",
             side_effect=TimeoutError,
@@ -108,6 +103,28 @@ class TestShutdown:
                 await lifecycle.shutdown(drain_timeout=1)
 
         assert any("exceeded drain_timeout" in rec.message for rec in caplog.records)
+
+
+    @pytest.mark.asyncio
+    async def test_shutdown_stop_all_runs_even_if_deregister_fails(
+        self,
+        mock_worker_handle: MagicMock,
+        mock_service_registry: MagicMock,
+        instance_id: uuid.UUID,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """stop_all() must execute even if deregister_instance() raises."""
+        mock_service_registry.deregister_instance.side_effect = RuntimeError("registry down")
+        lc = WorkerLifecycle(
+            worker_handle=mock_worker_handle,
+            service_registry=mock_service_registry,
+            instance_id=instance_id,
+        )
+        with caplog.at_level(logging.ERROR):
+            await lc.shutdown(drain_timeout=30)
+
+        mock_worker_handle.stop_all.assert_called_once()
+        assert any("deregister_instance failed" in rec.message for rec in caplog.records)
 
 
 class TestNullServiceRegistry:

@@ -47,8 +47,15 @@ class WorkerLifecycle:
             drain_timeout: Maximum seconds to wait for ``stop_all()`` to complete.
         """
         logger.info("WorkerLifecycle shutdown: deregistering instance %s", self._instance_id)
-        await asyncio.to_thread(self._service_registry.deregister_instance, self._instance_id)
-        logger.info("WorkerLifecycle shutdown: deregistered instance %s", self._instance_id)
+        try:
+            await asyncio.to_thread(self._service_registry.deregister_instance, self._instance_id)
+            logger.info("WorkerLifecycle shutdown: deregistered instance %s", self._instance_id)
+        except Exception:
+            logger.exception(
+                "WorkerLifecycle shutdown: deregister_instance failed for %s, "
+                "proceeding with stop_all",
+                self._instance_id,
+            )
 
         logger.info("WorkerLifecycle shutdown: stopping all teams (timeout=%ds)", drain_timeout)
         try:
