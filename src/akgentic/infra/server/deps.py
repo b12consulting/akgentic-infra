@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from akgentic.catalog.services import (
     AgentCatalog,
@@ -19,8 +19,7 @@ from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.team.manager import TeamManager
-from akgentic.team.ports import ServiceRegistry
-from akgentic.team.repositories.yaml import YamlEventStore
+from akgentic.team.ports import EventStore, ServiceRegistry
 
 
 class TierServices(BaseModel):
@@ -28,10 +27,6 @@ class TierServices(BaseModel):
 
     This is a runtime DI container, NOT a serialization model — arbitrary_types_allowed
     is intentional (Golden Rule #1b exemption).
-
-    Note: ``event_store`` uses the concrete ``YamlEventStore`` type because
-    ``EventStore`` (from akgentic-team) is not ``@runtime_checkable`` and cannot
-    be modified from this submodule.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -39,7 +34,9 @@ class TierServices(BaseModel):
     placement: PlacementStrategy = Field(description="Strategy for placing teams on workers")
     worker_handle: WorkerHandle = Field(description="Worker-level team lifecycle operations")
     auth: AuthStrategy = Field(description="Authentication strategy for incoming requests")
-    event_store: YamlEventStore = Field(description="Persistence backend for team event sourcing")
+    event_store: SkipValidation[EventStore] = Field(
+        description="Persistence backend for team event sourcing"
+    )
     runtime_cache: RuntimeCache = Field(
         description="Cache mapping team IDs to live TeamHandle instances"
     )

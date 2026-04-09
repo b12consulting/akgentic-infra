@@ -32,7 +32,7 @@ from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager
-from akgentic.team.ports import NullServiceRegistry, ServiceRegistry
+from akgentic.team.ports import EventStore, NullServiceRegistry, ServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
 
 logger = logging.getLogger(__name__)
@@ -93,7 +93,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
 
 
 def _build_actor_layer(
-    event_store: YamlEventStore,
+    event_store: EventStore,
     service_registry: ServiceRegistry,
     event_stream: EventStream,
 ) -> tuple[ActorSystem, TeamManager]:
