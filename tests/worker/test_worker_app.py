@@ -240,6 +240,23 @@ class TestSendMessageToAgent:
             )
         assert resp.status_code == 409
 
+    @pytest.mark.asyncio
+    async def test_send_to_agent_returns_404_on_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_handle.send_to.side_effect = ValueError("agent not found")
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/TestAgent",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 404
+
 
 class TestSendMessageFromTo:
     """POST /teams/{team_id}/message/from/{sender}/to/{recipient} route tests (AC #3)."""
@@ -293,6 +310,23 @@ class TestSendMessageFromTo:
             )
         assert resp.status_code == 409
 
+    @pytest.mark.asyncio
+    async def test_send_from_to_returns_404_on_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_handle.send_from_to.side_effect = ValueError("recipient not found")
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message/from/Alice/to/Bob",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 404
+
 
 class TestHumanInput:
     """POST /teams/{team_id}/human-input route tests (AC #4)."""
@@ -306,9 +340,15 @@ class TestHumanInput:
         mock_handle = MagicMock()
         mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
 
-        mock_event = MagicMock()
-        mock_event.event.id = message_id
-        mock_services.event_store.load_events.return_value = [mock_event]  # type: ignore[attr-defined]
+        # Two events: first doesn't match, second does — exercises loop iteration branch
+        non_matching_event = MagicMock()
+        non_matching_event.event.id = uuid.uuid4()
+        matching_event = MagicMock()
+        matching_event.event.id = message_id
+        mock_services.event_store.load_events.return_value = [  # type: ignore[attr-defined]
+            non_matching_event,
+            matching_event,
+        ]
 
         transport = ASGITransport(app=worker_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -317,8 +357,9 @@ class TestHumanInput:
                 json={"content": "user reply", "message_id": str(message_id)},
             )
         assert resp.status_code == 204
+        mock_services.event_store.load_events.assert_called_once_with(team_id)  # type: ignore[attr-defined]
         mock_handle.process_human_input.assert_called_once_with(
-            "user reply", mock_event.event
+            "user reply", matching_event.event
         )
 
     @pytest.mark.asyncio
