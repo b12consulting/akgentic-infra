@@ -355,16 +355,13 @@ class TestLifespan:
 
     @pytest.mark.asyncio
     async def test_lifespan_handles_timeout(self, worker_app: FastAPI) -> None:
-        import asyncio
-
-        never_done: asyncio.Future[None] = asyncio.get_event_loop().create_future()
-
         with patch(
-            "akgentic.infra.worker.app.asyncio.to_thread", return_value=never_done
+            "akgentic.infra.worker.services.lifecycle.asyncio.wait_for",
+            side_effect=TimeoutError,
         ):
             worker_app.state.settings = WorkerSettings(
                 shutdown_drain_timeout=0, shutdown_pre_drain_delay=0
             )
             async with _lifespan(worker_app):
                 pass
-        # Should not raise — timeout is handled gracefully
+        # Should not raise — timeout is handled gracefully in WorkerLifecycle
