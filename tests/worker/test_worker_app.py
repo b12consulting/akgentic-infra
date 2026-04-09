@@ -3,26 +3,26 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
 
 import pytest
+from akgentic.core import ActorSystem
+from akgentic.team.manager import TeamManager
+from akgentic.team.ports import EventStore, NullServiceRegistry
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from akgentic.core import ActorSystem
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.worker_handle import WorkerHandle
-from akgentic.infra.worker.app import create_worker_app
+from akgentic.infra.worker.app import _lifespan, create_worker_app
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.settings import WorkerSettings
-from akgentic.team.manager import TeamManager
-from akgentic.team.ports import EventStore, NullServiceRegistry
 
 
 def _make_mock_process(team_id: uuid.UUID | None = None) -> MagicMock:
     """Create a mock Process with the attributes routes need."""
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     process = MagicMock()
     process.team_id = team_id or uuid.uuid4()
     process.team_card.name = "Test Team"
@@ -219,3 +219,152 @@ class TestResumeTeam:
         data = resp.json()
         assert data["team_id"] == str(team_id)
         mock_services.runtime_cache.store.assert_called_once_with(team_id, mock_handle)  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    async def test_resume_team_returns_404_when_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.worker_handle.resume_team.side_effect = ValueError(  # type: ignore[attr-defined]
+            "Team not found"
+        )
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(f"/teams/{team_id}/resume")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_resume_team_returns_409_on_conflict(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.worker_handle.resume_team.side_effect = ValueError(  # type: ignore[attr-defined]
+            "Team is already running"
+        )
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(f"/teams/{team_id}/resume")
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_resume_team_returns_404_when_get_team_none(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_services.worker_handle.resume_team.return_value = mock_handle  # type: ignore[attr-defined]
+        mock_services.worker_handle.get_team.return_value = None  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(f"/teams/{team_id}/resume")
+        assert resp.status_code == 404
+
+
+class TestSendMessageErrors:
+    """Error path tests for POST /teams/{team_id}/message."""
+
+    @pytest.mark.asyncio
+    async def test_send_message_returns_409_on_value_error(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_handle.send.side_effect = ValueError("Team is already stopped")
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/message",
+                json={"content": "hello"},
+            )
+        assert resp.status_code == 409
+
+
+class TestDeleteTeamErrors:
+    """Error path tests for DELETE /teams/{team_id}."""
+
+    @pytest.mark.asyncio
+    async def test_delete_team_returns_404_when_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.worker_handle.delete_team.side_effect = ValueError(  # type: ignore[attr-defined]
+            "Team not found"
+        )
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.delete(f"/teams/{team_id}")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_delete_team_returns_404_when_deleted(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.worker_handle.delete_team.side_effect = ValueError(  # type: ignore[attr-defined]
+            "Team already deleted"
+        )
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.delete(f"/teams/{team_id}")
+        assert resp.status_code == 404
+
+
+class TestStopTeamErrors:
+    """Additional error path tests for POST /teams/{team_id}/stop."""
+
+    @pytest.mark.asyncio
+    async def test_stop_team_returns_404_when_not_found(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        mock_services.worker_handle.stop_team.side_effect = ValueError(  # type: ignore[attr-defined]
+            "Team not found"
+        )
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(f"/teams/{team_id}/stop")
+        assert resp.status_code == 404
+
+
+class TestLifespan:
+    """Worker lifespan handler tests."""
+
+    @pytest.mark.asyncio
+    async def test_lifespan_sets_draining_false_on_startup(
+        self, worker_app: FastAPI
+    ) -> None:
+        async with _lifespan(worker_app):
+            assert worker_app.state.draining is False
+
+    @pytest.mark.asyncio
+    async def test_lifespan_sets_draining_true_on_shutdown(
+        self, worker_app: FastAPI
+    ) -> None:
+        async with _lifespan(worker_app):
+            pass
+        assert worker_app.state.draining is True
+
+    @pytest.mark.asyncio
+    async def test_lifespan_calls_stop_all(self, worker_app: FastAPI) -> None:
+        async with _lifespan(worker_app):
+            pass
+        worker_app.state.services.worker_handle.stop_all.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_lifespan_handles_timeout(self, worker_app: FastAPI) -> None:
+        import asyncio
+
+        never_done: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+
+        with patch(
+            "akgentic.infra.worker.app.asyncio.to_thread", return_value=never_done
+        ):
+            worker_app.state.settings = WorkerSettings(
+                shutdown_drain_timeout=0, shutdown_pre_drain_delay=0
+            )
+            async with _lifespan(worker_app):
+                pass
+        # Should not raise — timeout is handled gracefully
