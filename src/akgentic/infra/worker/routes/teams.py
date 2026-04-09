@@ -1,4 +1,7 @@
-"""Worker team operation routes — create, message, stop, delete, resume."""
+"""Worker team operation routes.
+
+create, message, send_to, send_from_to, human-input, get, stop, delete, resume.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +12,11 @@ from typing import NoReturn, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from akgentic.infra.server.models import SendMessageRequest, TeamResponse
+from akgentic.core.messages.message import Message
+from akgentic.infra.server.models import HumanInputRequest, SendMessageRequest, TeamResponse
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.team.models import Process, TeamCard, TeamRuntime
+from akgentic.team.ports import EventStore
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,19 @@ def _process_to_response(process: Process) -> TeamResponse:
         created_at=process.created_at,
         updated_at=process.updated_at,
     )
+
+
+@router.get("/{team_id}", response_model=TeamResponse)
+def get_team(
+    team_id: uuid.UUID,
+    services: WorkerServices = Depends(get_services),
+) -> TeamResponse:
+    """Get team metadata by ID."""
+    logger.info("GET /teams/%s", team_id)
+    process = services.worker_handle.get_team(team_id)
+    if process is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+    return _process_to_response(process)
 
 
 @router.post("/", status_code=201, response_model=TeamResponse)
@@ -81,6 +99,82 @@ def send_message(
         raise HTTPException(status_code=404, detail="Team not found in worker cache")
     try:
         handle.send(body.content)
+    except ValueError as exc:
+        _raise_action_error(exc)
+
+
+@router.post("/{team_id}/message/{agent_name}", status_code=204)
+def send_message_to_agent(
+    team_id: uuid.UUID,
+    agent_name: str,
+    body: SendMessageRequest,
+    services: WorkerServices = Depends(get_services),
+) -> None:
+    """Send a message to a specific agent within a running team."""
+    logger.info("POST /teams/%s/message/%s", team_id, agent_name)
+    handle = services.runtime_cache.get(team_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="Team not found in worker cache")
+    try:
+        handle.send_to(agent_name, body.content)
+    except ValueError as exc:
+        _raise_action_error(exc)
+
+
+@router.post(
+    "/{team_id}/message/from/{sender_name}/to/{recipient_name}",
+    status_code=204,
+)
+def send_message_from_to(
+    team_id: uuid.UUID,
+    sender_name: str,
+    recipient_name: str,
+    body: SendMessageRequest,
+    services: WorkerServices = Depends(get_services),
+) -> None:
+    """Send a message from a specific agent to another agent."""
+    logger.info(
+        "POST /teams/%s/message/from/%s/to/%s", team_id, sender_name, recipient_name
+    )
+    handle = services.runtime_cache.get(team_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="Team not found in worker cache")
+    try:
+        handle.send_from_to(sender_name, recipient_name, body.content)
+    except ValueError as exc:
+        _raise_action_error(exc)
+
+
+def _find_message(
+    event_store: EventStore, team_id: uuid.UUID, message_id: str
+) -> Message:
+    """Find a message by ID in persisted events.
+
+    Raises:
+        ValueError: If message not found.
+    """
+    events = event_store.load_events(team_id)
+    for ev in events:
+        if str(ev.event.id) == message_id:
+            return ev.event
+    msg = f"Message {message_id} not found"
+    raise ValueError(msg)
+
+
+@router.post("/{team_id}/human-input", status_code=204)
+def human_input(
+    team_id: uuid.UUID,
+    body: HumanInputRequest,
+    services: WorkerServices = Depends(get_services),
+) -> None:
+    """Process human input for a running team."""
+    logger.info("POST /teams/%s/human-input", team_id)
+    handle = services.runtime_cache.get(team_id)
+    if handle is None:
+        raise HTTPException(status_code=404, detail="Team not found in worker cache")
+    try:
+        original_message = _find_message(services.event_store, team_id, body.message_id)
+        handle.process_human_input(body.content, original_message)
     except ValueError as exc:
         _raise_action_error(exc)
 
