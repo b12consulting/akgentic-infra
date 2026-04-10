@@ -421,6 +421,29 @@ class TestHumanInput:
             )
         assert resp.status_code == 409
 
+    @pytest.mark.asyncio
+    async def test_human_input_returns_409_when_event_not_sentmessage(
+        self, worker_app: FastAPI, mock_services: WorkerServices
+    ) -> None:
+        team_id = uuid.uuid4()
+        message_id = uuid.uuid4()
+        mock_handle = MagicMock()
+        mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
+
+        # Event found but is NOT a SentMessage — isinstance guard should reject it
+        mock_event = MagicMock()
+        mock_event.event.id = message_id
+        mock_services.event_store.load_events.return_value = [mock_event]  # type: ignore[attr-defined]
+
+        transport = ASGITransport(app=worker_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/teams/{team_id}/human-input",
+                json={"content": "reply", "message_id": str(message_id)},
+            )
+        assert resp.status_code == 409
+        assert "expected SentMessage" in resp.json()["detail"]
+
 
 class TestStopTeam:
     """POST /teams/{team_id}/stop route tests (AC #4)."""
