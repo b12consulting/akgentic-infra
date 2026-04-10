@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from akgentic.core.messages.message import Message
+from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.infra.server.models import HumanInputRequest, SendMessageRequest, TeamResponse
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.team.models import Process, TeamCard, TeamRuntime
@@ -173,8 +174,12 @@ def human_input(
     if handle is None:
         raise HTTPException(status_code=404, detail="Team not found in worker cache")
     try:
-        original_message = _find_message(services.event_store, team_id, body.message_id)
-        handle.process_human_input(body.content, original_message)
+        event = _find_message(services.event_store, team_id, body.message_id)
+        if not isinstance(event, SentMessage):
+            msg = f"Message {body.message_id} is a {type(event).__name__}, expected SentMessage"
+            raise ValueError(msg)
+        inner = event.message
+        handle.process_human_input(body.content, inner)
     except ValueError as exc:
         _raise_action_error(exc)
 

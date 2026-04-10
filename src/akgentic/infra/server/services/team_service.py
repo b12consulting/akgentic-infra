@@ -7,6 +7,7 @@ import uuid
 
 from akgentic.catalog.models.errors import EntryNotFoundError
 from akgentic.core.messages.message import Message
+from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
@@ -132,8 +133,12 @@ class TeamService:
             ValueError: If team not found, not running, or message not found.
         """
         handle = self._get_running_handle(team_id)
-        original_message = self._find_message(team_id, message_id)
-        handle.process_human_input(content, original_message)
+        event = self._find_message(team_id, message_id)
+        if not isinstance(event, SentMessage):
+            msg = f"Message {message_id} is a {type(event).__name__}, expected SentMessage"
+            raise ValueError(msg)
+        inner = event.message
+        handle.process_human_input(content, inner)
         logger.debug("Human input routed to team %s, message_id=%s", team_id, message_id)
 
     def stop_team(self, team_id: uuid.UUID) -> None:
