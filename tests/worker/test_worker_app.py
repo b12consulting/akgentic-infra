@@ -18,6 +18,7 @@ from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.infra.worker.app import _lifespan, create_worker_app
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.settings import WorkerSettings
+from tests.fixtures.events import build_sent_message
 
 
 def _make_mock_process(team_id: uuid.UUID | None = None) -> MagicMock:
@@ -340,11 +341,14 @@ class TestHumanInput:
         mock_handle = MagicMock()
         mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
 
+        # Build a real SentMessage so isinstance() check passes after unwrapping
+        sent_msg = build_sent_message(id=message_id)
+
         # Two events: first doesn't match, second does — exercises loop iteration branch
         non_matching_event = MagicMock()
         non_matching_event.event.id = uuid.uuid4()
         matching_event = MagicMock()
-        matching_event.event.id = message_id
+        matching_event.event = sent_msg
         mock_services.event_store.load_events.return_value = [  # type: ignore[attr-defined]
             non_matching_event,
             matching_event,
@@ -359,7 +363,7 @@ class TestHumanInput:
         assert resp.status_code == 204
         mock_services.event_store.load_events.assert_called_once_with(team_id)  # type: ignore[attr-defined]
         mock_handle.process_human_input.assert_called_once_with(
-            "user reply", matching_event.event
+            "user reply", sent_msg.message
         )
 
     @pytest.mark.asyncio
@@ -404,8 +408,9 @@ class TestHumanInput:
         mock_handle.process_human_input.side_effect = ValueError("team is stopped")
         mock_services.runtime_cache.get.return_value = mock_handle  # type: ignore[attr-defined]
 
+        sent_msg = build_sent_message(id=message_id)
         mock_event = MagicMock()
-        mock_event.event.id = message_id
+        mock_event.event = sent_msg
         mock_services.event_store.load_events.return_value = [mock_event]  # type: ignore[attr-defined]
 
         transport = ASGITransport(app=worker_app)
