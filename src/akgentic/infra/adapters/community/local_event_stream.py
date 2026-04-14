@@ -1,14 +1,19 @@
-"""LocalEventStream — community-tier in-memory EventStream with replay and fan-out.
+"""LocalEventStream — community-tier in-memory EventStream with per-reader signaling.
 
 Provides a thread-safe, in-process event stream backed by a plain dict.
 Designed for single-process community deployments where no external
 infrastructure (Redis, Kafka) is available.
 
-Threading model:
-- One ``threading.Lock`` on the stream protects the ``_streams`` dict and all
-  per-team state during ``append()``, ``read_from()``, ``subscribe()``, ``remove()``.
-- One ``threading.Condition`` per team for reader notification (``read_next()``
-  blocks on the condition until events are available or timeout expires).
+Threading model (CPython GIL assumption):
+- One ``threading.Lock`` (``_lock``) on the ``LocalEventStream`` protects
+  the ``_streams`` dict during ``append()``, ``subscribe()``, ``remove()``.
+- One ``threading.Lock`` per ``_TeamStream`` protects its ``signals`` set
+  and ``closed`` flag.
+- ``read_next()`` is lock-free during replay: CPython's GIL guarantees
+  atomic ``list.append()`` and ``len()``, so a reader whose cursor is
+  behind the write frontier can safely index into ``events`` without
+  holding any lock. The reader only blocks on its own ``threading.Event``
+  when fully caught up.
 - Safe for concurrent use from FastAPI thread-pool executors.
 """
 
@@ -16,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -31,40 +35,40 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _TeamStream:
-    """Per-team stream state grouping events, condition, readers, and bookkeeping."""
+    """Per-team stream state: events, per-reader signals, lock, and closed flag."""
 
     events: list[Message] = field(default_factory=list)
-    condition: threading.Condition = field(default_factory=threading.Condition)
-    readers: list[LocalStreamReader] = field(default_factory=list)
+    signals: set[threading.Event] = field(default_factory=set)
+    lock: threading.Lock = field(default_factory=threading.Lock)
     closed: bool = False
-    base_offset: int = 0
 
 
 class LocalStreamReader:
     """Cursor-based blocking reader for a single team's event stream.
 
-    Holds an absolute cursor position and a reference to the parent
-    ``_TeamStream``. Blocks on the team's ``Condition`` when no new
-    events are available.
+    Each reader holds its own ``threading.Event`` for wake-up signaling
+    and an absolute cursor into the parent ``_TeamStream.events`` list.
 
-    Thread-safety: all mutable state is accessed under the parent
-    team's ``Condition`` lock.
+    The replay path (``cursor < len(events)``) is lock-free under CPython's
+    GIL. The reader only blocks on ``_signal.wait()`` when fully caught up.
     """
 
     def __init__(
         self,
         team_stream: _TeamStream,
+        signal: threading.Event,
         cursor: int,
     ) -> None:
         self._team_stream = team_stream
+        self._signal = signal
         self._cursor = cursor
         self._closed = False
 
     def read_next(self, timeout: float = 0.5) -> Message | None:
         """Read the next event from the cursor position.
 
-        Blocks up to *timeout* seconds waiting for a new event. Returns
-        ``None`` if the timeout elapses with no event available.
+        Lock-free when replaying (``cursor < len(events)``). Blocks on
+        the reader's own ``threading.Event`` when caught up.
 
         Args:
             timeout: Maximum seconds to block.
@@ -75,34 +79,45 @@ class LocalStreamReader:
         Raises:
             StreamClosed: If the stream has been removed.
         """
-        with self._team_stream.condition:
-            deadline = time.monotonic() + timeout
-            while True:
-                if self._closed or self._team_stream.closed:
-                    raise StreamClosed()
-                base = self._team_stream.base_offset
-                end = base + len(self._team_stream.events)
-                if self._cursor < base:
-                    self._cursor = base
-                if self._cursor < end:
-                    event = self._team_stream.events[self._cursor - base]
-                    self._cursor += 1
-                    return event
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return None
-                self._team_stream.condition.wait(timeout=remaining)
+        if self._closed or self._team_stream.closed:
+            raise StreamClosed()
+
+        # Lock-free replay path
+        if self._cursor < len(self._team_stream.events):
+            event = self._team_stream.events[self._cursor]
+            self._cursor += 1
+            return event
+
+        # Caught up — wait for signal
+        self._signal.clear()
+
+        # Re-check after clear to avoid lost-wakeup race
+        if self._closed or self._team_stream.closed:
+            raise StreamClosed()
+        if self._cursor < len(self._team_stream.events):
+            event = self._team_stream.events[self._cursor]
+            self._cursor += 1
+            return event
+
+        self._signal.wait(timeout=timeout)
+
+        # Post-wait checks
+        if self._closed or self._team_stream.closed:
+            raise StreamClosed()
+        if self._cursor < len(self._team_stream.events):
+            event = self._team_stream.events[self._cursor]
+            self._cursor += 1
+            return event
+
+        return None
 
     def close(self) -> None:
         """Release resources held by this reader. Idempotent."""
         if self._closed:
             return
         self._closed = True
-        with self._team_stream.condition:
-            try:
-                self._team_stream.readers.remove(self)
-            except ValueError:
-                pass
+        with self._team_stream.lock:
+            self._team_stream.signals.discard(self._signal)
 
 
 class LocalEventStream:
@@ -110,17 +125,11 @@ class LocalEventStream:
 
     Satisfies the ``EventStream`` protocol (runtime-checkable). Backed by
     ``dict[UUID, _TeamStream]`` with a ``threading.Lock`` for thread safety.
-
-    Args:
-        maxlen: Optional maximum number of events per team stream.
-            When exceeded, oldest events are evicted (FIFO) and reader
-            cursors are adjusted.
     """
 
-    def __init__(self, maxlen: int | None = None) -> None:
+    def __init__(self) -> None:
         self._streams: dict[uuid.UUID, _TeamStream] = {}
         self._lock = threading.Lock()
-        self._maxlen = maxlen
 
     def append(self, team_id: uuid.UUID, event: Message) -> int:
         """Append an event to the team's stream.
@@ -133,7 +142,7 @@ class LocalEventStream:
             event: The message to append.
 
         Returns:
-            Monotonically increasing sequence number.
+            Monotonically increasing sequence number, or -1 if stream is closed.
         """
         with self._lock:
             ts = self._streams.get(team_id)
@@ -141,22 +150,14 @@ class LocalEventStream:
                 ts = _TeamStream()
                 self._streams[team_id] = ts
 
-        with ts.condition:
+        with ts.lock:
             if ts.closed:
                 logger.warning("append() on removed stream team_id=%s — discarding", team_id)
                 return -1
             ts.events.append(event)
-            seq = ts.base_offset + len(ts.events)
-
-            if self._maxlen is not None and len(ts.events) > self._maxlen:
-                evict_count = len(ts.events) - self._maxlen
-                ts.events = ts.events[evict_count:]
-                ts.base_offset += evict_count
-                for reader in ts.readers:
-                    if reader._cursor < ts.base_offset:
-                        reader._cursor = ts.base_offset
-
-            ts.condition.notify_all()
+            seq = len(ts.events)
+            for sig in ts.signals:
+                sig.set()
             return seq
 
     def read_from(
@@ -176,14 +177,9 @@ class LocalEventStream:
             if ts is None:
                 return []
 
-        with ts.condition:
-            if ts.closed:
-                return []
-            base = ts.base_offset
-            if cursor < base:
-                cursor = base
-            start_idx = cursor - base
-            return list(ts.events[start_idx:])
+        if ts.closed:
+            return []
+        return list(ts.events[cursor:])
 
     def subscribe(
         self, team_id: uuid.UUID, cursor: int = 0
@@ -205,18 +201,18 @@ class LocalEventStream:
                 ts = _TeamStream()
                 self._streams[team_id] = ts
 
-        with ts.condition:
+        signal = threading.Event()
+        with ts.lock:
             if ts.closed:
                 raise StreamClosed()
-            reader = LocalStreamReader(ts, cursor)
-            ts.readers.append(reader)
-            return reader
+            ts.signals.add(signal)
+        return LocalStreamReader(ts, signal, cursor)
 
     def remove(self, team_id: uuid.UUID) -> None:
         """Remove the stream for a team.
 
-        Sets the closed flag on all active readers and notifies them,
-        then deletes the stream data from the backing store.
+        Sets the closed flag and signals all active readers, then
+        deletes the stream data from the backing store.
 
         Args:
             team_id: ID of the team whose stream to remove.
@@ -226,6 +222,7 @@ class LocalEventStream:
             if ts is None:
                 return
 
-        with ts.condition:
+        with ts.lock:
             ts.closed = True
-            ts.condition.notify_all()
+            for sig in ts.signals:
+                sig.set()
