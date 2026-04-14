@@ -255,8 +255,8 @@ def test_read_from_cursor_beyond_end_returns_empty() -> None:
     assert events == []
 
 
-def test_subscribe_on_closed_stream_raises() -> None:
-    """subscribe() on a removed stream creates a new stream (removed was popped)."""
+def test_subscribe_after_remove_creates_new_stream() -> None:
+    """subscribe() after remove() creates a fresh stream (remove pops the old one)."""
     stream = LocalEventStream()
     stream.append(_TEAM_ID, _make_event(1))
     stream.remove(_TEAM_ID)
@@ -284,3 +284,33 @@ def test_append_on_removed_stream_returns_negative() -> None:
 
     result = stream.append(_TEAM_ID, _make_event(2))
     assert result == -1
+
+
+def test_subscribe_on_concurrently_closed_stream_raises() -> None:
+    """subscribe() raises StreamClosed when stream is closed between lookup and lock."""
+    stream = LocalEventStream()
+    stream.append(_TEAM_ID, _make_event(1))
+
+    # Simulate the race: get a reference to the _TeamStream, close it manually,
+    # but leave it in _streams so subscribe() finds it and hits the closed guard
+    with stream._lock:
+        ts = stream._streams[_TEAM_ID]
+    with ts.lock:
+        ts.closed = True
+
+    with pytest.raises(StreamClosed):
+        stream.subscribe(_TEAM_ID, cursor=0)
+
+
+def test_read_from_on_closed_stream_returns_empty() -> None:
+    """read_from() returns empty list when stream is closed but still in _streams."""
+    stream = LocalEventStream()
+    stream.append(_TEAM_ID, _make_event(1))
+
+    # Close the stream without removing it from _streams
+    with stream._lock:
+        ts = stream._streams[_TEAM_ID]
+    with ts.lock:
+        ts.closed = True
+
+    assert stream.read_from(_TEAM_ID) == []

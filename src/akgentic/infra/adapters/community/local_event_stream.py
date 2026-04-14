@@ -64,6 +64,19 @@ class LocalStreamReader:
         self._cursor = cursor
         self._closed = False
 
+    def _advance(self) -> Message | None:
+        """Advance the cursor and return the next event, or ``None`` if caught up."""
+        if self._cursor < len(self._team_stream.events):
+            event = self._team_stream.events[self._cursor]
+            self._cursor += 1
+            return event
+        return None
+
+    def _check_closed(self) -> None:
+        """Raise ``StreamClosed`` if the reader or stream has been closed."""
+        if self._closed or self._team_stream.closed:
+            raise StreamClosed()
+
     def read_next(self, timeout: float = 0.5) -> Message | None:
         """Read the next event from the cursor position.
 
@@ -79,37 +92,27 @@ class LocalStreamReader:
         Raises:
             StreamClosed: If the stream has been removed.
         """
-        if self._closed or self._team_stream.closed:
-            raise StreamClosed()
+        self._check_closed()
 
         # Lock-free replay path
-        if self._cursor < len(self._team_stream.events):
-            event = self._team_stream.events[self._cursor]
-            self._cursor += 1
+        event = self._advance()
+        if event is not None:
             return event
 
         # Caught up — wait for signal
         self._signal.clear()
 
         # Re-check after clear to avoid lost-wakeup race
-        if self._closed or self._team_stream.closed:
-            raise StreamClosed()
-        if self._cursor < len(self._team_stream.events):
-            event = self._team_stream.events[self._cursor]
-            self._cursor += 1
+        self._check_closed()
+        event = self._advance()
+        if event is not None:
             return event
 
         self._signal.wait(timeout=timeout)
 
         # Post-wait checks
-        if self._closed or self._team_stream.closed:
-            raise StreamClosed()
-        if self._cursor < len(self._team_stream.events):
-            event = self._team_stream.events[self._cursor]
-            self._cursor += 1
-            return event
-
-        return None
+        self._check_closed()
+        return self._advance()
 
     def close(self) -> None:
         """Release resources held by this reader. Idempotent."""
