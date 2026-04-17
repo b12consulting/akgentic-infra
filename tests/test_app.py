@@ -17,7 +17,7 @@ def test_create_app_returns_fastapi(
     app = create_app(community_services, seeded_settings)
     assert app.title == "Akgentic Platform API"
     route_paths = [r.path for r in app.routes]  # type: ignore[union-attr]
-    assert "/teams/" in route_paths
+    assert "/teams" in route_paths
     assert "/teams/{team_id}" in route_paths
 
 
