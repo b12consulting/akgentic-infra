@@ -65,7 +65,7 @@ def get_team(
     return _process_to_response(process)
 
 
-@router.post("/", status_code=201, response_model=TeamResponse)
+@router.post("", status_code=201, response_model=TeamResponse)
 def create_team(
     body: WorkerCreateTeamRequest,
     services: WorkerServices = Depends(get_services),

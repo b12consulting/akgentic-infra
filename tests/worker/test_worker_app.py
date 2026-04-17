@@ -106,7 +106,7 @@ class TestCreateTeam:
         transport = ASGITransport(app=worker_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
-                "/teams/",
+                "/teams",
                 json={
                     "team_card": team_card_json,
                     "user_id": "test-user",
