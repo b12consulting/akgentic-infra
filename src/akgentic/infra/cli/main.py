@@ -10,6 +10,8 @@ import typer
 from pydantic import BaseModel
 
 from akgentic.infra.cli.client import ApiClient, ApiError
+from akgentic.infra.cli.commands import login as login_command
+from akgentic.infra.cli.commands import logout as logout_command
 from akgentic.infra.cli.formatters import OutputFormat, format_output
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.tui.app import ChatApp
@@ -20,6 +22,10 @@ workspace_app = typer.Typer(name="workspace", help="Manage team workspace files"
 
 app.add_typer(team_app, name="team")
 app.add_typer(workspace_app, name="workspace")
+
+# Register top-level login/logout commands (Story 21.4).
+login_command.register(app)
+logout_command.register(app)
 
 
 # -- shared state --
@@ -162,9 +168,9 @@ def chat(
     ] = None,
 ) -> None:
     """Interactive chat REPL — connect to a team via WebSocket."""
-    from akgentic.infra.cli.repl_commands import build_default_registry
     from akgentic.infra.cli.connection import ConnectionManager
     from akgentic.infra.cli.event_router import EventRouter
+    from akgentic.infra.cli.repl_commands import build_default_registry
 
     renderer = RichRenderer()
 
