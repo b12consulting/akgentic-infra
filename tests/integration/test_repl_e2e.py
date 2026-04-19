@@ -20,7 +20,7 @@ import pytest
 
 from akgentic.core.messages.message import Message
 from akgentic.infra.cli.client import ApiClient
-from akgentic.infra.cli.commands import (
+from akgentic.infra.cli.repl_commands import (
     _create_handler,
     _delete_handler,
     _events_handler,

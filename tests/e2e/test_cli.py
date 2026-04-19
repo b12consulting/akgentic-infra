@@ -161,7 +161,7 @@ def test_e2e_cli_slash_commands(
     from types import SimpleNamespace
 
     from akgentic.infra.cli.client import ApiClient
-    from akgentic.infra.cli.commands import (
+    from akgentic.infra.cli.repl_commands import (
         _agents_handler,
         _files_handler,
         _history_handler,

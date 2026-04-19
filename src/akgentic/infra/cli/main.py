@@ -162,7 +162,7 @@ def chat(
     ] = None,
 ) -> None:
     """Interactive chat REPL — connect to a team via WebSocket."""
-    from akgentic.infra.cli.commands import build_default_registry
+    from akgentic.infra.cli.repl_commands import build_default_registry
     from akgentic.infra.cli.connection import ConnectionManager
     from akgentic.infra.cli.event_router import EventRouter
 

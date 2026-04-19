@@ -13,7 +13,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from akgentic.infra.cli.commands import (
+from akgentic.infra.cli.repl_commands import (
     _catalog_handler,
     _create_handler,
     _delete_handler,

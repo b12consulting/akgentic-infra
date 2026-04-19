@@ -10,7 +10,7 @@ from akgentic.core.messages.message import Message
 from akgentic.core.messages.orchestrator import EventMessage
 
 from akgentic.infra.cli.client import ApiError
-from akgentic.infra.cli.commands import build_default_registry
+from akgentic.infra.cli.repl_commands import build_default_registry
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer

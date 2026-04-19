@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from akgentic.infra.cli.commands import CommandRegistry
+from akgentic.infra.cli.repl_commands import CommandRegistry
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.messages import ConnectionStateChanged
