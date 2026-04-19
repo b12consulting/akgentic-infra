@@ -28,7 +28,7 @@ from akgentic.infra.server.routes.readiness import router as readiness_router
 from akgentic.infra.server.routes.teams import router as teams_router
 from akgentic.infra.server.routes.webhook import router as webhook_router
 from akgentic.infra.server.routes.workspace import router as workspace_router
-from akgentic.infra.server.routes.ws import ConnectionManager
+from akgentic.infra.server.routes.ws import ConnectionManager, shutdown_reader_pool
 from akgentic.infra.server.routes.ws import router as ws_router
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
@@ -112,6 +112,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             "stop_all() exceeded shutdown_drain_timeout=%ds, proceeding with exit",
             timeout,
         )
+
+    # Shut down the dedicated WS reader thread pool — see issue #227.
+    shutdown_reader_pool()
+    logger.info("WebSocket reader pool shut down")
 
 
 def _build_app(

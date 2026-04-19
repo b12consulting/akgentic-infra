@@ -106,6 +106,18 @@ class TestLifespanShutdown:
             mock_sleep.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_shutdown_calls_shutdown_reader_pool(self) -> None:
+        """Lifespan teardown releases the dedicated WS reader pool (issue #227)."""
+        app = _make_app_state()
+
+        with patch("akgentic.infra.server.app.shutdown_reader_pool") as mock_shutdown_pool:
+            ctx = _lifespan(app)
+            await ctx.__aenter__()
+            await ctx.__aexit__(None, None, None)
+
+        mock_shutdown_pool.assert_called_once_with()
+
+    @pytest.mark.asyncio
     async def test_shutdown_logs_timeout_warning(self) -> None:
         """AC #9: shutdown logs warning when stop_all exceeds drain timeout."""
         app = _make_app_state(drain_timeout=0)
@@ -114,10 +126,13 @@ class TestLifespanShutdown:
         async def _slow_to_thread(fn: object) -> None:
             await asyncio.sleep(10)
 
-        with patch(
-            "akgentic.infra.server.app.asyncio.to_thread",
-            side_effect=_slow_to_thread,
-        ), patch("akgentic.infra.server.app.logger") as mock_logger:
+        with (
+            patch(
+                "akgentic.infra.server.app.asyncio.to_thread",
+                side_effect=_slow_to_thread,
+            ),
+            patch("akgentic.infra.server.app.logger") as mock_logger,
+        ):
             ctx = _lifespan(app)
             await ctx.__aenter__()
             await ctx.__aexit__(None, None, None)

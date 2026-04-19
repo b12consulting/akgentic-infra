@@ -70,6 +70,17 @@ class ServerSettings(BaseSettings):
             "(0 for standalone, 5-10 for LB deployments)"
         ),
     )
+    ws_reader_pool_size: int = Field(
+        default=256,
+        ge=1,
+        description=(
+            "Dedicated thread pool for WebSocket event-stream reader polling. "
+            "Each active WS connection holds one thread per read_next(0.5) tick. "
+            "Size for concurrent WS budget plus headroom for burst open/close "
+            "cycles. Isolated from the default executor to prevent "
+            "cross-subsystem starvation."
+        ),
+    )
 
 
 class CommunitySettings(ServerSettings):

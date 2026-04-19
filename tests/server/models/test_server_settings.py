@@ -142,6 +142,7 @@ class TestSettingsHierarchy:
             "frontend_adapter",
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
+            "ws_reader_pool_size",
         }
         assert server_fields == expected, (
             f"ServerSettings fields mismatch: got {server_fields}, expected {expected}"
@@ -167,9 +168,7 @@ class TestSettingsHierarchy:
                 origin = typing.get_origin(annotation)
                 if origin is typing.Literal:
                     args = typing.get_args(annotation)
-                    assert "yaml" not in args, (
-                        f"{cls.__name__}.{field_name} has Literal['yaml']"
-                    )
+                    assert "yaml" not in args, f"{cls.__name__}.{field_name} has Literal['yaml']"
 
     def test_community_settings_wires_functional_app(self, tmp_path: Path) -> None:
         """End-to-end: CommunitySettings -> wire -> create_app -> team works."""
@@ -382,3 +381,40 @@ class TestShutdownSettings:
 
         with pytest.raises(ValidationError, match="shutdown_pre_drain_delay"):
             ServerSettings(shutdown_pre_drain_delay=-1)
+
+
+class TestWsReaderPoolSizeSetting:
+    """Tests for ws_reader_pool_size field (story 21-2)."""
+
+    def test_default_ws_reader_pool_size(self) -> None:
+        """Default ws_reader_pool_size is 256."""
+        settings = ServerSettings()
+        assert settings.ws_reader_pool_size == 256
+
+    def test_ws_reader_pool_size_from_env(self) -> None:
+        """AKGENTIC_WS_READER_POOL_SIZE overrides ws_reader_pool_size field."""
+        os.environ["AKGENTIC_WS_READER_POOL_SIZE"] = "64"
+        try:
+            settings = ServerSettings()
+            assert settings.ws_reader_pool_size == 64
+        finally:
+            del os.environ["AKGENTIC_WS_READER_POOL_SIZE"]
+
+    def test_ws_reader_pool_size_has_description(self) -> None:
+        """ws_reader_pool_size has a non-None description."""
+        field = ServerSettings.model_fields["ws_reader_pool_size"]
+        assert field.description is not None
+
+    def test_ws_reader_pool_size_rejects_zero(self) -> None:
+        """ws_reader_pool_size rejects 0 (ge=1 constraint)."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="ws_reader_pool_size"):
+            ServerSettings(ws_reader_pool_size=0)
+
+    def test_ws_reader_pool_size_rejects_negative(self) -> None:
+        """ws_reader_pool_size rejects negative values."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="ws_reader_pool_size"):
+            ServerSettings(ws_reader_pool_size=-1)

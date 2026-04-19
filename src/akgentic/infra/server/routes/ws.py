@@ -1,16 +1,27 @@
-"""WebSocket route for real-time event streaming via EventStream."""
+"""WebSocket route for real-time event streaming via EventStream.
+
+The streaming loop is a v1-style supervisor: ``pump`` forwards events and
+``watch_disconnect`` awaits client frames; whichever finishes first cancels
+the other. Reader polling runs on a dedicated ``ThreadPoolExecutor``
+(``_WS_READER_POOL``) so that blocking ``reader.read_next(timeout)`` calls
+cannot starve the default executor. The ``StreamReader`` protocol stays
+sync — enterprise adapters (``DaprStreamReader``) are unaffected.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from akgentic.infra.protocols.event_stream import StreamClosed
+from akgentic.core.messages import Message
+from akgentic.infra.protocols.event_stream import StreamClosed, StreamReader
 from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.models import TeamStatus
@@ -18,6 +29,44 @@ from akgentic.team.models import TeamStatus
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+_WS_READER_POOL: ThreadPoolExecutor | None = None
+
+
+def _get_reader_pool(websocket: WebSocket) -> ThreadPoolExecutor:
+    """Return the module-level dedicated reader pool, constructing it on first use.
+
+    Sized from ``app.state.settings.ws_reader_pool_size``. The pool is
+    process-global and reused across connections. It stays isolated from
+    ``asyncio``'s default executor to prevent the WS reader polling
+    workload from starving other ``run_in_executor`` callers in the same
+    process.
+
+    See issue #227.
+    """
+    global _WS_READER_POOL
+    if _WS_READER_POOL is None:
+        settings = websocket.app.state.settings
+        _WS_READER_POOL = ThreadPoolExecutor(
+            max_workers=settings.ws_reader_pool_size,
+            thread_name_prefix="ws-reader",
+        )
+    return _WS_READER_POOL
+
+
+def shutdown_reader_pool() -> None:
+    """Shut down the dedicated reader pool, cancelling queued futures.
+
+    Invoked by the FastAPI lifespan teardown. ``wait=False`` + ``cancel_futures=True``
+    allow the process to exit promptly even if a reader thread is mid-poll;
+    the daemon-threaded executor does not block interpreter shutdown.
+    """
+    global _WS_READER_POOL
+    if _WS_READER_POOL is None:
+        return
+    _WS_READER_POOL.shutdown(wait=False, cancel_futures=True)
+    _WS_READER_POOL = None
 
 
 class ConnectionManager:
@@ -146,7 +195,14 @@ async def _run_streaming_loop(
     conn_mgr: ConnectionManager,
     adapter: FrontendAdapter | None = None,
 ) -> None:
-    """Subscribe to EventStream and forward events over WebSocket."""
+    """Subscribe to EventStream and forward events over WebSocket.
+
+    Uses a v1-style supervisor: ``pump`` forwards events while
+    ``watch_disconnect`` awaits client frames. Whichever finishes first
+    cancels the other. Disconnect detection is structural (sub-millisecond
+    via ``websocket.receive()``) rather than polled via ``client_state``.
+    See issue #227.
+    """
     logger.debug("Streaming loop started: team_id=%s", team_id)
     event_stream = service.get_event_stream()
     try:
@@ -157,34 +213,99 @@ async def _run_streaming_loop(
         await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
         return
 
-    loop = asyncio.get_running_loop()
-    try:
-        while True:
-            event = await loop.run_in_executor(None, reader.read_next, 0.5)
-            if event is None:
-                if websocket.client_state != WebSocketState.CONNECTED:
-                    break
-                continue
+    stream_closed = await _supervise_stream(websocket, reader, adapter, team_id)
 
-            try:
-                if adapter is not None:
-                    wrapped = adapter.wrap_ws_event(event)
-                    await websocket.send_text(wrapped.model_dump_json())
-                else:
-                    await websocket.send_text(event.model_dump_json())
-                logger.debug("Event forwarded to client: team_id=%s", team_id)
-            except WebSocketDisconnect:
-                raise
-            except Exception:  # noqa: BLE001
-                logger.debug("Skipping unserializable event: team_id=%s", team_id)
-    except StreamClosed:
+    if stream_closed:
         logger.debug("StreamClosed for team %s, transitioning to idle loop", team_id)
         conn_mgr.clear_restored(team_id)
         await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
-    except (WebSocketDisconnect, asyncio.CancelledError):
+
+
+async def _send_event(
+    websocket: WebSocket,
+    event: Message,
+    adapter: FrontendAdapter | None,
+    team_id: uuid.UUID,
+) -> None:
+    """Serialize and forward a single event, logging and skipping on failure."""
+    try:
+        if adapter is not None:
+            wrapped = adapter.wrap_ws_event(event)
+            await websocket.send_text(wrapped.model_dump_json())
+        else:
+            await websocket.send_text(event.model_dump_json())
+        logger.debug("Event forwarded to client: team_id=%s", team_id)
+    except WebSocketDisconnect:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.debug("Skipping unserializable event: team_id=%s", team_id)
+
+
+async def _await_and_suppress(task: asyncio.Task[None]) -> None:
+    """Await ``task`` swallowing cancellation, disconnect, and incidental errors."""
+    with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect, Exception):
+        await task
+
+
+async def _supervise_stream(
+    websocket: WebSocket,
+    reader: StreamReader,
+    adapter: FrontendAdapter | None,
+    team_id: uuid.UUID,
+) -> bool:
+    """Race ``pump`` against ``watch_disconnect`` until one finishes.
+
+    Returns ``True`` iff the event stream observed ``StreamClosed`` (callers
+    transition to the idle loop). Cancels the losing task and awaits it
+    under ``contextlib.suppress`` so cleanup is idempotent.
+
+    Note on cancellation: cancelling ``pump_task`` marks its
+    ``run_in_executor`` future as cancelled on the event-loop side, but the
+    executor thread still holds ``threading.Event.wait(0.5)`` in
+    ``LocalStreamReader.read_next``. ``reader.close()`` below signals the
+    event and typically cuts the tick short to single-digit milliseconds.
+    """
+    stream_closed = False
+
+    async def pump() -> None:
+        nonlocal stream_closed
+        loop = asyncio.get_running_loop()
+        pool = _get_reader_pool(websocket)
+        try:
+            while True:
+                event = await loop.run_in_executor(pool, reader.read_next, 0.5)
+                if event is None:
+                    continue
+                await _send_event(websocket, event, adapter, team_id)
+        except StreamClosed:
+            stream_closed = True
+
+    async def watch_disconnect() -> None:
+        # Silently drops inbound client frames — correct for today's
+        # server-push protocol. A future client→server WS protocol must
+        # replace this helper. See issue #227.
+        try:
+            while True:
+                await websocket.receive()
+        except WebSocketDisconnect:
+            return
+
+    pump_task = asyncio.create_task(pump())
+    watch_task = asyncio.create_task(watch_disconnect())
+    try:
+        done, pending = await asyncio.wait(
+            [pump_task, watch_task], return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+            await _await_and_suppress(task)
+        for task in done:
+            await _await_and_suppress(task)
         logger.info("WebSocket streaming stopped: team_id=%s", team_id)
     finally:
         reader.close()
+
+    return stream_closed
 
 
 async def _run_idle_loop(
