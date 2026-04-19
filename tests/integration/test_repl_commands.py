@@ -13,6 +13,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from akgentic.infra.cli.repl import InputMode
 from akgentic.infra.cli.repl_commands import (
     _catalog_handler,
     _create_handler,
@@ -22,7 +23,6 @@ from akgentic.infra.cli.repl_commands import (
     _restore_handler,
     _teams_handler,
 )
-from akgentic.infra.cli.repl import InputMode
 
 from ._helpers import (
     CATALOG_ENTRY_ID,

@@ -43,7 +43,6 @@ from tests.fixtures.events import (
     _make_proxy,
     build_start_message,
     make_sent_message,
-    make_start_message,
 )
 
 from .conftest import captured_renderer as _captured_renderer

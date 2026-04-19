@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from akgentic.infra.cli.client import ApiClient, ApiError, EventInfo, TeamInfo
-from akgentic.infra.cli.repl_commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.connection import ConnectionManager
 from akgentic.infra.cli.event_router import EventRouter
+from akgentic.infra.cli.repl_commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
 from akgentic.infra.cli.tui.widgets.error import ErrorWidget
@@ -479,9 +479,8 @@ async def test_history_no_events_mounts_message() -> None:
 @pytest.mark.asyncio
 async def test_history_with_events_mounts_widgets() -> None:
     """AC #2: /history with displayable events mounts widgets from EventRouter."""
-    from tests.fixtures.events import build_sent_message
-
     from akgentic.infra.cli.tui.widgets.agent_message import AgentMessage
+    from tests.fixtures.events import build_sent_message
 
     client = _mock_client()
     typed_event = build_sent_message(content="hello from history")

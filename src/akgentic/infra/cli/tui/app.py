@@ -29,9 +29,9 @@ _log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from akgentic.infra.cli.client import ApiClient
-    from akgentic.infra.cli.repl_commands import CommandRegistry
     from akgentic.infra.cli.connection import ConnectionManager
     from akgentic.infra.cli.event_router import EventRouter
+    from akgentic.infra.cli.repl_commands import CommandRegistry
 
 _CSS_PATH = Path(__file__).parent / "styles" / "chat.tcss"
 

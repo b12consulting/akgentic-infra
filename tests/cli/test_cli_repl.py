@@ -10,7 +10,6 @@ from akgentic.core.messages.message import Message
 from akgentic.core.messages.orchestrator import EventMessage
 
 from akgentic.infra.cli.client import ApiError
-from akgentic.infra.cli.repl_commands import build_default_registry
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
@@ -23,6 +22,7 @@ from akgentic.infra.cli.repl import (
     _render_event_impl,
     _SlashCompleter,
 )
+from akgentic.infra.cli.repl_commands import build_default_registry
 from akgentic.infra.cli.ws_client import WsConnectionError
 from tests.fixtures.events import (
     _make_proxy,
@@ -31,7 +31,6 @@ from tests.fixtures.events import (
     build_sent_message,
     build_start_message,
     build_tool_call_event,
-    make_sent_message,
 )
 
 from .conftest import captured_renderer as _captured_renderer
