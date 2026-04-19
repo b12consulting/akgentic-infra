@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -331,6 +332,33 @@ class TestEventStreamWsIntegration:
 
         with client.websocket_connect(f"/ws/{team_id}"):
             pass  # immediate disconnect
+
+
+class TestFastDisconnectDetection:
+    """AC 13 (issue #227): structural disconnect detection via the supervisor."""
+
+    def test_idle_team_ws_disconnect_detected_fast(
+        self,
+        client: TestClient,
+    ) -> None:
+        """Closing an idle WS returns from the handler well under the old 1s worst case.
+
+        Before the supervisor, disconnect detection required a full
+        ``read_next(0.5)`` tick plus a ``client_state`` check — a worst case
+        near 1s. With ``watch_disconnect`` awaiting ``websocket.receive()``,
+        the handler must exit within a few hundred ms. The 500 ms bound here
+        is the looser CI-safe upper bound prescribed by AC 13.
+        """
+        resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+        team_id = resp.json()["team_id"]
+
+        start = time.monotonic()
+        with client.websocket_connect(f"/ws/{team_id}"):
+            pass  # immediate close triggers the disconnect path
+        elapsed = time.monotonic() - start
+
+        # Generous bound for shared CI runners; observed locally well under 100 ms.
+        assert elapsed < 0.5, f"disconnect detection took {elapsed:.3f}s, expected < 0.5s"
 
 
 def _trigger_subscriber_event(client: TestClient, team_id: str) -> None:
