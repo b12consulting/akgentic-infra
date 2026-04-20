@@ -292,7 +292,10 @@ class OidcTokenProvider:
     ) -> TokenCacheEntry:
         """Convert a :class:`TokenResponse` to a :class:`TokenCacheEntry`.
 
-        Enforces strict refresh-token presence per the module-level decision.
+        Enforces two invariants in wire-order before writing the cache:
+        (a) ``refresh_token`` must be present (strict module-level decision);
+        (b) ``token_type`` must be ``Bearer`` (case-insensitive) — ADR-021
+        §Decision 2 pins Bearer enforcement to this single cache-write funnel.
         """
         if response.refresh_token is None:
             # Strict path: we require a refresh_token to maintain the cache
@@ -301,6 +304,16 @@ class OidcTokenProvider:
             raise ReAuthRequiredError(
                 f"Token endpoint did not return a refresh_token for profile "
                 f"{self._profile_name!r}; cache purged."
+            )
+        if response.token_type.casefold() != "bearer":
+            # The downstream HTTP layer unconditionally formats the Authorization
+            # header as "Bearer <token>"; any other scheme would silently mis-wrap
+            # into an opaque 401. Purge-first to match the refresh_token branch's
+            # side-effect ordering.
+            delete_token_cache(self._profile_name, credentials_dir=self._credentials_dir)
+            raise OidcProtocolError(
+                f"Token endpoint returned unsupported token_type={response.token_type!r}; "
+                "only 'Bearer' is supported."
             )
         now = fallback_now if fallback_now is not None else self._clock()
         return TokenCacheEntry(

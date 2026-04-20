@@ -192,6 +192,7 @@ def test_poll_slow_down_widens_interval(
                     "access_token": "a",
                     "refresh_token": "r",
                     "expires_in": 3600,
+                    "token_type": "Bearer",
                 }
             )
         raise AssertionError(request.url)
@@ -381,6 +382,7 @@ def test_get_access_token_refreshes_when_expired(
                     "access_token": "new-access",
                     "refresh_token": "new-refresh",
                     "expires_in": 3600,
+                    "token_type": "Bearer",
                 }
             )
         raise AssertionError(request.url)
@@ -533,7 +535,14 @@ def test_default_prompt_hook_writes_to_stderr(
                 }
             )
         if str(request.url) == TOKEN_ENDPOINT:
-            return _json_response({"access_token": "a", "refresh_token": "r", "expires_in": 3600})
+            return _json_response(
+                {
+                    "access_token": "a",
+                    "refresh_token": "r",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                }
+            )
         raise AssertionError(request.url)
 
     provider = _make_provider(
@@ -565,7 +574,7 @@ def test_refresh_response_without_refresh_token_purges_and_raises(
             return httpx.Response(200, content=_discovery_body())
         if str(request.url) == TOKEN_ENDPOINT:
             # No refresh_token in response — strict path should purge + raise.
-            return _json_response({"access_token": "a", "expires_in": 3600})
+            return _json_response({"access_token": "a", "expires_in": 3600, "token_type": "Bearer"})
         raise AssertionError(request.url)
 
     provider = _make_provider(
@@ -626,7 +635,14 @@ def test_endpoints_cached_across_calls(
             discovery_calls["n"] += 1
             return httpx.Response(200, content=_discovery_body())
         if str(request.url) == TOKEN_ENDPOINT:
-            return _json_response({"access_token": "a", "refresh_token": "r", "expires_in": 3600})
+            return _json_response(
+                {
+                    "access_token": "a",
+                    "refresh_token": "r",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                }
+            )
         raise AssertionError(request.url)
 
     provider = _make_provider(
@@ -668,7 +684,14 @@ def test_run_device_code_flow_uses_default_prompt_when_hook_none(
                 }
             )
         if str(request.url) == TOKEN_ENDPOINT:
-            return _json_response({"access_token": "a", "refresh_token": "r", "expires_in": 3600})
+            return _json_response(
+                {
+                    "access_token": "a",
+                    "refresh_token": "r",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                }
+            )
         raise AssertionError(request.url)
 
     provider = _make_provider(
