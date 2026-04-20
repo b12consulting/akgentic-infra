@@ -10,7 +10,7 @@ from textual.reactive import reactive
 from textual.widgets import TextArea
 
 if TYPE_CHECKING:
-    from akgentic.infra.cli.commands import CommandRegistry
+    from akgentic.infra.cli.repl_commands import CommandRegistry
 
 
 class ChatInput(TextArea):

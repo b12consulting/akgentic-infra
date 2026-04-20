@@ -17,10 +17,13 @@ import builtins
 import time
 
 import pytest
-
 from akgentic.core.messages.message import Message
+
 from akgentic.infra.cli.client import ApiClient
-from akgentic.infra.cli.commands import (
+from akgentic.infra.cli.connection import ConnectionManager
+from akgentic.infra.cli.formatters import OutputFormat
+from akgentic.infra.cli.repl import ChatSession, TeamSelector
+from akgentic.infra.cli.repl_commands import (
     _create_handler,
     _delete_handler,
     _events_handler,
@@ -29,9 +32,6 @@ from akgentic.infra.cli.commands import (
     _stop_handler,
     _switch_handler,
 )
-from akgentic.infra.cli.connection import ConnectionManager
-from akgentic.infra.cli.formatters import OutputFormat
-from akgentic.infra.cli.repl import ChatSession, TeamSelector
 from akgentic.infra.cli.ws_client import WsClient
 
 from ._helpers import CATALOG_ENTRY_ID, StubRenderer

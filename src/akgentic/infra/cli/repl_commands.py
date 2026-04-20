@@ -1,4 +1,11 @@
-"""Slash command registry and dispatcher for in-session REPL commands."""
+"""Slash command registry and dispatcher for in-session REPL commands.
+
+Renamed from ``commands.py`` (Story 21.4 Task 0 — Option A) to free the
+``commands`` name for the new top-level Typer command subpackage
+(:mod:`akgentic.infra.cli.commands`) housing ``login`` / ``logout``. Python
+does not permit a module and a subpackage with the same name at the same
+level, so the legacy REPL slash-command registry moved here.
+"""
 
 from __future__ import annotations
 

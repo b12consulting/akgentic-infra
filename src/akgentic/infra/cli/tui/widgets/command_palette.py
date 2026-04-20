@@ -8,7 +8,7 @@ from rich.text import Text
 from textual.widget import Widget
 
 if TYPE_CHECKING:
-    from akgentic.infra.cli.commands import SlashCommand
+    from akgentic.infra.cli.repl_commands import SlashCommand
 
 
 class CommandPalette(Widget):

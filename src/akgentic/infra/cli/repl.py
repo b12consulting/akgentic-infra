@@ -15,11 +15,11 @@ from pydantic import BaseModel
 
 from akgentic.core.messages.message import Message
 from akgentic.infra.cli.client import ApiClient, ApiError
-from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.connection import ConnectionManager, ConnectionState
 from akgentic.infra.cli.event_router import EventRouter
 from akgentic.infra.cli.formatters import OutputFormat
 from akgentic.infra.cli.renderers import RichRenderer
+from akgentic.infra.cli.repl_commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.team_selector import TeamSelector as TeamSelector  # re-export
 from akgentic.infra.cli.ws_client import WsConnectionError
 

@@ -9,8 +9,8 @@ from contextlib import redirect_stdout
 from typing import TYPE_CHECKING
 
 from akgentic.infra.cli.client import ApiClient, ApiError
-from akgentic.infra.cli.commands import CommandRegistry
 from akgentic.infra.cli.renderers import RichRenderer
+from akgentic.infra.cli.repl_commands import CommandRegistry
 
 if TYPE_CHECKING:
     from akgentic.infra.cli.client import EventInfo
