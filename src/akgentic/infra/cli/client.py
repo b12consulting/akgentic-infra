@@ -106,22 +106,56 @@ class ApiError(Exception):
 
 
 class ApiClient:
-    """Thin HTTP client mapping CLI commands to server endpoints."""
+    """Thin HTTP client mapping CLI commands to server endpoints.
 
-    def __init__(self, base_url: str, api_key: str | None = None) -> None:
-        headers: dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.Client(
-            base_url=base_url,
-            headers=headers,
-            follow_redirects=True,
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
+    Two construction modes are supported:
+
+    * **Legacy** — ``ApiClient(base_url=..., api_key=...)`` constructs its own
+      :class:`httpx.Client` with the same headers, timeout, and redirect policy
+      it has always used. This path is what the Typer callback takes when
+      ``~/.akgentic/config.yaml`` does NOT exist (backward-compat invariant).
+    * **Pre-built** — ``ApiClient(http_client=<client>)`` uses the supplied
+      client verbatim. Ownership stays with the caller: :meth:`close` will NOT
+      close the externally supplied client. The profile-driven Typer callback
+      (story 22.5) uses this mode to hand ``ApiClient`` a client that already
+      has OIDC auto-auth wired.
+
+    Exactly one of ``base_url`` or ``http_client`` MUST be supplied.
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        *,
+        http_client: httpx.Client | None = None,
+    ) -> None:
+        if http_client is not None and base_url is not None:
+            raise ValueError("ApiClient accepts either http_client or base_url, not both.")
+        if http_client is None and base_url is None:
+            raise ValueError("ApiClient requires either http_client or base_url.")
+
+        if http_client is not None:
+            # External client: caller retains ownership; close() is a no-op.
+            self._client = http_client
+            self._owns_client = False
+        else:
+            assert base_url is not None  # narrowed by the guards above
+            headers: dict[str, str] = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            self._client = httpx.Client(
+                base_url=base_url,
+                headers=headers,
+                follow_redirects=True,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            self._owns_client = True
 
     def close(self) -> None:
-        """Close the underlying HTTP client."""
-        self._client.close()
+        """Close the underlying HTTP client iff this ``ApiClient`` owns it."""
+        if self._owns_client:
+            self._client.close()
 
     def __enter__(self) -> ApiClient:
         return self
