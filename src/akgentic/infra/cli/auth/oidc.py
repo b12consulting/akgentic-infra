@@ -107,7 +107,7 @@ class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str | None = None
     expires_in: int
-    token_type: str = "Bearer"
+    token_type: str
 
 
 class OidcErrorResponse(BaseModel):
