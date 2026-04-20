@@ -134,9 +134,9 @@ def create_process(
     from akgentic.catalog.models.errors import EntryNotFoundError
 
     try:
-        process = service.create_team(catalog_entry_id=type, user_id="anonymous")
+        process = service.create_team(catalog_namespace=type, user_id="anonymous")
     except EntryNotFoundError:
-        raise HTTPException(status_code=404, detail="Catalog entry not found") from None
+        raise HTTPException(status_code=404, detail="Catalog namespace not found") from None
     return _to_v1_process_context(process)
 
 

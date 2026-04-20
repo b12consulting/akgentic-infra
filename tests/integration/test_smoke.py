@@ -12,11 +12,11 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from akgentic.core.messages.message import Message
+from akgentic.core.utils.deserializer import deserialize_object
 from fastapi.testclient import TestClient
 from rich.console import Console
 
-from akgentic.core.messages.message import Message
-from akgentic.core.utils.deserializer import deserialize_object
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.infra.cli.repl import _render_event_impl
 
@@ -94,7 +94,7 @@ def test_smoke_create_team(smoke_client: TestClient) -> None:
     """POST /teams/ creates a running team."""
     team_id: str | None = None
     try:
-        resp = smoke_client.post("/teams/", json={"catalog_entry_id": CATALOG_ENTRY_ID})
+        resp = smoke_client.post("/teams/", json={"catalog_namespace": CATALOG_ENTRY_ID})
         assert resp.status_code == 201
         data = resp.json()
         assert data["status"] == "running"

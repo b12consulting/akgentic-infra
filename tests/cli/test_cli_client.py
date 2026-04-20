@@ -89,7 +89,7 @@ class TestCreateTeam:
         result = client.create_team("my-entry")
         assert isinstance(result, TeamInfo)
         assert result.team_id == "abc"
-        assert sent_bodies[0] == {"catalog_entry_id": "my-entry"}
+        assert sent_bodies[0] == {"catalog_namespace": "my-entry"}
 
 
 class TestStopTeam:
