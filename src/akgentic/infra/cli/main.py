@@ -40,6 +40,7 @@ from pydantic import BaseModel
 from akgentic.infra.cli.auth import DeviceAuthorizationResponse
 from akgentic.infra.cli.client import ApiClient, ApiError
 from akgentic.infra.cli.commands import catalog as catalog_command
+from akgentic.infra.cli.commands import channel as channel_command
 from akgentic.infra.cli.commands import login as login_command
 from akgentic.infra.cli.commands import logout as logout_command
 from akgentic.infra.cli.config import (
@@ -65,6 +66,7 @@ app.add_typer(workspace_app, name="workspace")
 login_command.register(app)
 logout_command.register(app)
 catalog_command.register(app)
+channel_command.register(app)
 
 
 # Default server — kept as a module constant so tests can compare against it
