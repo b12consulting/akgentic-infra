@@ -21,7 +21,9 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
+import httpx
 import pytest
+import yaml
 from akgentic.catalog.models import (
     AgentEntry,
     TeamEntry,
@@ -496,3 +498,136 @@ def test_admin_catalog_module_does_not_import_auth_protocol() -> None:
 
     src = Path(m.__file__).read_text()
     assert "akgentic.infra.protocols.auth" not in src
+
+
+# --- YAML request-body support (ADR-022 §D4) --------------------------------
+
+
+def _post_yaml_resp(
+    client: TestClient, entity: str, body_dict: dict[str, object]
+) -> httpx.Response:
+    return client.post(
+        f"/admin/catalog/{entity}",
+        content=yaml.safe_dump(body_dict).encode(),
+        headers={"Content-Type": "application/yaml"},
+    )
+
+
+def _put_yaml_resp(
+    client: TestClient, entity: str, entry_id: str, body_dict: dict[str, object]
+) -> httpx.Response:
+    return client.put(
+        f"/admin/catalog/{entity}/{entry_id}",
+        content=yaml.safe_dump(body_dict).encode(),
+        headers={"Content-Type": "application/yaml"},
+    )
+
+
+@pytest.mark.parametrize(("entity", "payload_factory", "_qfield"), ENTITIES)
+def test_yaml_post_happy_path(
+    client: TestClient,
+    entity: str,
+    payload_factory: EntryFactory,
+    _qfield: str,
+) -> None:
+    """POST application/yaml → 201; subsequent GET returns the posted entry."""
+    payload = payload_factory(f"yaml-post-{entity}").model_dump()
+    resp = _post_yaml_resp(client, entity, payload)
+    assert resp.status_code == 201, resp.text
+    got = client.get(f"/admin/catalog/{entity}/yaml-post-{entity}")
+    assert got.status_code == 200
+    # Round-trip: posted dict equals the stored entry (operator-owned fields)
+    assert got.json() == payload
+
+
+@pytest.mark.parametrize(("entity", "payload_factory", "_qfield"), ENTITIES)
+def test_yaml_put_happy_path(
+    client: TestClient,
+    entity: str,
+    payload_factory: EntryFactory,
+    _qfield: str,
+) -> None:
+    """PUT application/yaml → 200; GET reflects the mutated field."""
+    eid = f"yaml-put-{entity}"
+    _seed(client, entity, payload_factory(eid))
+    updated = payload_factory(eid).model_dump()
+    if entity == "templates":
+        updated["template"] = "Updated {name} via YAML."
+    elif entity == "tools":
+        updated["tool"]["description"] = "updated-via-yaml"
+    elif entity == "agents":
+        updated["card"]["description"] = "updated-via-yaml"
+    elif entity == "teams":
+        updated["description"] = "updated-via-yaml"
+
+    resp = _put_yaml_resp(client, entity, eid, updated)
+    assert resp.status_code == 200, resp.text
+
+    got = client.get(f"/admin/catalog/{entity}/{eid}").json()
+    if entity == "templates":
+        assert "YAML" in got["template"]
+    elif entity == "tools":
+        assert got["tool"]["description"] == "updated-via-yaml"
+    elif entity == "agents":
+        assert got["card"]["description"] == "updated-via-yaml"
+    elif entity == "teams":
+        assert got["description"] == "updated-via-yaml"
+
+
+def test_yaml_post_malformed_returns_422(client: TestClient) -> None:
+    """Malformed YAML body on POST → 422 with ``invalid YAML body:`` prefix."""
+    resp = client.post(
+        "/admin/catalog/templates",
+        content=b"{unclosed: [\n",
+        headers={"Content-Type": "application/yaml"},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["detail"].startswith("invalid YAML body: ")
+
+
+def test_yaml_put_malformed_returns_422(client: TestClient) -> None:
+    """Malformed YAML body on PUT → 422 with ``invalid YAML body:`` prefix."""
+    _seed(client, "templates", _template_payload("put-malformed"))
+    resp = client.put(
+        "/admin/catalog/templates/put-malformed",
+        content=b"{unclosed: [\n",
+        headers={"Content-Type": "application/yaml"},
+    )
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["detail"].startswith("invalid YAML body: ")
+
+
+def test_post_unsupported_content_type_returns_415(client: TestClient) -> None:
+    """POST with ``text/plain`` → 415 with ``unsupported Content-Type:`` prefix."""
+    resp = client.post(
+        "/admin/catalog/templates",
+        content=b"plain body",
+        headers={"Content-Type": "text/plain"},
+    )
+    assert resp.status_code == 415
+    body = resp.json()
+    assert body["detail"].startswith("unsupported Content-Type: ")
+
+
+def test_yaml_post_with_charset_parameter_accepted(client: TestClient) -> None:
+    """``application/yaml; charset=utf-8`` is treated as ``application/yaml``."""
+    payload = _template_payload("yaml-charset").model_dump()
+    resp = client.post(
+        "/admin/catalog/templates",
+        content=yaml.safe_dump(payload).encode(),
+        headers={"Content-Type": "application/yaml; charset=utf-8"},
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_yaml_x_yaml_alias_accepted(client: TestClient) -> None:
+    """``application/x-yaml`` alias is accepted on POST."""
+    payload = _template_payload("yaml-alias").model_dump()
+    resp = client.post(
+        "/admin/catalog/templates",
+        content=yaml.safe_dump(payload).encode(),
+        headers={"Content-Type": "application/x-yaml"},
+    )
+    assert resp.status_code == 201, resp.text

@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from pydantic import BaseModel, model_validator
 
+from akgentic.catalog.models import AgentEntry, TeamEntry, TemplateEntry, ToolEntry
 from akgentic.core.messages.message import Message
 from akgentic.core.utils.deserializer import deserialize_object
+
+# Typed admin-catalog entry union (ADR-022 §D4 response side).
+CatalogEntry = TemplateEntry | ToolEntry | AgentEntry | TeamEntry
+
+_ENTITY_MODELS: dict[str, type[BaseModel]] = {
+    "templates": TemplateEntry,
+    "tools": ToolEntry,
+    "agents": AgentEntry,
+    "teams": TeamEntry,
+}
 
 _log = logging.getLogger(__name__)
 
@@ -103,6 +114,17 @@ class ApiError(Exception):
     def retryable(self) -> bool:
         """True for transient server errors and network issues."""
         return self.status_code >= 500 or self.status_code == 429 or self.status_code == 0
+
+
+def _require_json_object(body: object) -> dict[str, Any]:
+    """Guard: return ``body`` as a ``dict`` or raise :class:`ApiError`.
+
+    Replaces the previous bare ``assert isinstance(body, dict)`` so malformed
+    server responses still surface as an ``ApiError`` under ``python -O``.
+    """
+    if not isinstance(body, dict):
+        raise ApiError(0, "unexpected response shape: expected JSON object")
+    return dict(body)
 
 
 class ApiClient:
@@ -313,37 +335,38 @@ class ApiClient:
         self,
         entity: str,
         q: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """GET /admin/catalog/<entity> → list of entries.
+    ) -> list[CatalogEntry]:
+        """GET /admin/catalog/<entity> → list of typed entries.
 
-        Returns the parsed JSON response body verbatim (``list[dict]``).
-        ``q`` is forwarded as ``?q=<text>`` when supplied.
+        ``q`` is forwarded as ``?q=<text>`` when supplied. Malformed responses
+        (non-list top-level) raise :class:`ApiError` — no silent empty-list
+        fallback.
         """
         params: dict[str, str] = {"q": q} if q is not None else {}
         resp = self._request("GET", f"/admin/catalog/{entity}", params=params or None)
         body = resp.json()
         if not isinstance(body, list):
-            return []
-        return list(body)
+            raise ApiError(0, "unexpected response shape: expected JSON array")
+        model = _ENTITY_MODELS[entity]
+        return [cast(CatalogEntry, model.model_validate(item)) for item in body]
 
-    def admin_catalog_get(self, entity: str, entry_id: str) -> dict[str, Any]:
-        """GET /admin/catalog/<entity>/<id> → single entry body."""
+    def admin_catalog_get(self, entity: str, entry_id: str) -> CatalogEntry:
+        """GET /admin/catalog/<entity>/<id> → typed entry."""
         resp = self._request("GET", f"/admin/catalog/{entity}/{entry_id}")
-        body = resp.json()
-        assert isinstance(body, dict)
-        return dict(body)
+        body = _require_json_object(resp.json())
+        return cast(CatalogEntry, _ENTITY_MODELS[entity].model_validate(body))
 
     def admin_catalog_create(
         self,
         entity: str,
         body: bytes,
         content_type: str,
-    ) -> dict[str, Any]:
-        """POST /admin/catalog/<entity> → created entry body.
+    ) -> CatalogEntry:
+        """POST /admin/catalog/<entity> → created typed entry.
 
         ``body`` is forwarded unchanged; ``content_type`` is one of
         ``application/json`` or ``application/yaml``. The server is the
-        validation point — the CLI does not parse the payload.
+        validation point — the CLI does not parse the outbound payload.
         """
         resp = self._raw_request(
             "POST",
@@ -351,9 +374,8 @@ class ApiClient:
             content=body,
             content_type=content_type,
         )
-        data = resp.json()
-        assert isinstance(data, dict)
-        return dict(data)
+        data = _require_json_object(resp.json())
+        return cast(CatalogEntry, _ENTITY_MODELS[entity].model_validate(data))
 
     def admin_catalog_update(
         self,
@@ -361,17 +383,16 @@ class ApiClient:
         entry_id: str,
         body: bytes,
         content_type: str,
-    ) -> dict[str, Any]:
-        """PUT /admin/catalog/<entity>/<id> → updated entry body."""
+    ) -> CatalogEntry:
+        """PUT /admin/catalog/<entity>/<id> → updated typed entry."""
         resp = self._raw_request(
             "PUT",
             f"/admin/catalog/{entity}/{entry_id}",
             content=body,
             content_type=content_type,
         )
-        data = resp.json()
-        assert isinstance(data, dict)
-        return dict(data)
+        data = _require_json_object(resp.json())
+        return cast(CatalogEntry, _ENTITY_MODELS[entity].model_validate(data))
 
     def admin_catalog_delete(self, entity: str, entry_id: str) -> None:
         """DELETE /admin/catalog/<entity>/<id> — 204 on success."""
