@@ -24,12 +24,14 @@ emitter, where ``services.auth.authenticate(request)`` feeds the
 """
 
 import builtins
+import json
 import logging
 from collections.abc import Callable
 from typing import Generic, Protocol, TypeVar, cast
 
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+import yaml
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ValidationError
 
 from akgentic.catalog.models import (
     AgentEntry,
@@ -121,6 +123,52 @@ def _emit_mutation_log(
     )
 
 
+# --- Request-body parsing (ADR-022 §D4: JSON + YAML single validation point) --
+
+_YAML_CONTENT_TYPES = frozenset({"application/yaml", "application/x-yaml"})
+
+
+async def _parse_entry_body(request: Request, entry_model: type[BaseModel]) -> BaseModel:
+    """Parse the request body into ``entry_model`` based on ``Content-Type``.
+
+    Accepts ``application/json`` (or missing header) and
+    ``application/yaml`` / ``application/x-yaml``. Content-type parameters
+    (``; charset=utf-8``) are tolerated — split on ``;``, strip, lower-case the
+    head.
+
+    Invalid YAML raises ``HTTPException(422, "invalid YAML body: ...")``.
+    Unsupported content types raise ``HTTPException(415, ...)``. Pydantic
+    ``ValidationError`` on ``entry_model.model_validate`` is mapped to a 422
+    ``HTTPException`` (mirrors FastAPI's default body-binding behaviour now
+    that the explicit body parameter has been replaced with raw-request
+    dispatch).
+    """
+    raw_ct = request.headers.get("content-type", "application/json")
+    content_type = raw_ct.split(";")[0].strip().lower()
+    raw = await request.body()
+
+    if content_type == "application/json" or content_type == "":
+        parsed: object = json.loads(raw) if raw else {}
+    elif content_type in _YAML_CONTENT_TYPES:
+        try:
+            parsed = yaml.safe_load(raw) if raw else {}
+        except yaml.YAMLError as exc:
+            raise HTTPException(status_code=422, detail=f"invalid YAML body: {exc}") from exc
+    else:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"unsupported Content-Type: {content_type!r}; "
+                "expected application/json or application/yaml"
+            ),
+        )
+
+    try:
+        return entry_model.model_validate(parsed)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
 # --- Generic route registration ----------------------------------------------
 
 
@@ -174,26 +222,26 @@ def _register_entity_routes(  # noqa: UP047
         return result
 
     @router.post(prefix, response_model=entry_model, status_code=201)
-    def _create_entry(
-        entry: entry_model,  # type: ignore[valid-type]
+    async def _create_entry(
         request: Request,
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
     ) -> EntryT:
+        entry = cast(EntryT, await _parse_entry_body(request, entry_model))
         catalog.create(entry)
         entry_id = cast(str, getattr(entry, "id"))  # noqa: B009
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="create")
-        return cast(EntryT, entry)
+        return entry
 
     @router.put(prefix + "/{entry_id}", response_model=entry_model)
-    def _update_entry(
+    async def _update_entry(
         entry_id: str,
-        entry: entry_model,  # type: ignore[valid-type]
         request: Request,
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
     ) -> EntryT:
+        entry = cast(EntryT, await _parse_entry_body(request, entry_model))
         catalog.update(entry_id, entry)
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="update")
-        return cast(EntryT, entry)
+        return entry
 
     @router.delete(prefix + "/{entry_id}", status_code=204)
     def _delete_entry(

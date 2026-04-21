@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from pydantic import BaseModel
 
 from akgentic.infra.cli.client import ApiError
 from akgentic.infra.cli.formatters import OutputFormat, format_output
@@ -94,10 +95,24 @@ def _read_body(
     return body, content_type
 
 
+def _to_dict_or_list(data: object) -> object:
+    """Pre-convert typed Pydantic entries to dicts for the formatter.
+
+    The ``format_output`` formatter projects by string key (``row.get(col)``),
+    so typed ``CatalogEntry`` values must be converted to dicts first. This
+    preserves the formatter's public contract without rewriting it.
+    """
+    if isinstance(data, BaseModel):
+        return data.model_dump()
+    if isinstance(data, list):
+        return [item.model_dump() if isinstance(item, BaseModel) else item for item in data]
+    return data
+
+
 def _render_entity(data: object, entity_name: str, fmt: OutputFormat) -> None:
     """Render a single entity body or a list of entity bodies."""
     columns = _COLUMNS_BY_ENTITY[entity_name]
-    typer.echo(format_output(data, fmt, columns))
+    typer.echo(format_output(_to_dict_or_list(data), fmt, columns))
 
 
 def _current_state() -> _State:
