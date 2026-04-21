@@ -190,13 +190,50 @@ class ApiClient:
             raise ApiError(0, f"Connection failed: {exc}") from exc
 
         if not resp.is_success:
-            detail = ""
-            try:
-                body = resp.json()
-                detail = body.get("detail", "")
-            except Exception:  # noqa: BLE001
-                pass
-            raise ApiError(resp.status_code, detail)
+            raise ApiError(resp.status_code, self._extract_detail(resp))
+        return resp
+
+    @staticmethod
+    def _extract_detail(resp: httpx.Response) -> str:
+        """Pull ``detail`` from a JSON error body, falling back to empty string."""
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            return ""
+        if isinstance(body, dict):
+            detail = body.get("detail", "")
+            if isinstance(detail, str):
+                return detail
+        return ""
+
+    def _raw_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        content: bytes,
+        content_type: str,
+    ) -> httpx.Response:
+        """Send a raw body with an explicit ``Content-Type`` header.
+
+        Reuses the same timeout / connect-error / non-2xx translation as
+        :meth:`_request` but bypasses the ``json=...`` shortcut so the caller
+        can post YAML (or any other encoding) without double-serialization.
+        """
+        try:
+            resp = self._client.request(
+                method,
+                path,
+                content=content,
+                headers={"Content-Type": content_type},
+            )
+        except httpx.TimeoutException as exc:
+            raise ApiError(0, f"Request timed out: {method} {path}") from exc
+        except httpx.ConnectError as exc:
+            raise ApiError(0, f"Connection failed: {exc}") from exc
+
+        if not resp.is_success:
+            raise ApiError(resp.status_code, self._extract_detail(resp))
         return resp
 
     # -- catalog endpoints --
@@ -269,6 +306,76 @@ class ApiClient:
         """GET /workspace/{team_id}/file → raw file bytes."""
         resp = self._request("GET", f"/workspace/{team_id}/file", params={"path": path})
         return resp.content
+
+    # -- admin catalog (thin wire — server is validation point, ADR-022 §D4) --
+
+    def admin_catalog_list(
+        self,
+        entity: str,
+        q: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET /admin/catalog/<entity> → list of entries.
+
+        Returns the parsed JSON response body verbatim (``list[dict]``).
+        ``q`` is forwarded as ``?q=<text>`` when supplied.
+        """
+        params: dict[str, str] = {"q": q} if q is not None else {}
+        resp = self._request("GET", f"/admin/catalog/{entity}", params=params or None)
+        body = resp.json()
+        if not isinstance(body, list):
+            return []
+        return list(body)
+
+    def admin_catalog_get(self, entity: str, entry_id: str) -> dict[str, Any]:
+        """GET /admin/catalog/<entity>/<id> → single entry body."""
+        resp = self._request("GET", f"/admin/catalog/{entity}/{entry_id}")
+        body = resp.json()
+        assert isinstance(body, dict)
+        return dict(body)
+
+    def admin_catalog_create(
+        self,
+        entity: str,
+        body: bytes,
+        content_type: str,
+    ) -> dict[str, Any]:
+        """POST /admin/catalog/<entity> → created entry body.
+
+        ``body`` is forwarded unchanged; ``content_type`` is one of
+        ``application/json`` or ``application/yaml``. The server is the
+        validation point — the CLI does not parse the payload.
+        """
+        resp = self._raw_request(
+            "POST",
+            f"/admin/catalog/{entity}",
+            content=body,
+            content_type=content_type,
+        )
+        data = resp.json()
+        assert isinstance(data, dict)
+        return dict(data)
+
+    def admin_catalog_update(
+        self,
+        entity: str,
+        entry_id: str,
+        body: bytes,
+        content_type: str,
+    ) -> dict[str, Any]:
+        """PUT /admin/catalog/<entity>/<id> → updated entry body."""
+        resp = self._raw_request(
+            "PUT",
+            f"/admin/catalog/{entity}/{entry_id}",
+            content=body,
+            content_type=content_type,
+        )
+        data = resp.json()
+        assert isinstance(data, dict)
+        return dict(data)
+
+    def admin_catalog_delete(self, entity: str, entry_id: str) -> None:
+        """DELETE /admin/catalog/<entity>/<id> — 204 on success."""
+        self._request("DELETE", f"/admin/catalog/{entity}/{entry_id}")
 
     def workspace_upload(self, team_id: str, path: str, file_data: bytes) -> WorkspaceUploadInfo:
         """POST /workspace/{team_id}/file → WorkspaceUploadInfo model."""
