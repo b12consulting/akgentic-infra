@@ -43,7 +43,6 @@ from tests.fixtures.events import (
     _make_proxy,
     build_start_message,
     make_sent_message,
-    make_start_message,
 )
 
 from .conftest import captured_renderer as _captured_renderer
@@ -987,13 +986,12 @@ class TestListCatalogTeamsClient:
         mock_response = MagicMock()
         mock_response.json.return_value = [
             {
-                "id": "research-team",
-                "name": "Research Team",
+                "id": "team",
+                "kind": "team",
+                "namespace": "research-team",
+                "model_type": "akgentic.team.models.TeamCard",
                 "description": "Multi-agent research and analysis team",
-                "entry_point": "human-proxy",
-                "message_types": ["akgentic.core.messages.UserMessage"],
-                "members": [],
-                "profiles": [],
+                "payload": {"name": "Research Team"},
             },
         ]
         mock_response.is_success = True

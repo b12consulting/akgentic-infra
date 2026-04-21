@@ -168,9 +168,26 @@ class ApiClient:
     # -- catalog endpoints --
 
     def list_catalog_teams(self) -> list[CatalogTeamInfo]:
-        """GET /catalog/api/teams/ -> list of CatalogTeamInfo models."""
-        resp = self._request("GET", "/catalog/api/teams/")
-        return [CatalogTeamInfo.model_validate(entry) for entry in resp.json()]
+        """GET /catalog/team -> list of CatalogTeamInfo models.
+
+        The unified v2 catalog returns one ``Entry`` per (namespace, id). The
+        CLI surfaces one ``CatalogTeamInfo`` per entry; ``id`` is the entry's
+        namespace (since the v1 ``catalog_namespace=<id>`` workflow is what
+        callers expect), ``name`` is the entry payload name when available
+        and falls back to the namespace, and ``description`` is the entry
+        description (empty string when absent).
+        """
+        resp = self._request("GET", "/catalog/team")
+        teams: list[CatalogTeamInfo] = []
+        for entry in resp.json():
+            payload = entry.get("payload") or {}
+            namespace = entry.get("namespace") or entry.get("id") or ""
+            name = payload.get("name") or namespace
+            description = entry.get("description") or payload.get("description") or ""
+            teams.append(
+                CatalogTeamInfo(id=namespace, name=name, description=description),
+            )
+        return teams
 
     # -- team endpoints --
 

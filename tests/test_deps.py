@@ -6,12 +6,6 @@ import uuid
 from unittest.mock import MagicMock
 
 from akgentic.catalog import Catalog
-from akgentic.catalog.services import (
-    AgentCatalog,
-    TeamCatalog,
-    TemplateCatalog,
-    ToolCatalog,
-)
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process
 
 from akgentic.infra.protocols.auth import AuthStrategy
@@ -86,10 +80,6 @@ class TestTierServicesEventStoreProtocol:
             ingestion=MagicMock(spec=InteractionChannelIngestion),
             channel_registry=MagicMock(spec=ChannelRegistry),
             catalog=MagicMock(spec=Catalog),
-            team_catalog=MagicMock(spec=TeamCatalog),
-            agent_catalog=MagicMock(spec=AgentCatalog),
-            tool_catalog=MagicMock(spec=ToolCatalog),
-            template_catalog=MagicMock(spec=TemplateCatalog),
         )
 
         assert services.event_store is fake_store

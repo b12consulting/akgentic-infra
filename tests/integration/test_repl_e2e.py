@@ -17,8 +17,8 @@ import builtins
 import time
 
 import pytest
-
 from akgentic.core.messages.message import Message
+
 from akgentic.infra.cli.client import ApiClient
 from akgentic.infra.cli.commands import (
     _create_handler,

@@ -10,17 +10,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from akgentic.catalog.api import (
-    add_exception_handlers,
-    agent_router,
-    team_router,
-    template_router,
-    tool_router,
-)
-from akgentic.catalog.api.agent_router import set_catalog as set_agent_catalog
-from akgentic.catalog.api.team_router import set_catalog as set_team_catalog
-from akgentic.catalog.api.template_router import set_catalog as set_template_catalog
-from akgentic.catalog.api.tool_router import set_catalog as set_tool_catalog
+from akgentic.catalog.api import add_exception_handlers
+from akgentic.catalog.api.router import router as catalog_router
+from akgentic.catalog.api.router import set_catalog as set_unified_catalog
 from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.logging_config import configure_logging
 from akgentic.infra.server.routes.frontend_adapter import load_frontend_adapter
@@ -136,7 +128,7 @@ def _build_app(
     app = FastAPI(title="Akgentic Platform API", lifespan=_lifespan)
     _add_cors(app, settings.cors_origins)
     _store_state(app, services, team_service, settings)
-    _inject_catalogs(services)
+    set_unified_catalog(services.catalog)
     _mount_routes(app, settings)
     add_exception_handlers(app)
     logger.info("Building app: routes mounted, CORS origins=%s", settings.cors_origins)
@@ -170,21 +162,10 @@ def _store_state(
     app.state.ingestion = services.ingestion
 
 
-def _inject_catalogs(services: TierServices) -> None:
-    """Inject catalog service instances into akgentic-catalog router modules."""
-    set_agent_catalog(services.agent_catalog)
-    set_team_catalog(services.team_catalog)
-    set_template_catalog(services.template_catalog)
-    set_tool_catalog(services.tool_catalog)
-
-
 def _mount_routes(app: FastAPI, settings: ServerSettings) -> None:
     """Mount all API routers and optional frontend adapter."""
     app.include_router(teams_router)
-    app.include_router(agent_router, prefix="/catalog")
-    app.include_router(team_router, prefix="/catalog")
-    app.include_router(template_router, prefix="/catalog")
-    app.include_router(tool_router, prefix="/catalog")
+    app.include_router(catalog_router)
     app.include_router(workspace_router)
     app.include_router(ws_router)
     app.include_router(webhook_router)

@@ -74,20 +74,14 @@ def _delete_team(client: TestClient, team_id: str) -> None:
 
 
 def test_smoke_list_catalog_teams(smoke_client: TestClient) -> None:
-    """GET /catalog/api/teams/ returns the seeded catalog."""
-    resp = smoke_client.get("/catalog/api/teams/")
+    """GET /catalog/team/{namespace}/resolve returns the seeded TeamCard."""
+    resp = smoke_client.get(f"/catalog/team/{CATALOG_ENTRY_ID}/resolve")
     assert resp.status_code == 200
-    teams = resp.json()
-    assert isinstance(teams, list)
-    assert len(teams) >= 1
+    card = resp.json()
 
-    # Find our seeded entry
-    entry = next((t for t in teams if t["id"] == CATALOG_ENTRY_ID), None)
-    assert entry is not None, f"Expected catalog entry '{CATALOG_ENTRY_ID}' not found"
-
-    # Validate response shape (AC #5: validate rendered CLI output / data shape)
-    for field in ("id", "name", "entry_point", "members"):
-        assert field in entry, f"Missing field '{field}' in catalog entry"
+    # Validate TeamCard response shape (AC #5: data shape)
+    for field in ("name", "entry_point", "members"):
+        assert field in card, f"Missing field '{field}' in resolved TeamCard"
 
 
 def test_smoke_create_team(smoke_client: TestClient) -> None:

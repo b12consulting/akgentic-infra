@@ -5,12 +5,6 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from akgentic.catalog import Catalog
-from akgentic.catalog.services import (
-    AgentCatalog,
-    TeamCatalog,
-    TemplateCatalog,
-    ToolCatalog,
-)
 from akgentic.core import ActorSystem
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.auth import AuthStrategy
@@ -51,19 +45,13 @@ class TierServices(BaseModel):
         description="Registry mapping channel IDs to team IDs"
     )
     catalog: Catalog = Field(description="v2 unified catalog service")
-    team_catalog: TeamCatalog = Field(description="Catalog service for team entry resolution")
-    agent_catalog: AgentCatalog = Field(description="Catalog service for agent entry resolution")
-    tool_catalog: ToolCatalog = Field(description="Catalog service for tool entry resolution")
-    template_catalog: TemplateCatalog = Field(
-        description="Catalog service for template entry resolution"
-    )
 
 
 class CommunityServices(TierServices):
-    """Community-tier service container with embedded TeamManager and catalogs.
+    """Community-tier service container with embedded TeamManager and catalog.
 
-    Extends TierServices with an in-process TeamManager and YAML-backed
-    catalogs for single-process deployment.
+    Extends TierServices with an in-process TeamManager and the YAML-backed
+    unified catalog for single-process deployment.
     """
 
     service_registry: ServiceRegistry = Field(

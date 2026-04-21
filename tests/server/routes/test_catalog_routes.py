@@ -1,4 +1,4 @@
-"""Tests for mounted akgentic-catalog routers at /catalog/api/<type>."""
+"""Tests for the mounted v2 unified /catalog router."""
 
 from __future__ import annotations
 
@@ -6,90 +6,85 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def test_catalog_team_router_mounted(client: TestClient) -> None:
-    """GET /catalog/api/teams returns list of team entries."""
-    resp = client.get("/catalog/api/teams")
+def test_catalog_team_list_mounted(client: TestClient) -> None:
+    """GET /catalog/team returns list of team entries in the seeded namespace."""
+    resp = client.get("/catalog/team", params={"namespace": "test-team"})
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body, list)
-    assert len(body) >= 1
     ids = [t["id"] for t in body]
-    assert "test-team" in ids
+    assert "team" in ids
 
 
-def test_catalog_agent_router_mounted(client: TestClient) -> None:
-    """GET /catalog/api/agents returns list of agent entries."""
-    resp = client.get("/catalog/api/agents")
+def test_catalog_team_resolve(client: TestClient) -> None:
+    """GET /catalog/team/{namespace}/resolve returns the dumped TeamCard."""
+    resp = client.get("/catalog/team/test-team/resolve")
     assert resp.status_code == 200
     body = resp.json()
-    assert isinstance(body, list)
-    assert len(body) >= 1
-    ids = [a["id"] for a in body]
-    assert "human-proxy" in ids
-
-
-def test_catalog_template_router_mounted(client: TestClient) -> None:
-    """GET /catalog/api/templates returns list (may be empty)."""
-    resp = client.get("/catalog/api/templates")
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
-
-
-def test_catalog_tool_router_mounted(client: TestClient) -> None:
-    """GET /catalog/api/tools returns list (may be empty)."""
-    resp = client.get("/catalog/api/tools")
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert body["name"] == "Test Team"
+    assert isinstance(body.get("members"), list)
 
 
 def test_catalog_team_get_by_id(client: TestClient) -> None:
-    """GET /catalog/api/teams/{id} returns specific team entry."""
-    resp = client.get("/catalog/api/teams/test-team")
+    """GET /catalog/team/{id} returns the specific team entry."""
+    resp = client.get("/catalog/team/team", params={"namespace": "test-team"})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["id"] == "test-team"
-    assert body["name"] == "Test Team"
-    assert body["entry_point"] == "human-proxy"
-    assert isinstance(body["members"], list)
-    assert len(body["members"]) == 2
+    assert body["id"] == "team"
+    assert body["namespace"] == "test-team"
+    assert body["kind"] == "team"
 
 
 def test_catalog_team_crud_create_and_delete(client: TestClient) -> None:
-    """POST then DELETE /catalog/api/teams/{id} works through mounted routers."""
+    """POST then DELETE /catalog/team/{id} works through the unified router."""
     entry = {
-        "id": "crud-test-team",
-        "name": "CRUD Test",
-        "entry_point": "human-proxy",
-        "message_types": ["akgentic.core.messages.UserMessage"],
-        "members": [{"agent_id": "human-proxy"}],
+        "id": "crud-team",
+        "kind": "team",
+        "namespace": "crud-ns",
+        "model_type": "akgentic.team.models.TeamCard",
+        "description": "",
+        "payload": {
+            "name": "CRUD Team",
+            "description": "crud",
+            "entry_point": {
+                "card": {
+                    "role": "Human",
+                    "description": "Human",
+                    "skills": [],
+                    "agent_class": "akgentic.core.agent.Akgent",
+                    "config": {"name": "@Human", "role": "Human"},
+                    "routes_to": [],
+                },
+                "headcount": 1,
+                "members": [],
+            },
+            "members": [],
+            "message_types": [{"__type__": "akgentic.core.messages.UserMessage"}],
+            "agent_profiles": [],
+        },
     }
     # Create
-    resp = client.post("/catalog/api/teams/", json=entry)
+    resp = client.post("/catalog/team", json=entry)
     assert resp.status_code == 201
-    assert resp.json()["id"] == "crud-test-team"
+    assert resp.json()["id"] == "crud-team"
 
     # Verify it exists
-    resp = client.get("/catalog/api/teams/crud-test-team")
+    resp = client.get("/catalog/team/crud-team", params={"namespace": "crud-ns"})
     assert resp.status_code == 200
-    assert resp.json()["name"] == "CRUD Test"
-
-    # List should include it
-    resp = client.get("/catalog/api/teams")
-    ids = [t["id"] for t in resp.json()]
-    assert "crud-test-team" in ids
+    assert resp.json()["namespace"] == "crud-ns"
 
     # Delete
-    resp = client.delete("/catalog/api/teams/crud-test-team")
+    resp = client.delete("/catalog/team/crud-team", params={"namespace": "crud-ns"})
     assert resp.status_code == 204
 
     # Verify entry is gone
-    resp = client.get("/catalog/api/teams/crud-test-team")
+    resp = client.get("/catalog/team/crud-team", params={"namespace": "crud-ns"})
     assert resp.status_code == 404
 
 
 def test_catalog_exception_handler_404(client: TestClient) -> None:
-    """GET /catalog/api/teams/{id} returns 404 for missing entry via exception handler."""
-    resp = client.get("/catalog/api/teams/nonexistent-entry")
+    """GET /catalog/team/{id} returns 404 for missing entry via exception handler."""
+    resp = client.get("/catalog/team/nonexistent-entry", params={"namespace": "test-team"})
     assert resp.status_code == 404
     body = resp.json()
     assert "detail" in body
@@ -99,17 +94,35 @@ def test_catalog_exception_handler_404(client: TestClient) -> None:
 def test_catalog_exception_handler_409(client: TestClient) -> None:
     """POST duplicate entry returns 409 via CatalogValidationError exception handler."""
     entry = {
-        "id": "test-team",
-        "name": "Duplicate Team",
-        "entry_point": "human-proxy",
-        "message_types": ["akgentic.core.messages.UserMessage"],
-        "members": [{"agent_id": "human-proxy"}],
+        "id": "team",
+        "kind": "team",
+        "namespace": "test-team",
+        "model_type": "akgentic.team.models.TeamCard",
+        "description": "",
+        "payload": {
+            "name": "Duplicate Team",
+            "description": "dup",
+            "entry_point": {
+                "card": {
+                    "role": "Human",
+                    "description": "Human",
+                    "skills": [],
+                    "agent_class": "akgentic.core.agent.Akgent",
+                    "config": {"name": "@Human", "role": "Human"},
+                    "routes_to": [],
+                },
+                "headcount": 1,
+                "members": [],
+            },
+            "members": [],
+            "message_types": [{"__type__": "akgentic.core.messages.UserMessage"}],
+            "agent_profiles": [],
+        },
     }
-    resp = client.post("/catalog/api/teams/", json=entry)
+    resp = client.post("/catalog/team", json=entry)
     assert resp.status_code == 409
     body = resp.json()
     assert "detail" in body
-    assert "already exists" in body["detail"].lower()
 
 
 def test_catalog_exception_handler_registered(app: FastAPI) -> None:
@@ -120,13 +133,19 @@ def test_catalog_exception_handler_registered(app: FastAPI) -> None:
     assert CatalogValidationError in app.exception_handlers
 
 
-def test_old_catalog_routes_removed(client: TestClient) -> None:
-    """Old hand-rolled /catalog/teams endpoint no longer exists."""
-    resp = client.get("/catalog/teams")
-    assert resp.status_code == 404 or resp.status_code == 405
+def test_v1_catalog_routes_removed(client: TestClient) -> None:
+    """Legacy v1 per-kind /catalog/api/* endpoints no longer exist.
+
+    Under the unified v2 router, /catalog/api/teams either does not match
+    any path (404/405) or matches /catalog/{kind}/{id} with kind="api",
+    which is rejected by EntryKind validation (422). All three are
+    acceptable "v1 is dead" signals.
+    """
+    resp = client.get("/catalog/api/teams")
+    assert resp.status_code in (404, 405, 422)
 
 
 def test_core_routes_coexist_with_catalog(client: TestClient) -> None:
-    """Core app routes still work after mounting catalog routers."""
+    """Core app routes still work after mounting the unified catalog router."""
     resp = client.get("/teams/")
     assert resp.status_code == 200

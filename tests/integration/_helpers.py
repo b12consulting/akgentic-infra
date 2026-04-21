@@ -124,73 +124,11 @@ def _write_yaml(path: Path, data: dict[str, object]) -> None:
 
 
 def seed_integration_catalog(catalog_root: Path) -> None:
-    """Seed YAML catalog with an LLM-capable agent for integration testing.
+    """Seed the v2 unified catalog with an LLM-capable team for integration tests.
 
-    Uses gpt-4o-mini for fast, cheap LLM calls.
+    Uses gpt-4o-mini for fast, cheap LLM calls. Layout is the v2 per-namespace
+    bundle (``{catalog_root}/{namespace}/{kind}/{id}.yaml``).
     """
-    _write_yaml(
-        catalog_root / "agents" / "human-proxy.yaml",
-        {
-            "id": "human-proxy",
-            "tool_ids": [],
-            "card": {
-                "role": "Human",
-                "description": "Human user interface",
-                "skills": [],
-                "agent_class": "akgentic.agent.HumanProxy",
-                "config": {"name": "@Human", "role": "Human"},
-                "routes_to": ["@Manager"],
-            },
-        },
-    )
-    _write_yaml(
-        catalog_root / "agents" / "manager.yaml",
-        {
-            "id": "manager",
-            "tool_ids": [],
-            "card": {
-                "role": "Manager",
-                "description": "Integration test manager agent",
-                "skills": ["coordination"],
-                "agent_class": "akgentic.agent.BaseAgent",
-                "config": {
-                    "name": "@Manager",
-                    "role": "Manager",
-                    "prompt": {
-                        "template": (
-                            "You are a helpful assistant. Reply concisely in one or two sentences."
-                        ),
-                    },
-                    "model_cfg": {
-                        "provider": "openai",
-                        "model": "gpt-4o-mini",
-                        "temperature": 0.0,
-                    },
-                    "usage_limits": {
-                        "request_limit": 5,
-                        "total_tokens_limit": 10000,
-                    },
-                },
-                "routes_to": [],
-            },
-        },
-    )
-    _write_yaml(
-        catalog_root / "teams" / "test-team.yaml",
-        {
-            "id": "test-team",
-            "name": "Integration Test Team",
-            "entry_point": "human-proxy",
-            "message_types": ["akgentic.agent.AgentMessage"],
-            "members": [
-                {"agent_id": "human-proxy"},
-                {"agent_id": "manager"},
-            ],
-            "profiles": [],
-        },
-    )
-    (catalog_root / "templates").mkdir(parents=True, exist_ok=True)
-    (catalog_root / "tools").mkdir(parents=True, exist_ok=True)
     _seed_v2_integration_namespace(catalog_root, namespace="test-team")
 
 

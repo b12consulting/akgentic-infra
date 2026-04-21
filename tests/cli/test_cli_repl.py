@@ -31,7 +31,6 @@ from tests.fixtures.events import (
     build_sent_message,
     build_start_message,
     build_tool_call_event,
-    make_sent_message,
 )
 
 from .conftest import captured_renderer as _captured_renderer
