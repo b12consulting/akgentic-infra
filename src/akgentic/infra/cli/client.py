@@ -377,6 +377,21 @@ class ApiClient:
         """DELETE /admin/catalog/<entity>/<id> — 204 on success."""
         self._request("DELETE", f"/admin/catalog/{entity}/{entry_id}")
 
+    # -- admin channels (thin wire — ADR-022 §D5) --
+
+    def reload_channels(self) -> dict[str, Any]:
+        """POST /admin/channels/reload → reload summary dict."""
+        resp = self._request("POST", "/admin/channels/reload")
+        if not resp.content:
+            return {}
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            return {}
+        if not isinstance(body, dict):
+            return {}
+        return dict(body)
+
     def workspace_upload(self, team_id: str, path: str, file_data: bytes) -> WorkspaceUploadInfo:
         """POST /workspace/{team_id}/file → WorkspaceUploadInfo model."""
         resp = self._request(
