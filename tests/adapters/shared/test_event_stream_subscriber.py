@@ -28,12 +28,23 @@ class TestEventStreamSubscriberProtocolCompliance:
         subscriber = EventStreamSubscriber(event_stream=LocalEventStream())
         assert callable(subscriber.on_stop)
 
+    def test_has_on_stop_request_method(self) -> None:
+        """Story 22.1 AC1: subscriber exposes on_stop_request for timer-driven shutdown."""
+        subscriber = EventStreamSubscriber(event_stream=LocalEventStream())
+        assert callable(subscriber.on_stop_request)
+
     def test_on_message_signature_matches_protocol(self) -> None:
         sig = inspect.signature(EventStreamSubscriber.on_message)
         assert "msg" in sig.parameters
 
     def test_on_stop_signature_matches_protocol(self) -> None:
         sig = inspect.signature(EventStreamSubscriber.on_stop)
+        params = [p for p in sig.parameters if p != "self"]
+        assert len(params) == 0
+
+    def test_on_stop_request_signature_matches_protocol(self) -> None:
+        """Story 22.1 AC1: on_stop_request takes no parameters beyond self and returns None."""
+        sig = inspect.signature(EventStreamSubscriber.on_stop_request)
         params = [p for p in sig.parameters if p != "self"]
         assert len(params) == 0
 
@@ -144,3 +155,40 @@ class TestOnStop:
         # Should not raise even though remove() throws
         subscriber.on_stop()
         mock_stream.remove.assert_called_once_with(team_id)
+
+
+class TestOnStopRequest:
+    """Story 22.1 AC4: on_stop_request is a no-op — never raises, never mutates state."""
+
+    def test_on_stop_request_returns_none_and_does_not_raise(self) -> None:
+        """Direct invocation returns None without raising."""
+        stream = LocalEventStream()
+        subscriber = EventStreamSubscriber(event_stream=stream)
+
+        result = subscriber.on_stop_request()
+
+        assert result is None
+
+    def test_on_stop_request_does_not_touch_event_stream(self) -> None:
+        """No-op contract: on_stop_request must not append, remove, or read from the stream."""
+        mock_stream = MagicMock()
+        subscriber = EventStreamSubscriber(event_stream=mock_stream)
+
+        subscriber.on_stop_request()
+
+        # No methods on the stream should have been called.
+        mock_stream.append.assert_not_called()
+        mock_stream.remove.assert_not_called()
+        mock_stream.read_from.assert_not_called()
+
+    def test_on_stop_request_does_not_mutate_seen_teams(self) -> None:
+        """State invariant: on_stop_request leaves _seen_teams untouched."""
+        stream = LocalEventStream()
+        subscriber = EventStreamSubscriber(event_stream=stream)
+        team_id = uuid.uuid4()
+        subscriber.on_message(_make_message(team_id=team_id))
+        before = set(subscriber._seen_teams)
+
+        subscriber.on_stop_request()
+
+        assert subscriber._seen_teams == before

@@ -1,8 +1,8 @@
 """EventStreamSubscriber -- shared subscriber that routes orchestrator events to EventStream.
 
-Satisfies the ``EventSubscriber`` protocol from ``akgentic.core.orchestrator`` via
-structural subtyping. A single instance is shared across all teams; ``team_id`` is
-extracted from each ``Message`` to route events to the correct per-team stream.
+Implements the ``EventSubscriber`` protocol from ``akgentic.core.orchestrator``.
+A single instance is shared across all teams; ``team_id`` is extracted from each
+``Message`` to route events to the correct per-team stream.
 
 Threading model:
 - A ``threading.Lock`` protects ``_seen_teams`` for safe concurrent access from
@@ -16,6 +16,8 @@ import threading
 import uuid
 from typing import TYPE_CHECKING
 
+from akgentic.core.orchestrator import EventSubscriber
+
 if TYPE_CHECKING:
     from akgentic.core.messages import Message
     from akgentic.infra.protocols.event_stream import EventStream
@@ -23,7 +25,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class EventStreamSubscriber:
+class EventStreamSubscriber(EventSubscriber):
     """Routes orchestrator events into the shared EventStream.
 
     Forwards each ``Message`` directly to the injected ``EventStream``.
@@ -57,6 +59,14 @@ class EventStreamSubscriber:
             self._seen_teams.add(team_id)
 
         self._event_stream.append(team_id, msg)
+
+    def on_stop_request(self) -> None:
+        """No-op — stop handling is bridged by ``TimerStopSubscriber`` in ``akgentic-team``.
+
+        The orchestrator's inactivity-timer handler calls this on every subscriber;
+        this shared subscriber has no per-team teardown to perform on that signal
+        (the per-team stream is removed in ``on_stop()`` once the team actually stops).
+        """
 
     def on_stop(self) -> None:
         """Remove streams for all tracked teams (best-effort cleanup)."""
