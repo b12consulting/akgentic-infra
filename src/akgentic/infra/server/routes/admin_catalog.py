@@ -11,7 +11,7 @@ mappings. Adding a fifth entity is a one-line additional call.
 
 `?q=<s>` per-entity mapping (mirrors AC #6):
 
-* ``templates`` → ``TemplateQuery(placeholder=s)``
+* ``templates`` → ``TemplateQuery(placeholder=s)`` (exact placeholder-name match)
 * ``tools`` → ``ToolQuery(name=s)``
 * ``agents`` → ``AgentQuery(description=s)``
 * ``teams`` → ``TeamQuery(name=s)``
@@ -23,9 +23,10 @@ emitter, where ``services.auth.authenticate(request)`` feeds the
 ``principal_id`` log field.
 """
 
+import builtins
 import logging
 from collections.abc import Callable
-from typing import cast
+from typing import Generic, Protocol, TypeVar, cast
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
@@ -48,9 +49,29 @@ from akgentic.catalog.services import (
     ToolCatalog,
 )
 
+_list = builtins.list  # Alias: the protocol's list() method shadows the built-in.
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/catalog", tags=["admin-catalog"])
+
+
+# Legacy-style TypeVars required for contravariance on QueryT (PEP 695's
+# class-header generic syntax does not yet support variance annotations in
+# Python 3.12); this also keeps Generic[...] explicit for the Protocol.
+EntryT = TypeVar("EntryT", bound=BaseModel)
+QueryT = TypeVar("QueryT", bound=BaseModel, contravariant=True)
+
+
+class _CatalogProto(Protocol, Generic[EntryT, QueryT]):  # noqa: UP046
+    """Structural protocol shared by all four ``{Entity}Catalog`` services."""
+
+    def list(self) -> _list[EntryT]: ...
+    def get(self, entry_id: str, /) -> EntryT | None: ...
+    def search(self, query: QueryT, /) -> _list[EntryT]: ...
+    def create(self, entry: EntryT, /) -> str: ...
+    def update(self, entry_id: str, entry: EntryT, /) -> None: ...
+    def delete(self, entry_id: str, /) -> None: ...
 
 
 # --- Per-entity dependency accessors (module-private) -------------------------
@@ -103,13 +124,13 @@ def _emit_mutation_log(
 # --- Generic route registration ----------------------------------------------
 
 
-def _register_entity_routes(
+def _register_entity_routes(  # noqa: UP047
     router: APIRouter,
     *,
     entity_name: str,
-    get_catalog: Callable[..., object],
-    entry_model: type[BaseModel],
-    query_from_q: Callable[[str], BaseModel],
+    get_catalog: Callable[[Request], _CatalogProto[EntryT, QueryT]],
+    entry_model: type[EntryT],
+    query_from_q: Callable[[str], QueryT],
 ) -> None:
     """Register the five CRUD verbs for one entity on ``router``.
 
@@ -122,58 +143,65 @@ def _register_entity_routes(
     ``CatalogValidationError`` (→ 409) and ``EntryNotFoundError`` (→ 404)
     propagate to the global handlers registered in
     ``akgentic.catalog.api._errors.add_exception_handlers``.
+
+    Note on the one remaining ``type: ignore[valid-type]`` below: ``entry_model``
+    is a runtime value of type ``type[EntryT]``. FastAPI reads it as a function
+    annotation for request-body validation, which is legal Python but mypy
+    cannot resolve a value-bound ``type[...]`` as a type expression. The ignore
+    is structural to the generic-factory + FastAPI pattern, not a stand-in for
+    a missing type.
     """
     singular = entity_name.rstrip("s").title()
     prefix = f"/{entity_name}"
 
-    @router.get(prefix, response_model=list[entry_model])  # type: ignore[valid-type]
+    @router.get(prefix, response_model=_list[entry_model])  # type: ignore[valid-type]
     def _list_entries(
         q: str | None = None,
-        catalog: object = Depends(get_catalog),
-    ) -> list[BaseModel]:
+        catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
+    ) -> _list[EntryT]:
         if q is None:
-            return catalog.list()  # type: ignore[attr-defined, no-any-return]
-        return catalog.search(query_from_q(q))  # type: ignore[attr-defined, no-any-return]
+            return catalog.list()
+        return catalog.search(query_from_q(q))
 
     @router.get(prefix + "/{entry_id}", response_model=entry_model)
     def _get_entry(
         entry_id: str,
-        catalog: object = Depends(get_catalog),
-    ) -> BaseModel:
-        result = catalog.get(entry_id)  # type: ignore[attr-defined]
+        catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
+    ) -> EntryT:
+        result = catalog.get(entry_id)
         if result is None:
             raise EntryNotFoundError(f"{singular} id '{entry_id}' not found")
-        return cast(BaseModel, result)
+        return result
 
     @router.post(prefix, response_model=entry_model, status_code=201)
     def _create_entry(
         entry: entry_model,  # type: ignore[valid-type]
         request: Request,
-        catalog: object = Depends(get_catalog),
-    ) -> BaseModel:
-        catalog.create(entry)  # type: ignore[attr-defined]
-        entry_id: str = entry.id  # type: ignore[attr-defined]
+        catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
+    ) -> EntryT:
+        catalog.create(entry)
+        entry_id = cast(str, getattr(entry, "id"))  # noqa: B009
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="create")
-        return cast(BaseModel, entry)
+        return cast(EntryT, entry)
 
     @router.put(prefix + "/{entry_id}", response_model=entry_model)
     def _update_entry(
         entry_id: str,
         entry: entry_model,  # type: ignore[valid-type]
         request: Request,
-        catalog: object = Depends(get_catalog),
-    ) -> BaseModel:
-        catalog.update(entry_id, entry)  # type: ignore[attr-defined]
+        catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
+    ) -> EntryT:
+        catalog.update(entry_id, entry)
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="update")
-        return cast(BaseModel, entry)
+        return cast(EntryT, entry)
 
     @router.delete(prefix + "/{entry_id}", status_code=204)
     def _delete_entry(
         entry_id: str,
         request: Request,
-        catalog: object = Depends(get_catalog),
+        catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
     ) -> None:
-        catalog.delete(entry_id)  # type: ignore[attr-defined]
+        catalog.delete(entry_id)
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="delete")
 
 
