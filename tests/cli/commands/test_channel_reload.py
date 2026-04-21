@@ -16,6 +16,7 @@ I/O runs through ``tmp_path`` via the module-level seams on
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from typer.testing import CliRunner
 
 from akgentic.infra.cli import main as main_module
 from akgentic.infra.cli.commands import channel as channel_module
+from akgentic.infra.cli.commands.channel import _COMMUNITY_MESSAGE
 from akgentic.infra.cli.main import app
 
 # ---------------------------------------------------------------------------
@@ -34,7 +36,7 @@ from akgentic.infra.cli.main import app
 
 
 @pytest.fixture(autouse=True)
-def _reset_overrides_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _reset_overrides_and_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     main_module._CONFIG_PATH_OVERRIDE = None
     main_module._CREDENTIALS_DIR_OVERRIDE = None
     main_module._HTTP_CLIENT_FACTORY_OVERRIDE = None
@@ -221,11 +223,10 @@ def test_reload_200_with_unexpected_body_shape(runner: CliRunner, tmp_path: Path
 # ---------------------------------------------------------------------------
 
 
-# The AC #5 verbatim message — character-for-character identity is required.
-EXPECTED_404_MESSAGE = (
-    "`ak channel reload` requires an enterprise deployment; "
-    "the current profile points at a community server."
-)
+# AC #5 verbatim message — character-for-character identity is required.
+# Imported from the module under test so the invariant is enforced by a single
+# source of truth (the tests fail the moment the production constant drifts).
+EXPECTED_404_MESSAGE = _COMMUNITY_MESSAGE
 
 
 def test_reload_404_community_server(runner: CliRunner, tmp_path: Path) -> None:
@@ -238,6 +239,13 @@ def test_reload_404_community_server(runner: CliRunner, tmp_path: Path) -> None:
     assert result.exit_code == 1
     # stderr must contain the exact AC #5 message, no suffix variation.
     assert EXPECTED_404_MESSAGE in result.stderr
+    # Belt-and-braces: assert the verbatim literal, not just the imported
+    # constant — this catches any future drift where both the constant and
+    # the test import are changed together but drift from the spec.
+    assert (
+        "`ak channel reload` requires an enterprise deployment; "
+        "the current profile points at a community server."
+    ) in result.stderr
     # No ``HTTP 404:`` prefix should appear — the community-detection path
     # replaces the generic rendering.
     assert "HTTP 404" not in result.stderr
