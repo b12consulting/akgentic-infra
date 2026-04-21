@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 
 import logfire
 
+from akgentic.core.orchestrator import EventSubscriber
+
 if TYPE_CHECKING:
     from akgentic.core.messages import Message
 
@@ -46,12 +48,11 @@ class _FlushBarrier:
         self.event = threading.Event()
 
 
-class TelemetrySubscriber:
+class TelemetrySubscriber(EventSubscriber):
     """Traces orchestrator events via logfire on a background thread.
 
-    Satisfies the EventSubscriber protocol from akgentic.core.orchestrator
-    via structural subtyping. Thread-safe — designed as a shared, long-lived
-    subscriber across all teams.
+    Implements the EventSubscriber protocol from akgentic.core.orchestrator.
+    Thread-safe — designed as a shared, long-lived subscriber across all teams.
 
     ``on_message()`` extracts the small set of attributes it needs on the
     caller's thread, enqueues them, and returns immediately. Actual emission
@@ -91,6 +92,14 @@ class TelemetrySubscriber:
         msg_type = msg.__class__.__name__
         team_id = msg.team_id
         self._queue.put((sender, msg_type, team_id))
+
+    def on_stop_request(self) -> None:
+        """No-op — stop handling is bridged by ``TimerStopSubscriber`` in ``akgentic-team``.
+
+        The orchestrator's inactivity-timer handler calls this on every subscriber;
+        this shared telemetry subscriber has no per-team teardown to perform on that
+        signal (worker drain happens in ``on_stop()`` on actual shutdown).
+        """
 
     def on_stop(self) -> None:
         """Signal the worker to drain and exit.
