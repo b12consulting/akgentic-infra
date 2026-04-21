@@ -23,6 +23,7 @@ from akgentic.catalog.api.template_router import set_catalog as set_template_cat
 from akgentic.catalog.api.tool_router import set_catalog as set_tool_catalog
 from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.logging_config import configure_logging
+from akgentic.infra.server.routes.admin_catalog import router as admin_catalog_router
 from akgentic.infra.server.routes.frontend_adapter import load_frontend_adapter
 from akgentic.infra.server.routes.readiness import router as readiness_router
 from akgentic.infra.server.routes.teams import router as teams_router
@@ -189,6 +190,7 @@ def _mount_routes(app: FastAPI, settings: ServerSettings) -> None:
     app.include_router(ws_router)
     app.include_router(webhook_router)
     app.include_router(readiness_router)
+    app.include_router(admin_catalog_router)
 
     if settings.frontend_adapter:
         adapter = load_frontend_adapter(settings.frontend_adapter)
