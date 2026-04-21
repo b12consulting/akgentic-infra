@@ -171,44 +171,54 @@ class FakeServer:
             return httpx.Response(404, json={"detail": "not an admin route", "errors": []})
         entity = parts[3]
         entry_id = parts[4] if len(parts) >= 5 else None
-        method = request.method
         if entity not in self.store:
             return httpx.Response(404, json={"detail": f"unknown entity {entity}", "errors": []})
         table = self.store[entity]
         if entry_id is None:
-            if method == "GET":
-                q = request.url.params.get("q")
-                entries = list(table.values())
-                if q is not None:
-                    entries = [e for e in entries if q in json.dumps(e)]
-                return httpx.Response(200, json=entries)
-            if method == "POST":
-                return self._create(request, table)
-        else:
-            if method == "GET":
-                if entry_id not in table:
-                    return httpx.Response(
-                        404,
-                        json={
-                            "detail": f"{entity} '{entry_id}' not found",
-                            "errors": [],
-                        },
-                    )
-                return httpx.Response(200, json=table[entry_id])
-            if method == "PUT":
-                return self._update(request, table, entity, entry_id)
-            if method == "DELETE":
-                if entry_id not in table:
-                    return httpx.Response(
-                        404,
-                        json={
-                            "detail": f"{entity} '{entry_id}' not found",
-                            "errors": [],
-                        },
-                    )
-                table.pop(entry_id)
-                return httpx.Response(204)
+            return self._dispatch_collection(request, table)
+        return self._dispatch_item(request, table, entity, entry_id)
+
+    def _dispatch_collection(
+        self,
+        request: httpx.Request,
+        table: dict[str, dict[str, Any]],
+    ) -> httpx.Response:
+        if request.method == "GET":
+            q = request.url.params.get("q")
+            entries = list(table.values())
+            if q is not None:
+                entries = [e for e in entries if q in json.dumps(e)]
+            return httpx.Response(200, json=entries)
+        if request.method == "POST":
+            return self._create(request, table)
         return httpx.Response(405, json={"detail": "method not allowed", "errors": []})
+
+    def _dispatch_item(
+        self,
+        request: httpx.Request,
+        table: dict[str, dict[str, Any]],
+        entity: str,
+        entry_id: str,
+    ) -> httpx.Response:
+        if request.method == "GET":
+            if entry_id not in table:
+                return self._not_found(entity, entry_id)
+            return httpx.Response(200, json=table[entry_id])
+        if request.method == "PUT":
+            return self._update(request, table, entity, entry_id)
+        if request.method == "DELETE":
+            if entry_id not in table:
+                return self._not_found(entity, entry_id)
+            table.pop(entry_id)
+            return httpx.Response(204)
+        return httpx.Response(405, json={"detail": "method not allowed", "errors": []})
+
+    @staticmethod
+    def _not_found(entity: str, entry_id: str) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"detail": f"{entity} '{entry_id}' not found", "errors": []},
+        )
 
     def _create(
         self,
