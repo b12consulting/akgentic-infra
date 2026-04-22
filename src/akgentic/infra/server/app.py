@@ -147,8 +147,7 @@ def _add_cors(app: FastAPI, cors_origins: list[str]) -> None:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    logger.info(f"Building app: CORSMiddleware - cors origins {cors_origins}")
-
+    logger.info("Building app: CORSMiddleware - cors origins %s", cors_origins)
 
 
 def _store_state(
