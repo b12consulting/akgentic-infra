@@ -145,7 +145,13 @@ def _build_app(
 
 
 def _add_cors(app: FastAPI, cors_origins: list[str]) -> None:
-    """Add CORS middleware to the application."""
+    """Add CORS middleware to the application.
+
+    When *cors_origins* is empty the middleware is **not** registered at all,
+    allowing an external gateway (e.g. Azure App Service) to manage CORS.
+    """
+    if not cors_origins:
+        return
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
