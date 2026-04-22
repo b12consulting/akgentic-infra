@@ -53,9 +53,11 @@ class ServerSettings(BaseSettings):
     )
     # Community-tier permissive default. Department/enterprise tiers must
     # override with explicit origins in their environment configuration.
+    # Set to [] to disable the CORS middleware entirely — useful when an
+    # external gateway (e.g. Azure App Service) manages CORS.
     cors_origins: list[str] = Field(
         default=["*"],
-        description="Allowed CORS origins for the HTTP server",
+        description="Allowed CORS origins for the HTTP server (empty list disables middleware)",
     )
     shutdown_drain_timeout: int = Field(
         default=30,
