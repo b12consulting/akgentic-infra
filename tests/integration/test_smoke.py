@@ -74,8 +74,8 @@ def _delete_team(client: TestClient, team_id: str) -> None:
 
 
 def test_smoke_list_catalog_teams(smoke_client: TestClient) -> None:
-    """GET /catalog/team/{namespace}/resolve returns the seeded TeamCard."""
-    resp = smoke_client.get(f"/catalog/team/{CATALOG_ENTRY_ID}/resolve")
+    """GET /admin/catalog/team/{namespace}/resolve returns the seeded TeamCard."""
+    resp = smoke_client.get(f"/admin/catalog/team/{CATALOG_ENTRY_ID}/resolve")
     assert resp.status_code == 200
     card = resp.json()
 

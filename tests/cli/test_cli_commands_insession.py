@@ -18,7 +18,7 @@ from akgentic.infra.cli.client import (
     WorkspaceTreeInfo,
     WorkspaceUploadInfo,
 )
-from akgentic.infra.cli.commands import (
+from akgentic.infra.cli.repl_commands import (
     CommandRegistry,
     _agents_handler,
     _catalog_handler,
@@ -300,7 +300,7 @@ class TestDeleteHandler:
         client = _mock_client()
         session = _make_session(client=client)
 
-        with patch("akgentic.infra.cli.commands.builtins.input", return_value="y"):
+        with patch("akgentic.infra.cli.repl_commands.builtins.input", return_value="y"):
             await _delete_handler("", session)
 
         out = capsys.readouterr().out
@@ -311,7 +311,7 @@ class TestDeleteHandler:
         client = _mock_client()
         session = _make_session(client=client)
 
-        with patch("akgentic.infra.cli.commands.builtins.input", return_value="n"):
+        with patch("akgentic.infra.cli.repl_commands.builtins.input", return_value="n"):
             await _delete_handler("", session)
 
         out = capsys.readouterr().out
@@ -324,7 +324,7 @@ class TestDeleteHandler:
         client = _mock_client()
         session = _make_session(client=client)
 
-        with patch("akgentic.infra.cli.commands.builtins.input", return_value="y"):
+        with patch("akgentic.infra.cli.repl_commands.builtins.input", return_value="y"):
             await _delete_handler("", session)
 
         client.get_team.assert_called_once_with("t1")
@@ -336,7 +336,7 @@ class TestDeleteHandler:
         client = _mock_client()
         session = _make_session(client=client)
 
-        with patch("akgentic.infra.cli.commands.builtins.input", return_value="y"):
+        with patch("akgentic.infra.cli.repl_commands.builtins.input", return_value="y"):
             await _delete_handler("", session)
 
         out = capsys.readouterr().out

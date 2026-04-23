@@ -22,10 +22,10 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
-from akgentic.infra.cli.commands import build_default_registry
 from akgentic.infra.cli.connection import ConnectionState
 from akgentic.infra.cli.event_router import EventRouter
 from akgentic.infra.cli.renderers import RichRenderer
+from akgentic.infra.cli.repl_commands import build_default_registry
 from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
 

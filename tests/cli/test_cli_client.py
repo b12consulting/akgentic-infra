@@ -333,3 +333,66 @@ class TestApiKey:
         client = _client(httpx.MockTransport(handler), api_key="secret-key")
         client.list_teams()
         assert headers.get("authorization") == "Bearer secret-key"
+
+
+# -- ApiClient constructor modes (story 22.5) --
+
+
+class TestApiClientConstruction:
+    """Exercises the dual-mode constructor introduced in story 22.5."""
+
+    def test_legacy_positional_constructs_own_client(self) -> None:
+        """Legacy call site ``ApiClient("http://x", "k")`` still works."""
+        client = ApiClient("http://test", "key")
+        try:
+            assert client._owns_client is True
+            assert client._client.headers.get("authorization") == "Bearer key"
+        finally:
+            client.close()
+
+    def test_legacy_keyword_constructs_own_client(self) -> None:
+        client = ApiClient(base_url="http://test", api_key="k2")
+        try:
+            assert client._owns_client is True
+        finally:
+            client.close()
+
+    def test_prebuilt_http_client_is_used_verbatim(self) -> None:
+        """``ApiClient(http_client=...)`` reuses the given client untouched."""
+        external = httpx.Client(base_url="http://external")
+        client = ApiClient(http_client=external)
+        try:
+            assert client._owns_client is False
+            assert client._client is external
+            # ApiClient must NOT mutate headers when an external client is
+            # supplied — the caller (callback) owns all auth.
+            assert "authorization" not in external.headers
+        finally:
+            external.close()
+
+    def test_both_base_url_and_http_client_raises(self) -> None:
+        external = httpx.Client(base_url="http://external")
+        try:
+            with pytest.raises(ValueError, match="either"):
+                ApiClient(base_url="http://x", http_client=external)
+        finally:
+            external.close()
+
+    def test_neither_base_url_nor_http_client_raises(self) -> None:
+        with pytest.raises(ValueError, match="requires either"):
+            ApiClient()
+
+    def test_close_does_not_close_external_client(self) -> None:
+        """Ownership invariant — external clients survive ``ApiClient.close()``."""
+        external = httpx.Client(base_url="http://external")
+        client = ApiClient(http_client=external)
+        client.close()
+        # External client should still be usable.
+        assert external.is_closed is False
+        external.close()
+
+    def test_close_does_close_owned_client(self) -> None:
+        client = ApiClient(base_url="http://test")
+        inner = client._client
+        client.close()
+        assert inner.is_closed is True

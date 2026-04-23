@@ -26,8 +26,8 @@ pytestmark = [pytest.mark.e2e]
 
 
 def test_e2e_list_catalog_teams(e2e_http_client: httpx.Client) -> None:
-    """AC #1: GET /catalog/team/{namespace}/resolve returns the TeamCard."""
-    resp = e2e_http_client.get(f"/catalog/team/{CATALOG_ENTRY_ID}/resolve")
+    """AC #1: GET /admin/catalog/team/{namespace}/resolve returns the TeamCard."""
+    resp = e2e_http_client.get(f"/admin/catalog/team/{CATALOG_ENTRY_ID}/resolve")
     assert resp.status_code == 200
     card = resp.json()
 

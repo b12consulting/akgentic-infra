@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from akgentic.infra.cli.client import ApiClient, ApiError, EventInfo, TeamInfo
-from akgentic.infra.cli.commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.connection import ConnectionManager
 from akgentic.infra.cli.event_router import EventRouter
+from akgentic.infra.cli.repl_commands import CommandRegistry, build_default_registry
 from akgentic.infra.cli.tui.app import ChatApp
 from akgentic.infra.cli.tui.widgets.chat_input import ChatInput
 from akgentic.infra.cli.tui.widgets.error import ErrorWidget

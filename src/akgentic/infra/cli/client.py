@@ -8,8 +8,12 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, model_validator
 
+from akgentic.catalog.models import Entry
 from akgentic.core.messages.message import Message
 from akgentic.core.utils.deserializer import deserialize_object
+
+# Typed admin-catalog entry alias (ADR-023 §D4 response side — unified v2 Entry).
+CatalogEntry = Entry
 
 _log = logging.getLogger(__name__)
 
@@ -105,23 +109,68 @@ class ApiError(Exception):
         return self.status_code >= 500 or self.status_code == 429 or self.status_code == 0
 
 
-class ApiClient:
-    """Thin HTTP client mapping CLI commands to server endpoints."""
+def _require_json_object(body: object) -> dict[str, Any]:
+    """Guard: return ``body`` as a ``dict`` or raise :class:`ApiError`.
 
-    def __init__(self, base_url: str, api_key: str | None = None) -> None:
-        headers: dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.Client(
-            base_url=base_url,
-            headers=headers,
-            follow_redirects=True,
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
+    Replaces the previous bare ``assert isinstance(body, dict)`` so malformed
+    server responses still surface as an ``ApiError`` under ``python -O``.
+    """
+    if not isinstance(body, dict):
+        raise ApiError(0, "unexpected response shape: expected JSON object")
+    return dict(body)
+
+
+class ApiClient:
+    """Thin HTTP client mapping CLI commands to server endpoints.
+
+    Two construction modes are supported:
+
+    * **Legacy** — ``ApiClient(base_url=..., api_key=...)`` constructs its own
+      :class:`httpx.Client` with the same headers, timeout, and redirect policy
+      it has always used. This path is what the Typer callback takes when
+      ``~/.akgentic/config.yaml`` does NOT exist (backward-compat invariant).
+    * **Pre-built** — ``ApiClient(http_client=<client>)`` uses the supplied
+      client verbatim. Ownership stays with the caller: :meth:`close` will NOT
+      close the externally supplied client. The profile-driven Typer callback
+      (story 22.5) uses this mode to hand ``ApiClient`` a client that already
+      has OIDC auto-auth wired.
+
+    Exactly one of ``base_url`` or ``http_client`` MUST be supplied.
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        *,
+        http_client: httpx.Client | None = None,
+    ) -> None:
+        if http_client is not None and base_url is not None:
+            raise ValueError("ApiClient accepts either http_client or base_url, not both.")
+        if http_client is None and base_url is None:
+            raise ValueError("ApiClient requires either http_client or base_url.")
+
+        if http_client is not None:
+            # External client: caller retains ownership; close() is a no-op.
+            self._client = http_client
+            self._owns_client = False
+        else:
+            assert base_url is not None  # narrowed by the guards above
+            headers: dict[str, str] = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            self._client = httpx.Client(
+                base_url=base_url,
+                headers=headers,
+                follow_redirects=True,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+            self._owns_client = True
 
     def close(self) -> None:
-        """Close the underlying HTTP client."""
-        self._client.close()
+        """Close the underlying HTTP client iff this ``ApiClient`` owns it."""
+        if self._owns_client:
+            self._client.close()
 
     def __enter__(self) -> ApiClient:
         return self
@@ -156,28 +205,70 @@ class ApiClient:
             raise ApiError(0, f"Connection failed: {exc}") from exc
 
         if not resp.is_success:
-            detail = ""
-            try:
-                body = resp.json()
-                detail = body.get("detail", "")
-            except Exception:  # noqa: BLE001
-                pass
-            raise ApiError(resp.status_code, detail)
+            raise ApiError(resp.status_code, self._extract_detail(resp))
+        return resp
+
+    @staticmethod
+    def _extract_detail(resp: httpx.Response) -> str:
+        """Pull ``detail`` from a JSON error body, falling back to empty string."""
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            return ""
+        if isinstance(body, dict):
+            detail = body.get("detail", "")
+            if isinstance(detail, str):
+                return detail
+        return ""
+
+    def _raw_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        content: bytes,
+        content_type: str,
+        params: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """Send a raw body with an explicit ``Content-Type`` header.
+
+        Reuses the same timeout / connect-error / non-2xx translation as
+        :meth:`_request` but bypasses the ``json=...`` shortcut so the caller
+        can post YAML (or any other encoding) without double-serialization.
+        An optional ``params`` mapping is forwarded as the URL query string
+        (v2 per-entry routes need ``?namespace=<ns>``).
+        """
+        try:
+            resp = self._client.request(
+                method,
+                path,
+                content=content,
+                headers={"Content-Type": content_type},
+                params=params,
+            )
+        except httpx.TimeoutException as exc:
+            raise ApiError(0, f"Request timed out: {method} {path}") from exc
+        except httpx.ConnectError as exc:
+            raise ApiError(0, f"Connection failed: {exc}") from exc
+
+        if not resp.is_success:
+            raise ApiError(resp.status_code, self._extract_detail(resp))
         return resp
 
     # -- catalog endpoints --
 
     def list_catalog_teams(self) -> list[CatalogTeamInfo]:
-        """GET /catalog/team -> list of CatalogTeamInfo models.
+        """GET /admin/catalog/team -> list of CatalogTeamInfo models.
 
-        The unified v2 catalog returns one ``Entry`` per (namespace, id). The
-        CLI surfaces one ``CatalogTeamInfo`` per entry; ``id`` is the entry's
+        Targets the v2 unified router mounted under /admin (ADR-023 §D1). The
+        v2 catalog returns one ``Entry`` per (namespace, id). The CLI
+        surfaces one ``CatalogTeamInfo`` per entry; ``id`` is the entry's
         namespace (since the v1 ``catalog_namespace=<id>`` workflow is what
         callers expect), ``name`` is the entry payload name when available
         and falls back to the namespace, and ``description`` is the entry
         description (empty string when absent).
         """
-        resp = self._request("GET", "/catalog/team")
+        resp = self._request("GET", "/admin/catalog/team")
         teams: list[CatalogTeamInfo] = []
         for entry in resp.json():
             payload = entry.get("payload") or {}
@@ -259,6 +350,112 @@ class ApiClient:
         """GET /workspace/{team_id}/file → raw file bytes."""
         resp = self._request("GET", f"/workspace/{team_id}/file", params={"path": path})
         return resp.content
+
+    # -- admin catalog (thin wire — server is validation point, ADR-023 §D4) --
+
+    def admin_catalog_list(
+        self,
+        kind: str,
+        *,
+        namespace: str | None = None,
+    ) -> list[CatalogEntry]:
+        """GET /admin/catalog/<kind> → list of v2 ``Entry`` models.
+
+        ``namespace`` is forwarded as ``?namespace=<ns>`` when supplied; when
+        omitted the server returns entries across every namespace visible to
+        the authenticated principal. Malformed responses (non-list top-level)
+        raise :class:`ApiError` — no silent empty-list fallback.
+        """
+        params: dict[str, str] = {"namespace": namespace} if namespace is not None else {}
+        resp = self._request("GET", f"/admin/catalog/{kind}", params=params or None)
+        body = resp.json()
+        if not isinstance(body, list):
+            raise ApiError(0, "unexpected response shape: expected JSON array")
+        return [Entry.model_validate(item) for item in body]
+
+    def admin_catalog_get(
+        self, kind: str, entry_id: str, *, namespace: str
+    ) -> CatalogEntry:
+        """GET /admin/catalog/<kind>/<id>?namespace=<ns> → v2 ``Entry`` model."""
+        resp = self._request(
+            "GET",
+            f"/admin/catalog/{kind}/{entry_id}",
+            params={"namespace": namespace},
+        )
+        body = _require_json_object(resp.json())
+        return Entry.model_validate(body)
+
+    def admin_catalog_create(
+        self,
+        kind: str,
+        body: bytes,
+        content_type: str,
+    ) -> CatalogEntry:
+        """POST /admin/catalog/<kind> → created v2 ``Entry`` model.
+
+        ``body`` is forwarded unchanged; ``content_type`` is one of
+        ``application/json`` or ``application/yaml``. The server is the
+        validation point — the CLI does not parse the outbound payload. The
+        body must carry a ``namespace`` field (v2 ``Entry`` shape); no query
+        parameter is needed on create.
+        """
+        resp = self._raw_request(
+            "POST",
+            f"/admin/catalog/{kind}",
+            content=body,
+            content_type=content_type,
+        )
+        data = _require_json_object(resp.json())
+        return Entry.model_validate(data)
+
+    def admin_catalog_update(
+        self,
+        kind: str,
+        entry_id: str,
+        body: bytes,
+        content_type: str,
+        *,
+        namespace: str,
+    ) -> CatalogEntry:
+        """PUT /admin/catalog/<kind>/<id>?namespace=<ns> → updated v2 ``Entry``.
+
+        URL namespace/id pair is authoritative; the server rejects bodies
+        whose ``namespace``/``id`` disagree with the URL.
+        """
+        resp = self._raw_request(
+            "PUT",
+            f"/admin/catalog/{kind}/{entry_id}",
+            content=body,
+            content_type=content_type,
+            params={"namespace": namespace},
+        )
+        data = _require_json_object(resp.json())
+        return Entry.model_validate(data)
+
+    def admin_catalog_delete(
+        self, kind: str, entry_id: str, *, namespace: str
+    ) -> None:
+        """DELETE /admin/catalog/<kind>/<id>?namespace=<ns> — 204 on success."""
+        self._request(
+            "DELETE",
+            f"/admin/catalog/{kind}/{entry_id}",
+            params={"namespace": namespace},
+        )
+
+    # -- admin channels (thin wire — ADR-022 §D5) --
+
+    def reload_channels(self) -> dict[str, Any]:
+        """POST /admin/channels/reload → reload summary dict."""
+        resp = self._request("POST", "/admin/channels/reload")
+        if not resp.content:
+            return {}
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            return {}
+        if not isinstance(body, dict):
+            return {}
+        return dict(body)
 
     def workspace_upload(self, team_id: str, path: str, file_data: bytes) -> WorkspaceUploadInfo:
         """POST /workspace/{team_id}/file → WorkspaceUploadInfo model."""
