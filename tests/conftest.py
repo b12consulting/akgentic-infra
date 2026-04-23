@@ -34,7 +34,19 @@ def _write_yaml(path: Path, data: dict[str, object]) -> None:
 
 
 def _seed_catalog(catalog_root: Path) -> None:
-    """Create minimal YAML catalog entries for a test team."""
+    """Create minimal YAML catalog entries for a test team.
+
+    Seeds BOTH v1 (per-kind dir layout under ``teams/``, ``agents/``,
+    ``tools/``, ``templates/``) AND v2 (per-namespace dir layout under
+    ``{namespace}/{kind}/{id}.yaml``) so the community wiring can expose a
+    working v1 four-catalog stack alongside the v2 ``Catalog`` that Story
+    18.2 adds. Uses the namespace ``test-team`` so tests can post
+    ``catalog_namespace="test-team"`` and hit the v2 code path, while the
+    v1 entry id is also ``test-team`` so legacy tests that still use
+    ``catalog_entry_id="test-team"`` resolve via the v2 API (the router
+    now forwards ``catalog_namespace`` either way).
+    """
+    # --- v1 layout (kept in place through Story 18.2; removed in 18.3) -----
     _write_yaml(
         catalog_root / "agents" / "human-proxy.yaml",
         {
@@ -82,6 +94,77 @@ def _seed_catalog(catalog_root: Path) -> None:
     # Empty dirs for templates and tools (no entries needed for this team)
     (catalog_root / "templates").mkdir(parents=True, exist_ok=True)
     (catalog_root / "tools").mkdir(parents=True, exist_ok=True)
+
+    # --- v2 unified-entry namespace bundle ----------------------------------
+    # Layout: {catalog_root}/{namespace}/{kind}/{id}.yaml
+    _seed_v2_namespace(catalog_root, namespace="test-team")
+
+
+_TEAM_CARD_TYPE = "akgentic.team.models.TeamCard"
+
+
+def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
+    """Write a minimal v2 team-namespace bundle into ``catalog_root``.
+
+    Mirrors the v1 ``Test Team`` definition so the same fixture exercises
+    both the v1 four-catalog pipeline and the v2 ``Catalog.load_team``
+    pipeline. The ``TeamCard`` payload shape is taken from
+    ``akgentic.team.models.TeamCard``; every agent_class / model_type
+    string satisfies the v2 allowlist (``akgentic.*``).
+
+    The member configs use plain ``akgentic.core.agent.Akgent`` (which
+    expects ``BaseConfig``) because the v2 resolver hydrates
+    ``AgentCard.config`` against the declared annotation (``BaseConfig``)
+    and does not upgrade to the agent-class's specific ``ConfigType``
+    subclass the way v1's ``AgentEntry.resolve_config`` validator does.
+    Upgrading v2 to per-agent-class config types is out of scope for
+    Story 18.2 (tracked as part of Epic 19's v1 removal). Tests that
+    only need the agents to *exist* and route messages by name work
+    with the plain base class.
+    """
+    team_payload = {
+        "name": "Test Team",
+        "description": "v2 test team for infra tests",
+        "entry_point": {
+            "card": {
+                "role": "Human",
+                "description": "Human user interface",
+                "skills": [],
+                "agent_class": "akgentic.core.agent.Akgent",
+                "config": {"name": "@Human", "role": "Human"},
+                "routes_to": ["@Manager"],
+            },
+            "headcount": 1,
+            "members": [],
+        },
+        "members": [
+            {
+                "card": {
+                    "role": "Manager",
+                    "description": "Test manager agent",
+                    "skills": ["coordination"],
+                    "agent_class": "akgentic.core.agent.Akgent",
+                    "config": {"name": "@Manager", "role": "Manager"},
+                    "routes_to": [],
+                },
+                "headcount": 1,
+                "members": [],
+            },
+        ],
+        "message_types": [{"__type__": "akgentic.core.messages.UserMessage"}],
+        "agent_profiles": [],
+    }
+    _write_yaml(
+        catalog_root / namespace / "team" / "team.yaml",
+        {
+            "id": "team",
+            "kind": "team",
+            "namespace": namespace,
+            "model_type": _TEAM_CARD_TYPE,
+            "description": "v2 test team namespace bundle",
+            "payload": team_payload,
+        },
+    )
 
 
 @pytest.fixture(autouse=True)

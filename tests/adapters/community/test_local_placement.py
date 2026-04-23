@@ -32,10 +32,12 @@ class TestLocalPlacementProtocolCompliance:
         assert callable(adapter.create_team)
 
     def test_create_team_signature_matches_protocol(self) -> None:
-        """create_team has team_card and user_id parameters matching PlacementStrategy."""
+        """create_team has team_card, user_id, and catalog_namespace parameters."""
         sig = inspect.signature(LocalPlacement.create_team)
         assert "team_card" in sig.parameters
         assert "user_id" in sig.parameters
+        assert "catalog_namespace" in sig.parameters
+        assert sig.parameters["catalog_namespace"].default is None
 
 
 class TestLocalPlacementBehavior:
@@ -48,7 +50,20 @@ class TestLocalPlacementBehavior:
         adapter = LocalPlacement(team_manager, service_registry)
         team_card = MagicMock()
         adapter.create_team(team_card, "user-1")
-        team_manager.create_team.assert_called_once_with(team_card, "user-1")
+        team_manager.create_team.assert_called_once_with(
+            team_card, "user-1", catalog_namespace=None
+        )
+
+    def test_create_team_forwards_catalog_namespace(self) -> None:
+        """create_team forwards catalog_namespace to TeamManager.create_team."""
+        team_manager = MagicMock()
+        service_registry = MagicMock()
+        adapter = LocalPlacement(team_manager, service_registry)
+        team_card = MagicMock()
+        adapter.create_team(team_card, "user-1", catalog_namespace="ns-abc")
+        team_manager.create_team.assert_called_once_with(
+            team_card, "user-1", catalog_namespace="ns-abc"
+        )
 
     def test_create_team_returns_local_team_handle(self) -> None:
         """create_team wraps TeamManager result in LocalTeamHandle."""

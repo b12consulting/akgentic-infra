@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
+from akgentic.catalog import Catalog
 from akgentic.catalog.services import (
     AgentCatalog,
     TeamCatalog,
@@ -49,6 +50,7 @@ class TierServices(BaseModel):
     channel_registry: ChannelRegistry = Field(
         description="Registry mapping channel IDs to team IDs"
     )
+    catalog: Catalog = Field(description="v2 unified catalog service")
     team_catalog: TeamCatalog = Field(description="Catalog service for team entry resolution")
     agent_catalog: AgentCatalog = Field(description="Catalog service for agent entry resolution")
     tool_catalog: ToolCatalog = Field(description="Catalog service for tool entry resolution")
