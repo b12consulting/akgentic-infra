@@ -36,6 +36,7 @@ from pydantic import BaseModel, ValidationError
 from akgentic.catalog.models import (
     AgentEntry,
     AgentQuery,
+    CatalogValidationError,
     EntryNotFoundError,
     TeamEntry,
     TeamQuery,
@@ -218,7 +219,7 @@ def _register_entity_routes(  # noqa: UP047
     ) -> EntryT:
         result = catalog.get(entry_id)
         if result is None:
-            raise EntryNotFoundError(f"{singular} id '{entry_id}' not found")
+            raise HTTPException(status_code=404, detail=f"{singular} id '{entry_id}' not found")
         return result
 
     @router.post(prefix, response_model=entry_model, status_code=201)
@@ -227,7 +228,10 @@ def _register_entity_routes(  # noqa: UP047
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
     ) -> EntryT:
         entry = cast(EntryT, await _parse_entry_body(request, entry_model))
-        catalog.create(entry)
+        try:
+            catalog.create(entry)
+        except CatalogValidationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         entry_id = cast(str, getattr(entry, "id"))  # noqa: B009
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="create")
         return entry
@@ -239,7 +243,12 @@ def _register_entity_routes(  # noqa: UP047
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
     ) -> EntryT:
         entry = cast(EntryT, await _parse_entry_body(request, entry_model))
-        catalog.update(entry_id, entry)
+        try:
+            catalog.update(entry_id, entry)
+        except EntryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CatalogValidationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="update")
         return entry
 
@@ -249,7 +258,10 @@ def _register_entity_routes(  # noqa: UP047
         request: Request,
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
     ) -> None:
-        catalog.delete(entry_id)
+        try:
+            catalog.delete(entry_id)
+        except EntryNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="delete")
 
 
