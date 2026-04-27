@@ -173,7 +173,7 @@ async def _parse_entry_body(request: Request, entry_model: type[BaseModel]) -> B
 # --- Generic route registration ----------------------------------------------
 
 
-def _register_entity_routes(  # noqa: UP047
+def _register_entity_routes(  # noqa: UP047, C901
     router: APIRouter,
     *,
     entity_name: str,
