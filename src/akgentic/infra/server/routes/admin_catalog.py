@@ -31,8 +31,10 @@ from typing import Generic, Protocol, TypeVar, cast
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ValidationError
 
+from akgentic.catalog.api._errors import ErrorResponse
 from akgentic.catalog.models import (
     AgentEntry,
     AgentQuery,
@@ -57,6 +59,15 @@ _list = builtins.list  # Alias: the protocol's list() method shadows the built-i
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/catalog", tags=["admin-catalog"])
+
+
+def _error_response(status: int, detail: str, errors: list[str] | None = None) -> JSONResponse:
+    # Per-route fallback: BaseHTTPMiddleware in akgentic-infra-enterprise swallows
+    # the global ErrorResponse handlers, so emit the same shape directly.
+    return JSONResponse(
+        status_code=status,
+        content=ErrorResponse(detail=detail, errors=errors or []).model_dump(),
+    )
 
 
 # Legacy-style TypeVars required for contravariance on QueryT (PEP 695's
@@ -216,22 +227,22 @@ def _register_entity_routes(  # noqa: UP047, C901
     def _get_entry(
         entry_id: str,
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
-    ) -> EntryT:
+    ) -> EntryT | JSONResponse:
         result = catalog.get(entry_id)
         if result is None:
-            raise HTTPException(status_code=404, detail=f"{singular} id '{entry_id}' not found")
+            return _error_response(404, f"{singular} id '{entry_id}' not found")
         return result
 
     @router.post(prefix, response_model=entry_model, status_code=201)
     async def _create_entry(
         request: Request,
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
-    ) -> EntryT:
+    ) -> EntryT | JSONResponse:
         entry = cast(EntryT, await _parse_entry_body(request, entry_model))
         try:
             catalog.create(entry)
         except CatalogValidationError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return _error_response(409, str(exc), exc.errors)
         entry_id = cast(str, getattr(entry, "id"))  # noqa: B009
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="create")
         return entry
@@ -241,28 +252,29 @@ def _register_entity_routes(  # noqa: UP047, C901
         entry_id: str,
         request: Request,
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
-    ) -> EntryT:
+    ) -> EntryT | JSONResponse:
         entry = cast(EntryT, await _parse_entry_body(request, entry_model))
         try:
             catalog.update(entry_id, entry)
         except EntryNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return _error_response(404, str(exc))
         except CatalogValidationError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return _error_response(409, str(exc), exc.errors)
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="update")
         return entry
 
-    @router.delete(prefix + "/{entry_id}", status_code=204)
+    @router.delete(prefix + "/{entry_id}", responses={204: {"description": "Deleted"}})
     def _delete_entry(
         entry_id: str,
         request: Request,
         catalog: _CatalogProto[EntryT, QueryT] = Depends(get_catalog),
-    ) -> None:
+    ) -> Response:
         try:
             catalog.delete(entry_id)
         except EntryNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return _error_response(404, str(exc))
         _emit_mutation_log(request, entity_name=entity_name, entity_id=entry_id, operation="delete")
+        return Response(status_code=204)
 
 
 # --- Four registration calls — one per entity -------------------------------
