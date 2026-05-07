@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from akgentic.catalog import Catalog, YamlEntryRepository
 from akgentic.catalog.repositories.yaml import (
     YamlAgentCatalogRepository,
     YamlTeamCatalogRepository,
@@ -56,6 +57,9 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     event_stream = LocalEventStream()
     actor_system, team_manager = _build_actor_layer(event_store, service_registry, event_stream)
     catalogs = _build_catalogs(settings)
+    # v2 unified catalog — lives alongside the four v1 catalogs during the
+    # 18.2 → 18.3 handoff. Story 18.3 removes the v1 fields.
+    catalog = Catalog(repository=YamlEntryRepository(root=settings.catalog_path))
 
     local_placement = LocalPlacement(team_manager, service_registry)
     local_worker_handle = LocalWorkerHandle(team_manager, service_registry, actor_system)
@@ -85,6 +89,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
         actor_system=actor_system,
         team_manager=team_manager,
         channel_parser_registry=ChannelParserRegistry(channels_config={}),
+        catalog=catalog,
         team_catalog=catalogs[0],
         agent_catalog=catalogs[1],
         tool_catalog=catalogs[2],

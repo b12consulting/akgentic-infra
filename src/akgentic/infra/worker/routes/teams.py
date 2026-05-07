@@ -72,7 +72,7 @@ def create_team(
 ) -> TeamResponse:
     """Create a new team from a pre-resolved TeamCard.
 
-    The server resolves catalog_entry_id to a TeamCard and forwards it
+    The server resolves the catalog namespace to a TeamCard and forwards it
     to the worker. The worker calls team_manager.create_team() directly.
     """
     logger.info("POST /teams — user_id=%s", body.user_id)

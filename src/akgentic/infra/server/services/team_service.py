@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from akgentic.catalog.models.errors import EntryNotFoundError
+from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.message import Message
 from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.infra.protocols.event_stream import EventStream
@@ -30,22 +30,39 @@ class TeamService:
         self._services = services
         self._cache: RuntimeCache = services.runtime_cache
 
-    def create_team(self, catalog_entry_id: str, user_id: str) -> Process:
-        """Resolve catalog entry and create a running team.
+    def create_team(self, catalog_namespace: str, user_id: str) -> Process:
+        """Resolve a catalog namespace to a TeamCard and create a running team.
+
+        Loads the team definition via the v2 unified ``Catalog.load_team``
+        API and forwards the namespace tag through placement so that the
+        persisted ``Process.catalog_namespace`` records the binding.
+
+        Args:
+            catalog_namespace: v2 catalog namespace holding exactly one
+                ``kind="team"`` entry.
+            user_id: Identifier of the user creating the team.
+
+        Returns:
+            The persisted ``Process`` for the newly created team.
 
         Raises:
-            EntryNotFoundError: If catalog_entry_id is not found.
+            EntryNotFoundError: If ``catalog_namespace`` has no team entry.
+                ``Catalog.load_team`` surfaces the condition as
+                ``CatalogValidationError``; this layer translates it so
+                the existing teams router's ``EntryNotFoundError → 404``
+                handler applies unchanged.
         """
-        logger.debug("Resolving catalog entry: %s", catalog_entry_id)
-        entry = self._services.team_catalog.get(catalog_entry_id)
-        if entry is None:
-            raise EntryNotFoundError(catalog_entry_id)
-        team_card = entry.to_team_card(
-            self._services.agent_catalog,
-            self._services.tool_catalog,
-            self._services.template_catalog,
+        logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
+        try:
+            team_card = self._services.catalog.load_team(catalog_namespace)
+        except CatalogValidationError as exc:
+            # Translate v2's validation error into the existing 404-mapped
+            # exception so the teams router's error-handling stays a no-op
+            # for this story (Story 18.3 consolidates error handling).
+            raise EntryNotFoundError(catalog_namespace) from exc
+        handle = self._services.placement.create_team(
+            team_card, user_id, catalog_namespace=catalog_namespace
         )
-        handle = self._services.placement.create_team(team_card, user_id)
         self._cache.store(handle.team_id, handle)
         # Consistency invariant: create_team() writes to event store, so
         # get_team() must find it immediately. If this fires, there is a bug
@@ -54,7 +71,11 @@ class TeamService:
         if process is None:  # pragma: no cover
             msg = f"Team {handle.team_id} was created but not found in event store"
             raise RuntimeError(msg)
-        logger.info("Team created: team_id=%s, catalog_entry=%s", process.team_id, catalog_entry_id)
+        logger.info(
+            "Team created: team_id=%s, catalog_namespace=%s",
+            process.team_id,
+            catalog_namespace,
+        )
         return process
 
     def list_teams(self, user_id: str) -> list[Process]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock
 
+from akgentic.catalog import Catalog
 from akgentic.catalog.services import (
     AgentCatalog,
     TeamCatalog,
@@ -84,6 +85,7 @@ class TestTierServicesEventStoreProtocol:
             event_stream=MagicMock(spec=EventStream),
             ingestion=MagicMock(spec=InteractionChannelIngestion),
             channel_registry=MagicMock(spec=ChannelRegistry),
+            catalog=MagicMock(spec=Catalog),
             team_catalog=MagicMock(spec=TeamCatalog),
             agent_catalog=MagicMock(spec=AgentCatalog),
             tool_catalog=MagicMock(spec=ToolCatalog),

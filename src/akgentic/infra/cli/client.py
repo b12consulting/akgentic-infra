@@ -276,9 +276,16 @@ class ApiClient:
         """GET /teams/{team_id} → TeamInfo model."""
         return TeamInfo.model_validate(self._request("GET", f"/teams/{team_id}").json())
 
-    def create_team(self, catalog_entry_id: str) -> TeamInfo:
-        """POST /teams → created TeamInfo model."""
-        resp = self._request("POST", "/teams", json={"catalog_entry_id": catalog_entry_id})
+    def create_team(self, catalog_namespace: str) -> TeamInfo:
+        """POST /teams → created TeamInfo model.
+
+        ``catalog_namespace`` is the v2 namespace holding the team entry.
+        The parameter name on the CLI entry points still reads as
+        ``catalog_entry_id`` for backward-compatibility; callers forward
+        the value verbatim and the server interprets it as a namespace
+        under v2 semantics.
+        """
+        resp = self._request("POST", "/teams", json={"catalog_namespace": catalog_namespace})
         return TeamInfo.model_validate(resp.json())
 
     def stop_team(self, team_id: str) -> None:

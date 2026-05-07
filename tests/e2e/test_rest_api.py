@@ -45,7 +45,7 @@ def test_e2e_create_team(e2e_http_client: httpx.Client) -> None:
     try:
         resp = e2e_http_client.post(
             "/teams/",
-            json={"catalog_entry_id": CATALOG_ENTRY_ID},
+            json={"catalog_namespace": CATALOG_ENTRY_ID},
         )
         assert resp.status_code == 201
         data = resp.json()

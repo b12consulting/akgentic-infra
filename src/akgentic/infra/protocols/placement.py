@@ -33,12 +33,22 @@ class PlacementStrategy(Protocol):
         automatically — surface the error to the user.
     """
 
-    def create_team(self, team_card: TeamCard, user_id: str) -> TeamHandle:
+    def create_team(
+        self,
+        team_card: TeamCard,
+        user_id: str,
+        catalog_namespace: str | None = None,
+    ) -> TeamHandle:
         """Create a team on a worker instance and return a handle.
 
         Args:
             team_card: Team configuration card.
             user_id: ID of the user creating the team.
+            catalog_namespace: Opaque tag identifying the catalog namespace
+                the team was instantiated from. Forwarded through to
+                ``TeamManager.create_team`` (community tier) or the remote
+                worker (department / enterprise tiers). ``None`` for teams
+                not sourced from a v2 catalog namespace.
 
         Returns:
             A TeamHandle for interacting with the newly created team.

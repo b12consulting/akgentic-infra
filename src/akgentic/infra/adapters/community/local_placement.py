@@ -40,17 +40,32 @@ class LocalPlacement:
         """The worker instance ID representing this process."""
         return self._instance_id
 
-    def create_team(self, team_card: TeamCard, user_id: str) -> TeamHandle:
+    def create_team(
+        self,
+        team_card: TeamCard,
+        user_id: str,
+        catalog_namespace: str | None = None,
+    ) -> TeamHandle:
         """Create a team in the local process and return a handle.
 
         Args:
             team_card: Team configuration card.
             user_id: ID of the user creating the team.
+            catalog_namespace: Opaque tag identifying the catalog namespace
+                the team was instantiated from. Forwarded verbatim to
+                ``TeamManager.create_team`` so the persisted ``Process``
+                records it. ``None`` for teams not sourced from a catalog.
 
         Returns:
             A LocalTeamHandle for interacting with the newly created team.
         """
-        logger.debug("LocalPlacement creating team: user_id=%s", user_id)
-        runtime = self._team_manager.create_team(team_card, user_id)
+        logger.debug(
+            "LocalPlacement creating team: user_id=%s, catalog_namespace=%s",
+            user_id,
+            catalog_namespace,
+        )
+        runtime = self._team_manager.create_team(
+            team_card, user_id, catalog_namespace=catalog_namespace
+        )
         logger.debug("Team created locally: team_id=%s", runtime.id)
         return LocalTeamHandle(runtime)
