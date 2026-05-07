@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import websockets.exceptions
-
 from akgentic.core.messages.message import Message
+
 from akgentic.infra.cli.ws_client import WsClient, WsConnectionError
 
 
