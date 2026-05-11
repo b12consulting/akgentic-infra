@@ -33,9 +33,10 @@ def get_team_service(request: Request) -> TeamService:
 
 def _process_to_response(process: Process) -> TeamResponse:
     """Convert a Process model to a TeamResponse."""
+    team_name = process.team_card.name or process.catalog_namespace or str(process.team_id)
     return TeamResponse(
         team_id=process.team_id,
-        name=process.team_card.name,
+        name=team_name,
         status=process.status.value,
         user_id=process.user_id,
         created_at=process.created_at,
