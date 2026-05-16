@@ -120,6 +120,25 @@ def _require_json_object(body: object) -> dict[str, Any]:
     return dict(body)
 
 
+# Structured API keys are minted with this prefix (``ak_<key_id>_<secret>``);
+# servers validate them via the ``X-API-Key`` header, not OIDC bearer auth.
+_API_KEY_PREFIX = "ak_"
+
+
+def _auth_headers(credential: str | None) -> dict[str, str]:
+    """Map a CLI credential to the correct auth header.
+
+    A structured API key (``ak_`` prefix) goes in ``X-API-Key``; anything
+    else is treated as a pre-resolved OIDC bearer token and goes in
+    ``Authorization: Bearer``. An empty/absent credential yields no header.
+    """
+    if not credential:
+        return {}
+    if credential.startswith(_API_KEY_PREFIX):
+        return {"X-API-Key": credential}
+    return {"Authorization": f"Bearer {credential}"}
+
+
 class ApiClient:
     """Thin HTTP client mapping CLI commands to server endpoints.
 
@@ -156,12 +175,9 @@ class ApiClient:
             self._owns_client = False
         else:
             assert base_url is not None  # narrowed by the guards above
-            headers: dict[str, str] = {}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
             self._client = httpx.Client(
                 base_url=base_url,
-                headers=headers,
+                headers=_auth_headers(api_key),
                 follow_redirects=True,
                 timeout=httpx.Timeout(30.0, connect=10.0),
             )
