@@ -147,9 +147,15 @@ def community_services(
 
 
 @pytest.fixture()
-def team_service(community_services: CommunityServices) -> TeamService:
+def team_service(
+    community_services: CommunityServices,
+    seeded_settings: CommunitySettings,
+) -> TeamService:
     """TeamService wired to community services."""
-    return TeamService(services=community_services)
+    return TeamService(
+        services=community_services,
+        workspaces_root=seeded_settings.workspaces_root,
+    )
 
 
 @pytest.fixture()

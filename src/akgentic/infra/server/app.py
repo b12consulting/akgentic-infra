@@ -14,6 +14,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,7 +59,11 @@ def create_app(
     settings = settings or ServerSettings()
     configure_logging(settings.log_level)
     logger.info("Logging configured: level=%s", settings.log_level)
-    team_service = TeamService(services)
+    # ``workspaces_root`` is declared on ``CommunitySettings``; base
+    # ``ServerSettings`` callers fall back to the same default the field
+    # declares so ``TeamService`` always has a valid FS-cleanup root.
+    workspaces_root = getattr(settings, "workspaces_root", Path("workspaces"))
+    team_service = TeamService(services, workspaces_root=workspaces_root)
     _wire_ingestion(services, team_service)
     return _build_app(services, team_service, settings)
 

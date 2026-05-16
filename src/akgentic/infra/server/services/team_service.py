@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import uuid
+from pathlib import Path
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.message import Message
@@ -17,6 +19,33 @@ from akgentic.team.models import PersistedEvent, Process, TeamStatus
 logger = logging.getLogger(__name__)
 
 
+def _remove_workspace_dir(workspaces_root: Path, team_id: uuid.UUID) -> None:
+    """Best-effort removal of a team's workspace directory.
+
+    Removes ``{workspaces_root}/{team_id}`` recursively. A missing directory
+    is a silent no-op (ephemeral teams that never invoked a ``Filesystem``
+    write have no directory to clean). Any ``shutil.rmtree`` failure is logged
+    at WARNING and suppressed so team deletion still completes in the system
+    of record — a later janitor pass can sweep orphans.
+
+    Generalized from akgentic-infra-enterprise's
+    ``routes/enterprise_server_teams.py`` per Epic 24 (Tier-Alignment Fixes
+    from Department + Enterprise); see ADR-022 §D7 for the original
+    best-effort, log-not-raise rationale.
+    """
+    target = workspaces_root / str(team_id)
+    if not target.exists():
+        return
+    try:
+        shutil.rmtree(target)
+    except Exception as exc:  # noqa: BLE001 — log-not-raise; cleanup is best-effort
+        logger.warning(
+            "Workspace cleanup failed — team_id=%s error=%s",
+            team_id,
+            exc,
+        )
+
+
 class TeamService:
     """Service layer bridging catalog resolution with team lifecycle management.
 
@@ -26,9 +55,18 @@ class TeamService:
     RuntimeCache/TeamHandle protocols.
     """
 
-    def __init__(self, services: TierServices) -> None:
+    def __init__(self, services: TierServices, *, workspaces_root: Path) -> None:
+        """Construct a TeamService.
+
+        Args:
+            services: Pre-wired tier services container.
+            workspaces_root: Server-side root directory under which each
+                team's workspace lives at ``{workspaces_root}/{team_id}/``.
+                Used by ``delete_team`` for best-effort FS cleanup.
+        """
         self._services = services
         self._cache: RuntimeCache = services.runtime_cache
+        self._workspaces_root = workspaces_root
 
     def create_team(self, catalog_namespace: str, user_id: str) -> Process:
         """Resolve a catalog namespace to a TeamCard and create a running team.
@@ -90,8 +128,15 @@ class TeamService:
     def delete_team(self, team_id: uuid.UUID) -> None:
         """Stop (if running) and delete a team.
 
+        After the team is removed from the system of record, the team's
+        workspace directory (``{workspaces_root}/{team_id}/``) is removed on a
+        best-effort basis — a missing directory or an ``rmtree`` failure does
+        not prevent deletion from completing.
+
         Raises:
-            ValueError: If team not found or already deleted.
+            ValueError: If team not found or already deleted. Raised before
+                any filesystem work, so a missing team never triggers FS
+                cleanup.
         """
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
@@ -106,6 +151,9 @@ class TeamService:
         except Exception:
             logger.debug("event_stream.remove() on delete — stream may already be removed")
         self._services.worker_handle.delete_team(team_id)
+        # FS cleanup runs LAST — after the worker-side delete — so a worker
+        # delete failure does not leave behind a removed workspace dir.
+        _remove_workspace_dir(self._workspaces_root, team_id)
         logger.info("Team deleted: team_id=%s", team_id)
 
     def send_message(self, team_id: uuid.UUID, content: str) -> None:
