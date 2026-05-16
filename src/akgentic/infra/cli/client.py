@@ -408,6 +408,27 @@ class ApiClient:
         data = _require_json_object(resp.json())
         return Entry.model_validate(data)
 
+    def admin_catalog_import_namespace(self, body: bytes) -> list[CatalogEntry]:
+        """POST /admin/catalog/namespace/import → imported v2 ``Entry`` models.
+
+        ``body`` is a single namespace-bundle YAML document (the format
+        produced by ``GET /admin/catalog/namespace/<ns>/export``), forwarded
+        unchanged with ``Content-Type: application/yaml``. The import is an
+        atomic namespace replacement; the server is the single validation
+        point. Malformed responses (non-list top-level) raise
+        :class:`ApiError`.
+        """
+        resp = self._raw_request(
+            "POST",
+            "/admin/catalog/namespace/import",
+            content=body,
+            content_type="application/yaml",
+        )
+        data = resp.json()
+        if not isinstance(data, list):
+            raise ApiError(0, "unexpected response shape: expected JSON array")
+        return [Entry.model_validate(item) for item in data]
+
     def admin_catalog_update(
         self,
         kind: str,
