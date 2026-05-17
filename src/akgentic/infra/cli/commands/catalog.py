@@ -239,6 +239,37 @@ def _register_kind_commands(parent_app: typer.Typer, kind_name: str) -> None:
 # -- public entry point -------------------------------------------------------
 
 
+def _register_namespace_commands(catalog_app: typer.Typer) -> None:
+    """Register namespace-bundle commands directly on the ``catalog`` group.
+
+    These operate on a whole namespace as a single YAML bundle, unlike the
+    per-kind CRUD verbs. Today: ``import``.
+    """
+
+    @catalog_app.command("import")
+    def import_cmd(
+        file: Annotated[
+            Path | None,
+            typer.Option(
+                "--file",
+                help="Path to a namespace-bundle YAML (.yaml|.yml). Reads stdin when omitted.",
+            ),
+        ] = None,
+    ) -> None:
+        """Import a namespace-bundle YAML as an atomic namespace replacement."""
+        state = _current_state()
+        if file is not None and file.suffix.lower() not in {".yaml", ".yml"}:
+            typer.echo(
+                f"Unsupported file extension {file.suffix.lstrip('.')!r}; "
+                "namespace import requires .yaml or .yml.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        body = file.read_bytes() if file is not None else sys.stdin.buffer.read()
+        data = _call_api(lambda: state.client.admin_catalog_import_namespace(body))
+        typer.echo(format_output(_to_dict_or_list(data), state.fmt, _COLUMNS_BY_KIND["team"]))
+
+
 def register(app: typer.Typer) -> None:
     """Register the ``catalog`` command group on ``app``.
 
@@ -250,6 +281,7 @@ def register(app: typer.Typer) -> None:
         name="catalog",
         help="Manage v2 catalog entries (team, agent, tool, model, prompt).",
     )
+    _register_namespace_commands(catalog_app)
     for kind_name in _KINDS:
         _register_kind_commands(catalog_app, kind_name)
     app.add_typer(catalog_app, name="catalog")

@@ -139,6 +139,8 @@ class FakeServer:
         # Expect /admin/catalog/<kind>[/id]
         if len(parts) < 4 or parts[1] != "admin" or parts[2] != "catalog":
             return httpx.Response(404, json={"detail": "not an admin route", "errors": []})
+        if parts[3] == "namespace" and len(parts) >= 5 and parts[4] == "import":
+            return self._import_namespace(request)
         kind = parts[3]
         entry_id = parts[4] if len(parts) >= 5 else None
         if kind not in self.store:
@@ -260,6 +262,28 @@ class FakeServer:
             return None
         return parsed
 
+    def _import_namespace(self, request: httpx.Request) -> httpx.Response:
+        """Fake ``POST /admin/catalog/namespace/import`` — parse a YAML bundle.
+
+        Mirrors the real route's contract: a single ``application/yaml``
+        bundle in, a JSON array of imported v2 ``Entry`` objects out (201).
+        """
+        if request.method != "POST":
+            return httpx.Response(405, json={"detail": "method not allowed", "errors": []})
+        try:
+            bundle = yaml.safe_load(request.content.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError):
+            return httpx.Response(422, json={"detail": "failed to parse bundle YAML", "errors": []})
+        if not isinstance(bundle, dict) or not isinstance(bundle.get("entries"), dict):
+            return httpx.Response(422, json={"detail": "malformed bundle", "errors": []})
+        namespace = bundle.get("namespace", "imported-ns")
+        imported: list[dict[str, Any]] = []
+        for entry_id, raw in bundle["entries"].items():
+            entry = {**raw, "id": entry_id, "namespace": namespace}
+            self.store.setdefault(entry["kind"], {})[(namespace, entry_id)] = entry
+            imported.append(entry)
+        return httpx.Response(201, json=imported)
+
 
 def _install_fake_server(
     tmp_path: Path,
@@ -325,6 +349,15 @@ def test_all_kinds_registered_on_main_app() -> None:
     catalog_app = catalog_groups[0].typer_instance
     subnames = {g.name for g in catalog_app.registered_groups}
     assert subnames == {"team", "agent", "tool", "model", "prompt"}
+
+
+def test_import_command_registered_on_catalog_group() -> None:
+    """``ak catalog import`` is registered as a command on the catalog group."""
+    catalog_groups = [g for g in app.registered_groups if g.name == "catalog"]
+    assert len(catalog_groups) == 1
+    catalog_app = catalog_groups[0].typer_instance
+    command_names = {c.name for c in catalog_app.registered_commands}
+    assert "import" in command_names
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +742,113 @@ def test_list_inherits_bearer_auth_from_profile(runner: CliRunner, tmp_path: Pat
     assert result.exit_code == 0, result.stderr
     assert captured_headers
     assert captured_headers[-1].get("authorization") == "Bearer test-access-token"
+
+
+# ---------------------------------------------------------------------------
+# import (namespace bundle: file yaml + stdin + bad ext + error response)
+# ---------------------------------------------------------------------------
+
+
+def _bundle_yaml(namespace: str = "imported-ns") -> str:
+    """Build a minimal namespace-bundle YAML document for import tests."""
+    return yaml.safe_dump(
+        {
+            "namespace": namespace,
+            "user_id": "anonymous",
+            "entries": {
+                "imp-team": {
+                    "kind": "team",
+                    "model_type": _MODEL_TYPE_BY_KIND["team"],
+                    "description": "imported team",
+                    "payload": {"name": "team-imp"},
+                },
+                "imp-agent": {
+                    "kind": "agent",
+                    "model_type": _MODEL_TYPE_BY_KIND["agent"],
+                    "description": "imported agent",
+                    "payload": {"name": "agent-imp"},
+                },
+            },
+        }
+    )
+
+
+def test_import_file_yaml_happy_path(runner: CliRunner, tmp_path: Path) -> None:
+    """``catalog import --file bundle.yaml`` POSTs the bundle as application/yaml."""
+    fake = _install_fake_server(tmp_path)
+    bundle_path = tmp_path / "bundle.yaml"
+    bundle_path.write_text(_bundle_yaml(), encoding="utf-8")
+
+    result = runner.invoke(app, ["catalog", "import", "--file", str(bundle_path)])
+
+    assert result.exit_code == 0, result.stderr
+    assert "imp-team" in result.stdout
+    assert "imp-agent" in result.stdout
+    post = [r for r in fake.captured_requests if r.method == "POST"][-1]
+    assert post.url.path == "/admin/catalog/namespace/import"
+    assert post.headers["content-type"] == "application/yaml"
+
+
+def test_import_file_yml_extension_accepted(runner: CliRunner, tmp_path: Path) -> None:
+    """A ``.yml`` extension is accepted just like ``.yaml``."""
+    _install_fake_server(tmp_path)
+    bundle_path = tmp_path / "bundle.yml"
+    bundle_path.write_text(_bundle_yaml(), encoding="utf-8")
+
+    result = runner.invoke(app, ["catalog", "import", "--file", str(bundle_path)])
+    assert result.exit_code == 0, result.stderr
+
+
+def test_import_stdin_happy_path(runner: CliRunner, tmp_path: Path) -> None:
+    """``catalog import`` with no ``--file`` reads the bundle from stdin."""
+    fake = _install_fake_server(tmp_path)
+
+    result = runner.invoke(app, ["catalog", "import"], input=_bundle_yaml())
+
+    assert result.exit_code == 0, result.stderr
+    post = [r for r in fake.captured_requests if r.method == "POST"][-1]
+    assert post.url.path == "/admin/catalog/namespace/import"
+    assert post.headers["content-type"] == "application/yaml"
+
+
+def test_import_json_format_returns_entry_list(runner: CliRunner, tmp_path: Path) -> None:
+    """``--format json`` renders the imported entries as a JSON array."""
+    _install_fake_server(tmp_path)
+    bundle_path = tmp_path / "bundle.yaml"
+    bundle_path.write_text(_bundle_yaml(), encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["--format", "json", "catalog", "import", "--file", str(bundle_path)]
+    )
+    assert result.exit_code == 0, result.stderr
+    decoded = json.loads(result.stdout)
+    assert isinstance(decoded, list)
+    assert {e["id"] for e in decoded} == {"imp-team", "imp-agent"}
+
+
+def test_import_unsupported_extension_no_http(runner: CliRunner, tmp_path: Path) -> None:
+    """A non-YAML ``--file`` extension exits 1; no HTTP call is made."""
+    fake = _install_fake_server(tmp_path)
+    bundle_path = tmp_path / "bundle.json"
+    bundle_path.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(app, ["catalog", "import", "--file", str(bundle_path)])
+    assert result.exit_code == 1
+    assert "Unsupported file extension 'json'" in result.stderr
+    assert "requires .yaml or .yml" in result.stderr
+    assert fake.captured_requests == []
+
+
+def test_import_malformed_bundle_422(runner: CliRunner, tmp_path: Path) -> None:
+    """A bundle missing ``entries`` → server 422 → CLI exits 1 with detail."""
+    _install_fake_server(tmp_path)
+    bundle_path = tmp_path / "bundle.yaml"
+    bundle_path.write_text(yaml.safe_dump({"namespace": "x"}), encoding="utf-8")
+
+    result = runner.invoke(app, ["catalog", "import", "--file", str(bundle_path)])
+    assert result.exit_code == 1
+    assert "HTTP 422" in result.stderr
+    assert "malformed bundle" in result.stderr
 
 
 # ---------------------------------------------------------------------------
