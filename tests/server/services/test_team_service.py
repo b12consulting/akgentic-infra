@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import uuid
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from akgentic.catalog.models.errors import EntryNotFoundError
-from akgentic.team.models import TeamStatus
+from akgentic.team.models import Process, TeamStatus
 
 from akgentic.infra.server.services.team_service import TeamService
 
@@ -197,3 +200,108 @@ class TestTeamServiceLogging:
         with caplog.at_level(logging.INFO, logger="akgentic.infra.server.services.team_service"):
             team_service.delete_team(process.team_id)
         assert any("Team deleted" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Story 24.1 — workspace-directory cleanup in delete_team
+#
+# These tests stub the tier services (MagicMock) so delete_team's FS-cleanup
+# step can be exercised in isolation, without spinning up the real actor
+# system (whose TeamManager.delete_team has a pre-existing flaky teardown
+# race — see the skipped tests above).
+# ---------------------------------------------------------------------------
+
+
+def _stub_team_service(workspaces_root: Path, *, team_exists: bool) -> TeamService:
+    """Build a TeamService with mocked tier services for FS-cleanup tests.
+
+    When ``team_exists`` is False, ``worker_handle.get_team`` returns None so
+    ``delete_team`` raises ``ValueError`` before any FS work.
+    """
+    services = MagicMock()
+    if team_exists:
+        process = MagicMock(spec=Process)
+        process.status = TeamStatus.STOPPED
+        services.worker_handle.get_team.return_value = process
+    else:
+        services.worker_handle.get_team.return_value = None
+    return TeamService(services, workspaces_root=workspaces_root)
+
+
+class TestDeleteTeamWorkspaceCleanup:
+    """Story 24.1: delete_team removes the team's workspace directory."""
+
+    def test_happy_path_removes_workspace_dir(self, tmp_path: Path) -> None:
+        """AC #1: an existing workspace dir and its contents are removed."""
+        team_id = uuid.uuid4()
+        team_dir = tmp_path / str(team_id)
+        team_dir.mkdir(parents=True)
+        (team_dir / "file.txt").write_text("content")
+
+        service = _stub_team_service(tmp_path, team_exists=True)
+        service.delete_team(team_id)
+
+        assert not team_dir.exists()
+
+    def test_missing_dir_is_silent_no_op(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """AC #2: a missing workspace dir produces no WARNING log and no error."""
+        team_id = uuid.uuid4()
+        # workspaces_root exists, but the {team_id} subdir does NOT.
+        service = _stub_team_service(tmp_path, team_exists=True)
+
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)
+
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings == []
+
+    def test_rmtree_failure_logged_and_suppressed(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AC #3: an rmtree failure is logged at WARNING and suppressed."""
+        team_id = uuid.uuid4()
+        team_dir = tmp_path / str(team_id)
+        team_dir.mkdir(parents=True)
+        (team_dir / "file.txt").write_text("content")
+
+        def _boom(_path: object) -> None:
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(shutil, "rmtree", _boom)
+
+        service = _stub_team_service(tmp_path, team_exists=True)
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)  # must NOT raise
+
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and str(team_id) in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        # Team is still deleted from the system of record.
+        service._services.worker_handle.delete_team.assert_called_once_with(team_id)
+
+    def test_team_not_found_skips_fs_work(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AC #5: a missing team raises ValueError before any rmtree is attempted."""
+        team_id = uuid.uuid4()
+        rmtree_calls: list[object] = []
+        monkeypatch.setattr(shutil, "rmtree", lambda p: rmtree_calls.append(p))
+
+        service = _stub_team_service(tmp_path, team_exists=False)
+        with pytest.raises(ValueError, match="not found"):
+            service.delete_team(team_id)
+
+        assert rmtree_calls == []
+        service._services.worker_handle.delete_team.assert_not_called()

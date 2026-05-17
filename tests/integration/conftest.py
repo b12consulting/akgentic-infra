@@ -126,9 +126,13 @@ def integration_services(
 @pytest.fixture()
 def integration_team_service(
     integration_services: CommunityServices,
+    integration_settings: CommunitySettings,
 ) -> TeamService:
     """TeamService wired to integration services."""
-    return TeamService(services=integration_services)
+    return TeamService(
+        services=integration_services,
+        workspaces_root=integration_settings.workspaces_root,
+    )
 
 
 @pytest.fixture()
