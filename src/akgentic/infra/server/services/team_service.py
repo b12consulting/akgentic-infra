@@ -68,7 +68,13 @@ class TeamService:
         self._cache: RuntimeCache = services.runtime_cache
         self._workspaces_root = workspaces_root
 
-    def create_team(self, catalog_namespace: str, user_id: str) -> Process:
+    def create_team(
+        self,
+        catalog_namespace: str,
+        user_id: str,
+        user_email: str = "",
+        team_id: uuid.UUID | None = None,
+    ) -> Process:
         """Resolve a catalog namespace to a TeamCard and create a running team.
 
         Loads the team definition via the v2 unified ``Catalog.load_team``
@@ -79,6 +85,9 @@ class TeamService:
             catalog_namespace: v2 catalog namespace holding exactly one
                 ``kind="team"`` entry.
             user_id: Identifier of the user creating the team.
+            user_email: Email of the user creating the team.
+            team_id: Optional caller-supplied team identifier; the placement
+                layer auto-generates a UUID when None.
 
         Returns:
             The persisted ``Process`` for the newly created team.
@@ -99,7 +108,11 @@ class TeamService:
             # for this story (Story 18.3 consolidates error handling).
             raise EntryNotFoundError(catalog_namespace) from exc
         handle = self._services.placement.create_team(
-            team_card, user_id, catalog_namespace=catalog_namespace
+            team_card,
+            user_id,
+            user_email=user_email,
+            team_id=team_id,
+            catalog_namespace=catalog_namespace,
         )
         self._cache.store(handle.team_id, handle)
         # Consistency invariant: create_team() writes to event store, so
@@ -117,9 +130,14 @@ class TeamService:
         return process
 
     def list_teams(self, user_id: str) -> list[Process]:
-        """List all teams for a given user."""
-        all_teams = self._services.event_store.list_teams()
-        return [t for t in all_teams if t.user_id == user_id]
+        """List all teams for a given user.
+
+        Pushes the ``user_id`` filter into the EventStore rather than loading
+        every team into Python and filtering here. Per-request cost scales with
+        the requesting user's team count, not with total teams across all
+        users. See team-package ADR-16 / Epic 19 for the Protocol change.
+        """
+        return self._services.event_store.list_teams(user_id=user_id)
 
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         """Get a single team by ID."""

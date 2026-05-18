@@ -27,12 +27,21 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 class WorkerCreateTeamRequest(BaseModel):
     """Request body for POST /teams on the worker.
 
-    The worker receives the already-resolved TeamCard and user_id from the
-    server — catalog resolution happens server-side.
+    The worker receives the already-resolved TeamCard and user identity from
+    the server — catalog resolution happens server-side.
     """
 
     team_card: TeamCard = Field(description="Pre-resolved TeamCard for team creation")
     user_id: str = Field(description="Authenticated user identifier (from server)")
+    user_email: str = Field(default="", description="Authenticated user email (from server)")
+    team_id: uuid.UUID | None = Field(
+        default=None,
+        description="Caller-supplied team identifier; worker auto-generates a UUID when None",
+    )
+    catalog_namespace: str | None = Field(
+        default=None,
+        description="Catalog namespace the team was instantiated from; None if not catalog-sourced",
+    )
 
 
 def get_services(request: Request) -> WorkerServices:
@@ -79,6 +88,9 @@ def create_team(
     runtime: TeamRuntime = services.team_manager.create_team(
         team_card=body.team_card,
         user_id=body.user_id,
+        user_email=body.user_email,
+        team_id=body.team_id,
+        catalog_namespace=body.catalog_namespace,
     )
     process = services.worker_handle.get_team(runtime.id)
     if process is None:  # pragma: no cover

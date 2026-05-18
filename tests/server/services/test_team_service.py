@@ -36,6 +36,37 @@ def test_create_team_propagates_catalog_namespace(team_service: TeamService) -> 
     assert process.catalog_namespace == "test-team"
 
 
+def test_create_team_forwards_user_email_and_team_id(team_service: TeamService) -> None:
+    """user_email and team_id flow through to placement.create_team verbatim."""
+    explicit_id = uuid.uuid4()
+    mock_placement = MagicMock()
+    # Match downstream contract: placement returns a handle whose team_id
+    # round-trips through the cache.
+    mock_placement.create_team.return_value.team_id = explicit_id
+    team_service._services.placement = mock_placement  # type: ignore[assignment]
+
+    try:
+        team_service.create_team(
+            "test-team",
+            user_id="alice",
+            user_email="alice@example.com",
+            team_id=explicit_id,
+        )
+    except Exception:
+        # Downstream worker_handle.get_team will fail because the mock placement
+        # never persists a Process — that's fine, we only care about the
+        # placement call shape.
+        pass
+
+    call = mock_placement.create_team.call_args
+    assert call.args[1] == "alice"
+    assert call.kwargs == {
+        "user_email": "alice@example.com",
+        "team_id": explicit_id,
+        "catalog_namespace": "test-team",
+    }
+
+
 def test_list_teams_empty(team_service: TeamService) -> None:
     """Listing teams when none exist returns empty list."""
     result = team_service.list_teams(user_id="anonymous")
@@ -51,6 +82,48 @@ def test_list_teams_filters_by_user(team_service: TeamService) -> None:
     assert len(alice_teams) == 1
     assert len(bob_teams) == 1
     assert alice_teams[0].user_id == "alice"
+
+
+def test_list_teams_delegates_to_event_store_with_user_id(team_service: TeamService) -> None:
+    """TeamService.list_teams MUST push user_id down to event_store.list_teams,
+    not load all teams and filter in Python. Regression-guard for the team-side
+    ADR-16 / Epic 19 push-down: if a future refactor restores the in-memory
+    filter pattern, this test fails even though the behavioural contract
+    (users see only their own teams) still passes.
+    """
+    mock_event_store = MagicMock()
+    mock_event_store.list_teams.return_value = []
+    # Swap in the mock event_store on the wired TierServices container.
+    # SkipValidation on the field allows direct assignment without re-validation.
+    team_service._services.event_store = mock_event_store  # type: ignore[assignment]
+
+    result = team_service.list_teams(user_id="alice")
+
+    # The delegating call shape — exactly one call, user_id="alice" as kwarg.
+    mock_event_store.list_teams.assert_called_once_with(user_id="alice")
+    # The call must NOT be a no-arg call followed by an in-Python filter.
+    assert mock_event_store.list_teams.call_args.args == ()
+    assert mock_event_store.list_teams.call_args.kwargs == {"user_id": "alice"}
+    # And the returned list is the event store's return value verbatim
+    # (no intermediate Python comprehension repacking it).
+    assert result == []
+
+
+def test_list_teams_passes_empty_string_user_id_verbatim(team_service: TeamService) -> None:
+    """user_id="" is a literal value, NOT a "list everything" sentinel.
+
+    The empty string is passed through verbatim to event_store.list_teams; the
+    backend applies its literal-match filter and returns only teams whose
+    Process.user_id == "". This locks in the natural behaviour of the
+    one-line delegating call.
+    """
+    mock_event_store = MagicMock()
+    mock_event_store.list_teams.return_value = []
+    team_service._services.event_store = mock_event_store  # type: ignore[assignment]
+
+    team_service.list_teams(user_id="")
+
+    mock_event_store.list_teams.assert_called_once_with(user_id="")
 
 
 def test_get_team_found(team_service: TeamService) -> None:
