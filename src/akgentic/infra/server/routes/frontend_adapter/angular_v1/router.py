@@ -70,9 +70,10 @@ def get_team_service(request: Request) -> TeamService:
 def _to_v1_process_context(process: Process) -> V1ProcessContext:
     """Convert a V2 Process to a V1ProcessContext."""
     entry_point = process.team_card.entry_point
+    team_name = process.team_card.name or process.catalog_namespace or str(process.team_id)
     return V1ProcessContext(
         id=str(process.team_id),
-        type=process.team_card.name,
+        type=team_name,
         status=process.status.value,
         created_at=process.created_at.isoformat(),
         updated_at=process.updated_at.isoformat(),
@@ -82,7 +83,7 @@ def _to_v1_process_context(process: Process) -> V1ProcessContext:
             role=entry_point.card.role,
         ),
         running=process.status == TeamStatus.RUNNING,
-        config_name=process.team_card.name,
+        config_name=team_name,
         user_id=process.user_id,
         user_email=process.user_email,
     )
