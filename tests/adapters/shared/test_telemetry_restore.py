@@ -33,25 +33,27 @@ class TestTelemetryRestoreAwareness:
             assert subscriber._flush(timeout=5.0), "worker did not drain in time"
             mock_lf.info.assert_called_once()
 
-        subscriber.on_stop(_TEAM_ID)
+        subscriber.close()
 
     def test_restoring_skips_logfire_emission(self) -> None:
-        """AC #6: set_restoring(True) suppresses logfire.info calls.
+        """AC #6: set_restoring(team_id, True) suppresses logfire.info for that team.
 
-        The ``_restoring`` guard drops messages before they enter the queue,
-        so the worker has nothing to emit.
+        The ``_restoring`` guard drops messages whose ``team_id`` is in the
+        per-team restoring set before they enter the queue, so the worker
+        has nothing to emit.
         """
         subscriber = TelemetrySubscriber()
         subscriber.set_restoring(_TEAM_ID, True)
         msg = MagicMock()
         msg.__class__.__name__ = "StartMessage"
+        msg.team_id = _TEAM_ID
 
         with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
             subscriber.on_message(msg)
             assert subscriber._flush(timeout=5.0)
             mock_lf.info.assert_not_called()
 
-        subscriber.on_stop(_TEAM_ID)
+        subscriber.close()
 
     def test_restoring_false_resumes_logfire(self) -> None:
         """set_restoring(False) resumes normal logfire emission."""
@@ -66,9 +68,9 @@ class TestTelemetryRestoreAwareness:
             assert subscriber._flush(timeout=5.0)
             mock_lf.info.assert_called_once()
 
-        subscriber.on_stop(_TEAM_ID)
+        subscriber.close()
 
     def test_on_stop_does_not_raise(self) -> None:
         """on_stop completes without error."""
         subscriber = TelemetrySubscriber()
-        subscriber.on_stop(_TEAM_ID)
+        subscriber.close()

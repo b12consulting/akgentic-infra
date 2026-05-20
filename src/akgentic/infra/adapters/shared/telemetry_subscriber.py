@@ -62,7 +62,8 @@ class TelemetrySubscriber(EventSubscriber):
     """
 
     def __init__(self) -> None:
-        self._restoring = False
+        self._restoring: set[uuid.UUID] = set()
+        self._restoring_lock = threading.Lock()
         self._queue: queue.Queue[object] = queue.Queue()
         self._worker = threading.Thread(
             target=self._run,
@@ -72,30 +73,43 @@ class TelemetrySubscriber(EventSubscriber):
         self._worker.start()
         logger.debug("TelemetrySubscriber initialized (async worker)")
 
-    def set_restoring(self, team_id: uuid.UUID, restoring: bool) -> None:  # noqa: ARG002
-        """Toggle restore mode to suppress span emission during event replay.
+    def set_restoring(self, team_id: uuid.UUID, restoring: bool) -> None:
+        """Toggle restore-mode suppression for a single team.
+
+        The restoring set is per-team — only messages whose ``team_id`` is in
+        the set are suppressed by ``on_message``. Mutation is guarded by
+        ``self._restoring_lock`` because multiple orchestrator threads may
+        toggle the flag concurrently (one orchestrator per team).
 
         Args:
             team_id: ``team_id`` from the orchestrator triggering the notification.
-                Accepted to satisfy the ``EventSubscriber`` Protocol but currently
-                ignored — per-team conversion of ``_restoring`` is deferred to
-                story 27.2.
-            restoring: ``True`` to suppress emission, ``False`` to resume.
+            restoring: ``True`` to suppress emission for ``team_id``, ``False``
+                to resume normal emission for it. Calling with ``restoring=False``
+                when ``team_id`` is not in the set is a silent no-op
+                (``set.discard`` semantics).
         """
-        self._restoring = restoring
+        with self._restoring_lock:
+            if restoring:
+                self._restoring.add(team_id)
+            else:
+                self._restoring.discard(team_id)
 
     def on_message(self, msg: Message) -> None:
         """Enqueue a lightweight telemetry record for background emission.
 
         Non-blocking: reads a few plain attributes off the message on the
         caller's thread and hands them to the worker. The actor thread is
-        never held on logfire I/O.
+        never held on logfire I/O. Messages whose ``team_id`` is currently
+        flagged restoring are dropped before they reach the queue, so the
+        restore-replay window of one team cannot interfere with the live
+        telemetry of another.
 
         Args:
             msg: Orchestrator telemetry message
         """
-        if self._restoring:
-            return
+        with self._restoring_lock:
+            if msg.team_id in self._restoring:
+                return
 
         sender = msg.sender.name if msg.sender else "unknown"
         msg_type = msg.__class__.__name__
@@ -107,7 +121,7 @@ class TelemetrySubscriber(EventSubscriber):
 
         The orchestrator's inactivity-timer handler calls this on every subscriber;
         this shared telemetry subscriber has no per-team teardown to perform on that
-        signal (worker drain happens in ``on_stop()`` on actual shutdown).
+        signal (worker drain happens in ``close()`` on actual worker shutdown).
 
         Args:
             team_id: ``team_id`` from the orchestrator triggering the notification.
@@ -115,20 +129,34 @@ class TelemetrySubscriber(EventSubscriber):
                 ignored — per-team handling is deferred.
         """
 
-    def on_stop(self, team_id: uuid.UUID) -> None:  # noqa: ARG002
-        """Signal the worker to drain and exit.
+    def on_stop(self, team_id: uuid.UUID) -> None:
+        """Per-team stop notification — does **not** drain the worker thread.
 
-        Bounded join keeps server shutdown snappy even if logfire is wedged.
+        The daemon worker is shared across every team that publishes through
+        this subscriber, so tearing it down on a single team's stop would
+        starve the rest. The drain is now performed by ``close()`` from the
+        worker FastAPI ``_lifespan`` shutdown branch, once every team has
+        already been torn down.
 
         Args:
             team_id: ``team_id`` from the orchestrator triggering the notification.
-                Accepted to satisfy the ``EventSubscriber`` Protocol but currently
-                ignored — extraction of the worker drain into a separate
-                ``close()`` method is deferred to story 27.2.
+                Logged at DEBUG; no other action is taken.
         """
+        logger.debug("TelemetrySubscriber: on_stop for team_id=%s", team_id)
+
+    def close(self) -> None:
+        """Push ``_SHUTDOWN`` and join the daemon worker thread. Idempotent.
+
+        Called from the worker FastAPI ``_lifespan`` shutdown branch after
+        ``WorkerLifecycle.shutdown()`` returns (all teams torn down). A second
+        call is a no-op — once the worker has exited, ``is_alive()`` is
+        ``False`` and the method returns immediately.
+        """
+        if not self._worker.is_alive():
+            return
         self._queue.put(_SHUTDOWN)
         self._worker.join(timeout=5.0)
-        logger.debug("TelemetrySubscriber stopped")
+        logger.debug("TelemetrySubscriber closed")
 
     def _flush(self, timeout: float = 5.0) -> bool:
         """Block until every item enqueued so far has been drained by the worker.
