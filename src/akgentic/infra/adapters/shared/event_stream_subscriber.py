@@ -39,8 +39,16 @@ class EventStreamSubscriber(EventSubscriber):
         self._lock = threading.Lock()
         logger.debug("EventStreamSubscriber initialized")
 
-    def set_restoring(self, restoring: bool) -> None:  # noqa: FBT001, ARG002
-        """No-op — EventStream must be repopulated during restore replay."""
+    def set_restoring(self, team_id: uuid.UUID, restoring: bool) -> None:  # noqa: FBT001, ARG002
+        """No-op — EventStream must be repopulated during restore replay.
+
+        Args:
+            team_id: ``team_id`` from the orchestrator. Accepted to satisfy the
+                ``EventSubscriber`` Protocol but currently ignored — this
+                subscriber's restore behaviour is a global no-op.
+            restoring: ``True`` while restore replay is in progress, ``False``
+                otherwise. Ignored.
+        """
 
     def on_message(self, msg: Message) -> None:
         """Forward message directly to the event stream.
@@ -60,16 +68,28 @@ class EventStreamSubscriber(EventSubscriber):
 
         self._event_stream.append(team_id, msg)
 
-    def on_stop_request(self) -> None:
+    def on_stop_request(self, team_id: uuid.UUID) -> None:  # noqa: ARG002
         """No-op — stop handling is bridged by ``TimerStopSubscriber`` in ``akgentic-team``.
 
         The orchestrator's inactivity-timer handler calls this on every subscriber;
         this shared subscriber has no per-team teardown to perform on that signal
         (the per-team stream is removed in ``on_stop()`` once the team actually stops).
+
+        Args:
+            team_id: ``team_id`` from the orchestrator. Accepted to satisfy the
+                ``EventSubscriber`` Protocol but currently ignored — per-team
+                stop handling is deferred to ``TimerStopSubscriber``.
         """
 
-    def on_stop(self) -> None:
-        """Remove streams for all tracked teams (best-effort cleanup)."""
+    def on_stop(self, team_id: uuid.UUID) -> None:  # noqa: ARG002
+        """Remove streams for all tracked teams (best-effort cleanup).
+
+        Args:
+            team_id: ``team_id`` from the orchestrator. Accepted to satisfy the
+                ``EventSubscriber`` Protocol but currently ignored — the body
+                still iterates ``_seen_teams``. Single-team-keyed cleanup is
+                deferred to story 27.3.
+        """
         with self._lock:
             teams = set(self._seen_teams)
 

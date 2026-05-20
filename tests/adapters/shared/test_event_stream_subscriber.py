@@ -7,9 +7,12 @@ import uuid
 from unittest.mock import MagicMock
 
 from akgentic.core.messages import Message
+from akgentic.core.orchestrator import EventSubscriber
 
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
+
+_TEAM_ID = uuid.uuid4()
 
 
 def _make_message(team_id: uuid.UUID | None = None) -> Message:
@@ -38,15 +41,26 @@ class TestEventStreamSubscriberProtocolCompliance:
         assert "msg" in sig.parameters
 
     def test_on_stop_signature_matches_protocol(self) -> None:
+        """on_stop takes a single ``team_id`` parameter beyond self (Story 27.1)."""
         sig = inspect.signature(EventStreamSubscriber.on_stop)
         params = [p for p in sig.parameters if p != "self"]
-        assert len(params) == 0
+        assert len(params) == 1
+        assert params[0] == "team_id"
 
     def test_on_stop_request_signature_matches_protocol(self) -> None:
-        """Story 22.1 AC1: on_stop_request takes no parameters beyond self and returns None."""
+        """on_stop_request takes a single ``team_id`` parameter beyond self (Story 27.1)."""
         sig = inspect.signature(EventStreamSubscriber.on_stop_request)
         params = [p for p in sig.parameters if p != "self"]
-        assert len(params) == 0
+        assert len(params) == 1
+        assert params[0] == "team_id"
+
+    def test_satisfies_event_subscriber_protocol(self) -> None:
+        """Story 27.1 AC #4: EventStreamSubscriber structurally satisfies EventSubscriber."""
+        subscriber: EventSubscriber = EventStreamSubscriber(event_stream=LocalEventStream())
+        assert callable(subscriber.set_restoring)
+        assert callable(subscriber.on_stop_request)
+        assert callable(subscriber.on_stop)
+        assert callable(subscriber.on_message)
 
 
 class TestOnMessage:
@@ -130,7 +144,9 @@ class TestOnStop:
         subscriber.on_message(_make_message(team_id=team_a))
         subscriber.on_message(_make_message(team_id=team_b))
 
-        subscriber.on_stop()
+        # Story 27.1: ``on_stop`` accepts ``team_id`` but body still iterates
+        # ``_seen_teams``; per-team-keyed cleanup is revived in story 27.3.
+        subscriber.on_stop(_TEAM_ID)
 
         # Streams should be removed
         assert stream.read_from(team_a) == []
@@ -141,7 +157,7 @@ class TestOnStop:
         stream = LocalEventStream()
         subscriber = EventStreamSubscriber(event_stream=stream)
 
-        subscriber.on_stop()  # Should not raise
+        subscriber.on_stop(_TEAM_ID)  # Should not raise
 
     def test_on_stop_handles_remove_exceptions_gracefully(self) -> None:
         """AC3: on_stop handles remove() exceptions (logged, not raised)."""
@@ -153,7 +169,7 @@ class TestOnStop:
         subscriber.on_message(_make_message(team_id=team_id))
 
         # Should not raise even though remove() throws
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
         mock_stream.remove.assert_called_once_with(team_id)
 
 
@@ -165,7 +181,7 @@ class TestOnStopRequest:
         stream = LocalEventStream()
         subscriber = EventStreamSubscriber(event_stream=stream)
 
-        result = subscriber.on_stop_request()
+        result = subscriber.on_stop_request(_TEAM_ID)
 
         assert result is None
 
@@ -174,7 +190,7 @@ class TestOnStopRequest:
         mock_stream = MagicMock()
         subscriber = EventStreamSubscriber(event_stream=mock_stream)
 
-        subscriber.on_stop_request()
+        subscriber.on_stop_request(_TEAM_ID)
 
         # No methods on the stream should have been called.
         mock_stream.append.assert_not_called()
@@ -189,6 +205,6 @@ class TestOnStopRequest:
         subscriber.on_message(_make_message(team_id=team_id))
         before = set(subscriber._seen_teams)
 
-        subscriber.on_stop_request()
+        subscriber.on_stop_request(_TEAM_ID)
 
         assert subscriber._seen_teams == before

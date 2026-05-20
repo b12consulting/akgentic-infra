@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import inspect
 import time
+import uuid
 from unittest.mock import MagicMock, patch
 
+from akgentic.core.orchestrator import EventSubscriber
+
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
+
+_TEAM_ID = uuid.uuid4()
 
 
 class TestTelemetrySubscriberProtocolCompliance:
@@ -26,7 +31,7 @@ class TestTelemetrySubscriberProtocolCompliance:
         """Story 22.1 AC2: subscriber exposes on_stop_request for timer-driven shutdown."""
         subscriber = TelemetrySubscriber()
         assert callable(subscriber.on_stop_request)
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
     def test_on_message_signature_matches_protocol(self) -> None:
         """on_message has msg parameter matching EventSubscriber."""
@@ -34,16 +39,35 @@ class TestTelemetrySubscriberProtocolCompliance:
         assert "msg" in sig.parameters
 
     def test_on_stop_signature_matches_protocol(self) -> None:
-        """on_stop has no parameters beyond self."""
+        """on_stop takes a single ``team_id`` parameter beyond self (Story 27.1)."""
         sig = inspect.signature(TelemetrySubscriber.on_stop)
         params = [p for p in sig.parameters if p != "self"]
-        assert len(params) == 0
+        assert len(params) == 1
+        assert params[0] == "team_id"
 
     def test_on_stop_request_signature_matches_protocol(self) -> None:
-        """Story 22.1 AC2: on_stop_request takes no parameters beyond self."""
+        """on_stop_request takes a single ``team_id`` parameter beyond self (Story 27.1)."""
         sig = inspect.signature(TelemetrySubscriber.on_stop_request)
         params = [p for p in sig.parameters if p != "self"]
-        assert len(params) == 0
+        assert len(params) == 1
+        assert params[0] == "team_id"
+
+    def test_satisfies_event_subscriber_protocol(self) -> None:
+        """Story 27.1 AC #4: TelemetrySubscriber structurally satisfies EventSubscriber.
+
+        ``EventSubscriber`` is a ``typing.Protocol`` (not ``runtime_checkable``),
+        so this test assigns the subscriber to a Protocol-typed name to surface
+        structural mismatches at mypy time and asserts each required method
+        exists at runtime.
+        """
+        subscriber: EventSubscriber = TelemetrySubscriber()
+        try:
+            assert callable(subscriber.set_restoring)
+            assert callable(subscriber.on_stop_request)
+            assert callable(subscriber.on_stop)
+            assert callable(subscriber.on_message)
+        finally:
+            subscriber.on_stop(_TEAM_ID)
 
 
 class TestTelemetrySubscriberBehavior:
@@ -59,7 +83,7 @@ class TestTelemetrySubscriberBehavior:
     def test_on_stop_does_not_raise(self) -> None:
         """on_stop completes without error."""
         subscriber = TelemetrySubscriber()
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
 
 class TestTelemetrySubscriberAsyncWorker:
@@ -90,7 +114,7 @@ class TestTelemetrySubscriberAsyncWorker:
             # Generous ceiling for shared CI runners; the real target is sub-ms.
             assert elapsed < 0.05, f"on_message took {elapsed * 1000:.1f} ms"
 
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
     def test_flush_then_logfire_called_with_expected_args(self) -> None:
         """After explicit flush, ``logfire.info`` was called with sender/msg_type/team_id."""
@@ -110,12 +134,12 @@ class TestTelemetrySubscriberAsyncWorker:
             assert kwargs["msg_type"] == "StartMessage"
             assert kwargs["team_id"] == "team-xyz"
 
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
     def test_restoring_flag_suppresses_enqueue(self) -> None:
         """``_restoring=True`` drops messages before they reach the queue."""
         subscriber = TelemetrySubscriber()
-        subscriber.set_restoring(True)
+        subscriber.set_restoring(_TEAM_ID, True)
         msg = MagicMock()
         msg.__class__.__name__ = "StartMessage"
 
@@ -126,20 +150,20 @@ class TestTelemetrySubscriberAsyncWorker:
 
             mock_lf.info.assert_not_called()
 
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
     def test_worker_is_daemon(self) -> None:
         """Worker thread is a daemon — process exit is never blocked on logfire."""
         subscriber = TelemetrySubscriber()
         assert subscriber._worker.daemon is True
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
     def test_on_stop_joins_within_timeout(self) -> None:
         """``on_stop`` returns within ~5 s and the worker thread exits."""
         subscriber = TelemetrySubscriber()
 
         start = time.perf_counter()
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
         elapsed = time.perf_counter() - start
 
         assert elapsed < 5.0, f"on_stop took {elapsed:.2f} s"
@@ -153,10 +177,10 @@ class TestOnStopRequest:
         """Direct invocation returns None without raising."""
         subscriber = TelemetrySubscriber()
         try:
-            result = subscriber.on_stop_request()
+            result = subscriber.on_stop_request(_TEAM_ID)
             assert result is None
         finally:
-            subscriber.on_stop()
+            subscriber.on_stop(_TEAM_ID)
 
     def test_on_stop_request_does_not_enqueue_on_worker(self) -> None:
         """Queue invariant: on_stop_request must NOT enqueue a telemetry record.
@@ -168,7 +192,7 @@ class TestOnStopRequest:
         try:
             qsize_before = subscriber._queue.qsize()
 
-            subscriber.on_stop_request()
+            subscriber.on_stop_request(_TEAM_ID)
             # Allow worker a tiny window to drain anything unexpected.
             assert subscriber._flush(timeout=5.0)
 
@@ -181,13 +205,13 @@ class TestOnStopRequest:
             # by _flush before we observe).
             assert subscriber._queue.qsize() == qsize_before
         finally:
-            subscriber.on_stop()
+            subscriber.on_stop(_TEAM_ID)
 
     def test_on_stop_request_before_on_stop_then_stop_still_works(self) -> None:
         """Idempotent: calling on_stop_request then on_stop still shuts the worker down."""
         subscriber = TelemetrySubscriber()
 
-        subscriber.on_stop_request()
-        subscriber.on_stop()
+        subscriber.on_stop_request(_TEAM_ID)
+        subscriber.on_stop(_TEAM_ID)
 
         assert not subscriber._worker.is_alive()

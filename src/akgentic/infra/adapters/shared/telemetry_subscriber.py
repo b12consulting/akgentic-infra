@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import uuid
 from typing import TYPE_CHECKING
 
 import logfire
@@ -71,8 +72,16 @@ class TelemetrySubscriber(EventSubscriber):
         self._worker.start()
         logger.debug("TelemetrySubscriber initialized (async worker)")
 
-    def set_restoring(self, restoring: bool) -> None:
-        """Toggle restore mode to suppress span emission during event replay."""
+    def set_restoring(self, team_id: uuid.UUID, restoring: bool) -> None:  # noqa: ARG002
+        """Toggle restore mode to suppress span emission during event replay.
+
+        Args:
+            team_id: ``team_id`` from the orchestrator triggering the notification.
+                Accepted to satisfy the ``EventSubscriber`` Protocol but currently
+                ignored — per-team conversion of ``_restoring`` is deferred to
+                story 27.2.
+            restoring: ``True`` to suppress emission, ``False`` to resume.
+        """
         self._restoring = restoring
 
     def on_message(self, msg: Message) -> None:
@@ -93,18 +102,29 @@ class TelemetrySubscriber(EventSubscriber):
         team_id = msg.team_id
         self._queue.put((sender, msg_type, team_id))
 
-    def on_stop_request(self) -> None:
+    def on_stop_request(self, team_id: uuid.UUID) -> None:  # noqa: ARG002
         """No-op — stop handling is bridged by ``TimerStopSubscriber`` in ``akgentic-team``.
 
         The orchestrator's inactivity-timer handler calls this on every subscriber;
         this shared telemetry subscriber has no per-team teardown to perform on that
         signal (worker drain happens in ``on_stop()`` on actual shutdown).
+
+        Args:
+            team_id: ``team_id`` from the orchestrator triggering the notification.
+                Accepted to satisfy the ``EventSubscriber`` Protocol but currently
+                ignored — per-team handling is deferred.
         """
 
-    def on_stop(self) -> None:
+    def on_stop(self, team_id: uuid.UUID) -> None:  # noqa: ARG002
         """Signal the worker to drain and exit.
 
         Bounded join keeps server shutdown snappy even if logfire is wedged.
+
+        Args:
+            team_id: ``team_id`` from the orchestrator triggering the notification.
+                Accepted to satisfy the ``EventSubscriber`` Protocol but currently
+                ignored — extraction of the worker drain into a separate
+                ``close()`` method is deferred to story 27.2.
         """
         self._queue.put(_SHUTDOWN)
         self._worker.join(timeout=5.0)

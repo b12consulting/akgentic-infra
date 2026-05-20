@@ -7,9 +7,12 @@ runs on a daemon worker. Live-emit assertions must flush the worker via
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import MagicMock, patch
 
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
+
+_TEAM_ID = uuid.uuid4()
 
 
 class TestTelemetryRestoreAwareness:
@@ -25,14 +28,12 @@ class TestTelemetryRestoreAwareness:
         msg = MagicMock()
         msg.__class__.__name__ = "StartMessage"
 
-        with patch(
-            "akgentic.infra.adapters.shared.telemetry_subscriber.logfire"
-        ) as mock_lf:
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
             subscriber.on_message(msg)
             assert subscriber._flush(timeout=5.0), "worker did not drain in time"
             mock_lf.info.assert_called_once()
 
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
     def test_restoring_skips_logfire_emission(self) -> None:
         """AC #6: set_restoring(True) suppresses logfire.info calls.
@@ -41,37 +42,33 @@ class TestTelemetryRestoreAwareness:
         so the worker has nothing to emit.
         """
         subscriber = TelemetrySubscriber()
-        subscriber.set_restoring(True)
+        subscriber.set_restoring(_TEAM_ID, True)
         msg = MagicMock()
         msg.__class__.__name__ = "StartMessage"
 
-        with patch(
-            "akgentic.infra.adapters.shared.telemetry_subscriber.logfire"
-        ) as mock_lf:
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
             subscriber.on_message(msg)
             assert subscriber._flush(timeout=5.0)
             mock_lf.info.assert_not_called()
 
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
     def test_restoring_false_resumes_logfire(self) -> None:
         """set_restoring(False) resumes normal logfire emission."""
         subscriber = TelemetrySubscriber()
-        subscriber.set_restoring(True)
-        subscriber.set_restoring(False)
+        subscriber.set_restoring(_TEAM_ID, True)
+        subscriber.set_restoring(_TEAM_ID, False)
         msg = MagicMock()
         msg.__class__.__name__ = "StartMessage"
 
-        with patch(
-            "akgentic.infra.adapters.shared.telemetry_subscriber.logfire"
-        ) as mock_lf:
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
             subscriber.on_message(msg)
             assert subscriber._flush(timeout=5.0)
             mock_lf.info.assert_called_once()
 
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
 
     def test_on_stop_does_not_raise(self) -> None:
         """on_stop completes without error."""
         subscriber = TelemetrySubscriber()
-        subscriber.on_stop()
+        subscriber.on_stop(_TEAM_ID)
