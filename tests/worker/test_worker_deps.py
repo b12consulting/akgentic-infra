@@ -8,6 +8,7 @@ from akgentic.core import ActorSystem
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import EventStore, NullServiceRegistry, ServiceRegistry
 
+from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.infra.worker.deps import WorkerServices
@@ -41,6 +42,35 @@ class TestWorkerServicesConstruction:
         assert services.runtime_cache is runtime_cache
         assert services.worker_handle is worker_handle
 
+    def test_telemetry_subscriber_field_defaults_to_none(self) -> None:
+        """Story 27.1 AC #7: ``telemetry_subscriber`` is optional, defaults to None."""
+        services = WorkerServices(
+            team_manager=MagicMock(spec=TeamManager),
+            actor_system=MagicMock(spec=ActorSystem),
+            event_store=MagicMock(spec=EventStore),
+            service_registry=NullServiceRegistry(),
+            runtime_cache=MagicMock(spec=RuntimeCache),
+            worker_handle=MagicMock(spec=WorkerHandle),
+        )
+        assert services.telemetry_subscriber is None
+
+    def test_telemetry_subscriber_field_accepts_subscriber(self) -> None:
+        """Story 27.1 AC #7: ``telemetry_subscriber`` accepts a TelemetrySubscriber."""
+        subscriber = TelemetrySubscriber()
+        try:
+            services = WorkerServices(
+                team_manager=MagicMock(spec=TeamManager),
+                actor_system=MagicMock(spec=ActorSystem),
+                event_store=MagicMock(spec=EventStore),
+                service_registry=NullServiceRegistry(),
+                runtime_cache=MagicMock(spec=RuntimeCache),
+                worker_handle=MagicMock(spec=WorkerHandle),
+                telemetry_subscriber=subscriber,
+            )
+            assert services.telemetry_subscriber is subscriber
+        finally:
+            subscriber.close()
+
 
 class TestWorkerServicesModel:
     """WorkerServices model structure and metadata (AC #1)."""
@@ -53,6 +83,7 @@ class TestWorkerServicesModel:
             "service_registry",
             "runtime_cache",
             "worker_handle",
+            "telemetry_subscriber",
         }
         assert set(WorkerServices.model_fields.keys()) == expected_fields
 

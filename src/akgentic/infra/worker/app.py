@@ -75,3 +75,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await asyncio.sleep(delay)
 
     await app.state.lifecycle.shutdown(drain_timeout=settings.shutdown_drain_timeout)
+
+    # Drain the shared TelemetrySubscriber daemon worker AFTER every team has been
+    # torn down, so per-team ``on_stop`` notifications could still emit telemetry
+    # spans. The subscriber is optional on ``WorkerServices`` — tiers that do not
+    # register a TelemetrySubscriber leave it None.
+    services: WorkerServices = app.state.services
+    if services.telemetry_subscriber is not None:
+        services.telemetry_subscriber.close()
+        logger.info("Worker lifespan shutdown: telemetry drained")
