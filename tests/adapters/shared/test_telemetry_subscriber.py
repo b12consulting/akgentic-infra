@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from akgentic.core.orchestrator import EventSubscriber
 
+from akgentic.infra.adapters.shared import telemetry_subscriber as ts_module
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 
 _TEAM_ID = uuid.uuid4()
@@ -31,7 +32,6 @@ class TestTelemetrySubscriberProtocolCompliance:
         """Story 22.1 AC2: subscriber exposes on_stop_request for timer-driven shutdown."""
         subscriber = TelemetrySubscriber()
         assert callable(subscriber.on_stop_request)
-        subscriber.close()
 
     def test_on_message_signature_matches_protocol(self) -> None:
         """on_message has msg parameter matching EventSubscriber."""
@@ -61,13 +61,10 @@ class TestTelemetrySubscriberProtocolCompliance:
         exists at runtime.
         """
         subscriber: EventSubscriber = TelemetrySubscriber()
-        try:
-            assert callable(subscriber.set_restoring)
-            assert callable(subscriber.on_stop_request)
-            assert callable(subscriber.on_stop)
-            assert callable(subscriber.on_message)
-        finally:
-            subscriber.close()
+        assert callable(subscriber.set_restoring)
+        assert callable(subscriber.on_stop_request)
+        assert callable(subscriber.on_stop)
+        assert callable(subscriber.on_message)
 
 
 class TestTelemetrySubscriberBehavior:
@@ -76,20 +73,14 @@ class TestTelemetrySubscriberBehavior:
     def test_on_message_does_not_raise(self) -> None:
         """on_message processes a mock message without error."""
         subscriber = TelemetrySubscriber()
-        try:
-            msg = MagicMock()
-            msg.__class__.__name__ = "StartMessage"
-            subscriber.on_message(msg)
-        finally:
-            subscriber.close()
+        msg = MagicMock()
+        msg.__class__.__name__ = "StartMessage"
+        subscriber.on_message(msg)
 
     def test_on_stop_does_not_raise(self) -> None:
         """on_stop completes without error."""
         subscriber = TelemetrySubscriber()
-        try:
-            subscriber.on_stop(_TEAM_ID)
-        finally:
-            subscriber.close()
+        subscriber.on_stop(_TEAM_ID)
 
 
 class TestTelemetrySubscriberAsyncWorker:
@@ -120,8 +111,6 @@ class TestTelemetrySubscriberAsyncWorker:
             # Generous ceiling for shared CI runners; the real target is sub-ms.
             assert elapsed < 0.05, f"on_message took {elapsed * 1000:.1f} ms"
 
-        subscriber.close()
-
     def test_flush_then_logfire_called_with_expected_args(self) -> None:
         """After explicit flush, ``logfire.info`` was called with sender/msg_type/team_id."""
         subscriber = TelemetrySubscriber()
@@ -140,8 +129,6 @@ class TestTelemetrySubscriberAsyncWorker:
             assert kwargs["msg_type"] == "StartMessage"
             assert kwargs["team_id"] == "team-xyz"
 
-        subscriber.close()
-
     def test_restoring_flag_suppresses_enqueue(self) -> None:
         """``set_restoring(team, True)`` drops same-team messages before they reach the queue."""
         subscriber = TelemetrySubscriber()
@@ -157,24 +144,10 @@ class TestTelemetrySubscriberAsyncWorker:
 
             mock_lf.info.assert_not_called()
 
-        subscriber.close()
-
     def test_worker_is_daemon(self) -> None:
-        """Worker thread is a daemon — process exit is never blocked on logfire."""
+        """Worker thread is a daemon — process exit is never blocked on logfire (AC #6)."""
         subscriber = TelemetrySubscriber()
         assert subscriber._worker.daemon is True
-        subscriber.close()
-
-    def test_close_joins_within_timeout(self) -> None:
-        """``close()`` returns within ~5 s and the worker thread exits."""
-        subscriber = TelemetrySubscriber()
-
-        start = time.perf_counter()
-        subscriber.close()
-        elapsed = time.perf_counter() - start
-
-        assert elapsed < 5.0, f"close() took {elapsed:.2f} s"
-        assert not subscriber._worker.is_alive()
 
 
 class TestOnStopRequest:
@@ -183,11 +156,8 @@ class TestOnStopRequest:
     def test_on_stop_request_returns_none_and_does_not_raise(self) -> None:
         """Direct invocation returns None without raising."""
         subscriber = TelemetrySubscriber()
-        try:
-            result = subscriber.on_stop_request(_TEAM_ID)
-            assert result is None
-        finally:
-            subscriber.close()
+        result = subscriber.on_stop_request(_TEAM_ID)
+        assert result is None
 
     def test_on_stop_request_does_not_enqueue_on_worker(self) -> None:
         """Queue invariant: on_stop_request must NOT enqueue a telemetry record.
@@ -196,32 +166,20 @@ class TestOnStopRequest:
         the orchestrator and is not a trace event itself.
         """
         subscriber = TelemetrySubscriber()
-        try:
-            qsize_before = subscriber._queue.qsize()
-
-            subscriber.on_stop_request(_TEAM_ID)
-            # Allow worker a tiny window to drain anything unexpected.
-            assert subscriber._flush(timeout=5.0)
-
-            with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
-                # Re-flush after patching so any pending emission would surface.
-                assert subscriber._flush(timeout=5.0)
-                mock_lf.info.assert_not_called()
-
-            # Queue size is unchanged (ignoring barrier sentinels which are drained
-            # by _flush before we observe).
-            assert subscriber._queue.qsize() == qsize_before
-        finally:
-            subscriber.close()
-
-    def test_on_stop_request_before_close_then_close_still_works(self) -> None:
-        """Idempotent: calling on_stop_request then close() still shuts the worker down."""
-        subscriber = TelemetrySubscriber()
+        qsize_before = subscriber._queue.qsize()
 
         subscriber.on_stop_request(_TEAM_ID)
-        subscriber.close()
+        # Allow worker a tiny window to drain anything unexpected.
+        assert subscriber._flush(timeout=5.0)
 
-        assert not subscriber._worker.is_alive()
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
+            # Re-flush after patching so any pending emission would surface.
+            assert subscriber._flush(timeout=5.0)
+            mock_lf.info.assert_not_called()
+
+        # Queue size is unchanged (ignoring barrier sentinels which are drained
+        # by _flush before we observe).
+        assert subscriber._queue.qsize() == qsize_before
 
 
 class TestPerTeamRestoringSet:
@@ -230,99 +188,110 @@ class TestPerTeamRestoringSet:
     def test_set_restoring_adds_team_id_to_set(self) -> None:
         """``set_restoring(team, True)`` adds; ``set_restoring(team, False)`` discards."""
         subscriber = TelemetrySubscriber()
-        try:
-            team_a = uuid.uuid4()
-            subscriber.set_restoring(team_a, True)
-            assert team_a in subscriber._restoring
+        team_a = uuid.uuid4()
+        subscriber.set_restoring(team_a, True)
+        assert team_a in subscriber._restoring
 
-            subscriber.set_restoring(team_a, False)
-            assert team_a not in subscriber._restoring
-        finally:
-            subscriber.close()
+        subscriber.set_restoring(team_a, False)
+        assert team_a not in subscriber._restoring
 
     def test_set_restoring_discard_is_idempotent(self) -> None:
         """``set_restoring(team, False)`` on an absent team is a no-op (set.discard semantics)."""
         subscriber = TelemetrySubscriber()
-        try:
-            team_a = uuid.uuid4()
-            # Not previously added; must not raise.
-            subscriber.set_restoring(team_a, False)
-            assert team_a not in subscriber._restoring
-        finally:
-            subscriber.close()
+        team_a = uuid.uuid4()
+        # Not previously added; must not raise.
+        subscriber.set_restoring(team_a, False)
+        assert team_a not in subscriber._restoring
 
     def test_restoring_set_starts_empty(self) -> None:
         """Fresh subscriber has an empty restoring set (not False/None)."""
         subscriber = TelemetrySubscriber()
-        try:
-            assert isinstance(subscriber._restoring, set)
-            assert len(subscriber._restoring) == 0
-        finally:
-            subscriber.close()
+        assert isinstance(subscriber._restoring, set)
+        assert len(subscriber._restoring) == 0
 
     def test_on_message_suppresses_only_restoring_team(self) -> None:
         """team_a in restoring ⇒ team_a messages dropped, team_b messages still emitted."""
         subscriber = TelemetrySubscriber()
-        try:
-            team_a = uuid.uuid4()
-            team_b = uuid.uuid4()
-            subscriber.set_restoring(team_a, True)
+        team_a = uuid.uuid4()
+        team_b = uuid.uuid4()
+        subscriber.set_restoring(team_a, True)
 
-            msg_a = MagicMock()
-            msg_a.__class__.__name__ = "StartMessage"
-            msg_a.sender.name = "orchestrator"
-            msg_a.team_id = team_a
+        msg_a = MagicMock()
+        msg_a.__class__.__name__ = "StartMessage"
+        msg_a.sender.name = "orchestrator"
+        msg_a.team_id = team_a
 
-            msg_b = MagicMock()
-            msg_b.__class__.__name__ = "StartMessage"
-            msg_b.sender.name = "orchestrator"
-            msg_b.team_id = team_b
+        msg_b = MagicMock()
+        msg_b.__class__.__name__ = "StartMessage"
+        msg_b.sender.name = "orchestrator"
+        msg_b.team_id = team_b
 
-            with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
-                subscriber.on_message(msg_a)  # dropped
-                subscriber.on_message(msg_b)  # emitted
-                assert subscriber._flush(timeout=5.0)
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
+            subscriber.on_message(msg_a)  # dropped
+            subscriber.on_message(msg_b)  # emitted
+            assert subscriber._flush(timeout=5.0)
 
-                # Only team_b's message reached logfire.
-                assert mock_lf.info.call_count == 1
-                _, kwargs = mock_lf.info.call_args
-                assert kwargs["team_id"] == team_b
-        finally:
-            subscriber.close()
+            # Only team_b's message reached logfire.
+            assert mock_lf.info.call_count == 1
+            _, kwargs = mock_lf.info.call_args
+            assert kwargs["team_id"] == team_b
 
 
-class TestOnStopDoesNotDrainWorker:
-    """Story 27.1 AC #5: ``on_stop(team_id)`` no longer drains the daemon worker thread."""
+class TestOnStopIsNoActionOnSharedSubscriber:
+    """Story 28.1 AC #5/#6: ``on_stop(team_id)`` is a no-action signal on this shared subscriber.
 
-    def test_on_stop_does_not_drain_worker(self) -> None:
-        """Two per-team ``on_stop`` calls leave the worker alive; only close() drains."""
+    The daemon worker is shared across every team. ``on_stop`` MUST NOT tear it
+    down on a single team's stop. The worker is reclaimed by the Python runtime
+    at process exit (``daemon=True``).
+    """
+
+    def test_on_stop_leaves_worker_alive(self) -> None:
+        """Two per-team ``on_stop`` calls leave the worker alive."""
         subscriber = TelemetrySubscriber()
-        try:
-            team_a = uuid.uuid4()
-            team_b = uuid.uuid4()
+        team_a = uuid.uuid4()
+        team_b = uuid.uuid4()
 
-            subscriber.on_stop(team_a)
-            assert subscriber._worker.is_alive()
+        subscriber.on_stop(team_a)
+        assert subscriber._worker.is_alive()
 
-            subscriber.on_stop(team_b)
-            assert subscriber._worker.is_alive()
-        finally:
-            subscriber.close()
+        subscriber.on_stop(team_b)
+        assert subscriber._worker.is_alive()
 
 
-class TestCloseIdempotency:
-    """Story 27.1 AC #6: ``close()`` drains the worker once and is idempotent."""
+class TestCloseAndShutdownSentinelAreGone:
+    """Story 28.1 AC #5: ``close()`` and ``_SHUTDOWN`` are removed; the worker thread is daemon."""
 
-    def test_close_drains_worker(self) -> None:
-        """After ``close()``, the worker thread has exited."""
+    def test_close_method_does_not_exist(self) -> None:
+        """``TelemetrySubscriber.close`` is gone — no caller in any tier (ADR-025 §5)."""
+        assert hasattr(TelemetrySubscriber, "close") is False
+
+    def test_shutdown_sentinel_is_gone(self) -> None:
+        """Module-level ``_SHUTDOWN`` sentinel is removed — no consumer in ``_run``."""
+        assert getattr(ts_module, "_SHUTDOWN", None) is None
+
+    def test_worker_thread_is_daemon(self) -> None:
+        """Worker thread remains ``daemon=True`` — reclaimed at process exit."""
         subscriber = TelemetrySubscriber()
-        subscriber.close()
-        assert not subscriber._worker.is_alive()
+        assert subscriber._worker.daemon is True
 
-    def test_close_is_idempotent(self) -> None:
-        """A second ``close()`` is a no-op and does not raise."""
+
+class TestFlushBarrierIsPreserved:
+    """Story 28.1 AC #7: ``_flush()`` and ``_FlushBarrier`` are preserved as test-only helpers."""
+
+    def test_flush_barrier_returns_true(self) -> None:
+        """``_flush(timeout=1.0)`` returns ``True`` on a healthy worker (AC #7)."""
         subscriber = TelemetrySubscriber()
-        subscriber.close()
-        # Second call must not raise; worker stays not-alive.
-        subscriber.close()
-        assert not subscriber._worker.is_alive()
+        assert subscriber._flush(timeout=1.0) is True
+
+    def test_flush_after_on_message_emits_to_logfire(self) -> None:
+        """``on_message`` (non-restoring) followed by ``_flush`` triggers one emit (AC #6)."""
+        subscriber = TelemetrySubscriber()
+        msg = MagicMock()
+        msg.__class__.__name__ = "StartMessage"
+        msg.sender.name = "orchestrator"
+        msg.team_id = _TEAM_ID
+
+        with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
+            subscriber.on_message(msg)
+            assert subscriber._flush(timeout=1.0) is True
+            mock_lf.info.assert_called_once()

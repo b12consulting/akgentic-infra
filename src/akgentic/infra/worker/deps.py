@@ -5,7 +5,6 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from akgentic.core import ActorSystem
-from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.team.manager import TeamManager
@@ -35,12 +34,3 @@ class WorkerServices(BaseModel):
         description="Cache mapping team IDs to live TeamHandle instances"
     )
     worker_handle: WorkerHandle = Field(description="Local worker handle for this process")
-    telemetry_subscriber: TelemetrySubscriber | None = Field(
-        default=None,
-        description=(
-            "Shared TelemetrySubscriber driving the daemon-thread logfire emitter. "
-            "Optional so department/enterprise wirings that do not register a "
-            "TelemetrySubscriber can omit it. When present, the worker FastAPI "
-            "lifespan calls close() after WorkerLifecycle.shutdown() returns."
-        ),
-    )

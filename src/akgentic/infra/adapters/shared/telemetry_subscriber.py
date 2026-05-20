@@ -12,6 +12,14 @@ subscribers). ADR-018 Decision 1 (shipped here) makes ``TelemetrySubscriber``
 non-blocking internally via a daemon worker thread. ADR-018 Decision 2 (the
 orchestrator-level dispatch fix) is deferred to a follow-up epic in
 ``akgentic-core``.
+
+Worker-thread teardown (see ADR-025 §5, revised 2026-05-20):
+
+    The background worker thread is constructed with ``daemon=True`` and is
+    reclaimed by the Python runtime at process exit; no explicit drain hook is
+    plumbed through ``WorkerServices``. The previous ``close()`` API and the
+    ``_SHUTDOWN`` sentinel that fed it have been removed — no tier called them.
+    Tests that need a deterministic flush use ``_flush()``.
 """
 
 from __future__ import annotations
@@ -30,9 +38,6 @@ if TYPE_CHECKING:
     from akgentic.core.messages import Message
 
 logger = logging.getLogger(__name__)
-
-# Sentinel used to signal the background worker to exit cleanly.
-_SHUTDOWN = object()
 
 
 class _FlushBarrier:
@@ -58,7 +63,9 @@ class TelemetrySubscriber(EventSubscriber):
     ``on_message()`` extracts the small set of attributes it needs on the
     caller's thread, enqueues them, and returns immediately. Actual emission
     runs on a single daemon worker, so a slow or misconfigured logfire
-    backend can never stall the orchestrator's actor thread.
+    backend can never stall the orchestrator's actor thread. The daemon
+    worker is reclaimed by the Python runtime at process exit; no explicit
+    drain is plumbed through ``WorkerServices`` (ADR-025 §5).
     """
 
     def __init__(self) -> None:
@@ -121,7 +128,7 @@ class TelemetrySubscriber(EventSubscriber):
 
         The orchestrator's inactivity-timer handler calls this on every subscriber;
         this shared telemetry subscriber has no per-team teardown to perform on that
-        signal (worker drain happens in ``close()`` on actual worker shutdown).
+        signal. The daemon worker thread lives for the process lifetime.
 
         Args:
             team_id: ``team_id`` from the orchestrator triggering the notification.
@@ -130,33 +137,19 @@ class TelemetrySubscriber(EventSubscriber):
         """
 
     def on_stop(self, team_id: uuid.UUID) -> None:
-        """Per-team stop notification — does **not** drain the worker thread.
+        """Per-team stop notification — no action on this shared subscriber.
 
         The daemon worker is shared across every team that publishes through
         this subscriber, so tearing it down on a single team's stop would
-        starve the rest. The drain is now performed by ``close()`` from the
-        worker FastAPI ``_lifespan`` shutdown branch, once every team has
-        already been torn down.
+        starve the rest. The worker thread is ``daemon=True`` and is reclaimed
+        by the Python runtime at process exit; no explicit drain is performed
+        on ``on_stop`` (ADR-025 §5).
 
         Args:
             team_id: ``team_id`` from the orchestrator triggering the notification.
                 Logged at DEBUG; no other action is taken.
         """
         logger.debug("TelemetrySubscriber: on_stop for team_id=%s", team_id)
-
-    def close(self) -> None:
-        """Push ``_SHUTDOWN`` and join the daemon worker thread. Idempotent.
-
-        Called from the worker FastAPI ``_lifespan`` shutdown branch after
-        ``WorkerLifecycle.shutdown()`` returns (all teams torn down). A second
-        call is a no-op — once the worker has exited, ``is_alive()`` is
-        ``False`` and the method returns immediately.
-        """
-        if not self._worker.is_alive():
-            return
-        self._queue.put(_SHUTDOWN)
-        self._worker.join(timeout=5.0)
-        logger.debug("TelemetrySubscriber closed")
 
     def _flush(self, timeout: float = 5.0) -> bool:
         """Block until every item enqueued so far has been drained by the worker.
@@ -182,8 +175,6 @@ class TelemetrySubscriber(EventSubscriber):
         """Background loop: drain the queue, emit to logfire, never raise."""
         while True:
             item = self._queue.get()
-            if item is _SHUTDOWN:
-                return
             if isinstance(item, _FlushBarrier):
                 item.event.set()
                 continue

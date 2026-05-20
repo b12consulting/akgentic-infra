@@ -43,9 +43,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     event_store = YamlEventStore(data_dir=settings.event_store_path)
     service_registry = NullServiceRegistry()
     event_stream = LocalEventStream()
-    actor_system, team_manager, _telemetry_subscriber = _build_actor_layer(
-        event_store, service_registry, event_stream
-    )
+    actor_system, team_manager = _build_actor_layer(event_store, service_registry, event_stream)
     catalog = _build_catalog(settings)
 
     local_placement = LocalPlacement(team_manager, service_registry)
@@ -84,19 +82,18 @@ def _build_actor_layer(
     event_store: EventStore,
     service_registry: ServiceRegistry,
     event_stream: EventStream,
-) -> tuple[ActorSystem, TeamManager, TelemetrySubscriber]:
-    """Build ActorSystem, TeamManager, and return the shared TelemetrySubscriber.
+) -> tuple[ActorSystem, TeamManager]:
+    """Build ``ActorSystem`` and ``TeamManager`` with shared subscribers wired in.
 
-    The ``TelemetrySubscriber`` is returned by reference so callers that drive
-    a FastAPI worker can plumb it into ``WorkerServices.telemetry_subscriber``
-    and call ``close()`` from the worker lifespan shutdown hook (story 27.1).
-    Community wiring discards the reference because it does not run a FastAPI
-    worker process.
+    Constructs a ``TelemetrySubscriber`` and installs it on
+    ``TeamManager.subscribers`` alongside ``EventStreamSubscriber``. The
+    daemon thread inside ``TelemetrySubscriber`` is ``daemon=True`` and is
+    reclaimed by the Python interpreter at process exit; no explicit drain
+    is plumbed through ``WorkerServices`` (ADR-025 §5).
     """
     logger.debug("Building actor layer: event_store=%s", type(event_store).__name__)
-    telemetry_subscriber = TelemetrySubscriber()
     shared_subscribers: list[EventSubscriber] = [
-        telemetry_subscriber,
+        TelemetrySubscriber(),
         EventStreamSubscriber(event_stream=event_stream),
     ]
     actor_system = ActorSystem()
@@ -110,7 +107,7 @@ def _build_actor_layer(
         "Actor system created, team manager initialized with %d shared subscribers",
         len(shared_subscribers),
     )
-    return actor_system, team_manager, telemetry_subscriber
+    return actor_system, team_manager
 
 
 def _build_catalog(settings: CommunitySettings) -> Catalog:

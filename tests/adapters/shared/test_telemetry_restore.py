@@ -33,8 +33,6 @@ class TestTelemetryRestoreAwareness:
             assert subscriber._flush(timeout=5.0), "worker did not drain in time"
             mock_lf.info.assert_called_once()
 
-        subscriber.close()
-
     def test_restoring_skips_logfire_emission(self) -> None:
         """AC #6: set_restoring(team_id, True) suppresses logfire.info for that team.
 
@@ -53,8 +51,6 @@ class TestTelemetryRestoreAwareness:
             assert subscriber._flush(timeout=5.0)
             mock_lf.info.assert_not_called()
 
-        subscriber.close()
-
     def test_restoring_false_resumes_logfire(self) -> None:
         """set_restoring(False) resumes normal logfire emission."""
         subscriber = TelemetrySubscriber()
@@ -68,9 +64,7 @@ class TestTelemetryRestoreAwareness:
             assert subscriber._flush(timeout=5.0)
             mock_lf.info.assert_called_once()
 
-        subscriber.close()
-
     def test_on_stop_does_not_raise(self) -> None:
         """on_stop completes without error."""
         subscriber = TelemetrySubscriber()
-        subscriber.close()
+        subscriber.on_stop(_TEAM_ID)
