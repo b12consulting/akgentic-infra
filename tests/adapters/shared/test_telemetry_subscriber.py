@@ -143,7 +143,7 @@ class TestTelemetrySubscriberAsyncWorker:
         subscriber.close()
 
     def test_restoring_flag_suppresses_enqueue(self) -> None:
-        """``set_restoring(team, True)`` drops messages for that team before they reach the queue."""
+        """``set_restoring(team, True)`` drops same-team messages before they reach the queue."""
         subscriber = TelemetrySubscriber()
         subscriber.set_restoring(_TEAM_ID, True)
         msg = MagicMock()
@@ -278,9 +278,7 @@ class TestPerTeamRestoringSet:
             msg_b.sender.name = "orchestrator"
             msg_b.team_id = team_b
 
-            with patch(
-                "akgentic.infra.adapters.shared.telemetry_subscriber.logfire"
-            ) as mock_lf:
+            with patch("akgentic.infra.adapters.shared.telemetry_subscriber.logfire") as mock_lf:
                 subscriber.on_message(msg_a)  # dropped
                 subscriber.on_message(msg_b)  # emitted
                 assert subscriber._flush(timeout=5.0)
