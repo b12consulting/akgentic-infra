@@ -31,6 +31,7 @@ from akgentic.infra.server.logging_config import configure_logging
 from akgentic.infra.server.routes._admin_mutation_log import AdminCatalogMutationLogMiddleware
 from akgentic.infra.server.routes._auth_dep import require_authenticated_principal
 from akgentic.infra.server.routes._catalog_authz import require_namespace_owner_or_admin
+from akgentic.infra.server.routes._catalog_caller_identity import scope_catalog_caller_identity
 from akgentic.infra.server.routes.frontend_adapter import load_frontend_adapter
 from akgentic.infra.server.routes.readiness import router as readiness_router
 from akgentic.infra.server.routes.teams import router as teams_router
@@ -222,10 +223,20 @@ def _mount_routes(app: FastAPI, settings: ServerSettings) -> None:
     # body-carried create routes). The router-level authentication gate below
     # stays exactly as-is; this gate is additive.
     _attach_owner_or_admin_gate(admin_catalog_router)
+    # ADR-028 §Decision 7 (infra side): scope each /admin/catalog/* request
+    # inside Catalog.as_caller(request_user.user_id), derived server-side from
+    # the ADR-023 get_request_user seam. Attached once here so department
+    # (calls create_app) and enterprise (transplants these routes/state)
+    # inherit it from the same place. The router-level authentication gate
+    # below stays exactly as-is; this dependency is additive and never reads a
+    # spoofable inbound header.
     app.include_router(
         admin_catalog_router,
         prefix="/admin",
-        dependencies=[Depends(require_authenticated_principal)],
+        dependencies=[
+            Depends(require_authenticated_principal),
+            Depends(scope_catalog_caller_identity),
+        ],
     )
     logger.info("Building app: routes mounted")
 
