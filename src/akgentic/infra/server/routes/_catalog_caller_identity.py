@@ -22,34 +22,87 @@ subsequent request that resolves ``"anonymous"`` in the shared app
 (ADR-028 §Decision 7 contextvar semantics).
 
 The catalog *reading* this contextvar on write to stamp ``entry.user_id`` is
-the companion catalog half (akgentic-catalog Epic 27 / Story 27.2) — out of
-scope here. Until that lands and the ``akgentic-catalog`` submodule pointer is
-bumped, this wiring correctly *sets* the caller identity, but writes still
-persist ``"anonymous"`` because the catalog does not yet read it.
+the companion catalog half (akgentic-catalog Epic 27 / Story 27.2).
+
+Admin "see-all" reads (ADR-028 §Decision 9): an explicit, admin-only, opt-in
+``?all=true`` query parameter makes infra run the read **unscoped** — it does
+NOT enter ``Catalog.as_caller``, leaving the catalog's ``_caller_user_id``
+contextvar ``None``, so the catalog's ``list``/``get`` skip the visibility
+filter and return everything (the existing community ``caller is None ⇒ no
+filter`` path, reused as the "see all" lever). The catalog never learns about
+roles; the decision lives entirely here in infra. The switch is:
+
+* **admin-only / opt-in** — honoured iff ``"admin" in user.roles`` AND
+  ``all=true``. A non-admin passing ``all=true`` is treated exactly as
+  ``all=false`` (scoped); the param is silently ineffective, never a 403, never
+  a privilege grant.
+* **reads only** — unscoping is gated on ``request.method == "GET"``. Writes
+  (``PUT``/``DELETE``/``POST``, including ``POST .../search``) always run
+  scoped regardless of ``?all=``, so ownership-stamping on the write path is
+  unaffected (an unscoped write would stamp ``anonymous``). This means the
+  ``POST .../search`` read stays scoped by design — see the dev note in
+  Story 31.4 (search is "sufficient additional coverage", not
+  mandatory-unscoped; the GET-only gate is the safe shape).
+* **default unchanged** — ``all`` absent / ``all=false`` runs scoped for
+  everyone (including admins) — byte-identical to before.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 
-from fastapi import Depends
+from fastapi import Depends, Query, Request
 
 from akgentic.catalog.catalog import Catalog
 from akgentic.infra.server.auth import RequestUser, get_request_user
 
 __all__ = ["scope_catalog_caller_identity"]
 
+logger = logging.getLogger(__name__)
+
+_ADMIN_ROLE = "admin"
+
 
 async def scope_catalog_caller_identity(
+    request: Request,
     user: RequestUser = Depends(get_request_user),
+    all_: bool = Query(False, alias="all"),
 ) -> AsyncIterator[None]:
-    """Run the request inside ``Catalog.as_caller(user.user_id)``.
+    """Scope the request to ``Catalog.as_caller(user.user_id)`` unless an admin opts in via ``all``.
 
     FastAPI resolves ``user`` through the ADR-023 seam (honouring each tier's
-    ``dependency_overrides``), then enters the catalog's caller-identity
-    context manager for the request body. The ``finally`` in
-    ``Catalog.as_caller`` resets the contextvar token on exit, so the identity
-    is scoped to a single request and never leaks across requests.
+    ``dependency_overrides``), then — for the default case — enters the
+    catalog's caller-identity context manager for the request body. The
+    ``finally`` in ``Catalog.as_caller`` resets the contextvar token on exit,
+    so the identity is scoped to a single request and never leaks across
+    requests.
+
+    Declaring ``all_`` here (router-level dependency) makes ``?all=`` an
+    accepted query parameter on **every** ``/admin/catalog/*`` route without
+    editing any catalog read handler (the catalog router lives in
+    ``akgentic-catalog``). The Python name ``all_`` is aliased to the wire name
+    ``all`` so the switch is literally ``?all=true`` while avoiding shadowing
+    the ``all`` builtin.
+
+    The "see all" predicate (ADR-028 §Decision 9)::
+
+        unscoped = all_ and (admin in roles) and method == "GET"
+
+    When ``unscoped`` is ``True`` the dependency yields **without** entering
+    ``Catalog.as_caller`` — the contextvar stays ``None`` and the catalog
+    returns everything (the community ``caller is None ⇒ no filter`` path).
+    Otherwise the request runs scoped under ``Catalog.as_caller(user.user_id)``:
+
+    * non-admin + ``all=true`` ⇒ scoped (owner+public only) — fail-safe, no 403;
+    * admin + ``all=false``/absent ⇒ scoped — default, owner+public only;
+    * any write (``PUT``/``DELETE``/``POST``, incl. ``.../search``) ⇒ scoped
+      regardless of ``?all=`` — reads-only unscoping, so ownership-stamping on
+      the write path is never affected;
+    * community (anonymous) ⇒ never has the ``admin`` role ⇒ always scoped.
+
+    No 403 is ever raised by ``all`` — the param is a visibility lever, not an
+    authorization gate.
 
     This dependency is **async on purpose**: an async generator dependency is
     entered on the request's own asyncio task, so the ``ContextVar`` set by
@@ -66,7 +119,25 @@ async def scope_catalog_caller_identity(
 
     Yields:
         ``None`` — the dependency exists purely for its context-manager side
-        effect of setting and resetting the caller-identity contextvar.
+        effect of setting (or, when unscoped, deliberately NOT setting) the
+        caller-identity contextvar.
     """
+    unscoped = all_ and _ADMIN_ROLE in user.roles and request.method == "GET"
+    if unscoped:
+        # Admin opted into the see-all read: do NOT enter as_caller so the
+        # catalog's visibility filter is bypassed (caller is None => no filter).
+        # The mutation-log middleware only logs writes, so emit a dedicated
+        # INFO line here to make the unscoping decision itself auditable.
+        logger.info(
+            "admin catalog unscoped read",
+            extra={
+                "user_id": user.user_id,
+                "principal_id": user.user_id,
+                "path": request.url.path,
+                "unscoped": True,
+            },
+        )
+        yield
+        return
     with Catalog.as_caller(user.user_id):
         yield
