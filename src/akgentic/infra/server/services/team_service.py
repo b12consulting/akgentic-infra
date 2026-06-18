@@ -13,7 +13,7 @@ from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.deps import TierServices
-from akgentic.team.models import PersistedEvent, Process, TeamStatus
+from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +286,25 @@ class TeamService:
             raise ValueError(msg)
         logger.debug("Loading events for team %s", team_id)
         return self._services.event_store.load_events(team_id)
+
+    def get_agent_states(self, team_id: uuid.UUID) -> list[AgentStateSnapshot]:
+        """Get all persisted agent-state snapshots for a team.
+
+        A thin, faithful read of the snapshot store: returns every snapshot as
+        persisted, with no liveness filtering and no name->UUID resolution. The
+        team-exists guard mirrors ``get_events`` — ``get_team`` returns the
+        persisted process for a stopped team too, so this fires only for a
+        genuinely unknown team.
+
+        Raises:
+            ValueError: If team not found.
+        """
+        process = self._services.worker_handle.get_team(team_id)
+        if process is None:
+            msg = f"Team {team_id} not found"
+            raise ValueError(msg)
+        logger.debug("Loading agent states for team %s", team_id)
+        return self._services.event_store.load_agent_states(team_id)
 
     def get_event_stream(self) -> EventStream:
         """Return the tier's EventStream for cursor-based replay and fan-out."""
