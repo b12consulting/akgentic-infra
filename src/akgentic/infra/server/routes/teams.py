@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import NoReturn, cast
+from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -20,6 +20,7 @@ from akgentic.infra.server.models import (
     TeamResponse,
 )
 from akgentic.infra.server.services.team_service import TeamService
+from akgentic.infra.server.state_keys import CONNECTION_MANAGER, TEAM_SERVICE
 from akgentic.team.models import Process
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 
 def get_team_service(request: Request) -> TeamService:
     """FastAPI dependency: extract TeamService from app.state."""
-    return cast(TeamService, request.app.state.team_service)
+    return TEAM_SERVICE.require(request)
 
 
 def _process_to_response(process: Process) -> TeamResponse:
@@ -193,7 +194,7 @@ def restore_team(
     except ValueError as exc:
         _raise_action_error(exc)
 
-    conn_mgr = getattr(request.app.state, "connection_manager", None)
+    conn_mgr = CONNECTION_MANAGER.get(request)
     if conn_mgr is not None:
         from akgentic.infra.server.routes.ws import notify_restore
 

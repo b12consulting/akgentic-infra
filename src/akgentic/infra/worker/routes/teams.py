@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import NoReturn, cast
+from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.infra.server.models import HumanInputRequest, SendMessageRequest, TeamResponse
 from akgentic.infra.worker.deps import WorkerServices
+from akgentic.infra.worker.state_keys import SERVICES
 from akgentic.team.models import Process, TeamCard, TeamRuntime
 from akgentic.team.ports import EventStore
 
@@ -45,7 +46,7 @@ class WorkerCreateTeamRequest(BaseModel):
 
 def get_services(request: Request) -> WorkerServices:
     """FastAPI dependency: extract WorkerServices from app.state."""
-    return cast(WorkerServices, request.app.state.services)
+    return SERVICES.require(request)
 
 
 def _process_to_response(process: Process) -> TeamResponse:
