@@ -12,4 +12,5 @@ from __future__ import annotations
 from akgentic.infra.utils import StateKey
 from akgentic.infra.worker.deps import WorkerServices
 
+DRAINING: StateKey[bool] = StateKey("draining", default=False)
 SERVICES: StateKey[WorkerServices] = StateKey("services", required=True)
