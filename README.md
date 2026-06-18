@@ -290,10 +290,13 @@ src/akgentic/infra/
     routes/             REST, WebSocket, webhook, and frontend adapter routes
     services/           TeamService (tier-agnostic orchestrator)
     settings.py         Pydantic-settings configuration classes
+    state_keys.py       Typed app.state key declarations (server tier)
     app.py              Application factory (create_app)
   cli/                Typer-based CLI (ak-infra)
+  utils.py            StateKey[T] — typed app.state handle factory
   wiring.py           Dependency injection — wires adapters into services
   worker/             Worker module (planned for department/enterprise tiers)
+    state_keys.py       Typed app.state key declarations (worker tier)
 ```
 
 ## Quick Start
@@ -387,6 +390,38 @@ Tier-agnostic adapters that work across community, department, and enterprise de
 | `TelegramParser`             | Parses inbound Telegram webhook payloads                     |
 | `ChannelParserRegistry`      | Resolves and holds channel parsers/adapters from config      |
 | `TelemetrySubscriber`        | Event subscriber that traces messages via Logfire            |
+
+### Typed `app.state` access (`StateKey[T]`)
+
+`create_app()` stores its wired services on FastAPI's `app.state` so routes can reach them. `app.state` is a `starlette.datastructures.State` whose attribute reads are typed `Any`, so routes used to `cast(...)` every read. `StateKey[T]` (see ADR-030 — Typed `app.state` Access via a `StateKey[T]` Registry) replaces that with a typed, serialization-free handle to one slot. The API is three calls:
+
+- `KEY.set(source, value)` — the producer writes the slot.
+- `KEY.get(source) -> T | None` — soft read; returns the key's `default` when the slot is unset (or raises `LookupError` if the key is `required=True`).
+- `KEY.require(source) -> T` — loud read; never returns `None` (raises `LookupError` when unset/`None`).
+
+`source` may be a `FastAPI`, `Request`, or `WebSocket`. A key is declared once as a module-level constant — that declaration *is* the registration; there is no central registry. `StateKey("name", *, default=..., required=...)` is the full constructor.
+
+**Producer / consumer.** `create_app()` (the producer) sets each slot through its key, and routes (the consumers) read the same key handle:
+
+```python
+# producer — server/app.py
+SERVICES.set(app, services)
+TEAM_SERVICE.set(app, team_service)
+
+# consumer — server/routes/teams.py
+team_service = TEAM_SERVICE.require(request)
+```
+
+**Soft defaults.** A key declared with a `default` reads that default back when its slot was never set: `CHANNEL_PARSERS` and `FRONTEND_ADAPTER` default to `None`, `DRAINING` defaults to `False`. So `CHANNEL_PARSERS.get(request)` returns `ChannelParserRegistry | None` without any `getattr(..., None)` at the call site.
+
+**`Depends` bridge.** DI-shaped handlers wrap the same key in a one-line provider — no second source of truth:
+
+```python
+def get_team_service(request: Request) -> TeamService:
+    return TEAM_SERVICE.require(request)
+```
+
+**Key lives with its producer.** Server keys are declared in `server/state_keys.py`, worker keys in `worker/state_keys.py` — each in the package that writes the slot. Both tiers export a `SERVICES` key, but they are different keys typed to different containers (`TierServices` server-side, `WorkerServices` worker-side); the worker route imports its own (`from akgentic.infra.worker.state_keys import SERVICES`). Department and enterprise tiers adopt these keys on their own branches/PRs — a tracked follow-up (see `_bmad-output/akgentic-infra-department/migration-plan-lift-shared-auth-and-http-helpers-to-akgentic-infra.md`); the coexistence with the older `cast`/`getattr` style during that rollout is intentional.
 
 ## CLI
 
