@@ -81,14 +81,16 @@ def test_worker_get_services_returns_wired_services() -> None:
     assert worker_get_services(request) is services
 
 
-# --- AC 19/23: soft slot stays None when unset; route tolerates it ----------
+# --- AC 19/23: required parser-registry raises; surviving soft slot stays None
 
 
-def test_channel_parsers_get_is_none_when_unset() -> None:
-    """The soft ``CHANNEL_PARSERS`` slot resolves to ``None`` (not a raise) when
-    the producer never set it — preserving the historical soft read."""
+def test_get_channel_parser_registry_raises_when_unset() -> None:
+    """``CHANNEL_PARSERS`` is required: the webhook dependency raises
+    ``LookupError`` (via ``.require()``) when the producer never set the slot,
+    rather than returning a silent ``None``."""
     request = cast(Request, _RequestStub(FastAPI()))
-    assert get_channel_parser_registry(request) is None
+    with pytest.raises(LookupError):
+        get_channel_parser_registry(request)
 
 
 def test_frontend_adapter_get_is_none_when_unset() -> None:
@@ -99,12 +101,12 @@ def test_frontend_adapter_get_is_none_when_unset() -> None:
 
 
 def _build_webhook_app_without_parser_registry() -> FastAPI:
-    """Webhook app with the required slots set but the soft parser registry left
-    unset, so ``CHANNEL_PARSERS.get`` returns ``None`` at request time."""
+    """Webhook app with the other required slots set but the parser registry left
+    unset, so ``CHANNEL_PARSERS.require`` raises ``LookupError`` at request time."""
     app = FastAPI()
-    # The two required webhook slots must be present so their ``.require`` does
-    # not raise before the soft-registry guard runs — FastAPI resolves all three
-    # dependencies up front, before the handler body.
+    # The other two required webhook slots are present so the failure is isolated
+    # to the missing parser registry — FastAPI resolves all three dependencies up
+    # front, before the handler body.
     app.state.channel_registry = MagicMock()
     app.state.ingestion = StubIngestion()
     app.include_router(webhook_router)
@@ -112,22 +114,28 @@ def _build_webhook_app_without_parser_registry() -> FastAPI:
 
 
 def test_webhook_returns_500_when_parser_registry_unset() -> None:
-    """With no parser registry configured the webhook surfaces a deliberate 500
-    (D3): byte-equivalent to the historical ``None`` cast then ``AttributeError``
-    → 500, now an explicit ``HTTPException(500)``."""
-    client = TestClient(_build_webhook_app_without_parser_registry())
+    """With no parser registry configured the webhook surfaces a 500: the
+    required ``CHANNEL_PARSERS.require()`` raises ``LookupError`` in the
+    dependency, which an ASGI server turns into a 500 (no ``HTTPException`` and
+    no "Channel parsing not configured" detail). ``raise_server_exceptions=False``
+    makes the TestClient return the server's 500 instead of re-raising."""
+    client = TestClient(
+        _build_webhook_app_without_parser_registry(),
+        raise_server_exceptions=False,
+    )
     resp = client.post("/webhook/some-channel", json={"text": "hi"})
     assert resp.status_code == 500
 
 
-# --- AC 1: producer leaves the soft parser-registry slot None when absent ----
+# --- AC 1: producer leaves the parser-registry slot unset when absent --------
 
 
-def test_store_state_leaves_channel_parsers_none_when_services_lacks_it() -> None:
+def test_store_state_leaves_channel_parsers_unset_when_services_lacks_it() -> None:
     """``_store_state`` must NOT raise when the services container has no
-    ``channel_parser_registry`` attribute, and ``CHANNEL_PARSERS.get`` must read
-    back ``None`` — byte-identical to the historical ``getattr(..., None)``
-    store. (A base ``TierServices`` deployment has no channel parsers.)"""
+    ``channel_parser_registry`` attribute (a base ``TierServices`` deployment has
+    no channel parsers): it simply leaves the slot unset. Because
+    ``CHANNEL_PARSERS`` is now required, a later read raises ``LookupError``
+    rather than reading back a silent ``None``."""
     app = FastAPI()
     services = MagicMock(spec=["channel_registry", "ingestion"])
     services.channel_registry = MagicMock()
@@ -140,4 +148,5 @@ def test_store_state_leaves_channel_parsers_none_when_services_lacks_it() -> Non
         ServerSettings(),
     )
 
-    assert CHANNEL_PARSERS.get(app) is None
+    with pytest.raises(LookupError):
+        CHANNEL_PARSERS.require(app)

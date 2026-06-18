@@ -208,9 +208,10 @@ def _store_state(
     SETTINGS.set(app, settings)
     CONNECTION_MANAGER.set(app, ConnectionManager())
     # ``channel_parser_registry`` is optional on the services container (only the
-    # community tier declares it). Read it the same way as before; only ``set``
-    # it when present. CHANNEL_PARSERS is a soft key (default None), so an unset
-    # slot reads back as None — byte-identical to storing None explicitly.
+    # community tier declares it). CHANNEL_PARSERS is a required key, so the slot
+    # is only set when the services container actually exposes a registry; a tier
+    # without one leaves the slot unset and any webhook request fails loud
+    # (``require()`` → LookupError → 500) instead of reading back a silent None.
     channel_parsers = getattr(services, "channel_parser_registry", None)
     if channel_parsers is not None:
         CHANNEL_PARSERS.set(app, channel_parsers)

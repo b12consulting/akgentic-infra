@@ -85,8 +85,17 @@ def test_get_on_required_unset_raises() -> None:
 
 def test_soft_get_returns_none_default_when_unset() -> None:
     app = FastAPI()
-    assert CHANNEL_PARSERS.get(app) is None
+    # FRONTEND_ADAPTER is the surviving soft slot — its unset read is the None
+    # default (CHANNEL_PARSERS is now required; see the LookupError test below).
     assert FRONTEND_ADAPTER.get(app) is None
+
+
+def test_channel_parsers_get_raises_when_unset() -> None:
+    # CHANNEL_PARSERS is now required: an unset slot raises LookupError rather
+    # than reading back a silent None default.
+    app = FastAPI()
+    with pytest.raises(LookupError):
+        CHANNEL_PARSERS.get(app)
 
 
 def test_draining_returns_false_default_before_startup() -> None:
@@ -191,7 +200,7 @@ def test_server_keys_declare_expected_names_and_flags() -> None:
         (SETTINGS, "settings", True, None),
         (CONNECTION_MANAGER, "connection_manager", True, None),
         (CHANNEL_REGISTRY, "channel_registry", True, None),
-        (CHANNEL_PARSERS, "channel_parser_registry", False, None),
+        (CHANNEL_PARSERS, "channel_parser_registry", True, None),
         (INGESTION, "ingestion", True, None),
         (FRONTEND_ADAPTER, "frontend_adapter", False, None),
         (DRAINING, "draining", False, False),

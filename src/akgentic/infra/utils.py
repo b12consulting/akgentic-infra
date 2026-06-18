@@ -35,9 +35,23 @@ class StateKey(Generic[T]):  # noqa: UP046  # ADR-030 pins the classic Generic[T
         self.required = required
 
     def set(self, source: FastAPI | Request | WebSocket, value: T) -> None:
+        """Write ``value`` into this key's ``app.state`` slot (producer side).
+
+        The only writer of the slot — :meth:`get`/:meth:`require` rely on this
+        invariant for their typed reads. ``source`` may be the ``FastAPI`` app
+        or any ``Request``/``WebSocket`` that reaches it.
+        """
         setattr(self._state(source), self.name, value)
 
     def get(self, source: FastAPI | Request | WebSocket) -> T | None:
+        """Read this key's slot, typed as ``T``, without a ``cast`` (consumer side).
+
+        Returns the stored value if present. If the slot was never ``set``,
+        raises ``LookupError`` when the key is ``required``, otherwise returns
+        ``self.default``. A ``_MISSING`` sentinel distinguishes "never set" from
+        a slot deliberately set to ``None``. See :meth:`require` for the strict,
+        non-optional variant.
+        """
         value = getattr(self._state(source), self.name, _MISSING)
         if value is _MISSING:
             if self.required:
@@ -46,6 +60,14 @@ class StateKey(Generic[T]):  # noqa: UP046  # ADR-030 pins the classic Generic[T
         return value  # type: ignore[no-any-return]  # invariant: only set() writes this slot
 
     def require(self, source: FastAPI | Request | WebSocket) -> T:
+        """Return the slot's value, raising ``LookupError`` if it is missing.
+
+        Strict counterpart to :meth:`get`: it returns a non-optional ``T`` so
+        callers need no null-check. Any ``None`` from ``get`` (absent slot, a
+        ``None`` default, or a slot explicitly set to ``None``) is turned into
+        a named ``LookupError`` so a missing dependency fails fast at the
+        access site instead of crashing later as ``NoneType``.
+        """
         value = self.get(source)
         if value is None:
             raise LookupError(f"app.state.{self.name} is not set")

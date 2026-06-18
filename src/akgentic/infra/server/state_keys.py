@@ -23,14 +23,17 @@ from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
 from akgentic.infra.utils import StateKey
 
+DRAINING: StateKey[bool] = StateKey("draining", default=False)
+
 SERVICES: StateKey[TierServices] = StateKey("services", required=True)
 TEAM_SERVICE: StateKey[TeamService] = StateKey("team_service", required=True)
 SETTINGS: StateKey[ServerSettings] = StateKey("settings", required=True)
 CONNECTION_MANAGER: StateKey[ConnectionManager] = StateKey("connection_manager", required=True)
 CHANNEL_REGISTRY: StateKey[ChannelRegistry] = StateKey("channel_registry", required=True)
-# Soft key — defaults to None when the slot is unset.
-CHANNEL_PARSERS: StateKey[ChannelParserRegistry] = StateKey("channel_parser_registry")
+CHANNEL_PARSERS: StateKey[ChannelParserRegistry] = StateKey(
+    "channel_parser_registry", required=True
+)
 INGESTION: StateKey[InteractionChannelIngestion] = StateKey("ingestion", required=True)
+
 # Soft key — only set when a frontend adapter is configured.
 FRONTEND_ADAPTER: StateKey[FrontendAdapter] = StateKey("frontend_adapter")
-DRAINING: StateKey[bool] = StateKey("draining", default=False)

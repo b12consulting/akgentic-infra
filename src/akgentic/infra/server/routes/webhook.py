@@ -19,14 +19,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 
-def get_channel_parser_registry(request: Request) -> ChannelParserRegistry | None:
+def get_channel_parser_registry(request: Request) -> ChannelParserRegistry:
     """FastAPI dependency: extract ChannelParserRegistry from app.state.
 
-    ``channel_parser_registry`` is a soft slot (a tier without channel parsers
-    legitimately leaves it ``None``), so this returns ``ChannelParserRegistry |
-    None``. The handler turns an unset registry into a deliberate 500.
+    ``channel_parser_registry`` is a required slot on any webhook-serving tier:
+    a request reaching this route on a deployment that never wired a registry is
+    a misconfiguration, so ``.require()`` raises ``LookupError`` (surfaced as a
+    500) rather than returning ``None`` and crashing later. The non-optional
+    ``-> ChannelParserRegistry`` return means the handler needs no null-check.
     """
-    return CHANNEL_PARSERS.get(request)
+    return CHANNEL_PARSERS.require(request)
 
 
 def get_channel_registry(request: Request) -> ChannelRegistry:
@@ -43,7 +45,7 @@ def get_ingestion(request: Request) -> InteractionChannelIngestion:
 async def webhook(
     channel: str,
     request: Request,
-    parser_registry: ChannelParserRegistry | None = Depends(get_channel_parser_registry),
+    parser_registry: ChannelParserRegistry = Depends(get_channel_parser_registry),
     channel_registry: ChannelRegistry = Depends(get_channel_registry),
     ingestion: InteractionChannelIngestion = Depends(get_ingestion),
 ) -> None:
@@ -56,14 +58,6 @@ async def webhook(
     """
     content_type = request.headers.get("content-type", "")
     logger.info("POST /webhook/%s — content_type=%s", channel, content_type)
-
-    if parser_registry is None:
-        # Soft slot left unset is a server misconfiguration: a webhook reached a
-        # deployment with no channel-parser registry. Surface a deliberate 500
-        # (the historical cast(...) yielded None here, then crashed on the next
-        # get_parser() call with the same effective 500).
-        logger.error("No channel parser registry configured")
-        raise HTTPException(status_code=500, detail="Channel parsing not configured")
 
     parser = parser_registry.get_parser(channel)
     if parser is None:
@@ -97,7 +91,7 @@ async def webhook(
                 message.channel_user_id,
                 existing_team,
             )
-            await ingestion.route_reply(existing_team, message.content)
+            await ingestion.route_reply(existing_team, message.content, message.message_id)
         else:
             # Initiation flow
             new_team_id = await ingestion.initiate_team(
