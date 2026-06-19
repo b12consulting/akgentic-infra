@@ -22,6 +22,7 @@ from akgentic.infra.adapters import (
     TelemetrySubscriber,
     YamlChannelRegistry,
 )
+from akgentic.infra.errors import PlacementConsistencyError, ServerError
 from akgentic.infra.protocols import (
     AuthStrategy,
     ChannelMessage,
@@ -32,6 +33,9 @@ from akgentic.infra.protocols import (
     InteractionChannelAdapter,
     InteractionChannelIngestion,
     JsonValue,
+    NoCapacityError,
+    NoSandboxCapacityError,
+    PlacementError,
     PlacementStrategy,
     RecoveryPolicy,
     RuntimeCache,
@@ -39,6 +43,7 @@ from akgentic.infra.protocols import (
     StreamReader,
     TeamHandle,
     WorkerHandle,
+    WorkerRejectedError,
 )
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
@@ -71,13 +76,19 @@ __all__ = [
     "InteractionChannelAdapter",
     "InteractionChannelIngestion",
     "JsonValue",
+    "NoCapacityError",
+    "NoSandboxCapacityError",
+    "PlacementConsistencyError",
+    "PlacementError",
     "PlacementStrategy",
     "RecoveryPolicy",
     "RuntimeCache",
+    "ServerError",
     "StreamClosed",
     "StreamReader",
     "TeamHandle",
     "WorkerHandle",
+    "WorkerRejectedError",
     # Adapters
     "ChannelConfig",
     "ChannelParserRegistry",
