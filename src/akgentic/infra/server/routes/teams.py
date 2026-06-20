@@ -21,7 +21,11 @@ from akgentic.infra.server.models import (
     TeamListResponse,
     TeamResponse,
 )
-from akgentic.infra.server.services.team_service import TeamService
+from akgentic.infra.server.services.team_service import (
+    InvalidCursorError,
+    TeamCursor,
+    TeamService,
+)
 from akgentic.infra.server.state_keys import CONNECTION_MANAGER, TEAM_SERVICE
 from akgentic.team.models import Process
 
@@ -75,11 +79,22 @@ def create_team(
 def list_teams(
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
+    limit: int = 50,
+    cursor: str | None = None,
 ) -> TeamListResponse:
-    """List all teams for the current user."""
-    logger.debug("GET /teams")
-    processes = service.list_teams(user_id=user.user_id)
-    return TeamListResponse(teams=[_process_to_response(p) for p in processes])
+    """List one keyset-paginated page of teams for the current user."""
+    logger.debug("GET /teams — limit=%s cursor=%s", limit, cursor is not None)
+    decoded = None
+    if cursor is not None:
+        try:
+            decoded = TeamCursor.decode(cursor)
+        except InvalidCursorError:
+            raise HTTPException(status_code=400, detail="Invalid cursor") from None
+    page, next_cursor = service.list_teams(user_id=user.user_id, limit=limit, cursor=decoded)
+    return TeamListResponse(
+        teams=[_process_to_response(p) for p in page],
+        next_cursor=next_cursor,
+    )
 
 
 @router.get("/{team_id}", response_model=TeamResponse)
