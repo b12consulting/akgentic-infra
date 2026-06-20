@@ -32,13 +32,10 @@ class TeamResponse(BaseModel):
 
 
 class TeamListResponse(BaseModel):
-    """Response body for GET /teams."""
+    """Response body for GET /teams (one numbered page + full owned count)."""
 
-    teams: list[TeamResponse] = Field(description="List of team metadata entries")
-    next_cursor: str | None = Field(
-        default=None,
-        description="Opaque token for the next page; null when this is the last page.",
-    )
+    teams: list[TeamResponse] = Field(description="Current page of team metadata entries")
+    total_count: int = Field(description="Total teams for the user across all pages")
 
 
 class SendMessageRequest(BaseModel):

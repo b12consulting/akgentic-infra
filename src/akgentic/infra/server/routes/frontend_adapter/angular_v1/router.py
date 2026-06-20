@@ -33,7 +33,7 @@ from akgentic.infra.server.routes.frontend_adapter.angular_v1.models import (
     V1StateUpdateBody,
     V1StatusResponse,
 )
-from akgentic.infra.server.services.team_service import MAX_PAGE_LIMIT, TeamService
+from akgentic.infra.server.services.team_service import MAX_PAGE_SIZE, TeamService
 from akgentic.team.models import PersistedEvent, Process, TeamStatus
 
 process_router = APIRouter(prefix="/process", tags=["v1-compat"])
@@ -148,8 +148,8 @@ def list_processes(
     service: TeamService = Depends(get_team_service),
 ) -> list[V1ProcessContext]:
     """GET /process/ -> list teams as flat list."""
-    # V1 adapter has no pagination; request the max page (next_cursor ignored).
-    page, _ = service.list_teams(user_id="anonymous", limit=MAX_PAGE_LIMIT)
+    # V1 adapter has no pagination; request the max page (total_count ignored).
+    page, _ = service.list_teams(user_id="anonymous", size=MAX_PAGE_SIZE)
     return [_to_v1_process_context(p) for p in page]
 
 
