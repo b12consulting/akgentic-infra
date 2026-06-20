@@ -35,6 +35,10 @@ class TeamListResponse(BaseModel):
     """Response body for GET /teams."""
 
     teams: list[TeamResponse] = Field(description="List of team metadata entries")
+    next_cursor: str | None = Field(
+        default=None,
+        description="Opaque token for the next page; null when this is the last page.",
+    )
 
 
 class SendMessageRequest(BaseModel):

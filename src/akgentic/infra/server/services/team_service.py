@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import logging
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
+
+from pydantic import BaseModel, Field, ValidationError
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.orchestrator import SentMessage
@@ -16,6 +22,45 @@ from akgentic.infra.server.deps import TierServices
 from akgentic.team.models import PersistedEvent, Process, TeamStatus
 
 logger = logging.getLogger(__name__)
+
+# Default and maximum page sizes for GET /teams (ADR-031 §Decision 1).
+DEFAULT_PAGE_LIMIT = 50
+MAX_PAGE_LIMIT = 200
+# Upper bound on an incoming cursor token; a well-formed cursor is well under
+# this, so anything larger is rejected before base64 decoding (ADR-031 §6).
+_MAX_CURSOR_LEN = 4096
+
+
+class InvalidCursorError(ValueError):
+    """Raised when a cursor token cannot be decoded into a TeamCursor."""
+
+
+class TeamCursor(BaseModel):
+    """Opaque keyset position for GET /teams pagination (ADR-031 §Decision 2)."""
+
+    created_at: datetime = Field(description="created_at of the last row on the previous page")
+    team_id: uuid.UUID = Field(description="team_id tie-breaker of that row")
+
+    def encode(self) -> str:
+        """Encode this position as a base64url(json) opaque token."""
+        payload = json.dumps(self.model_dump(mode="json")).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii")
+
+    @classmethod
+    def decode(cls, token: str) -> TeamCursor:
+        """Decode an opaque token back into a TeamCursor.
+
+        Raises:
+            InvalidCursorError: On any malformed, oversized, or unparseable token.
+        """
+        if len(token) > _MAX_CURSOR_LEN:
+            raise InvalidCursorError("cursor token too long")
+        try:
+            raw = base64.urlsafe_b64decode(token.encode("ascii"))
+            data = json.loads(raw)
+            return cls.model_validate(data)
+        except (binascii.Error, ValueError, ValidationError, UnicodeDecodeError) as exc:
+            raise InvalidCursorError("malformed cursor token") from exc
 
 
 def _remove_workspace_dir(workspaces_root: Path, team_id: uuid.UUID) -> None:
@@ -128,15 +173,43 @@ class TeamService:
         )
         return process
 
-    def list_teams(self, user_id: str) -> list[Process]:
-        """List all teams for a given user.
+    def list_teams(
+        self,
+        *,
+        user_id: str,
+        limit: int = DEFAULT_PAGE_LIMIT,
+        cursor: TeamCursor | None = None,
+    ) -> tuple[list[Process], str | None]:
+        """Return one keyset-paginated page of the user's teams plus next cursor.
 
-        Pushes the ``user_id`` filter into the EventStore rather than loading
-        every team into Python and filtering here. Per-request cost scales with
-        the requesting user's team count, not with total teams across all
-        users. See team-package ADR-16 / Epic 19 for the Protocol change.
+        Phase 1: the store still returns the full owned set (ADR-031 §Decision 3);
+        the page is sorted ``created_at DESC, team_id DESC``, seeked past the
+        cursor, and sliced here. ``next_cursor`` is set only when the page is full
+        and rows remain after it; otherwise None.
         """
-        return self._services.event_store.list_teams(user_id=user_id)
+        limit = max(1, min(limit, MAX_PAGE_LIMIT))
+        rows = self._services.event_store.list_teams(user_id=user_id)
+        rows.sort(key=lambda p: (p.created_at, p.team_id), reverse=True)
+        start = self._seek(rows, cursor)
+        page = rows[start : start + limit]
+        more_remain = start + limit < len(rows)
+        next_cursor = (
+            TeamCursor(created_at=page[-1].created_at, team_id=page[-1].team_id).encode()
+            if len(page) == limit and more_remain
+            else None
+        )
+        return page, next_cursor
+
+    @staticmethod
+    def _seek(rows: list[Process], cursor: TeamCursor | None) -> int:
+        """Index of the first row strictly after the cursor in DESC keyset order."""
+        if cursor is None:
+            return 0
+        target = (cursor.created_at, cursor.team_id)
+        return next(
+            (i for i, p in enumerate(rows) if (p.created_at, p.team_id) < target),
+            len(rows),
+        )
 
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         """Get a single team by ID."""

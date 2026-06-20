@@ -55,6 +55,19 @@ def test_team_list_response_empty() -> None:
     assert resp.teams == []
 
 
+def test_team_list_response_next_cursor_defaults_none() -> None:
+    """TeamListResponse(teams=...) without next_cursor stays backward-compatible."""
+    resp = TeamListResponse(teams=[])
+    assert resp.next_cursor is None
+    assert resp.model_dump()["next_cursor"] is None
+
+
+def test_team_list_response_carries_next_cursor() -> None:
+    """next_cursor round-trips through serialization when provided."""
+    resp = TeamListResponse(teams=[], next_cursor="opaque-token")
+    assert resp.model_dump(mode="json")["next_cursor"] == "opaque-token"
+
+
 def test_team_list_response_with_items() -> None:
     """TeamListResponse serializes a list of TeamResponses."""
     tid = uuid.uuid4()
