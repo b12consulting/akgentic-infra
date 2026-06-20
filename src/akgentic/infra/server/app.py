@@ -27,6 +27,7 @@ from akgentic.catalog.api._settings import CatalogRouterSettings
 from akgentic.catalog.api.router import build_router as build_catalog_router
 from akgentic.catalog.api.router import set_catalog as set_unified_catalog
 from akgentic.infra.server.deps import TierServices
+from akgentic.infra.server.errors import add_server_exception_handlers
 from akgentic.infra.server.logging_config import configure_logging
 from akgentic.infra.server.routes._admin_mutation_log import AdminCatalogMutationLogMiddleware
 from akgentic.infra.server.routes._auth_dep import require_authenticated_principal
@@ -175,6 +176,7 @@ def _build_app(
     # Starlette's protocol vs. a concrete class mismatch.
     app.add_middleware(AdminCatalogMutationLogMiddleware)  # type: ignore[arg-type]
     add_exception_handlers(app)
+    add_server_exception_handlers(app)
     return app
 
 

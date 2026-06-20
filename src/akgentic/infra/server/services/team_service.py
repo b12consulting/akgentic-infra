@@ -9,6 +9,7 @@ from pathlib import Path
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.orchestrator import SentMessage
+from akgentic.infra.errors import PlacementConsistencyError
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
@@ -120,7 +121,7 @@ class TeamService:
         process = self._services.worker_handle.get_team(handle.team_id)
         if process is None:  # pragma: no cover
             msg = f"Team {handle.team_id} was created but not found in event store"
-            raise RuntimeError(msg)
+            raise PlacementConsistencyError(msg)
         logger.info(
             "Team created: team_id=%s, catalog_namespace=%s",
             process.team_id,
