@@ -215,6 +215,7 @@ def stop_team(
     logger.info("POST /teams/%s/stop", team_id)
     try:
         services.worker_handle.stop_team(team_id)
+        services.runtime_cache.remove(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
 
@@ -228,6 +229,7 @@ def delete_team(
     logger.info("DELETE /teams/%s", team_id)
     try:
         services.worker_handle.delete_team(team_id)
+        services.runtime_cache.remove(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
 

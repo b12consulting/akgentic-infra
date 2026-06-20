@@ -26,7 +26,9 @@ from akgentic.infra.server.models import SendMessageRequest
 from akgentic.infra.worker.routes.teams import (
     WorkerCreateTeamRequest,
     create_team,
+    delete_team,
     send_message,
+    stop_team,
 )
 
 _TEAM_CARD_PAYLOAD = {
@@ -181,6 +183,61 @@ def test_create_team_store_is_idempotent_overwrite() -> None:
     assert isinstance(second_handle, LocalTeamHandle)
     assert second_handle is not first_handle
     assert second_handle.team_id == team_id
+
+
+def _build_lifecycle_services(
+    runtime: _FakeRuntime,
+    process: Process,
+    cache: LocalRuntimeCache,
+) -> SimpleNamespace:
+    """WorkerServices stub whose worker_handle also supports stop/delete (no-ops)."""
+    return SimpleNamespace(
+        team_manager=SimpleNamespace(create_team=lambda **_kwargs: runtime),
+        worker_handle=SimpleNamespace(
+            get_team=lambda _tid: process,
+            stop_team=lambda _tid: None,
+            delete_team=lambda _tid: None,
+        ),
+        runtime_cache=cache,
+    )
+
+
+def test_stop_team_evicts_handle_from_cache() -> None:
+    """Regression: stopping a team removes its handle so the cache cannot pin it.
+
+    Without the eviction the worker-lifetime LocalRuntimeCache retains the whole
+    TeamRuntime graph (proxies, ActorRefs, pykka AttrInfo) of every stopped team.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    cache = LocalRuntimeCache()
+    services = _build_lifecycle_services(
+        _FakeRuntime(team_id), _build_process(team_id, team_card), cache
+    )
+
+    create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
+    assert cache.get(team_id) is not None
+
+    stop_team(team_id, services)  # type: ignore[arg-type]
+
+    assert cache.get(team_id) is None, "stop_team must evict the handle from runtime_cache"
+
+
+def test_delete_team_evicts_handle_from_cache() -> None:
+    """Regression: deleting a team removes its handle from the cache."""
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    cache = LocalRuntimeCache()
+    services = _build_lifecycle_services(
+        _FakeRuntime(team_id), _build_process(team_id, team_card), cache
+    )
+
+    create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
+    assert cache.get(team_id) is not None
+
+    delete_team(team_id, services)  # type: ignore[arg-type]
+
+    assert cache.get(team_id) is None, "delete_team must evict the handle from runtime_cache"
 
 
 def test_send_message_without_create_returns_404() -> None:
