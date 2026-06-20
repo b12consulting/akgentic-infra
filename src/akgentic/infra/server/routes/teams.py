@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from akgentic.catalog.models.errors import EntryNotFoundError
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.models import (
+    AgentStateListResponse,
+    AgentStateResponse,
     CreateTeamRequest,
     EventListResponse,
     EventResponse,
@@ -223,6 +225,30 @@ def get_events(
                 timestamp=ev.timestamp,
             )
             for ev in events
+        ]
+    )
+
+
+@router.get("/{team_id}/agent-states", response_model=AgentStateListResponse)
+def get_agent_states(
+    team_id: uuid.UUID,
+    service: TeamService = Depends(get_team_service),
+) -> AgentStateListResponse:
+    """Get the latest persisted state snapshot for each agent of a team."""
+    logger.debug("GET /teams/%s/agent-states", team_id)
+    try:
+        snapshots = service.get_agent_states(team_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Team not found") from None
+    return AgentStateListResponse(
+        states=[
+            AgentStateResponse(
+                agent_id=s.agent_id,
+                name=s.name,
+                state=s.state.model_dump(mode="json"),
+                updated_at=s.updated_at,
+            )
+            for s in snapshots
         ]
     )
 
