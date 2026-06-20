@@ -5,6 +5,9 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+import pytest
+from pydantic import ValidationError
+
 from akgentic.infra.server.models import (
     CreateTeamRequest,
     EventListResponse,
@@ -50,26 +53,27 @@ def test_team_response_serialization() -> None:
 
 
 def test_team_list_response_empty() -> None:
-    """TeamListResponse can hold an empty list."""
-    resp = TeamListResponse(teams=[])
+    """TeamListResponse can hold an empty list with a zero total_count."""
+    resp = TeamListResponse(teams=[], total_count=0)
     assert resp.teams == []
+    assert resp.total_count == 0
 
 
-def test_team_list_response_next_cursor_defaults_none() -> None:
-    """TeamListResponse(teams=...) without next_cursor stays backward-compatible."""
-    resp = TeamListResponse(teams=[])
-    assert resp.next_cursor is None
-    assert resp.model_dump()["next_cursor"] is None
+def test_team_list_response_requires_total_count() -> None:
+    """total_count is required — omitting it raises a ValidationError."""
+    with pytest.raises(ValidationError):
+        TeamListResponse(teams=[])  # type: ignore[call-arg]
 
 
-def test_team_list_response_carries_next_cursor() -> None:
-    """next_cursor round-trips through serialization when provided."""
-    resp = TeamListResponse(teams=[], next_cursor="opaque-token")
-    assert resp.model_dump(mode="json")["next_cursor"] == "opaque-token"
+def test_team_list_response_total_count_round_trips() -> None:
+    """total_count round-trips through serialization (full owned count before paging)."""
+    resp = TeamListResponse(teams=[], total_count=1234)
+    assert resp.total_count == 1234
+    assert resp.model_dump(mode="json")["total_count"] == 1234
 
 
 def test_team_list_response_with_items() -> None:
-    """TeamListResponse serializes a list of TeamResponses."""
+    """TeamListResponse serializes a list of TeamResponses plus the total."""
     tid = uuid.uuid4()
     now = datetime.now(tz=UTC)
     item = TeamResponse(
@@ -80,9 +84,10 @@ def test_team_list_response_with_items() -> None:
         created_at=now,
         updated_at=now,
     )
-    resp = TeamListResponse(teams=[item])
+    resp = TeamListResponse(teams=[item], total_count=1)
     assert len(resp.teams) == 1
     assert resp.teams[0].team_id == tid
+    assert resp.total_count == 1
 
 
 def test_send_message_request() -> None:

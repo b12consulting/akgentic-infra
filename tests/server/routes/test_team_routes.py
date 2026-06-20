@@ -32,15 +32,16 @@ def test_create_team_invalid_entry(client: TestClient) -> None:
 
 
 def test_list_teams_empty(client: TestClient) -> None:
-    """GET /teams returns empty list and a null next_cursor when no teams exist."""
+    """GET /teams returns an empty list and total_count == 0 when no teams exist."""
     resp = client.get("/teams/")
     assert resp.status_code == 200
-    assert resp.json()["teams"] == []
-    assert resp.json()["next_cursor"] is None
+    body = resp.json()
+    assert body["teams"] == []
+    assert body["total_count"] == 0
 
 
 def test_list_teams_after_create(client: TestClient) -> None:
-    """GET /teams returns created teams; a single-team set has a null next_cursor."""
+    """GET /teams returns created teams and total_count == the owned count."""
     client.post("/teams/", json={"catalog_namespace": "test-team"})
     resp = client.get("/teams/")
     assert resp.status_code == 200
@@ -48,7 +49,7 @@ def test_list_teams_after_create(client: TestClient) -> None:
     teams = body["teams"]
     assert len(teams) == 1
     assert teams[0]["name"] == "Test Team"
-    assert body["next_cursor"] is None
+    assert body["total_count"] == 1
 
 
 def test_get_team_success(client: TestClient) -> None:
@@ -127,10 +128,10 @@ def test_list_teams_filters_by_overridden_identity(
     teams = body["teams"]
     assert len(teams) == 1
     assert teams[0]["user_id"] == "alice"
-    assert body["next_cursor"] is None
+    assert body["total_count"] == 1
 
 
-# --- Cursor pagination (Story 36.1, ADR-031 §Decision 1-4) ---
+# --- Classic offset+total pagination (Story 37.1, ADR-032 §Decision 1-2) ---
 
 
 def _create_teams(client: TestClient, n: int) -> None:
@@ -140,52 +141,64 @@ def _create_teams(client: TestClient, n: int) -> None:
         assert resp.status_code == 201
 
 
-def test_list_teams_limit_zero_clamped_no_500(client: TestClient) -> None:
-    """(d) ?limit=0 is clamped (>=1) and returns 200, never a 500."""
-    _create_teams(client, 2)
-    resp = client.get("/teams/", params={"limit": 0})
-    assert resp.status_code == 200
-    assert 1 <= len(resp.json()["teams"]) <= 200
-
-
-def test_list_teams_limit_huge_clamped_no_500(client: TestClient) -> None:
-    """(d) ?limit=99999 is clamped to <=200 and returns 200."""
+def test_list_teams_default_page_returns_total_count(client: TestClient) -> None:
+    """No query params: total_count == full owned count; teams capped at the default."""
     _create_teams(client, 3)
-    resp = client.get("/teams/", params={"limit": 99999})
+    resp = client.get("/teams/")
     assert resp.status_code == 200
-    assert len(resp.json()["teams"]) <= 200
+    body = resp.json()
+    assert body["total_count"] == 3
+    assert len(body["teams"]) == 3  # well under the 250 default
 
 
-def test_list_teams_malformed_cursor_returns_400(client: TestClient) -> None:
-    """(#6) A malformed cursor returns a 400, never a 500 or unhandled error."""
-    resp = client.get("/teams/", params={"cursor": "not-a-valid-token"})
-    assert resp.status_code == 400
-
-
-def test_list_teams_walk_visits_every_team_once(client: TestClient) -> None:
-    """(#6) An end-to-end HTTP walk over a multi-page set visits every team once."""
+def test_list_teams_page_size_slices_and_orders(client: TestClient) -> None:
+    """?page=&size= slice the owned set; total_count stays full; pages don't overlap."""
     _create_teams(client, 5)
-    seen: list[str] = []
-    cursor: str | None = None
-    pages = 0
-    while True:
-        params: dict[str, object] = {"limit": 2}
-        if cursor is not None:
-            params["cursor"] = cursor
-        resp = client.get("/teams/", params=params)
-        assert resp.status_code == 200
-        body = resp.json()
-        seen.extend(t["team_id"] for t in body["teams"])
-        cursor = body["next_cursor"]
-        pages += 1
-        assert pages < 10  # guard against an infinite walk
-        if cursor is None:
-            break
-    assert len(seen) == 5
-    assert len(set(seen)) == 5  # no duplicates, no gaps
+    resp1 = client.get("/teams/", params={"page": 1, "size": 2})
+    resp2 = client.get("/teams/", params={"page": 2, "size": 2})
+    resp3 = client.get("/teams/", params={"page": 3, "size": 2})
+    assert resp1.status_code == resp2.status_code == resp3.status_code == 200
+    body1, body2, body3 = resp1.json(), resp2.json(), resp3.json()
+
+    # total_count is the full owned count on every page.
+    assert body1["total_count"] == body2["total_count"] == body3["total_count"] == 5
+    assert len(body1["teams"]) == 2
+    assert len(body2["teams"]) == 2
+    assert len(body3["teams"]) == 1  # last partial page
+
+    ids = [t["team_id"] for t in body1["teams"] + body2["teams"] + body3["teams"]]
+    assert len(set(ids)) == 5  # contiguous, no overlap, no gap
+
+    # Ordering is created_at DESC, team_id DESC — newest first across all pages.
+    created = [
+        (t["created_at"], t["team_id"]) for t in body1["teams"] + body2["teams"] + body3["teams"]
+    ]
+    assert created == sorted(created, reverse=True)
 
 
-# --- Statelessness (Story 36.1 AC #12): cursor is the only pagination state ---
+def test_list_teams_out_of_range_page_empty_with_total(client: TestClient) -> None:
+    """An out-of-range page returns an empty list with the correct total_count."""
+    _create_teams(client, 3)
+    resp = client.get("/teams/", params={"page": 99, "size": 10})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["teams"] == []
+    assert body["total_count"] == 3
+
+
+def test_list_teams_size_clamped_no_500(client: TestClient) -> None:
+    """size <= 0 and size > 500 are clamped to [1, 500]; the request never 500s."""
+    _create_teams(client, 2)
+    resp_low = client.get("/teams/", params={"size": 0})
+    assert resp_low.status_code == 200
+    assert len(resp_low.json()["teams"]) == 1  # clamped to 1
+
+    resp_high = client.get("/teams/", params={"size": 99999})
+    assert resp_high.status_code == 200
+    assert len(resp_high.json()["teams"]) <= 500
+
+
+# --- Statelessness (Story 37.1 AC #7): a page is a pure function of args + store ---
 
 
 @pytest.fixture()
@@ -203,27 +216,27 @@ def second_replica_client(
     services.actor_system.shutdown()
 
 
-def test_cursor_followable_across_independent_replicas(
+def test_pages_consistent_across_independent_replicas(
     client: TestClient,
     second_replica_client: TestClient,
 ) -> None:
-    """AC #12: a cursor minted by one replica is followable by another replica
-    serving the same store — no reliance on the minting request's in-process state.
+    """AC #7: page 1 from one replica and page 2 from another serving the same
+    store form a contiguous, non-overlapping walk — no reliance on per-request state.
     """
     _create_teams(client, 5)
 
-    # Replica A mints page 1 + cursor.
-    resp_a = client.get("/teams/", params={"limit": 2})
+    resp_a = client.get("/teams/", params={"page": 1, "size": 2})
     assert resp_a.status_code == 200
     body_a = resp_a.json()
-    cursor = body_a["next_cursor"]
-    assert cursor is not None
+    assert body_a["total_count"] == 5
     page1 = {t["team_id"] for t in body_a["teams"]}
 
-    # Replica B (separate app/services) follows that cursor over the shared store.
-    resp_b = second_replica_client.get("/teams/", params={"limit": 2, "cursor": cursor})
+    # Replica B (separate app/services) serves page 2 over the shared store.
+    resp_b = second_replica_client.get("/teams/", params={"page": 2, "size": 2})
     assert resp_b.status_code == 200
-    page2 = {t["team_id"] for t in resp_b.json()["teams"]}
+    body_b = resp_b.json()
+    assert body_b["total_count"] == 5
+    page2 = {t["team_id"] for t in body_b["teams"]}
 
     assert page1.isdisjoint(page2)  # B did not re-show A's page
     assert len(page1 | page2) == 4  # contiguous walk across the replica boundary

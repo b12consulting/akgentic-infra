@@ -13,11 +13,7 @@ import pytest
 from akgentic.catalog.models.errors import EntryNotFoundError
 from akgentic.team.models import Process, TeamStatus
 
-from akgentic.infra.server.services.team_service import (
-    InvalidCursorError,
-    TeamCursor,
-    TeamService,
-)
+from akgentic.infra.server.services.team_service import MAX_PAGE_SIZE, TeamService
 
 
 def test_create_team_returns_process(team_service: TeamService) -> None:
@@ -73,20 +69,22 @@ def test_create_team_forwards_user_email_and_team_id(team_service: TeamService) 
 
 
 def test_list_teams_empty(team_service: TeamService) -> None:
-    """Listing teams when none exist returns an empty page and no cursor."""
-    page, next_cursor = team_service.list_teams(user_id="anonymous")
+    """Listing teams when none exist returns an empty page and a zero total."""
+    page, total = team_service.list_teams(user_id="anonymous")
     assert page == []
-    assert next_cursor is None
+    assert total == 0
 
 
 def test_list_teams_filters_by_user(team_service: TeamService) -> None:
     """list_teams returns only teams belonging to the given user."""
     team_service.create_team(catalog_namespace="test-team", user_id="alice")
     team_service.create_team(catalog_namespace="test-team", user_id="bob")
-    alice_teams, _ = team_service.list_teams(user_id="alice")
-    bob_teams, _ = team_service.list_teams(user_id="bob")
+    alice_teams, alice_total = team_service.list_teams(user_id="alice")
+    bob_teams, bob_total = team_service.list_teams(user_id="bob")
     assert len(alice_teams) == 1
+    assert alice_total == 1
     assert len(bob_teams) == 1
+    assert bob_total == 1
     assert alice_teams[0].user_id == "alice"
 
 
@@ -103,16 +101,16 @@ def test_list_teams_delegates_to_event_store_with_user_id(team_service: TeamServ
     # SkipValidation on the field allows direct assignment without re-validation.
     team_service._services.event_store = mock_event_store  # type: ignore[assignment]
 
-    page, next_cursor = team_service.list_teams(user_id="alice")
+    page, total = team_service.list_teams(user_id="alice")
 
     # The delegating call shape — exactly one call, user_id="alice" as kwarg.
-    # Phase-2 (store-side keyset pushdown) is out of scope: NO limit/cursor here.
+    # Phase-2 (store-side offset pushdown) is out of scope: NO page/size here.
     mock_event_store.list_teams.assert_called_once_with(user_id="alice")
     assert mock_event_store.list_teams.call_args.args == ()
     assert mock_event_store.list_teams.call_args.kwargs == {"user_id": "alice"}
-    # Empty owned set -> empty page, no next cursor.
+    # Empty owned set -> empty page, zero total.
     assert page == []
-    assert next_cursor is None
+    assert total == 0
 
 
 def test_list_teams_passes_empty_string_user_id_verbatim(team_service: TeamService) -> None:
@@ -396,7 +394,7 @@ class TestDeleteTeamWorkspaceCleanup:
 
 
 # ---------------------------------------------------------------------------
-# Story 36.1 — keyset (cursor) pagination on list_teams.
+# Story 37.1 — classic offset+total pagination on list_teams (ADR-032).
 #
 # These tests use a MagicMock event store returning hand-built Process
 # snapshots so created_at / team_id are deterministic (the real fixture
@@ -408,7 +406,7 @@ _BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _make_process(created_at: datetime, team_id: uuid.UUID) -> Process:
-    """Build a Process snapshot with explicit keyset columns."""
+    """Build a Process snapshot with explicit sort-key columns."""
     return Process.model_construct(
         team_id=team_id,
         team_card=MagicMock(),
@@ -429,55 +427,53 @@ def _service_over(rows: list[Process]) -> TeamService:
 
 def _distinct_rows(n: int) -> list[Process]:
     """``n`` processes with strictly increasing created_at (distinct positions)."""
-    return [
-        _make_process(_BASE_TIME + timedelta(minutes=i), uuid.uuid4()) for i in range(n)
-    ]
+    return [_make_process(_BASE_TIME + timedelta(minutes=i), uuid.uuid4()) for i in range(n)]
 
 
-def test_default_limit_over_50_returns_50_and_cursor() -> None:
-    """(a) >50 set with default limit returns exactly 50 + a non-null cursor."""
-    service = _service_over(_distinct_rows(60))
-    page, next_cursor = service.list_teams(user_id="alice")
-    assert len(page) == 50
-    assert next_cursor is not None
+def test_page1_returns_size_rows_with_full_total() -> None:
+    """(a) page 1 returns <= size rows; total_count is the full owned count."""
+    service = _service_over(_distinct_rows(300))
+    page, total = service.list_teams(user_id="alice")  # default page=1, size=250
+    assert len(page) == 250
+    assert total == 300
 
 
-def test_set_at_or_below_limit_returns_all_and_none() -> None:
-    """(a) <=50 set returns every team and a None cursor."""
-    service = _service_over(_distinct_rows(50))
-    page, next_cursor = service.list_teams(user_id="alice")
-    assert len(page) == 50
-    assert next_cursor is None
+def test_page1_under_size_returns_all_with_full_total() -> None:
+    """(a) a set smaller than size returns every team with the full total."""
+    service = _service_over(_distinct_rows(40))
+    page, total = service.list_teams(user_id="alice", size=250)
+    assert len(page) == 40
+    assert total == 40
 
 
-def test_walk_multipage_set_visits_every_team_once() -> None:
-    """(b) Following next_cursor over a >2-page set yields every team exactly once."""
-    rows = _distinct_rows(7)
+def test_page_n_returns_correct_slice_in_order() -> None:
+    """(b) page N returns the offset slice in created_at DESC, team_id DESC order."""
+    rows = _distinct_rows(10)
     service = _service_over(rows)
-    seen: list[uuid.UUID] = []
-    cursor: TeamCursor | None = None
-    pages = 0
-    while True:
-        page, token = service.list_teams(user_id="alice", limit=3, cursor=cursor)
-        pages += 1
-        seen.extend(p.team_id for p in page)
-        if token is None:
-            break
-        cursor = TeamCursor.decode(token)
-        assert pages < 10  # guard against an accidental infinite walk
-    assert pages == 3  # 3 + 3 + 1
-    assert seen == sorted(
-        (p.team_id for p in rows),
-        key=lambda tid: next(
-            (r.created_at, r.team_id) for r in rows if r.team_id == tid
-        ),
-        reverse=True,
-    )
-    assert len(set(seen)) == len(rows)  # no duplicates, no gaps
+    expected = sorted(rows, key=lambda p: (p.created_at, p.team_id), reverse=True)
+
+    page1, total1 = service.list_teams(user_id="alice", page=1, size=3)
+    page2, total2 = service.list_teams(user_id="alice", page=2, size=3)
+    page4, total4 = service.list_teams(user_id="alice", page=4, size=3)
+
+    assert total1 == total2 == total4 == 10
+    assert [p.team_id for p in page1] == [p.team_id for p in expected[0:3]]
+    assert [p.team_id for p in page2] == [p.team_id for p in expected[3:6]]
+    # Last partial page: rows 9..10 of 10 (size-3 slice at offset 9).
+    assert [p.team_id for p in page4] == [p.team_id for p in expected[9:12]]
+    assert len(page4) == 1
+
+
+def test_out_of_range_page_returns_empty_with_correct_total() -> None:
+    """(c) a page past the end returns [] with the correct total (no error)."""
+    service = _service_over(_distinct_rows(5))
+    page, total = service.list_teams(user_id="alice", page=99, size=10)
+    assert page == []
+    assert total == 5
 
 
 def test_ordering_is_created_at_then_team_id_desc() -> None:
-    """(c) Order is created_at DESC, team_id DESC, with a tie broken by team_id."""
+    """(d) order is created_at DESC, team_id DESC, with a tie broken by team_id."""
     t0 = _BASE_TIME
     t1 = _BASE_TIME + timedelta(minutes=1)
     low = uuid.UUID(int=1)
@@ -489,92 +485,68 @@ def test_ordering_is_created_at_then_team_id_desc() -> None:
         _make_process(t0, high),
     ]
     service = _service_over(rows)
-    page, _ = service.list_teams(user_id="alice", limit=10)
+    page, total = service.list_teams(user_id="alice", size=10)
     keys = [(p.created_at, p.team_id) for p in page]
+    assert total == 3
     assert keys == sorted(keys, reverse=True)
     # Newest timestamp first; among the t0 tie, the higher team_id leads.
     assert keys == [(t1, high), (t0, high), (t0, low)]
 
 
-def test_cursor_encode_decode_roundtrip() -> None:
-    """(e) encode -> decode round-trips to an equal keyset position."""
-    cursor = TeamCursor(created_at=_BASE_TIME, team_id=uuid.uuid4())
-    restored = TeamCursor.decode(cursor.encode())
-    assert restored == cursor
+def test_size_clamps_to_lower_bound() -> None:
+    """(e) size <= 0 clamps to 1 (returns a single row)."""
+    service = _service_over(_distinct_rows(3))
+    page_zero, total_zero = service.list_teams(user_id="alice", size=0)
+    page_neg, _ = service.list_teams(user_id="alice", size=-5)
+    assert len(page_zero) == 1
+    assert total_zero == 3
+    assert len(page_neg) == 1
 
 
-def test_decode_malformed_token_raises() -> None:
-    """(e) A malformed token raises the well-defined InvalidCursorError."""
-    with pytest.raises(InvalidCursorError):
-        TeamCursor.decode("not-a-valid-token")
+def test_size_clamps_to_upper_bound() -> None:
+    """(e) size > MAX_PAGE_SIZE clamps to MAX_PAGE_SIZE (500)."""
+    service = _service_over(_distinct_rows(600))
+    page, total = service.list_teams(user_id="alice", size=99999)
+    assert len(page) == MAX_PAGE_SIZE
+    assert total == 600
 
 
-def test_decode_oversized_token_raises() -> None:
-    """(e) An oversized token is rejected before decoding."""
-    with pytest.raises(InvalidCursorError):
-        TeamCursor.decode("A" * 5000)
+def test_size_250_default_and_explicit() -> None:
+    """(e) default size is 250, and size=250 (cap raised above 200) works."""
+    service_default = _service_over(_distinct_rows(300))
+    page_default, _ = service_default.list_teams(user_id="alice")
+    assert len(page_default) == 250
+
+    service_explicit = _service_over(_distinct_rows(300))
+    page_explicit, _ = service_explicit.list_teams(user_id="alice", size=250)
+    assert len(page_explicit) == 250
 
 
-def test_insert_newer_team_between_pages_no_dup_or_skip() -> None:
-    """(f) Inserting a newer team between fetches does not re-show/skip seen rows."""
-    rows = _distinct_rows(5)  # created_at increasing => newest is rows[-1]
-    services = MagicMock()
-    services.event_store.list_teams.side_effect = lambda **_kw: list(rows)
-    service = TeamService(services, workspaces_root=Path("/unused"))
-
-    page1, token = service.list_teams(user_id="alice", limit=2)
-    assert token is not None
-    seen = [p.team_id for p in page1]
-
-    # A new, NEWER team appears before page 2 is fetched.
-    newer = _make_process(_BASE_TIME + timedelta(hours=1), uuid.uuid4())
-    rows.append(newer)
-
-    cursor = TeamCursor.decode(token)
-    page2, _ = service.list_teams(user_id="alice", limit=2, cursor=cursor)
-    seen += [p.team_id for p in page2]
-
-    assert newer.team_id not in seen  # newer row sits before the held cursor
-    assert len(set(seen)) == len(seen)  # no duplicates among already-seen rows
-
-
-def test_delete_unseen_team_between_pages_no_dup_or_gap() -> None:
-    """(f) Deleting a not-yet-seen row between fetches leaves seen rows intact."""
-    rows = _distinct_rows(6)
-    services = MagicMock()
-    services.event_store.list_teams.side_effect = lambda **_kw: list(rows)
-    service = TeamService(services, workspaces_root=Path("/unused"))
-
-    page1, token = service.list_teams(user_id="alice", limit=2)
-    assert token is not None
-    seen = {p.team_id for p in page1}
-
-    # Delete an OLDER (not-yet-seen) row before continuing.
-    oldest = min(rows, key=lambda p: (p.created_at, p.team_id))
-    rows.remove(oldest)
-
-    cursor = TeamCursor.decode(token)
-    page2, _ = service.list_teams(user_id="alice", limit=2, cursor=cursor)
-    page2_ids = {p.team_id for p in page2}
-
-    assert seen.isdisjoint(page2_ids)  # no row re-shown
-    assert oldest.team_id not in page2_ids  # deleted row never surfaces
-
-
-def test_limit_clamped_to_range() -> None:
-    """(d) limit is clamped to [1, 200]: 0 -> 1 row, 99999 -> all (<=200)."""
-    rows = _distinct_rows(3)
+def test_default_page_is_1() -> None:
+    """(f) default page is 1: omitting page returns the first slice."""
+    rows = _distinct_rows(10)
     service = _service_over(rows)
-    page_low, _ = service.list_teams(user_id="alice", limit=0)
-    assert len(page_low) == 1
-    page_high, _ = service.list_teams(user_id="alice", limit=99999)
-    assert len(page_high) == 3
+    expected = sorted(rows, key=lambda p: (p.created_at, p.team_id), reverse=True)
+    default_page, _ = service.list_teams(user_id="alice", size=3)
+    explicit_page1, _ = service.list_teams(user_id="alice", page=1, size=3)
+    assert [p.team_id for p in default_page] == [p.team_id for p in expected[0:3]]
+    assert [p.team_id for p in default_page] == [p.team_id for p in explicit_page1]
+
+
+def test_page_clamps_to_lower_bound() -> None:
+    """(f) page <= 0 clamps to 1 (same slice as page 1)."""
+    rows = _distinct_rows(10)
+    service = _service_over(rows)
+    page_zero, _ = service.list_teams(user_id="alice", page=0, size=3)
+    page_neg, _ = service.list_teams(user_id="alice", page=-3, size=3)
+    page1, _ = service.list_teams(user_id="alice", page=1, size=3)
+    assert [p.team_id for p in page_zero] == [p.team_id for p in page1]
+    assert [p.team_id for p in page_neg] == [p.team_id for p in page1]
 
 
 # ---------------------------------------------------------------------------
-# Story 36.1 AC #12 — the server is stateless: the opaque cursor is the ONLY
-# pagination state and it lives on the client. list_teams is a pure function of
-# (user_id, limit, cursor) + current store contents; nothing is cached between
+# Story 37.1 AC #7 — list_teams is stateless: a pure function of
+# (user_id, page, size) + current store contents; nothing is cached between
 # requests, so a page is correct regardless of which replica serves it.
 # ---------------------------------------------------------------------------
 
@@ -582,42 +554,35 @@ def test_limit_clamped_to_range() -> None:
 def test_list_teams_refetches_store_every_call() -> None:
     """Every list_teams call re-reads the store — no cached sorted list."""
     service = _service_over(_distinct_rows(5))
-    service.list_teams(user_id="alice", limit=2)
-    _, token = service.list_teams(user_id="alice", limit=2)
-    assert token is not None
-    service.list_teams(user_id="alice", limit=2, cursor=TeamCursor.decode(token))
+    service.list_teams(user_id="alice", page=1, size=2)
+    service.list_teams(user_id="alice", page=2, size=2)
+    service.list_teams(user_id="alice", page=3, size=2)
     # One store read per request — no request reused a prior request's fetch.
     assert service._services.event_store.list_teams.call_count == 3
 
 
-def test_same_cursor_yields_same_page_independent_requests() -> None:
-    """Two independent requests with the same cursor return the same page."""
+def test_same_args_yield_same_page_independent_requests() -> None:
+    """Two independent requests with the same (page, size) return the same page."""
     rows = _distinct_rows(7)
     service = _service_over(rows)
-    _, token = service.list_teams(user_id="alice", limit=2)
-    assert token is not None
-    cursor = TeamCursor.decode(token)
-    page_a, next_a = service.list_teams(user_id="alice", limit=2, cursor=cursor)
-    page_b, next_b = service.list_teams(user_id="alice", limit=2, cursor=cursor)
+    page_a, total_a = service.list_teams(user_id="alice", page=2, size=2)
+    page_b, total_b = service.list_teams(user_id="alice", page=2, size=2)
     assert [p.team_id for p in page_a] == [p.team_id for p in page_b]
-    assert next_a == next_b
+    assert total_a == total_b
 
 
-def test_cursor_works_on_fresh_service_instance() -> None:
-    """A cursor minted by one service instance is followable by a SEPARATE,
-    freshly constructed instance over the same store contents — simulating a
-    different worker/replica with no shared in-process state.
+def test_page_followable_on_fresh_service_instance() -> None:
+    """A page minted by one service instance matches a SEPARATE, freshly
+    constructed instance over the same store contents — simulating a different
+    worker/replica with no shared in-process state.
     """
     rows = _distinct_rows(7)
     minting_service = _service_over(rows)
-    page1, token = minting_service.list_teams(user_id="alice", limit=3)
-    assert token is not None
+    page1, _ = minting_service.list_teams(user_id="alice", page=1, size=3)
 
     # A brand-new instance (different "replica"), no prior request primed.
     fresh_service = _service_over(rows)
-    page2, _ = fresh_service.list_teams(
-        user_id="alice", limit=3, cursor=TeamCursor.decode(token)
-    )
+    page2, _ = fresh_service.list_teams(user_id="alice", page=2, size=3)
 
     seen = {p.team_id for p in page1} | {p.team_id for p in page2}
     assert {p.team_id for p in page1}.isdisjoint({p.team_id for p in page2})
@@ -628,7 +593,7 @@ def test_list_teams_holds_no_per_request_state() -> None:
     """list_teams mutates no instance attribute that survives the call."""
     service = _service_over(_distinct_rows(5))
     before = dict(vars(service))
-    service.list_teams(user_id="alice", limit=2)
+    service.list_teams(user_id="alice", page=1, size=2)
     after = dict(vars(service))
     # No new attribute, and the wired collaborators are unchanged identities.
     assert before.keys() == after.keys()
