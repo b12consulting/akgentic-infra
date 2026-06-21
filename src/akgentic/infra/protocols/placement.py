@@ -71,12 +71,14 @@ class PlacementStrategy(Protocol):
 
     - **Community** (``LocalPlacement``): single-process — always places on the
       local ``TeamManager`` instance. No network involved.
-    - **Department** (``LeastTeamsPlacement``): selects the worker with the fewest
-      active teams via ``ServiceRegistry``. Creates the team with an HTTP call
-      to the chosen worker's management endpoint.
-    - **Enterprise** (``LabelMatchPlacement`` / ``WeightedPlacement`` /
-      ``ZoneAwarePlacement``): label-aware selection with optional zone affinity.
-      Creates via Dapr service invocation or direct gRPC.
+    - **Department** (``HttpPlacement``): selects the least-loaded eligible worker
+      (lowest ``active_teams / max_teams`` ratio) via the service registry, honours
+      the ``sandbox`` label, then creates the team with an HTTP ``POST /teams`` to
+      the chosen worker.
+    - **Enterprise** (``DaprPlacement``): runs a ``LabelMatchPlacement`` →
+      ``WeightedPlacement`` → ``ZoneAwarePlacement`` pipeline (filter → rank →
+      prefer) to select a worker, then creates the team via Dapr service invocation
+      to the worker's ``POST /teams`` endpoint.
 
     Error contract:
         Raises ``PlacementError`` (a ``ServerError``, and — for backward
