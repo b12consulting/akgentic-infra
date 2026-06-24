@@ -7,8 +7,15 @@ every tier mounts on its own FastAPI worker.
 """
 
 from akgentic.infra.worker.deps import WorkerServices
+from akgentic.infra.worker.routes.memory_diagnostics import router as memory_diagnostics_router
 from akgentic.infra.worker.routes.readiness import router as readiness_router
 from akgentic.infra.worker.routes.teams import router as teams_router
 from akgentic.infra.worker.settings import WorkerSettings
 
-__all__ = ["WorkerServices", "WorkerSettings", "readiness_router", "teams_router"]
+__all__ = [
+    "WorkerServices",
+    "WorkerSettings",
+    "memory_diagnostics_router",
+    "readiness_router",
+    "teams_router",
+]
