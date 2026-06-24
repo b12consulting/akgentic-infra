@@ -43,7 +43,7 @@ def team_for_upload(client: TestClient, seeded_settings: ServerSettings) -> uuid
     here so this module is self-contained and does not depend on import
     order.
     """
-    resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    resp = client.post("/teams/", json={"catalog_entry_id": "test-team"})
     assert resp.status_code == 201
     team_id = uuid.UUID(resp.json()["team_id"])
     ws_root = seeded_settings.workspaces_root / str(team_id)
