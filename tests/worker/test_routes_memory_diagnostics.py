@@ -105,5 +105,16 @@ def test_module_redefines_no_core_primitive() -> None:
     """The names resolve to the core types — the module redefines no primitive (AC #2)."""
     assert memory_diagnostics.ObjectCensus is core_diagnostics.ObjectCensus
     assert memory_diagnostics.TypeGrowth is core_diagnostics.TypeGrowth
-    assert memory_diagnostics.ReferrerNode is core_diagnostics.ReferrerNode
     assert memory_diagnostics.ReferrerReport is core_diagnostics.ReferrerReport
+
+
+def test_module_holds_no_pure_logic() -> None:
+    """The route module is FastAPI-only: the referrer walk lives in core, not here.
+
+    No ``gc`` import and no local ``_walk`` / ``_short`` / ``_SKIP_REFERRER_TYPES``
+    copies — the handler delegates to ``ReferrerReport.capture`` (AC #3).
+    """
+    assert not hasattr(memory_diagnostics, "gc")
+    assert not hasattr(memory_diagnostics, "_walk")
+    assert not hasattr(memory_diagnostics, "_short")
+    assert not hasattr(memory_diagnostics, "_SKIP_REFERRER_TYPES")
