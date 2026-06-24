@@ -2,7 +2,8 @@
 
 After Epic 28 the dead worker FastAPI shell (``create_worker_app``,
 ``WorkerLifecycle``, the ``_lifespan`` factory) is gone. The surviving public
-surface is exactly: settings, the DI container, and the two shared routers that
+surface is exactly: settings, the DI container, and the three shared routers
+(readiness, teams, and the opt-in ``/debug/memory`` diagnostics router) that
 every tier mounts on its own FastAPI worker.
 """
 
