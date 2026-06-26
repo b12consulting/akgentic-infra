@@ -1,49 +1,28 @@
-"""Tests for NoAuth adapter."""
+"""Tests for the NoAuth community marker strategy."""
 
 from __future__ import annotations
 
-import inspect
-
 from akgentic.infra.adapters.community.no_auth import NoAuth
-from akgentic.infra.protocols.auth import AuthStrategy
+from akgentic.infra.server.auth import RequestUser, get_request_user
 
 
-class TestNoAuthProtocolCompliance:
-    """AC2: NoAuth implements AuthStrategy protocol."""
+class TestNoAuthMarker:
+    """NoAuth is the community marker strategy — it carries no auth behaviour."""
 
-    def test_satisfies_auth_strategy_protocol(self) -> None:
-        """NoAuth structurally satisfies AuthStrategy."""
-        adapter = NoAuth()
-        assert isinstance(adapter, AuthStrategy)
+    def test_noauth_instantiates(self) -> None:
+        """NoAuth can be constructed as the community tier's auth marker."""
+        assert isinstance(NoAuth(), NoAuth)
 
-    def test_has_authenticate_method(self) -> None:
-        """NoAuth exposes authenticate with correct signature."""
-        adapter = NoAuth()
-        assert callable(adapter.authenticate)
-
-    def test_authenticate_signature_matches_protocol(self) -> None:
-        """authenticate has request parameter matching AuthStrategy."""
-        sig = inspect.signature(NoAuth.authenticate)
-        assert "request" in sig.parameters
+    def test_noauth_has_no_authenticate_method(self) -> None:
+        """The synchronous authenticate method is gone (collapsed onto the seam)."""
+        assert not hasattr(NoAuth(), "authenticate")
 
 
-class TestNoAuthBehavior:
-    """AC2: NoAuth passes all requests through."""
+class TestCommunityIdentitySeam:
+    """Community identity resolves to anonymous through get_request_user."""
 
-    def test_authenticate_returns_anonymous(self) -> None:
-        """authenticate always returns 'anonymous'."""
-        adapter = NoAuth()
-        assert adapter.authenticate(None) == "anonymous"
-
-    def test_authenticate_returns_string(self) -> None:
-        """authenticate returns a str, not None."""
-        adapter = NoAuth()
-        result = adapter.authenticate({})
-        assert isinstance(result, str)
-
-    def test_authenticate_ignores_request_content(self) -> None:
-        """authenticate returns same value regardless of input."""
-        adapter = NoAuth()
-        assert adapter.authenticate("anything") == "anonymous"
-        assert adapter.authenticate(42) == "anonymous"
-        assert adapter.authenticate({"auth": "token"}) == "anonymous"
+    def test_get_request_user_default_is_anonymous(self) -> None:
+        """The community default returns an anonymous principal, never None."""
+        user = get_request_user()
+        assert isinstance(user, RequestUser)
+        assert user.user_id == "anonymous"

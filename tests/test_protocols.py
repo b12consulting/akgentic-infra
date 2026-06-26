@@ -31,13 +31,15 @@ def test_auth_strategy_is_protocol() -> None:
     assert Protocol in inspect.getmro(AuthStrategy)
 
 
-def test_auth_strategy_has_authenticate() -> None:
-    """AuthStrategy defines authenticate with request parameter."""
+def test_auth_strategy_is_marker_without_authenticate() -> None:
+    """AuthStrategy is a marker protocol — the synchronous authenticate is gone.
+
+    Authentication flows through the ADR-023 ``get_request_user`` seam; the
+    protocol is retained only as the ``TierServices.auth`` field type.
+    """
     from akgentic.infra.protocols import AuthStrategy
 
-    assert hasattr(AuthStrategy, "authenticate")
-    sig = inspect.signature(AuthStrategy.authenticate)
-    assert "request" in sig.parameters
+    assert not hasattr(AuthStrategy, "authenticate")
 
 
 def test_recovery_policy_is_protocol() -> None:
@@ -666,14 +668,6 @@ def test_placement_strategy_return_type() -> None:
         localns={"TeamCard": TeamCard, "TeamHandle": TeamHandle},
     )
     assert hints["return"] is TeamHandle
-
-
-def test_auth_strategy_return_type() -> None:
-    """AuthStrategy.authenticate returns str | None."""
-    from akgentic.infra.protocols import AuthStrategy
-
-    hints = get_type_hints(AuthStrategy.authenticate)
-    assert hints["return"] == str | None
 
 
 def test_recovery_policy_return_type() -> None:
