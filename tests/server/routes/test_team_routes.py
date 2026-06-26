@@ -145,11 +145,14 @@ def test_team_owner_access_passes_for_anonymous(client: TestClient) -> None:
     assert client.get(f"/teams/{team_id}/events").status_code == 200
 
 
-def test_team_access_denies_non_owner_with_404(overridden_user_client: TestClient) -> None:
+def test_team_access_denies_non_owner_with_404(
+    app: FastAPI, overridden_user_client: TestClient
+) -> None:
     """A non-owner non-admin gets 404 (no existence leak) on another user's team.
 
-    The anonymous ``client`` would own its teams; here ``alice`` (the override)
-    creates a team, then a fresh anonymous-equivalent identity must NOT see it.
+    ``alice`` (the override) creates and owns the team; a different identity
+    (the default anonymous principal, the same ``app``) must NOT see it — the
+    per-team routes return 404, not 200, and not 403.
     """
     # alice creates and owns the team.
     team_id = overridden_user_client.post(
@@ -157,6 +160,12 @@ def test_team_access_denies_non_owner_with_404(overridden_user_client: TestClien
     ).json()["team_id"]
     # alice (owner) can read it.
     assert overridden_user_client.get(f"/teams/{team_id}").status_code == 200
+    # A different identity must NOT see it — 404 over 403. Drop alice's identity
+    # override so the seam resolves the default anonymous principal.
+    app.dependency_overrides.clear()
+    anonymous_client = TestClient(app)
+    assert anonymous_client.get(f"/teams/{team_id}").status_code == 404
+    assert anonymous_client.get(f"/teams/{team_id}/events").status_code == 404
 
 
 # --- Classic offset+total pagination (Story 37.1, ADR-032 §Decision 1-2) ---
