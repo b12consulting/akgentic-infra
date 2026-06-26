@@ -31,15 +31,21 @@ def test_auth_strategy_is_protocol() -> None:
     assert Protocol in inspect.getmro(AuthStrategy)
 
 
-def test_auth_strategy_is_marker_without_authenticate() -> None:
-    """AuthStrategy is a marker protocol — the synchronous authenticate is gone.
+def test_auth_strategy_declares_async_contract() -> None:
+    """AuthStrategy declares the async resolver contract; the sync member stays gone.
 
-    Authentication flows through the ADR-023 ``get_request_user`` seam; the
-    protocol is retained only as the ``TierServices.auth`` field type.
+    The contract is ``async resolve_request_user`` + ``get_auth_routes``; there
+    is no synchronous ``authenticate`` entry point (removed in Story 40.1).
     """
+    import inspect
+
     from akgentic.infra.protocols import AuthStrategy
 
     assert not hasattr(AuthStrategy, "authenticate")
+    assert hasattr(AuthStrategy, "resolve_request_user")
+    assert inspect.iscoroutinefunction(AuthStrategy.resolve_request_user)
+    assert "connection" in inspect.signature(AuthStrategy.resolve_request_user).parameters
+    assert hasattr(AuthStrategy, "get_auth_routes")
 
 
 def test_recovery_policy_is_protocol() -> None:

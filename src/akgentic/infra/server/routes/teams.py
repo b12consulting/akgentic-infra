@@ -21,18 +21,14 @@ from akgentic.infra.server.models import (
     TeamListResponse,
     TeamResponse,
 )
+from akgentic.infra.server.routes._team_access import get_team_service, require_team_access
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.infra.server.state_keys import CONNECTION_MANAGER, TEAM_SERVICE
+from akgentic.infra.server.state_keys import CONNECTION_MANAGER
 from akgentic.team.models import Process
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/teams", tags=["teams"])
-
-
-def get_team_service(request: Request) -> TeamService:
-    """FastAPI dependency: extract TeamService from app.state."""
-    return TEAM_SERVICE.require(request)
 
 
 def _process_to_response(process: Process) -> TeamResponse:
@@ -87,7 +83,11 @@ def list_teams(
     )
 
 
-@router.get("/{team_id}", response_model=TeamResponse)
+@router.get(
+    "/{team_id}",
+    response_model=TeamResponse,
+    dependencies=[Depends(require_team_access)],
+)
 def get_team(
     team_id: uuid.UUID,
     service: TeamService = Depends(get_team_service),
@@ -100,7 +100,11 @@ def get_team(
     return _process_to_response(process)
 
 
-@router.delete("/{team_id}", status_code=204)
+@router.delete(
+    "/{team_id}",
+    status_code=204,
+    dependencies=[Depends(require_team_access)],
+)
 def delete_team(
     team_id: uuid.UUID,
     service: TeamService = Depends(get_team_service),
@@ -116,7 +120,11 @@ def delete_team(
 # --- Action Endpoints ---
 
 
-@router.post("/{team_id}/message", status_code=204)
+@router.post(
+    "/{team_id}/message",
+    status_code=204,
+    dependencies=[Depends(require_team_access)],
+)
 def send_message(
     team_id: uuid.UUID,
     body: SendMessageRequest,
@@ -210,7 +218,11 @@ def restore_team(
     return _process_to_response(process)
 
 
-@router.get("/{team_id}/events", response_model=EventListResponse)
+@router.get(
+    "/{team_id}/events",
+    response_model=EventListResponse,
+    dependencies=[Depends(require_team_access)],
+)
 def get_events(
     team_id: uuid.UUID,
     service: TeamService = Depends(get_team_service),
