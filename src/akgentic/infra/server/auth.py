@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import Request
 from pydantic import BaseModel, Field
+from starlette.requests import HTTPConnection
 
 
 class RequestUser(BaseModel):
@@ -19,16 +19,17 @@ class RequestUser(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
-def get_request_user(request: Request) -> RequestUser:
-    """Resolve the authenticated principal for the current request.
+def get_request_user(conn: HTTPConnection) -> RequestUser:
+    """Resolve the authenticated principal for an HTTP request or WS connection.
 
     Reads the ``RequestUser`` the shared ``RequireAuthMiddleware`` stashes on
-    ``request.state.request_user`` (ADR-034 Decision 2b — auth runs once per
-    request). When no middleware has populated the stash (the community tier,
-    which mounts none), falls back to the anonymous default — never ``None``,
-    never raises.
+    ``conn.state.request_user`` (ADR-034 Decision 2b — auth runs once per
+    request). ``HTTPConnection`` is the common base of ``Request`` and
+    ``WebSocket``, so the WS route resolves identity through this same seam.
+    When no middleware has populated the stash (the community tier, which mounts
+    none), falls back to the anonymous default — never ``None``, never raises.
     """
-    user = getattr(request.state, "request_user", None)
+    user = getattr(conn.state, "request_user", None)
     if isinstance(user, RequestUser):
         return user
     return RequestUser(user_id="anonymous")

@@ -138,7 +138,11 @@ def send_message(
         _raise_action_error(exc)
 
 
-@router.post("/{team_id}/message/{agent_name}", status_code=204)
+@router.post(
+    "/{team_id}/message/{agent_name}",
+    status_code=204,
+    dependencies=[Depends(require_team_access)],
+)
 def send_message_to_agent(
     team_id: uuid.UUID,
     agent_name: str,
@@ -153,7 +157,11 @@ def send_message_to_agent(
         _raise_action_error(exc)
 
 
-@router.post("/{team_id}/message/from/{sender_name}/to/{recipient_name}", status_code=204)
+@router.post(
+    "/{team_id}/message/from/{sender_name}/to/{recipient_name}",
+    status_code=204,
+    dependencies=[Depends(require_team_access)],
+)
 def send_message_from_to(
     team_id: uuid.UUID,
     sender_name: str,
@@ -169,7 +177,11 @@ def send_message_from_to(
         _raise_action_error(exc)
 
 
-@router.post("/{team_id}/human-input", status_code=204)
+@router.post(
+    "/{team_id}/human-input",
+    status_code=204,
+    dependencies=[Depends(require_team_access)],
+)
 def human_input(
     team_id: uuid.UUID,
     body: HumanInputRequest,
@@ -183,7 +195,11 @@ def human_input(
         _raise_action_error(exc)
 
 
-@router.post("/{team_id}/stop", status_code=204)
+@router.post(
+    "/{team_id}/stop",
+    status_code=204,
+    dependencies=[Depends(require_team_access)],
+)
 def stop_team(
     team_id: uuid.UUID,
     service: TeamService = Depends(get_team_service),
@@ -196,7 +212,12 @@ def stop_team(
         _raise_action_error(exc)
 
 
-@router.post("/{team_id}/restore", status_code=200, response_model=TeamResponse)
+@router.post(
+    "/{team_id}/restore",
+    status_code=200,
+    response_model=TeamResponse,
+    dependencies=[Depends(require_team_access)],
+)
 def restore_team(
     team_id: uuid.UUID,
     request: Request,
@@ -246,7 +267,11 @@ def get_events(
     )
 
 
-@router.get("/{team_id}/agent-states", response_model=AgentStateListResponse)
+@router.get(
+    "/{team_id}/agent-states",
+    response_model=AgentStateListResponse,
+    dependencies=[Depends(require_team_access)],
+)
 def get_agent_states(
     team_id: uuid.UUID,
     service: TeamService = Depends(get_team_service),

@@ -31,7 +31,12 @@ from akgentic.team.models import Process
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["get_team_service", "require_team_access", "require_workspace_access"]
+__all__ = [
+    "get_team_service",
+    "owner_or_admin",
+    "require_team_access",
+    "require_workspace_access",
+]
 
 _ADMIN_ROLE = "admin"
 
@@ -44,6 +49,16 @@ def get_team_service(request: Request) -> TeamService:
 def _owner_or_admin(process: Process, user: RequestUser) -> bool:
     """The single owner-or-admin rule: caller owns the team or holds ``admin``."""
     return process.user_id == user.user_id or _ADMIN_ROLE in user.roles
+
+
+def owner_or_admin(process: Process, user: RequestUser) -> bool:
+    """Public seam for the owner-or-admin rule, reused by the WS handler.
+
+    The WS route has no ``Depends`` 404 path, so it applies the rule in-handler
+    rather than importing the module-private ``_owner_or_admin`` — the rule stays
+    defined exactly once.
+    """
+    return _owner_or_admin(process, user)
 
 
 def require_team_access(
