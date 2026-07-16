@@ -24,6 +24,7 @@ from akgentic.infra.server.models import (
 from akgentic.infra.server.routes._team_access import get_team_service, require_team_access
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.state_keys import CONNECTION_MANAGER
+from akgentic.team import EventNotFoundError
 from akgentic.team.models import Process
 
 logger = logging.getLogger(__name__)
@@ -246,14 +247,21 @@ def restore_team(
 )
 def get_events(
     team_id: uuid.UUID,
+    after_event_id: uuid.UUID | None = None,
     service: TeamService = Depends(get_team_service),
 ) -> EventListResponse:
-    """Get all persisted events for a team."""
-    logger.debug("GET /teams/%s/events", team_id)
+    """Get persisted events for a team, or only those after ``after_event_id``."""
+    logger.debug("GET /teams/%s/events after_event_id=%s", team_id, after_event_id)
     try:
-        events = service.get_events(team_id)
+        events = service.get_events(team_id, after_event_id=after_event_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
+    except EventNotFoundError:
+        # A stale cursor is a bad cursor, not a missing team — 404 here would tell
+        # the client the team is gone and tear down a live team's view.
+        raise HTTPException(
+            status_code=400, detail=f"Unknown after_event_id cursor: {after_event_id}"
+        ) from None
     return EventListResponse(
         events=[
             EventResponse(
