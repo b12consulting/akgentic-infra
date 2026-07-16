@@ -347,19 +347,23 @@ def test_get_events_state_changed_message_cursor_returns_400(
     StateChangedMessage into an AgentStateSnapshot when ``sender is not None``.
     A sender-less one falls through to the event log, becomes a valid cursor,
     and would return 200 — testing the exact opposite of this test's name.
+
+    The sender name must not collide with a seeded-catalog agent: the live
+    team's own agents emit a state change on init_state(), so asserting on a
+    real agent's snapshot would pass whether or not on_message() diverted.
     """
     team_id = _create_team(client)
     store = community_services.event_store
     subscriber = PersistenceSubscriber(uuid.UUID(team_id), store)
 
     sender = MagicMock(spec=ActorAddress)
-    sender.name = "@Manager"
+    sender.name = "@TrapSender"
     state_changed = StateChangedMessage(sender=sender, state=SampleAgentState(task_count=1))
     subscriber.on_message(state_changed)
 
     # It became a snapshot and never entered the event log — so its id is not a cursor.
     snapshots = store.load_agent_states(uuid.UUID(team_id))
-    assert any(s.agent_id == "@Manager" for s in snapshots)
+    assert any(s.agent_id == "@TrapSender" for s in snapshots)
     persisted_ids = [e.event.id for e in store.load_events(uuid.UUID(team_id))]
     assert state_changed.id not in persisted_ids
 
