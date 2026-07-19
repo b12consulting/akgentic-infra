@@ -92,10 +92,32 @@ def test_team_list_response_with_items() -> None:
     assert resp.total_count == 1
 
 
-def test_send_message_request() -> None:
-    """SendMessageRequest requires content."""
+def test_send_message_request_content_path() -> None:
+    """SendMessageRequest accepts a plain content string (message left unset)."""
     req = SendMessageRequest(content="hello")
     assert req.content == "hello"
+    assert req.message is None
+
+
+def test_send_message_request_message_path() -> None:
+    """SendMessageRequest accepts a serialized Message envelope (content left unset)."""
+    serialized = UserMessage(content="typed").model_dump(mode="json")
+    req = SendMessageRequest(message=serialized)
+    assert req.message == serialized
+    assert req.content is None
+
+
+def test_send_message_request_rejects_neither() -> None:
+    """Neither content nor message set violates the exactly-one validator."""
+    with pytest.raises(ValidationError):
+        SendMessageRequest()
+
+
+def test_send_message_request_rejects_both() -> None:
+    """Both content and message set violates the exactly-one validator."""
+    serialized = UserMessage(content="typed").model_dump(mode="json")
+    with pytest.raises(ValidationError):
+        SendMessageRequest(content="hello", message=serialized)
 
 
 def test_emit_message_request_round_trips_serialized_message() -> None:

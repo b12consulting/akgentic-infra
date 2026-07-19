@@ -9,8 +9,6 @@ from typing import NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from akgentic.catalog.models.errors import EntryNotFoundError
-from akgentic.core.messages.message import Message
-from akgentic.core.utils.deserializer import deserialize_object
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.models import (
     AgentStateListResponse,
@@ -24,6 +22,7 @@ from akgentic.infra.server.models import (
     TeamListResponse,
     TeamResponse,
 )
+from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
 from akgentic.infra.server.routes._team_access import get_team_service, require_team_access
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.state_keys import CONNECTION_MANAGER
@@ -134,10 +133,16 @@ def send_message(
     body: SendMessageRequest,
     service: TeamService = Depends(get_team_service),
 ) -> None:
-    """Send a message to a running team."""
+    """Send a message to a running team.
+
+    Accepts either a plain ``content`` string or a pre-formed typed ``Message``
+    (the ``message`` wire envelope, deserialized to the concrete type for agent
+    processing); a bad envelope is a 400 (ADR-22). Team-state errors map through
+    ``_raise_action_error``.
+    """
     logger.info("POST /teams/%s/message", team_id)
     try:
-        service.send_message(team_id, body.content)
+        service.send_message(team_id, resolve_send_payload(body))
     except ValueError as exc:
         _raise_action_error(exc)
 
@@ -153,10 +158,10 @@ def send_message_to_agent(
     body: SendMessageRequest,
     service: TeamService = Depends(get_team_service),
 ) -> None:
-    """Send a message to a specific agent in a running team."""
+    """Send a message (plain ``content`` or typed ``message`` envelope) to a specific agent."""
     logger.info("POST /teams/%s/message/%s", team_id, agent_name)
     try:
-        service.send_message_to(team_id, agent_name, body.content)
+        service.send_message_to(team_id, agent_name, resolve_send_payload(body))
     except ValueError as exc:
         _raise_action_error(exc)
 
@@ -173,10 +178,12 @@ def send_message_from_to(
     body: SendMessageRequest,
     service: TeamService = Depends(get_team_service),
 ) -> None:
-    """Send a message from a specific agent to another agent in a running team."""
+    """Send a message (plain ``content`` or typed ``message``) from one agent to another."""
     logger.info("POST /teams/%s/message/from/%s/to/%s", team_id, sender_name, recipient_name)
     try:
-        service.send_message_from_to(team_id, sender_name, recipient_name, body.content)
+        service.send_message_from_to(
+            team_id, sender_name, recipient_name, resolve_send_payload(body)
+        )
     except ValueError as exc:
         _raise_action_error(exc)
 
@@ -199,15 +206,7 @@ def emit_notification(
     client error (400); team-state errors map through ``_raise_action_error``.
     """
     logger.info("POST /teams/%s/notification", team_id)
-    try:
-        # body.message is a polymorphic-Message wire envelope (a serialized
-        # Message dict with the __model__ tag); deserialize_object accepts the
-        # dict directly and reconstructs the concrete typed Message.
-        message = deserialize_object(body.message)
-    except (ValueError, TypeError, ImportError, AttributeError) as exc:
-        raise HTTPException(status_code=400, detail="invalid message payload") from exc
-    if not isinstance(message, Message):
-        raise HTTPException(status_code=400, detail="payload is not a Message")
+    message = decode_message(body.message)
     try:
         service.emit_message(team_id, message)
     except ValueError as exc:

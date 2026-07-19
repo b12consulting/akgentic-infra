@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CreateTeamRequest(BaseModel):
@@ -40,9 +40,36 @@ class TeamListResponse(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    """Request body for POST /teams/{team_id}/message."""
+    """Request body for the POST /teams/{team_id}/message[...] routes.
 
-    content: str = Field(description="Message content to send to the team")
+    Carries EXACTLY ONE of two mutually exclusive payloads (enforced below):
+
+    - ``content``: a plain ``str`` — the framework wraps it in the team's
+      default message type (unchanged legacy behaviour).
+    - ``message``: a pre-formed *processing* ``Message`` as a wire envelope — a
+      serialized ``Message.model_dump(mode="json")`` dict carrying the
+      ``__model__`` tag. The route deserializes it into the concrete typed
+      ``Message`` and hands it to ``TeamService.send_message*`` for agent
+      processing. It is deserialized immediately and never becomes application
+      state, so this is NOT the ``dict[str, Any]`` anti-pattern (Golden Rule #1)
+      — the same documented polymorphic-envelope exception ``EmitMessageRequest``
+      carries for the publish-only ``/notification`` route.
+    """
+
+    content: str | None = Field(
+        default=None, description="Plain-string message content (framework wraps it)"
+    )
+    message: dict[str, Any] | None = Field(
+        default=None,
+        description="Serialized Message dict (model_dump(mode='json')) carrying the __model__ tag",
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_payload(self) -> SendMessageRequest:
+        """Require exactly one of ``content`` / ``message`` (neither and both are errors)."""
+        if (self.content is None) == (self.message is None):
+            raise ValueError("exactly one of 'content' or 'message' must be set")
+        return self
 
 
 class EmitMessageRequest(BaseModel):

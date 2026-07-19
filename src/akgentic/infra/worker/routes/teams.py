@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.server.models import HumanInputRequest, SendMessageRequest, TeamResponse
+from akgentic.infra.server.routes._message_payload import resolve_send_payload
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.state_keys import SERVICES
 from akgentic.team.models import Process, TeamCard, TeamRuntime
@@ -120,7 +121,7 @@ def send_message(
     if handle is None:
         raise HTTPException(status_code=404, detail="Team not found in worker cache")
     try:
-        handle.send(body.content)
+        handle.send(resolve_send_payload(body))
     except ValueError as exc:
         _raise_action_error(exc)
 
@@ -138,7 +139,7 @@ def send_message_to_agent(
     if handle is None:
         raise HTTPException(status_code=404, detail="Team not found in worker cache")
     try:
-        handle.send_to(agent_name, body.content)
+        handle.send_to(agent_name, resolve_send_payload(body))
     except ValueError as exc:
         _raise_action_error(exc)
 
@@ -160,7 +161,7 @@ def send_message_from_to(
     if handle is None:
         raise HTTPException(status_code=404, detail="Team not found in worker cache")
     try:
-        handle.send_from_to(sender_name, recipient_name, body.content)
+        handle.send_from_to(sender_name, recipient_name, resolve_send_payload(body))
     except ValueError as exc:
         _raise_action_error(exc)
 

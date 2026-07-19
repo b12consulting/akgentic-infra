@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from akgentic.core.messages.message import UserMessage
 from akgentic.team.models import Process, TeamCard, TeamStatus
 
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
@@ -162,6 +163,81 @@ def test_create_then_message_hits_cache_and_returns_204() -> None:
 
     assert result is None
     assert runtime.sent == ["hello team"]
+
+
+def test_send_message_typed_envelope_delivers_decoded_message() -> None:
+    """The worker /message route accepts a serialized Message envelope (str|Message path).
+
+    A ``{message: <model_dump(mode="json")>}`` body is resolved via the shared
+    ``resolve_send_payload`` into the concrete typed ``Message`` and handed to
+    the handle — the newly-available typed path, alongside the plain-str path.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    runtime = _FakeRuntime(team_id)
+    process = _build_process(team_id, team_card)
+    cache = LocalRuntimeCache()
+    services = _build_services(runtime, process, cache)
+
+    create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
+
+    original = UserMessage(content="typed-hello")
+    result = send_message(
+        team_id,
+        SendMessageRequest(message=original.model_dump(mode="json")),
+        services,  # type: ignore[arg-type]
+    )
+
+    assert result is None
+    assert len(runtime.sent) == 1
+    delivered = runtime.sent[0]
+    assert type(delivered) is UserMessage
+    assert delivered == original
+
+
+def test_send_message_bad_envelope_returns_400() -> None:
+    """A message envelope with an unimportable __model__ tag surfaces a 400."""
+    from fastapi import HTTPException
+
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    runtime = _FakeRuntime(team_id)
+    process = _build_process(team_id, team_card)
+    cache = LocalRuntimeCache()
+    services = _build_services(runtime, process, cache)
+
+    create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
+
+    body = SendMessageRequest(message={"__model__": "akgentic.core.messages.message.NoSuchMessage"})
+    with pytest.raises(HTTPException) as exc_info:
+        send_message(team_id, body, services)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 400
+    assert runtime.sent == []
+
+
+def test_send_message_non_message_envelope_returns_400() -> None:
+    """A message envelope that decodes to a non-Message surfaces a 400."""
+    from fastapi import HTTPException
+
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    runtime = _FakeRuntime(team_id)
+    process = _build_process(team_id, team_card)
+    cache = LocalRuntimeCache()
+    services = _build_services(runtime, process, cache)
+
+    create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
+
+    with pytest.raises(HTTPException) as exc_info:
+        send_message(
+            team_id,
+            SendMessageRequest(message={"hello": "world"}),
+            services,  # type: ignore[arg-type]
+        )
+
+    assert exc_info.value.status_code == 400
+    assert runtime.sent == []
 
 
 def test_create_team_store_is_idempotent_overwrite() -> None:
