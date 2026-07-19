@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -42,6 +43,25 @@ class SendMessageRequest(BaseModel):
     """Request body for POST /teams/{team_id}/message."""
 
     content: str = Field(description="Message content to send to the team")
+
+
+class EmitMessageRequest(BaseModel):
+    """Request body for POST /teams/{team_id}/notification.
+
+    ``message`` is a polymorphic-Message wire envelope — a serialized
+    ``Message.model_dump(mode="json")`` dict carrying the ``__model__`` tag.
+    The route deserializes it immediately into a concrete typed ``Message``
+    via ``deserialize_object``; it never becomes application state, so this
+    is NOT the ``dict[str, Any]`` anti-pattern (Golden Rule #1). A typed
+    ``message: Message`` field was rejected: ``SerializableBaseModel`` only
+    strips ``__model__`` for the declared class and would not dispatch a base
+    annotation to the concrete subclass — ``deserialize_object`` is the
+    reconstruction path.
+    """
+
+    message: dict[str, Any] = Field(
+        description="Serialized Message dict (model_dump(mode='json')) carrying the __model__ tag"
+    )
 
 
 class HumanInputRequest(BaseModel):

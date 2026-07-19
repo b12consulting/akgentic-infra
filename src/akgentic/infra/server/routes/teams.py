@@ -9,11 +9,14 @@ from typing import NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from akgentic.catalog.models.errors import EntryNotFoundError
+from akgentic.core.messages.message import Message
+from akgentic.core.utils.deserializer import deserialize_object
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.models import (
     AgentStateListResponse,
     AgentStateResponse,
     CreateTeamRequest,
+    EmitMessageRequest,
     EventListResponse,
     EventResponse,
     HumanInputRequest,
@@ -174,6 +177,39 @@ def send_message_from_to(
     logger.info("POST /teams/%s/message/from/%s/to/%s", team_id, sender_name, recipient_name)
     try:
         service.send_message_from_to(team_id, sender_name, recipient_name, body.content)
+    except ValueError as exc:
+        _raise_action_error(exc)
+
+
+@router.post(
+    "/{team_id}/notification",
+    status_code=204,
+    dependencies=[Depends(require_team_access)],
+)
+def emit_notification(
+    team_id: uuid.UUID,
+    body: EmitMessageRequest,
+    service: TeamService = Depends(get_team_service),
+) -> None:
+    """Inject a pre-formed notification Message into a running team.
+
+    Deserializes the ``__model__``-tagged payload back into the concrete
+    ``Message`` and publishes it to the team's subscribers with no agent
+    processing (ADR-22). A decode failure or a non-``Message`` payload is a
+    client error (400); team-state errors map through ``_raise_action_error``.
+    """
+    logger.info("POST /teams/%s/notification", team_id)
+    try:
+        # body.message is a polymorphic-Message wire envelope (a serialized
+        # Message dict with the __model__ tag); deserialize_object accepts the
+        # dict directly and reconstructs the concrete typed Message.
+        message = deserialize_object(body.message)
+    except (ValueError, TypeError, ImportError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail="invalid message payload") from exc
+    if not isinstance(message, Message):
+        raise HTTPException(status_code=400, detail="payload is not a Message")
+    try:
+        service.emit_message(team_id, message)
     except ValueError as exc:
         _raise_action_error(exc)
 

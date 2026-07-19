@@ -6,10 +6,12 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
+from akgentic.core.messages.message import UserMessage
 from pydantic import ValidationError
 
 from akgentic.infra.server.models import (
     CreateTeamRequest,
+    EmitMessageRequest,
     EventListResponse,
     EventResponse,
     HumanInputRequest,
@@ -94,6 +96,20 @@ def test_send_message_request() -> None:
     """SendMessageRequest requires content."""
     req = SendMessageRequest(content="hello")
     assert req.content == "hello"
+
+
+def test_emit_message_request_round_trips_serialized_message() -> None:
+    """EmitMessageRequest holds a serialized Message dict (with __model__) as message."""
+    serialized = UserMessage(content="banner").model_dump(mode="json")
+    req = EmitMessageRequest(message=serialized)
+    assert req.message == serialized
+    assert req.message["__model__"] == "akgentic.core.messages.message.UserMessage"
+
+
+def test_emit_message_request_requires_message() -> None:
+    """message is required — omitting it raises a ValidationError."""
+    with pytest.raises(ValidationError):
+        EmitMessageRequest()  # type: ignore[call-arg]
 
 
 def test_human_input_request() -> None:

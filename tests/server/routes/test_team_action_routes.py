@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from akgentic.core.actor_address import ActorAddress
 from akgentic.core.agent_state import BaseState
+from akgentic.core.messages.message import UserMessage
 from akgentic.core.messages.orchestrator import StateChangedMessage
 from akgentic.team.subscriber import PersistenceSubscriber
 from fastapi import FastAPI
@@ -142,6 +143,49 @@ def test_send_message_from_to_unknown_recipient(client: TestClient) -> None:
         json={"content": "hello"},
     )
     assert resp.status_code == 404
+
+
+def test_emit_notification_success(client: TestClient) -> None:
+    """POST /teams/{id}/notification with a serialized Message dict returns 204."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    payload = UserMessage(content="banner").model_dump(mode="json")
+    resp = client.post(f"/teams/{team_id}/notification", json={"message": payload})
+    assert resp.status_code == 204
+
+
+def test_emit_notification_undeserializable_payload_returns_400(client: TestClient) -> None:
+    """A payload whose __model__ tag cannot be imported returns 400."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    payload = {"__model__": "akgentic.core.messages.message.NoSuchMessage"}
+    resp = client.post(f"/teams/{team_id}/notification", json={"message": payload})
+    assert resp.status_code == 400
+
+
+def test_emit_notification_non_message_payload_returns_400(client: TestClient) -> None:
+    """A payload that decodes to something other than a Message returns 400."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    resp = client.post(f"/teams/{team_id}/notification", json={"message": {"hello": "world"}})
+    assert resp.status_code == 400
+
+
+def test_emit_notification_not_found_team(client: TestClient) -> None:
+    """POST /teams/{id}/notification on a non-existent team returns 404."""
+    payload = UserMessage(content="banner").model_dump(mode="json")
+    resp = client.post(f"/teams/{uuid.uuid4()}/notification", json={"message": payload})
+    assert resp.status_code == 404
+
+
+def test_emit_notification_stopped_team_returns_409(client: TestClient) -> None:
+    """POST /teams/{id}/notification on a stopped team returns 409."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = create_resp.json()["team_id"]
+    client.post(f"/teams/{team_id}/stop")
+    payload = UserMessage(content="banner").model_dump(mode="json")
+    resp = client.post(f"/teams/{team_id}/notification", json={"message": payload})
+    assert resp.status_code == 409
 
 
 def test_human_input_not_found_team(client: TestClient) -> None:
