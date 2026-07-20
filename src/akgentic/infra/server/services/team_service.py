@@ -6,6 +6,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.orchestrator import SentMessage
@@ -15,6 +16,9 @@ from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.deps import TierServices
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
+
+if TYPE_CHECKING:
+    from akgentic.core.messages.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +193,22 @@ class TeamService:
         _remove_workspace_dir(self._workspaces_root, team_id)
         logger.info("Team deleted: team_id=%s", team_id)
 
-    def send_message(self, team_id: uuid.UUID, content: str) -> None:
+    def emit_message(self, team_id: uuid.UUID, message: Message) -> None:
+        """Publish a pre-formed message into a running team's event record.
+
+        Resolves the running handle and delegates to ``handle.emitMessage``
+        — same shape as ``send_message``. The message reaches the team's
+        subscribers (durable store + live stream) with no agent processing
+        and no outbound channel dispatch (ADR-22).
+
+        Raises:
+            ValueError: If team not found or not running.
+        """
+        handle = self._get_running_handle(team_id)
+        handle.emitMessage(message)
+        logger.debug("Message emitted to team %s", team_id)
+
+    def send_message(self, team_id: uuid.UUID, content: str | Message) -> None:
         """Send a message to a running team.
 
         Raises:
@@ -199,7 +218,7 @@ class TeamService:
         handle.send(content)
         logger.debug("Message sent to team %s", team_id)
 
-    def send_message_to(self, team_id: uuid.UUID, agent_name: str, content: str) -> None:
+    def send_message_to(self, team_id: uuid.UUID, agent_name: str, content: str | Message) -> None:
         """Send a message to a specific agent in a running team.
 
         Raises:
@@ -210,7 +229,7 @@ class TeamService:
         logger.debug("Message sent to agent '%s' in team %s", agent_name, team_id)
 
     def send_message_from_to(
-        self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str
+        self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str | Message
     ) -> None:
         """Send a message from a specific agent to another agent in a running team.
 
