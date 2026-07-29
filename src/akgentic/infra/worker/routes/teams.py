@@ -241,11 +241,12 @@ def stop_team(
     logger.info("POST /teams/%s/stop", team_id)
     try:
         services.worker_handle.stop_team(team_id)
+        # Evict only once the stop succeeded, so the cache never diverges from
+        # team state. A rejected stop leaves the handle cached; the eviction
+        # subscriber reclaims it when the orchestrator does tear down.
+        services.runtime_cache.remove(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
-    finally:
-        # Unconditional and idempotent: a failed stop still strands a dead handle.
-        services.runtime_cache.remove(team_id)
 
 
 @router.delete("/{team_id}", status_code=204)
@@ -257,11 +258,11 @@ def delete_team(
     logger.info("DELETE /teams/%s", team_id)
     try:
         services.worker_handle.delete_team(team_id)
+        # Only evict once the delete actually succeeded: a rejected delete (team
+        # still RUNNING) leaves the team live, and its handle must stay reachable.
+        services.runtime_cache.remove(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
-    finally:
-        # Unconditional and idempotent: no subscriber fires on the delete path.
-        services.runtime_cache.remove(team_id)
 
 
 @router.post("/{team_id}/resume", status_code=200, response_model=TeamResponse)

@@ -400,8 +400,8 @@ def test_stop_team_releases_the_cached_handle() -> None:
     assert services.runtime_cache.get(team_id) is None
 
 
-def test_stop_team_releases_the_handle_even_when_the_stop_fails() -> None:
-    """A failed stop still evicts, and the mapped 404 propagates untouched."""
+def test_stop_team_keeps_the_handle_when_the_stop_fails() -> None:
+    """A rejected stop leaves the handle cached, and the mapped 404 propagates."""
     team_id = uuid.uuid4()
     services = _lifecycle_services(team_id, error=ValueError(f"Team {team_id} not found"))
 
@@ -409,7 +409,7 @@ def test_stop_team_releases_the_handle_even_when_the_stop_fails() -> None:
         stop_team(team_id, services)  # type: ignore[arg-type]
 
     assert exc_info.value.status_code == 404
-    assert services.runtime_cache.get(team_id) is None
+    assert services.runtime_cache.get(team_id) is not None
 
 
 def test_stop_team_without_a_cached_handle_is_a_no_op() -> None:
@@ -436,8 +436,8 @@ def test_delete_team_releases_the_cached_handle() -> None:
     assert services.runtime_cache.get(team_id) is None
 
 
-def test_delete_team_releases_the_handle_even_when_the_delete_fails() -> None:
-    """A failed delete still evicts, and the mapped 404 propagates untouched."""
+def test_delete_team_keeps_the_handle_when_the_delete_fails() -> None:
+    """A rejected delete leaves the handle cached, and the mapped 404 propagates."""
     team_id = uuid.uuid4()
     services = _lifecycle_services(team_id, error=ValueError(f"Team {team_id} not found"))
 
@@ -445,11 +445,16 @@ def test_delete_team_releases_the_handle_even_when_the_delete_fails() -> None:
         delete_team(team_id, services)  # type: ignore[arg-type]
 
     assert exc_info.value.status_code == 404
-    assert services.runtime_cache.get(team_id) is None
+    assert services.runtime_cache.get(team_id) is not None
 
 
-def test_delete_team_state_conflict_still_evicts_the_handle() -> None:
-    """A state-conflict ValueError keeps its 409 mapping and still evicts."""
+def test_delete_team_state_conflict_keeps_the_handle_reachable() -> None:
+    """A RUNNING team refused deletion keeps its handle — it is still live.
+
+    ``TeamManager.delete_team`` rejects a RUNNING team with "stop it first". Evicting
+    on that path would make a still-running team unreachable to the message routes,
+    which resolve every send through ``runtime_cache.get``.
+    """
     team_id = uuid.uuid4()
     services = _lifecycle_services(team_id, error=ValueError("Team is currently running"))
 
@@ -457,7 +462,7 @@ def test_delete_team_state_conflict_still_evicts_the_handle() -> None:
         delete_team(team_id, services)  # type: ignore[arg-type]
 
     assert exc_info.value.status_code == 409
-    assert services.runtime_cache.get(team_id) is None
+    assert services.runtime_cache.get(team_id) is not None
 
 
 def test_delete_team_without_a_cached_handle_is_a_no_op() -> None:
