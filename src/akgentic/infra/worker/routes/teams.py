@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from akgentic.core.messages.message import Message
 from akgentic.core.messages.orchestrator import SentMessage
+from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.server.models import (
     EmitMessageRequest,
     HumanInputRequest,
@@ -39,6 +40,10 @@ class WorkerCreateTeamRequest(BaseModel):
 
     team_card: TeamCard = Field(description="Pre-resolved TeamCard for team creation")
     user_id: str = Field(description="Authenticated user identifier (from server)")
+    user_email: str = Field(default="", description="Authenticated user email (from server)")
+    team_id: uuid.UUID | None = Field(
+        default=None, description="Caller-supplied team identifier; auto-generated when absent"
+    )
 
 
 def get_services(request: Request) -> WorkerServices:
@@ -85,7 +90,12 @@ def create_team(
     runtime: TeamRuntime = services.team_manager.create_team(
         team_card=body.team_card,
         user_id=body.user_id,
+        user_email=body.user_email,
+        team_id=body.team_id,
     )
+    # The message / notification / human-input routes resolve via runtime_cache.get,
+    # so a team is only reachable once its handle is stored here.
+    services.runtime_cache.store(runtime.id, LocalTeamHandle(runtime))
     process = services.worker_handle.get_team(runtime.id)
     if process is None:  # pragma: no cover
         msg = f"Team {runtime.id} was created but not found in event store"

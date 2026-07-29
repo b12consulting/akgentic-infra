@@ -1,4 +1,4 @@
-"""Shared worker team-route tests for the typed-send and notification surfaces.
+"""Shared worker team-route tests for create, typed-send and notification surfaces.
 
 The worker ``/message*`` routes accept a pre-formed ``Message`` wire envelope
 alongside the plain-string path, and ``/notification`` publishes a pre-formed
@@ -7,23 +7,36 @@ Message through ``handle.emitMessage`` with no agent processing.
 The handlers are exercised directly with a real ``LocalRuntimeCache`` seeded
 with a ``LocalTeamHandle`` over a stub runtime, so the assertion is on the
 genuine decode-and-delegate path rather than on team creation.
+
+``POST /teams`` is exercised the same way: the create handler must forward
+``user_email`` / ``team_id`` to the team manager and populate the very cache the
+``/message*`` routes read, so a freshly created team is immediately reachable.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from akgentic.core.messages.message import UserMessage
+from akgentic.team.models import Process, TeamCard, TeamStatus
 from fastapi import HTTPException
 
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.server.models import EmitMessageRequest, SendMessageRequest
-from akgentic.infra.worker.routes.teams import emit_notification, send_message
+from akgentic.infra.worker.routes.teams import (
+    WorkerCreateTeamRequest,
+    create_team,
+    emit_notification,
+    send_message,
+)
 
 _BAD_ENVELOPE = {"__model__": "akgentic.core.messages.message.NoSuchMessage"}
+_NOW = datetime(2026, 7, 29, 12, 0, 0, tzinfo=UTC)
 
 
 class _FakeRuntime:
@@ -47,6 +60,152 @@ def _seed_cache(team_id: uuid.UUID) -> tuple[_FakeRuntime, SimpleNamespace]:
     cache = LocalRuntimeCache()
     cache.store(team_id, LocalTeamHandle(runtime))  # type: ignore[arg-type]
     return runtime, SimpleNamespace(runtime_cache=cache)
+
+
+def _make_team_card(name: str = "Test Team") -> TeamCard:
+    """Minimal ``TeamCard`` double — the create handler only forwards it."""
+    card = MagicMock(spec=TeamCard)
+    card.name = name
+    return card  # type: ignore[no-any-return]
+
+
+def _make_process(team_id: uuid.UUID, user_id: str) -> Process:
+    """Persisted metadata the worker handle returns after a create."""
+    return Process(
+        team_id=team_id,
+        team_card=_make_team_card(),
+        status=TeamStatus.RUNNING,
+        user_id=user_id,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+class _RecordingTeamManager:
+    """Records ``create_team`` kwargs and honours a caller-supplied ``team_id``.
+
+    The signature has no defaults on purpose: a handler that fails to forward
+    ``user_email`` or ``team_id`` raises ``TypeError`` instead of passing.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.runtime: _FakeRuntime | None = None
+
+    def create_team(
+        self,
+        *,
+        team_card: TeamCard,
+        user_id: str,
+        user_email: str,
+        team_id: uuid.UUID | None,
+    ) -> _FakeRuntime:
+        self.calls.append(
+            {
+                "team_card": team_card,
+                "user_id": user_id,
+                "user_email": user_email,
+                "team_id": team_id,
+            }
+        )
+        self.runtime = _FakeRuntime(team_id or uuid.uuid4())
+        return self.runtime
+
+
+class _RecordingWorkerHandle:
+    """Returns the created ``Process`` and records cache state at lookup time."""
+
+    def __init__(self, cache: LocalRuntimeCache, user_id: str) -> None:
+        self._cache = cache
+        self._user_id = user_id
+        self.cached_at_lookup: list[bool] = []
+
+    def get_team(self, team_id: uuid.UUID) -> Process:
+        self.cached_at_lookup.append(self._cache.get(team_id) is not None)
+        return _make_process(team_id, self._user_id)
+
+
+def _create_services(user_id: str = "user-1") -> SimpleNamespace:
+    """Worker services stub for the create route: manager + handle + real cache."""
+    cache = LocalRuntimeCache()
+    return SimpleNamespace(
+        team_manager=_RecordingTeamManager(),
+        worker_handle=_RecordingWorkerHandle(cache, user_id),
+        runtime_cache=cache,
+    )
+
+
+def test_create_team_stores_a_local_team_handle_before_the_process_lookup() -> None:
+    """The created runtime is cached under ``runtime.id`` ahead of ``get_team``."""
+    services = _create_services()
+    body = WorkerCreateTeamRequest(team_card=_make_team_card(), user_id="user-1")
+
+    response = create_team(body, services)  # type: ignore[arg-type]
+
+    runtime = services.team_manager.runtime
+    assert runtime is not None
+    cached = services.runtime_cache.get(runtime.id)
+    assert isinstance(cached, LocalTeamHandle)
+    assert cached.team_id == runtime.id
+    # The store must precede the worker-handle lookup and the response build.
+    assert services.worker_handle.cached_at_lookup == [True]
+    assert response.team_id == runtime.id
+    assert response.status == TeamStatus.RUNNING.value
+
+
+def test_create_team_makes_the_team_reachable_by_the_message_route() -> None:
+    """A create followed by a send resolves through the cache — no 404."""
+    services = _create_services()
+    body = WorkerCreateTeamRequest(team_card=_make_team_card(), user_id="user-1")
+
+    response = create_team(body, services)  # type: ignore[arg-type]
+    original = UserMessage(content="post-create hello")
+    result = send_message(
+        response.team_id,
+        SendMessageRequest(message=original.model_dump(mode="json")),
+        services,  # type: ignore[arg-type]
+    )
+
+    assert result is None
+    runtime = services.team_manager.runtime
+    assert runtime is not None
+    assert runtime.sent == [original]
+
+
+def test_create_team_defaults_forward_empty_email_and_no_team_id() -> None:
+    """A body carrying only ``team_card`` + ``user_id`` still validates."""
+    services = _create_services()
+    body = WorkerCreateTeamRequest(team_card=_make_team_card(), user_id="user-1")
+
+    assert body.user_email == ""
+    assert body.team_id is None
+
+    create_team(body, services)  # type: ignore[arg-type]
+
+    call = services.team_manager.calls[0]
+    assert call["user_id"] == "user-1"
+    assert call["user_email"] == ""
+    assert call["team_id"] is None
+
+
+def test_create_team_forwards_supplied_user_email_and_team_id() -> None:
+    """Both new fields reach the team manager, and the id is honoured."""
+    services = _create_services()
+    requested_id = uuid.uuid4()
+    body = WorkerCreateTeamRequest(
+        team_card=_make_team_card(),
+        user_id="user-1",
+        user_email="user@example.com",
+        team_id=requested_id,
+    )
+
+    response = create_team(body, services)  # type: ignore[arg-type]
+
+    call = services.team_manager.calls[0]
+    assert call["user_email"] == "user@example.com"
+    assert call["team_id"] == requested_id
+    assert response.team_id == requested_id
+    assert services.runtime_cache.get(requested_id) is not None
 
 
 def test_send_message_typed_envelope_delivers_decoded_message() -> None:
