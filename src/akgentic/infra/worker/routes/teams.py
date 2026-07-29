@@ -243,6 +243,9 @@ def stop_team(
         services.worker_handle.stop_team(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
+    finally:
+        # Unconditional and idempotent: a failed stop still strands a dead handle.
+        services.runtime_cache.remove(team_id)
 
 
 @router.delete("/{team_id}", status_code=204)
@@ -256,6 +259,9 @@ def delete_team(
         services.worker_handle.delete_team(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
+    finally:
+        # Unconditional and idempotent: no subscriber fires on the delete path.
+        services.runtime_cache.remove(team_id)
 
 
 @router.post("/{team_id}/resume", status_code=200, response_model=TeamResponse)
