@@ -13,8 +13,9 @@ genuine decode-and-delegate path rather than on team creation.
 ``/message*`` routes read, so a freshly created team is immediately reachable.
 
 ``POST /teams/{id}/stop`` and ``DELETE /teams/{id}`` close the same loop from the
-other end: both evict the cached handle unconditionally, so a worker-handle
-failure still releases the handle while the mapped HTTP error propagates.
+other end: each evicts the cached handle only once the lifecycle call succeeded.
+A rejected call leaves the handle in place — a delete refused because the team is
+still RUNNING has to stay reachable — while the mapped HTTP error propagates.
 """
 
 from __future__ import annotations
@@ -375,13 +376,10 @@ class _LifecycleWorkerHandle:
             raise self._error
 
 
-def _lifecycle_services(
-    team_id: uuid.UUID | None = None, *, error: ValueError | None = None
-) -> SimpleNamespace:
-    """Services stub for stop/delete: real cache (seeded when ``team_id`` is given)."""
+def _lifecycle_services(team_id: uuid.UUID, *, error: ValueError | None = None) -> SimpleNamespace:
+    """Services stub for stop/delete: a real cache seeded with ``team_id``."""
     cache = LocalRuntimeCache()
-    if team_id is not None:
-        cache.store(team_id, LocalTeamHandle(_FakeRuntime(team_id)))  # type: ignore[arg-type]
+    cache.store(team_id, LocalTeamHandle(_FakeRuntime(team_id)))  # type: ignore[arg-type]
     return SimpleNamespace(
         runtime_cache=cache,
         worker_handle=_LifecycleWorkerHandle(error),
@@ -413,15 +411,17 @@ def test_stop_team_keeps_the_handle_when_the_stop_fails() -> None:
 
 
 def test_stop_team_without_a_cached_handle_is_a_no_op() -> None:
-    """Evicting an absent team_id raises nothing and changes no status."""
+    """Evicting an absent team_id raises nothing and spares unrelated entries."""
     team_id = uuid.uuid4()
-    services = _lifecycle_services()
+    other_id = uuid.uuid4()
+    services = _lifecycle_services(other_id)
 
     result = stop_team(team_id, services)  # type: ignore[arg-type]
 
     assert result is None
     assert services.worker_handle.stopped == [team_id]
     assert services.runtime_cache.get(team_id) is None
+    assert services.runtime_cache.get(other_id) is not None
 
 
 def test_delete_team_releases_the_cached_handle() -> None:
@@ -456,7 +456,10 @@ def test_delete_team_state_conflict_keeps_the_handle_reachable() -> None:
     which resolve every send through ``runtime_cache.get``.
     """
     team_id = uuid.uuid4()
-    services = _lifecycle_services(team_id, error=ValueError("Team is currently running"))
+    # The manager's verbatim message: it carries neither "not found" nor
+    # "deleted", so _raise_action_error must map it to a 409.
+    refusal = f"Cannot delete team {team_id}: team is currently running. Stop it first."
+    services = _lifecycle_services(team_id, error=ValueError(refusal))
 
     with pytest.raises(HTTPException) as exc_info:
         delete_team(team_id, services)  # type: ignore[arg-type]
@@ -466,12 +469,14 @@ def test_delete_team_state_conflict_keeps_the_handle_reachable() -> None:
 
 
 def test_delete_team_without_a_cached_handle_is_a_no_op() -> None:
-    """Evicting an absent team_id raises nothing and changes no status."""
+    """Evicting an absent team_id raises nothing and spares unrelated entries."""
     team_id = uuid.uuid4()
-    services = _lifecycle_services()
+    other_id = uuid.uuid4()
+    services = _lifecycle_services(other_id)
 
     result = delete_team(team_id, services)  # type: ignore[arg-type]
 
     assert result is None
     assert services.worker_handle.deleted == [team_id]
     assert services.runtime_cache.get(team_id) is None
+    assert services.runtime_cache.get(other_id) is not None
