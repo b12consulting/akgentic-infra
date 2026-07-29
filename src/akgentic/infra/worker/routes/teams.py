@@ -34,8 +34,10 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 class WorkerCreateTeamRequest(BaseModel):
     """Request body for POST /teams on the worker.
 
-    The worker receives the already-resolved TeamCard and user_id from the
-    server — catalog resolution happens server-side.
+    The worker receives the already-resolved TeamCard plus the caller identity
+    (user_id, user_email) from the server — catalog resolution happens
+    server-side. ``team_id`` lets the server pin the identifier it already
+    handed out; the team manager generates one when it is absent.
     """
 
     team_card: TeamCard = Field(description="Pre-resolved TeamCard for team creation")
@@ -97,7 +99,10 @@ def create_team(
     # so a team is only reachable once its handle is stored here.
     services.runtime_cache.store(runtime.id, LocalTeamHandle(runtime))
     process = services.worker_handle.get_team(runtime.id)
-    if process is None:  # pragma: no cover
+    if process is None:
+        # Drop the handle stored above: this create failed, and nothing else
+        # evicts a team that never reached the event store.
+        services.runtime_cache.remove(runtime.id)
         msg = f"Team {runtime.id} was created but not found in event store"
         raise RuntimeError(msg)
     return _process_to_response(process)

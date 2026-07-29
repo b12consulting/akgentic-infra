@@ -16,6 +16,7 @@ genuine decode-and-delegate path rather than on team creation.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -81,6 +82,16 @@ def _make_process(team_id: uuid.UUID, user_id: str) -> Process:
     )
 
 
+@dataclass(frozen=True)
+class _CreateCall:
+    """One recorded ``create_team`` invocation — typed, so assertions are checked."""
+
+    team_card: TeamCard
+    user_id: str
+    user_email: str
+    team_id: uuid.UUID | None
+
+
 class _RecordingTeamManager:
     """Records ``create_team`` kwargs and honours a caller-supplied ``team_id``.
 
@@ -89,7 +100,7 @@ class _RecordingTeamManager:
     """
 
     def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[_CreateCall] = []
         self.runtime: _FakeRuntime | None = None
 
     def create_team(
@@ -101,36 +112,43 @@ class _RecordingTeamManager:
         team_id: uuid.UUID | None,
     ) -> _FakeRuntime:
         self.calls.append(
-            {
-                "team_card": team_card,
-                "user_id": user_id,
-                "user_email": user_email,
-                "team_id": team_id,
-            }
+            _CreateCall(
+                team_card=team_card,
+                user_id=user_id,
+                user_email=user_email,
+                team_id=team_id,
+            )
         )
         self.runtime = _FakeRuntime(team_id or uuid.uuid4())
         return self.runtime
 
 
 class _RecordingWorkerHandle:
-    """Returns the created ``Process`` and records cache state at lookup time."""
+    """Returns the created ``Process`` and records cache state at lookup time.
 
-    def __init__(self, cache: LocalRuntimeCache, user_id: str) -> None:
+    ``found=False`` reproduces the created-but-not-persisted path, where
+    ``get_team`` returns ``None`` exactly as the real worker handle may.
+    """
+
+    def __init__(self, cache: LocalRuntimeCache, user_id: str, *, found: bool = True) -> None:
         self._cache = cache
         self._user_id = user_id
+        self._found = found
         self.cached_at_lookup: list[bool] = []
 
-    def get_team(self, team_id: uuid.UUID) -> Process:
+    def get_team(self, team_id: uuid.UUID) -> Process | None:
         self.cached_at_lookup.append(self._cache.get(team_id) is not None)
+        if not self._found:
+            return None
         return _make_process(team_id, self._user_id)
 
 
-def _create_services(user_id: str = "user-1") -> SimpleNamespace:
+def _create_services(user_id: str = "user-1", *, found: bool = True) -> SimpleNamespace:
     """Worker services stub for the create route: manager + handle + real cache."""
     cache = LocalRuntimeCache()
     return SimpleNamespace(
         team_manager=_RecordingTeamManager(),
-        worker_handle=_RecordingWorkerHandle(cache, user_id),
+        worker_handle=_RecordingWorkerHandle(cache, user_id, found=found),
         runtime_cache=cache,
     )
 
@@ -149,8 +167,13 @@ def test_create_team_stores_a_local_team_handle_before_the_process_lookup() -> N
     assert cached.team_id == runtime.id
     # The store must precede the worker-handle lookup and the response build.
     assert services.worker_handle.cached_at_lookup == [True]
+    # The 201 body still carries the persisted Process, field for field.
     assert response.team_id == runtime.id
     assert response.status == TeamStatus.RUNNING.value
+    assert response.name == "Test Team"
+    assert response.user_id == "user-1"
+    assert response.created_at == _NOW
+    assert response.updated_at == _NOW
 
 
 def test_create_team_makes_the_team_reachable_by_the_message_route() -> None:
@@ -183,9 +206,9 @@ def test_create_team_defaults_forward_empty_email_and_no_team_id() -> None:
     create_team(body, services)  # type: ignore[arg-type]
 
     call = services.team_manager.calls[0]
-    assert call["user_id"] == "user-1"
-    assert call["user_email"] == ""
-    assert call["team_id"] is None
+    assert call.user_id == "user-1"
+    assert call.user_email == ""
+    assert call.team_id is None
 
 
 def test_create_team_forwards_supplied_user_email_and_team_id() -> None:
@@ -202,10 +225,23 @@ def test_create_team_forwards_supplied_user_email_and_team_id() -> None:
     response = create_team(body, services)  # type: ignore[arg-type]
 
     call = services.team_manager.calls[0]
-    assert call["user_email"] == "user@example.com"
-    assert call["team_id"] == requested_id
+    assert call.user_email == "user@example.com"
+    assert call.team_id == requested_id
     assert response.team_id == requested_id
     assert services.runtime_cache.get(requested_id) is not None
+
+
+def test_create_team_evicts_the_handle_when_the_process_lookup_fails() -> None:
+    """A create that never reaches the event store leaves no handle behind."""
+    services = _create_services(found=False)
+    body = WorkerCreateTeamRequest(team_card=_make_team_card(), user_id="user-1")
+
+    with pytest.raises(RuntimeError, match="not found in event store"):
+        create_team(body, services)  # type: ignore[arg-type]
+
+    runtime = services.team_manager.runtime
+    assert runtime is not None
+    assert services.runtime_cache.get(runtime.id) is None
 
 
 def test_send_message_typed_envelope_delivers_decoded_message() -> None:
