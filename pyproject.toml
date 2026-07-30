@@ -16,7 +16,8 @@ dependencies = [
     "akgentic-agent",
     "akgentic-llm",
     "akgentic-tool",
-    "fastapi>=0.100.0",
+    "fastapi>=0.100.0,<0.137",
+    "starlette>=0.46.0,<1.1",
     "pydantic-settings>=2.0.0",
     "logfire>=0.1.0",
     "typer[all]>=0.9.0",
@@ -39,19 +40,16 @@ dev = [
     "mypy>=1.8.0",
     "ruff>=0.1.0",
     "python-dotenv>=1.0.0",
+    # Reached infra transitively via akgentic-catalog[dev] under the workspace's
+    # `uv sync --all-extras`. Standalone CI installs only akgentic-infra[dev],
+    # so mypy needs the yaml stubs declared here.
+    "types-PyYAML>=6.0",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv.sources]
-akgentic-core = { workspace = true }
-akgentic-team = { workspace = true }
-akgentic-catalog = { workspace = true }
-akgentic-agent = { workspace = true }
-akgentic-llm = { workspace = true }
-akgentic-tool = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/akgentic"]
