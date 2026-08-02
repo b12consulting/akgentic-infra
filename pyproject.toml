@@ -11,7 +11,7 @@ keywords = ["agents", "ai", "akgentic", "infrastructure"]
 
 dependencies = [
     "akgentic-core>=1.5.0,<2.0.0",
-    "akgentic-team>=1.6.0,<2.0.0",
+    "akgentic-team>=1.5.0,<2.0.0",
     "akgentic-catalog>=2.2.0",
     "akgentic-agent>=1.6.0,<2.0.0",
     "akgentic-llm>=1.6.0,<2.0.0",
