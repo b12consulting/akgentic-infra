@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import uuid
+from typing import get_type_hints
 from unittest.mock import MagicMock
 
 import pytest
 from akgentic.catalog.models.errors import EntryNotFoundError
-from akgentic.team.models import TeamStatus
+from akgentic.team.models import Process, TeamStatus
 
 from akgentic.infra.server.services.team_service import TeamService
 
@@ -146,6 +148,24 @@ def test_list_teams_status_narrows_within_user(team_service: TeamService) -> Non
 
     unfiltered = team_service.list_teams(user_id="alice")
     assert {p.team_id for p in unfiltered} == {running.team_id, stopped.team_id}
+
+
+def test_list_teams_user_id_stays_required_while_status_is_optional() -> None:
+    """``status`` is the optional filter; ``user_id`` is not, and never becomes one.
+
+    Widening ``user_id`` to ``str | None = None`` "for symmetry with the
+    Protocol" would put "list every user's teams" one forgotten argument
+    away, and nothing else in the suite would notice: every call site passes
+    ``user_id`` today, so the behavioural tests and strict mypy both stay
+    green. This asserts the shape directly because no behavioural test can.
+    """
+    sig = inspect.signature(TeamService.list_teams)
+    assert sig.parameters["user_id"].default is inspect.Parameter.empty
+    assert sig.parameters["status"].default is None
+
+    hints = get_type_hints(TeamService.list_teams)
+    assert hints["user_id"] is str
+    assert hints["return"] == list[Process]
 
 
 def test_get_team_found(team_service: TeamService) -> None:

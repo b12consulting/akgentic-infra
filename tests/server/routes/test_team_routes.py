@@ -131,8 +131,12 @@ def test_list_teams_filters_by_overridden_identity(
 
 def test_list_teams_status_running_excludes_stopped(client: TestClient) -> None:
     """?status=running returns only the running team; omitting it returns both."""
-    running_id = client.post("/teams/", json={"catalog_entry_id": "test-team"}).json()["team_id"]
-    stopped_id = client.post("/teams/", json={"catalog_entry_id": "test-team"}).json()["team_id"]
+    running = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    stopped = client.post("/teams/", json={"catalog_entry_id": "test-team"})
+    assert running.status_code == 201
+    assert stopped.status_code == 201
+    running_id = running.json()["team_id"]
+    stopped_id = stopped.json()["team_id"]
     assert client.post(f"/teams/{stopped_id}/stop").status_code == 204
 
     filtered = client.get("/teams", params={"status": "running"})
