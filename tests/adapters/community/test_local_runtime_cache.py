@@ -112,9 +112,7 @@ def _filtering_store(*seeded: Process) -> MagicMock:
     """
     rows = list(seeded)
 
-    def list_teams(
-        user_id: str | None = None, status: TeamStatus | None = None
-    ) -> list[Process]:
+    def list_teams(user_id: str | None = None, status: TeamStatus | None = None) -> list[Process]:
         matched = rows if user_id is None else [p for p in rows if p.user_id == user_id]
         return matched if status is None else [p for p in matched if p.status == status]
 
@@ -185,8 +183,8 @@ class TestLocalRuntimeCacheWarm:
 
         assert cache.get(team_id) is None
 
-    def test_warm_continues_after_failed_team(self) -> None:
-        """A broken team is skipped; the rest of the same batch is still restored."""
+    def test_warm_continues_after_failed_team(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A broken team is skipped and reported; the rest of the batch is still restored."""
         cache = LocalRuntimeCache()
         broken_id, healthy_id = uuid.uuid4(), uuid.uuid4()
         handle = MagicMock()
@@ -199,10 +197,20 @@ class TestLocalRuntimeCacheWarm:
             _make_process(healthy_id, TeamStatus.RUNNING),
         )
 
-        cache.warm(worker, event_store)  # should not raise
+        with caplog.at_level(logging.WARNING):
+            cache.warm(worker, event_store)  # should not raise
 
         assert cache.get(broken_id) is None
         assert cache.get(healthy_id) is handle
+
+        # The skip must be reported, with the traceback attached — a swallowed
+        # failure that logs nothing is indistinguishable from a team that was
+        # never in the batch.
+        failures = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(failures) == 1
+        assert failures[0].getMessage() == f"Failed to restore team {broken_id}, skipping"
+        assert failures[0].exc_info is not None
+        assert failures[0].exc_info[0] is ValueError
 
     def test_warm_no_running_teams(self) -> None:
         """No running teams → no calls to worker."""
@@ -231,11 +239,17 @@ class TestLocalRuntimeCacheWarm:
         with caplog.at_level(logging.INFO):
             cache.warm(worker, event_store)
 
-        assert caplog.messages.count("Warming cache: restoring 2 running team(s)") == 1
+        announcements = [
+            i
+            for i, m in enumerate(caplog.messages)
+            if m == "Warming cache: restoring 2 running team(s)"
+        ]
+        per_team = [i for i, m in enumerate(caplog.messages) if m.startswith("Restored team:")]
+        assert len(announcements) == 1
+        assert len(per_team) == 2
+        assert announcements[0] < min(per_team)  # announced before the loop, not inside it
 
-    def test_warm_empty_result_emits_no_warming_log(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_warm_empty_result_emits_no_warming_log(self, caplog: pytest.LogCaptureFixture) -> None:
         """An empty store returns early — no restore announcement is logged."""
         cache = LocalRuntimeCache()
 
