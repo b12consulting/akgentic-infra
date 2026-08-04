@@ -140,6 +140,7 @@ class TeamService:
         self,
         *,
         user_id: str,
+        status: TeamStatus | None = None,
         page: int = 1,
         size: int = 250,
     ) -> tuple[list[Process], int]:
@@ -147,10 +148,21 @@ class TeamService:
 
         Phase 1: the store returns the full owned set, sorted ``created_at DESC,
         team_id DESC`` and sliced here (ADR-032 §Decision 2). Stateless — a pure
-        function of ``user_id`` + ``page`` + ``size`` + store contents. An
-        out-of-range page yields an empty list with the correct total.
+        function of ``user_id`` + ``status`` + ``page`` + ``size`` + store
+        contents. An out-of-range page yields an empty list with the correct
+        total.
+
+        Both filters push into the EventStore rather than loading every team
+        into Python and filtering here, so per-request cost scales with the
+        answer rather than with the archive. ``status=None`` is *no status
+        filter* — every state is returned, ``DELETED`` included — so a caller
+        that passes no status gets exactly the result set it got before.
+        ``status`` only narrows *within* the user's teams; it never replaces
+        the owner filter. The returned total counts the filtered set, so it
+        agrees with the page it accompanies. See team-package ADR-16 (owner)
+        and ADR-23 (lifecycle state) for the Protocol changes.
         """
-        rows = self._services.event_store.list_teams(user_id=user_id)
+        rows = self._services.event_store.list_teams(user_id=user_id, status=status)
         rows.sort(key=lambda p: (p.created_at, p.team_id), reverse=True)
         total = len(rows)
         size = max(1, min(size, MAX_PAGE_SIZE))

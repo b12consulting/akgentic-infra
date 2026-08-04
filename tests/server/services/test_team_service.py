@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import get_type_hints
 from unittest.mock import MagicMock
 
 import pytest
@@ -103,11 +105,12 @@ def test_list_teams_delegates_to_event_store_with_user_id(team_service: TeamServ
 
     page, total = team_service.list_teams(user_id="alice")
 
-    # The delegating call shape — exactly one call, user_id="alice" as kwarg.
+    # The delegating call shape — exactly one call, both filters as kwargs.
     # Phase-2 (store-side offset pushdown) is out of scope: NO page/size here.
-    mock_event_store.list_teams.assert_called_once_with(user_id="alice")
+    mock_event_store.list_teams.assert_called_once_with(user_id="alice", status=None)
+    # The call must NOT be a no-arg call followed by an in-Python filter.
     assert mock_event_store.list_teams.call_args.args == ()
-    assert mock_event_store.list_teams.call_args.kwargs == {"user_id": "alice"}
+    assert mock_event_store.list_teams.call_args.kwargs == {"user_id": "alice", "status": None}
     # Empty owned set -> empty page, zero total.
     assert page == []
     assert total == 0
@@ -127,7 +130,64 @@ def test_list_teams_passes_empty_string_user_id_verbatim(team_service: TeamServi
 
     team_service.list_teams(user_id="")
 
-    mock_event_store.list_teams.assert_called_once_with(user_id="")
+    mock_event_store.list_teams.assert_called_once_with(user_id="", status=None)
+
+
+def test_list_teams_delegates_status_to_event_store(team_service: TeamService) -> None:
+    """A caller-supplied status is pushed down alongside user_id.
+
+    Companion to the user_id push-down guard above: the service must never
+    load the user's teams and filter the lifecycle state in Python. Both
+    filters travel as kwargs in a single delegated call.
+    """
+    mock_event_store = MagicMock()
+    mock_event_store.list_teams.return_value = []
+    team_service._services.event_store = mock_event_store  # type: ignore[assignment]
+
+    team_service.list_teams(user_id="alice", status=TeamStatus.RUNNING)
+
+    mock_event_store.list_teams.assert_called_once_with(user_id="alice", status=TeamStatus.RUNNING)
+    assert mock_event_store.list_teams.call_args.args == ()
+
+
+def test_list_teams_status_narrows_within_user(team_service: TeamService) -> None:
+    """status=RUNNING returns only the running team; omitting status returns both.
+
+    Runs against the wired YAML event store, so this exercises the real
+    push-down rather than a mock's recorded call.
+    """
+    running = team_service.create_team("test-team", user_id="alice")
+    stopped = team_service.create_team("test-team", user_id="alice")
+    team_service.stop_team(stopped.team_id)
+
+    only_running, running_total = team_service.list_teams(
+        user_id="alice", status=TeamStatus.RUNNING
+    )
+    assert [p.team_id for p in only_running] == [running.team_id]
+    # The total counts the filtered set, not the owned set it was drawn from.
+    assert running_total == 1
+
+    unfiltered, unfiltered_total = team_service.list_teams(user_id="alice")
+    assert {p.team_id for p in unfiltered} == {running.team_id, stopped.team_id}
+    assert unfiltered_total == 2
+
+
+def test_list_teams_user_id_stays_required_while_status_is_optional() -> None:
+    """``status`` is the optional filter; ``user_id`` is not, and never becomes one.
+
+    Widening ``user_id`` to ``str | None = None`` "for symmetry with the
+    Protocol" would put "list every user's teams" one forgotten argument
+    away, and nothing else in the suite would notice: every call site passes
+    ``user_id`` today, so the behavioural tests and strict mypy both stay
+    green. This asserts the shape directly because no behavioural test can.
+    """
+    sig = inspect.signature(TeamService.list_teams)
+    assert sig.parameters["user_id"].default is inspect.Parameter.empty
+    assert sig.parameters["status"].default is None
+
+    hints = get_type_hints(TeamService.list_teams)
+    assert hints["user_id"] is str
+    assert hints["return"] == tuple[list[Process], int]
 
 
 def test_get_team_found(team_service: TeamService) -> None:

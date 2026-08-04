@@ -27,7 +27,7 @@ from akgentic.infra.server.routes._team_access import get_team_service, require_
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.state_keys import CONNECTION_MANAGER
 from akgentic.team import EventNotFoundError
-from akgentic.team.models import Process
+from akgentic.team.models import Process, TeamStatus
 
 logger = logging.getLogger(__name__)
 
@@ -74,12 +74,23 @@ def create_team(
 def list_teams(
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
+    status: TeamStatus | None = None,
     page: int = 1,
     size: int = 250,
 ) -> TeamListResponse:
-    """List one numbered page of teams for the current user, plus the total count."""
-    logger.debug("GET /teams — page=%s size=%s", page, size)
-    page_slice, total = service.list_teams(user_id=user.user_id, page=page, size=size)
+    """List one page of the current user's teams, plus the total count.
+
+    ``status`` is validated by FastAPI against ``TeamStatus``; an unknown value
+    is a 422 raised by the framework, not handled here. Omitting it returns
+    every status, ``DELETED`` included. A status only narrows within the
+    caller's own teams — it never widens the set beyond them, and
+    ``total_count`` counts the filtered set, so it stays consistent with the
+    page slice it accompanies.
+    """
+    logger.debug("GET /teams — status=%s page=%s size=%s", status, page, size)
+    page_slice, total = service.list_teams(
+        user_id=user.user_id, status=status, page=page, size=size
+    )
     return TeamListResponse(
         teams=[_process_to_response(p) for p in page_slice],
         total_count=total,
