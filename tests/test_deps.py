@@ -159,3 +159,25 @@ class TestFakeEventStoreProtocolShape:
 
         assert _parameter_shape(fake_method) == _parameter_shape(protocol_method)
         assert get_type_hints(fake_method) == get_type_hints(protocol_method)
+
+    def test_the_protocol_surface_was_actually_discovered(self) -> None:
+        """The parametrized guard above is only real while the derivation finds methods.
+
+        An empty parameter set is reported by pytest as SKIPPED, not as a
+        failure, and the run still exits 0 — so the signature comparison could
+        quietly stop covering anything and no gate would turn red. Break the
+        derivation deliberately and this is the only test that notices.
+        """
+        assert _PROTOCOL_METHODS
+
+    def test_the_fake_does_not_inherit_from_the_protocol(self) -> None:
+        """Structural subtyping is what the fake exists to demonstrate.
+
+        ``FakeEventStore``'s whole point is that a class which merely has the
+        right shape is accepted for a protocol-typed field; making it a subclass
+        would erase the thing under test while leaving every other assertion in
+        this file green — the signature comparison included, since the overrides
+        are unchanged. ``issubclass`` cannot be used here: ``EventStore`` is not
+        ``@runtime_checkable``, so the check goes through the MRO instead.
+        """
+        assert EventStore not in FakeEventStore.__mro__
