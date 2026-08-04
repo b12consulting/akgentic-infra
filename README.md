@@ -1,6 +1,7 @@
-![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/gpiroux/73f98d6bf131b998029a9d28a0007614/raw/coverage.json)
-
 # akgentic-infra
+
+[![CI](https://github.com/b12consulting/akgentic-infra/actions/workflows/ci.yml/badge.svg)](https://github.com/b12consulting/akgentic-infra/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/gpiroux/73f98d6bf131b998029a9d28a0007614/raw/coverage.json)](https://github.com/b12consulting/akgentic-infra/actions/workflows/ci.yml)
 
 **Status:** Beta — community tier complete; department and enterprise tiers implemented in the sibling `akgentic-infra-department` and `akgentic-infra-enterprise` packages.
 
