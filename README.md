@@ -639,3 +639,9 @@ pytest packages/akgentic-infra/tests/ -m integration
 | `websockets`        | WebSocket client and server            |
 | `pyyaml`            | YAML persistence (event store, catalog)|
 | `logfire`           | Observability and logging              |
+
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](https://github.com/b12consulting/akgentic-infra/blob/master/LICENSE).
+
+> **Dual licensing & CLA** — Akgentic is available under the AGPL-3.0 open-source license. A commercial license is also planned for organizations that require alternative terms. Contact [Yuma](https://www.weareyuma.com/en/contact) for more information. External contributions will be accepted once a Contributor License Agreement (CLA) is in place. Until then, please hold off on submitting pull requests.
