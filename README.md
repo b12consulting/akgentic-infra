@@ -588,11 +588,14 @@ as well as a gate.
 
 Two properties matter operationally:
 
-- **Give every process the same value** — server, worker, and CLI. The value is read
-  at **startup only**. If the server has a prefix the worker does not, the server
-  accepts entries the worker then refuses to resolve, and the symptom surfaces at
-  team-start time rather than at write time. The worker reads this same variable
-  directly; there is no `AKGENTIC_WORKER_`-prefixed variant, by design.
+- **Give every process that resolves catalog entries the same value** — today the
+  server and the `ak-catalog` CLI. The value is read at **startup only**. If the two
+  disagree, one accepts entries the other refuses to resolve. Workers are not
+  affected: they receive an already-resolved team card rather than a catalog entry,
+  so they never consult this policy — setting the variable in a worker container is
+  harmless but does nothing. There is deliberately no `AKGENTIC_WORKER_`-prefixed
+  variant: one policy, one variable name, so any process that later begins resolving
+  entries picks it up with no extra wiring.
 - **The setting authorises; it does not import.** `GET /admin/catalog/model_types`
   lists only the classes the process has **already imported**. Your models normally
   appear because your own wiring imports them; if a module nothing imports should
