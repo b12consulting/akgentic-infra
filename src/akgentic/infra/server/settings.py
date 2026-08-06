@@ -102,10 +102,12 @@ class ServerSettings(BaseSettings):
         description=(
             "Extra module prefixes an Entry.model_type may name, on top of the "
             "always-allowed 'akgentic.'. Comma-separated (acme.,contoso.models.) "
-            'or a JSON list (["acme."]). Must carry the same value in every '
-            "process of a deployment (server, worker, CLI) — the policy is "
-            "process-wide, and a server/worker mismatch makes an entry writable "
-            "in one process and unresolvable in another."
+            'or a JSON list (["acme."]). The policy is process-wide and read at '
+            "startup, so every process that constructs or resolves catalog "
+            "entries — the server and the ak-catalog CLI — must carry the same "
+            "value, or an entry writable in one is unresolvable in the other. "
+            "Workers are unaffected: they receive a resolved TeamCard rather "
+            "than an Entry and never consult this policy."
         ),
     )
 
