@@ -214,9 +214,11 @@ def test_create_app_imports_nothing_for_a_configured_prefix(
     # ``importlib.import_module(...)`` call and a function-local ``from importlib
     # import import_module``; patching app.py's own namespace covers a module-level
     # ``from importlib import import_module`` binding — a name that must not exist
-    # on app.py today, hence raising=False. A ``__import__``-based sweep (pkgutil)
-    # is not intercepted directly, but reaching a subpackage still requires
-    # importing the package itself through one of the two points above.
+    # on app.py today, hence raising=False. NOT covered: a preload built on the
+    # ``__import__`` builtin (directly or via pkgutil) bypasses both patch points
+    # and leaves this test green. That gap is accepted — every plausible
+    # reintroduction goes through ``import_module`` — but it is a gap, not
+    # indirect coverage, and a reviewer should not read it as one.
     monkeypatch.setattr(importlib, "import_module", _spy)
     monkeypatch.setattr(app_module, "import_module", _spy, raising=False)
     # The second patch point only bites while create_app genuinely executes in that
