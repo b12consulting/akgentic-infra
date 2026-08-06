@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
+from types import ModuleType
 
 import pytest
 from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
@@ -178,3 +180,52 @@ def test_policy_is_applied_before_routes_are_mounted(
     create_app(community_services, settings)
 
     assert seen == [("akgentic.", "acme.")]
+
+
+def test_create_app_imports_nothing_for_a_configured_prefix(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """create_app never imports a deployment's modules on a configured prefix's behalf.
+
+    A boot-time preload of each configured prefix's module was prototyped for this
+    epic and deliberately withdrawn. ``import_module`` executes the target module's
+    top-level code, transitively, so a package that is broken or absent from the
+    server image would take the whole *server* down — bought in exchange for
+    populating a model-type dropdown. Neither validation nor resolution ever needed
+    it: ``load_model_type`` imports on demand, and enumeration reports whatever the
+    process has already imported. The setting authorises; it does not import.
+
+    This test is the regression pin for that decision, so whoever reintroduces the
+    preload lands here and reads the reasoning rather than finding an unexplained
+    absence. The configured prefix names a module that does not exist, which covers
+    both reintroduction shapes: a fail-fast preload raises out of create_app, and a
+    tolerant one is caught by the recorded call name.
+    """
+    real_import_module = importlib.import_module
+    imported: list[str] = []
+
+    def _spy(name: str, package: str | None = None) -> ModuleType:
+        imported.append(name)
+        return real_import_module(name, package)
+
+    # Two patch points, one per reintroduction shape: an ``importlib.import_module``
+    # call, and a module-level ``from importlib import import_module`` binding — a
+    # name that does not exist on app.py today, hence raising=False.
+    monkeypatch.setattr(importlib, "import_module", _spy)
+    monkeypatch.setattr(app_module, "import_module", _spy, raising=False)
+
+    settings = CommunitySettings(
+        workspaces_root=seeded_settings.workspaces_root,
+        catalog_model_type_prefixes=["acme.models."],
+    )
+    create_app(community_services, settings)
+
+    # The policy DID apply — this is a no-import assertion, not a no-effect one.
+    assert allowed_prefixes() == ("akgentic.", "acme.models.")
+    assert not [name for name in imported if name == "acme" or name.startswith("acme.")], imported
+    # Self-check: a spy that silently stopped recording would make the assertion
+    # above vacuously true, which is the failure mode a negative test invites.
+    importlib.import_module("json")
+    assert "json" in imported
