@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
+from akgentic.catalog import reset_allowed_prefixes
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
-from akgentic.catalog import reset_allowed_prefixes
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService

@@ -5,7 +5,7 @@ from __future__ import annotations
 import warnings
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypeGuard
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -13,6 +13,11 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from akgentic.catalog import parse_prefixes
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
+def _is_string_sequence(v: object) -> TypeGuard[Sequence[str]]:
+    """Report whether ``v`` is a non-string sequence whose items are all strings."""
+    return isinstance(v, Sequence) and all(isinstance(item, str) for item in v)
 
 
 class ServerSettings(BaseSettings):
@@ -106,7 +111,7 @@ class ServerSettings(BaseSettings):
 
     @field_validator("catalog_model_type_prefixes", mode="before")
     @classmethod
-    def _normalize_catalog_model_type_prefixes(cls, v: Sequence[str] | str | None) -> list[str]:
+    def _normalize_catalog_model_type_prefixes(cls, v: object) -> list[str]:
         """Normalize and validate through the catalog's own parser.
 
         Infra deliberately owns no splitting, stripping, trailing-dot, or
@@ -115,8 +120,20 @@ class ServerSettings(BaseSettings):
         prefix raises ``ValueError`` here, which pydantic surfaces as a
         ``ValidationError`` at settings construction rather than at the first
         catalog write.
+
+        ``v`` is typed ``object`` because a ``mode="before"`` validator is
+        handed whatever the caller passed. The shape guard is not parsing: it
+        exists because ``parse_prefixes`` assumes strings, so a programmatic
+        caller passing ``5`` or ``[1, 2]`` would otherwise surface a bare
+        ``TypeError``/``AttributeError`` from inside the catalog — pydantic
+        converts neither, so that value would escape settings construction as
+        something other than a ``ValidationError``.
         """
-        return list(parse_prefixes(v))
+        if v is None or isinstance(v, str) or _is_string_sequence(v):
+            return list(parse_prefixes(v))
+        raise ValueError(
+            f"invalid model_type prefix: {v!r} is not a string or a sequence of strings"
+        )
 
 
 class CommunitySettings(ServerSettings):

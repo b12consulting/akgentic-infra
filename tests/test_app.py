@@ -5,13 +5,16 @@ from __future__ import annotations
 import logging
 
 import pytest
-from fastapi.testclient import TestClient
-
 from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
 from akgentic.catalog import allowed_prefixes
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from akgentic.infra.server import app as app_module
 from akgentic.infra.server.app import create_app
-from akgentic.infra.server.deps import CommunityServices
-from akgentic.infra.server.settings import CommunitySettings
+from akgentic.infra.server.deps import CommunityServices, TierServices
+from akgentic.infra.server.services.team_service import TeamService
+from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 
 def test_create_app_returns_fastapi(
@@ -142,3 +145,36 @@ def test_boot_log_names_the_effective_prefix_tuple(
     assert effective == ("akgentic.", "acme.")
     messages = [record.getMessage() for record in caplog.records if record.name == app_logger.name]
     assert any(str(effective) in message for message in messages), messages
+
+
+def test_policy_is_applied_before_routes_are_mounted(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The policy is live by the time _build_app mounts the catalog routes.
+
+    Asserting the post-conditions of create_app is not enough: moving
+    set_allowed_prefixes below _build_app would leave every other test in this
+    section green while re-opening the window this ordering exists to close —
+    a route accepting an Entry under the pre-application policy.
+    """
+    settings = CommunitySettings(
+        workspaces_root=seeded_settings.workspaces_root,
+        catalog_model_type_prefixes=["acme."],
+    )
+    seen: list[tuple[str, ...]] = []
+    real_build_app = app_module._build_app
+
+    def _spy(
+        services: TierServices,
+        team_service: TeamService,
+        build_settings: ServerSettings,
+    ) -> FastAPI:
+        seen.append(allowed_prefixes())
+        return real_build_app(services, team_service, build_settings)
+
+    monkeypatch.setattr(app_module, "_build_app", _spy)
+    create_app(community_services, settings)
+
+    assert seen == [("akgentic.", "acme.")]

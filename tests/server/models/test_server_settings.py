@@ -7,9 +7,9 @@ import warnings
 from pathlib import Path
 
 import pytest
+from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
 from pydantic import ValidationError
 
-from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 
@@ -498,6 +498,18 @@ class TestCatalogModelTypePrefixesSetting:
         with pytest.raises(ValidationError, match="invalid model_type prefix"):
             ServerSettings()
 
+    @pytest.mark.parametrize("value", [5, [1, 2], b"acme."])
+    def test_non_string_value_fails_as_a_validation_error(self, value: object) -> None:
+        """A programmatic caller passing the wrong shape gets a ValidationError.
+
+        ``parse_prefixes`` assumes strings; reached with a non-string it raises
+        TypeError/AttributeError, neither of which pydantic converts. Without
+        the validator's shape guard such a value escapes settings construction
+        as a bare traceback out of the catalog instead of a field-named error.
+        """
+        with pytest.raises(ValidationError, match="invalid model_type prefix"):
+            ServerSettings(catalog_model_type_prefixes=value)
+
     def test_description_present(self) -> None:
         """The field carries an operator-facing description."""
         field = ServerSettings.model_fields["catalog_model_type_prefixes"]
@@ -511,5 +523,10 @@ class TestCatalogModelTypePrefixesSetting:
         lazy read. Two differently-named variables for one process-wide policy is
         exactly the failure mode this pins.
         """
-        derived = ServerSettings.model_config["env_prefix"] + "catalog_model_type_prefixes".upper()
+        field_name = "catalog_model_type_prefixes"
+        # Without this the field name below is just a literal: renaming the
+        # field would leave the derivation intact and this test green, which is
+        # the exact silent split it exists to prevent.
+        assert field_name in ServerSettings.model_fields
+        derived = ServerSettings.model_config["env_prefix"] + field_name.upper()
         assert derived == CATALOG_PREFIXES_ENV_VAR
