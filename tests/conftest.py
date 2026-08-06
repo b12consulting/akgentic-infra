@@ -11,6 +11,8 @@ import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
+from akgentic.catalog import reset_allowed_prefixes
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
@@ -112,6 +114,25 @@ def _ensure_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set a dummy OPENAI_API_KEY so BaseAgent actors can initialise in unit tests."""
     if not os.environ.get("OPENAI_API_KEY"):
         monkeypatch.setenv("OPENAI_API_KEY", "test-dummy-key")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_catalog_model_type_prefixes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[None, None, None]:
+    """Keep the catalog's process-wide prefix allowlist from leaking between tests.
+
+    The allowlist is a module global that *latches*: once resolved — by the
+    first read, or by ``create_app`` applying the setting — the environment is
+    never consulted again for the life of the process. Since ``create_app``
+    resolves it, every app-building test in this suite would otherwise pin the
+    policy for whatever runs next, and a test that sets the variable would pass
+    or fail by collection order. Suite-wide and autouse so no test can forget.
+    """
+    monkeypatch.delenv(CATALOG_PREFIXES_ENV_VAR, raising=False)
+    reset_allowed_prefixes()
+    yield
+    reset_allowed_prefixes()
 
 
 @pytest.fixture()

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
 from fastapi.testclient import TestClient
 
+from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
+from akgentic.catalog import allowed_prefixes
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
@@ -68,3 +73,72 @@ def test_create_app_includes_webhook_routes(
     app = create_app(community_services, seeded_settings)
     route_paths = [r.path for r in app.routes]  # type: ignore[union-attr]
     assert "/webhook/{channel}" in route_paths
+
+
+# ---------------------------------------------------------------------------
+# Catalog model_type allowlist application
+#
+# The catalog's prefix policy is a process-wide global; the suite-wide autouse
+# fixture in conftest.py resets it and clears the env var around each test.
+# ---------------------------------------------------------------------------
+
+
+def test_explicit_settings_beat_ambient_environment(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicitly-constructed settings object wins over the environment.
+
+    The catalog would otherwise resolve its own policy lazily from the env var;
+    create_app calling set_allowed_prefixes makes the passed settings the single
+    authority, so a stale ambient value cannot silently widen the allowlist.
+    """
+    monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, "acme.")
+    settings = CommunitySettings(
+        workspaces_root=seeded_settings.workspaces_root,
+        catalog_model_type_prefixes=["contoso."],
+    )
+    create_app(community_services, settings)
+    assert allowed_prefixes() == ("akgentic.", "contoso.")
+
+
+def test_empty_prefix_list_leaves_base_prefix_only(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+) -> None:
+    """An empty list is neither a narrowing nor a crash — akgentic. survives."""
+    assert seeded_settings.catalog_model_type_prefixes == []
+    create_app(community_services, seeded_settings)
+    assert allowed_prefixes() == ("akgentic.",)
+
+
+def test_boot_log_names_the_effective_prefix_tuple(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One INFO line names the effective tuple.
+
+    Server and worker resolve this policy independently; the boot log is the
+    only thing that makes a mismatch between them diagnosable from logs alone.
+    """
+    settings = CommunitySettings(
+        workspaces_root=seeded_settings.workspaces_root,
+        catalog_model_type_prefixes=["acme."],
+    )
+    app_logger = logging.getLogger("akgentic.infra.server.app")
+    caplog.set_level(logging.INFO, logger=app_logger.name)
+    # create_app calls configure_logging(), which replaces the ROOT logger's
+    # handlers wholesale — dropping caplog's own handler mid-call. Attaching it
+    # to the module logger instead keeps the boot line captured.
+    app_logger.addHandler(caplog.handler)
+    try:
+        create_app(community_services, settings)
+    finally:
+        app_logger.removeHandler(caplog.handler)
+
+    effective = allowed_prefixes()
+    assert effective == ("akgentic.", "acme.")
+    messages = [record.getMessage() for record in caplog.records if record.name == app_logger.name]
+    assert any(str(effective) in message for message in messages), messages

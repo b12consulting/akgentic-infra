@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends as DependsParam
 from fastapi.routing import APIRoute
 
+from akgentic.catalog import allowed_prefixes, set_allowed_prefixes
 from akgentic.catalog.api import add_exception_handlers
 from akgentic.catalog.api._settings import CatalogRouterSettings
 from akgentic.catalog.api.router import build_router as build_catalog_router
@@ -79,6 +80,12 @@ def create_app(
     settings = settings or ServerSettings()
     configure_logging(settings.log_level)
     logger.info("Logging configured: level=%s", settings.log_level)
+    # Make the passed settings authoritative over the catalog's own lazy read of
+    # AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES, before any route can accept an entry.
+    # Deliberately here and not in ``_build_app``: that is the shared test-facing
+    # assembler and must not acquire a process-global side effect.
+    set_allowed_prefixes(settings.catalog_model_type_prefixes)
+    logger.info("Catalog model_type allowlist: %s", allowed_prefixes())
     # ``workspaces_root`` is declared on ``CommunitySettings``; base
     # ``ServerSettings`` callers fall back to the same default the field
     # declares so ``TeamService`` always has a valid FS-cleanup root.

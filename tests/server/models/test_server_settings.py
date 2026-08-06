@@ -7,7 +7,9 @@ import warnings
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 
@@ -143,6 +145,7 @@ class TestSettingsHierarchy:
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "ws_reader_pool_size",
+            "catalog_model_type_prefixes",
         }
         assert server_fields == expected, (
             f"ServerSettings fields mismatch: got {server_fields}, expected {expected}"
@@ -446,3 +449,67 @@ class TestWsReaderPoolSizeSetting:
 
         with pytest.raises(ValidationError, match="ws_reader_pool_size"):
             ServerSettings(ws_reader_pool_size=-1)
+
+
+class TestCatalogModelTypePrefixesSetting:
+    """ServerSettings.catalog_model_type_prefixes — the catalog allowlist knob.
+
+    The env var is cleared and the catalog's process-wide policy reset around
+    every test by the suite-wide autouse fixture in ``tests/conftest.py``.
+    """
+
+    def test_default_is_empty_list(self) -> None:
+        """With the env var absent the field defaults to an empty list."""
+        assert ServerSettings().catalog_model_type_prefixes == []
+
+    def test_comma_form_single_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A bare comma-form value parses (this is what NoDecode buys us)."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, "acme.")
+        assert ServerSettings().catalog_model_type_prefixes == ["acme."]
+
+    def test_json_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The JSON-array form parses to the same list."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, '["acme."]')
+        assert ServerSettings().catalog_model_type_prefixes == ["acme."]
+
+    def test_comma_form_multiple_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A multi-value comma form splits in declaration order."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, "acme.,contoso.models.")
+        assert ServerSettings().catalog_model_type_prefixes == ["acme.", "contoso.models."]
+
+    def test_missing_trailing_dot_is_normalized(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Normalization is delegated to the catalog parser, not reimplemented."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, "acme")
+        assert ServerSettings().catalog_model_type_prefixes == ["acme."]
+
+    def test_explicit_list_construction(self) -> None:
+        """An explicitly-passed list goes through the same validator."""
+        settings = ServerSettings(catalog_model_type_prefixes=["acme"])
+        assert settings.catalog_model_type_prefixes == ["acme."]
+
+    @pytest.mark.parametrize("raw", ["*", "acme-core.", "."])
+    def test_malformed_value_fails_at_construction(
+        self,
+        raw: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A malformed prefix fails at settings construction, not at first write."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, raw)
+        with pytest.raises(ValidationError, match="invalid model_type prefix"):
+            ServerSettings()
+
+    def test_description_present(self) -> None:
+        """The field carries an operator-facing description."""
+        field = ServerSettings.model_fields["catalog_model_type_prefixes"]
+        assert field.description is not None
+
+    def test_env_var_name_matches_the_catalog_allowlist_variable(self) -> None:
+        """One variable serves both layers — a rename on either side breaks here.
+
+        The catalog reads this variable lazily as its own default in every
+        process; infra reads it as a typed field and then overrides the catalog's
+        lazy read. Two differently-named variables for one process-wide policy is
+        exactly the failure mode this pins.
+        """
+        derived = ServerSettings.model_config["env_prefix"] + "catalog_model_type_prefixes".upper()
+        assert derived == CATALOG_PREFIXES_ENV_VAR
