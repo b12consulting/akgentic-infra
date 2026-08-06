@@ -602,9 +602,9 @@ Two properties matter operationally:
   normally, because resolution imports on demand. Confirm the prefix took effect from
   the boot log line naming the effective policy:
 
-```text
-INFO [akgentic.infra.server.app] Catalog model_type allowlist: ('akgentic.', 'acme.core.models.')
-```
+  ```text
+  2026-01-15 09:00:00 INFO     [akgentic.infra.server.app] Catalog model_type allowlist: ('akgentic.', 'acme.core.models.')
+  ```
 
 ## Installation
 

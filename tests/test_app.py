@@ -210,11 +210,19 @@ def test_create_app_imports_nothing_for_a_configured_prefix(
         imported.append(name)
         return real_import_module(name, package)
 
-    # Two patch points, one per reintroduction shape: an ``importlib.import_module``
-    # call, and a module-level ``from importlib import import_module`` binding — a
-    # name that does not exist on app.py today, hence raising=False.
+    # Two patch points. Patching the attribute on ``importlib`` covers both an
+    # ``importlib.import_module(...)`` call and a function-local ``from importlib
+    # import import_module``; patching app.py's own namespace covers a module-level
+    # ``from importlib import import_module`` binding — a name that must not exist
+    # on app.py today, hence raising=False. A ``__import__``-based sweep (pkgutil)
+    # is not intercepted directly, but reaching a subpackage still requires
+    # importing the package itself through one of the two points above.
     monkeypatch.setattr(importlib, "import_module", _spy)
     monkeypatch.setattr(app_module, "import_module", _spy, raising=False)
+    # The second patch point only bites while create_app genuinely executes in that
+    # namespace. Re-exporting create_app from another module would retire the
+    # module-level-binding shape's coverage while leaving this test green.
+    assert create_app.__globals__ is vars(app_module)
 
     settings = CommunitySettings(
         workspaces_root=seeded_settings.workspaces_root,
