@@ -7,6 +7,8 @@ import warnings
 from pathlib import Path
 
 import pytest
+from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
+from pydantic import ValidationError
 
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
@@ -143,6 +145,7 @@ class TestSettingsHierarchy:
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "ws_reader_pool_size",
+            "catalog_model_type_prefixes",
         }
         assert server_fields == expected, (
             f"ServerSettings fields mismatch: got {server_fields}, expected {expected}"
@@ -446,3 +449,84 @@ class TestWsReaderPoolSizeSetting:
 
         with pytest.raises(ValidationError, match="ws_reader_pool_size"):
             ServerSettings(ws_reader_pool_size=-1)
+
+
+class TestCatalogModelTypePrefixesSetting:
+    """ServerSettings.catalog_model_type_prefixes — the catalog allowlist knob.
+
+    The env var is cleared and the catalog's process-wide policy reset around
+    every test by the suite-wide autouse fixture in ``tests/conftest.py``.
+    """
+
+    def test_default_is_empty_list(self) -> None:
+        """With the env var absent the field defaults to an empty list."""
+        assert ServerSettings().catalog_model_type_prefixes == []
+
+    def test_comma_form_single_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A bare comma-form value parses (this is what NoDecode buys us)."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, "acme.")
+        assert ServerSettings().catalog_model_type_prefixes == ["acme."]
+
+    def test_json_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The JSON-array form parses to the same list."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, '["acme."]')
+        assert ServerSettings().catalog_model_type_prefixes == ["acme."]
+
+    def test_comma_form_multiple_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A multi-value comma form splits in declaration order."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, "acme.,contoso.models.")
+        assert ServerSettings().catalog_model_type_prefixes == ["acme.", "contoso.models."]
+
+    def test_missing_trailing_dot_is_normalized(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Normalization is delegated to the catalog parser, not reimplemented."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, "acme")
+        assert ServerSettings().catalog_model_type_prefixes == ["acme."]
+
+    def test_explicit_list_construction(self) -> None:
+        """An explicitly-passed list goes through the same validator."""
+        settings = ServerSettings(catalog_model_type_prefixes=["acme"])
+        assert settings.catalog_model_type_prefixes == ["acme."]
+
+    @pytest.mark.parametrize("raw", ["*", "acme-core.", "."])
+    def test_malformed_value_fails_at_construction(
+        self,
+        raw: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A malformed prefix fails at settings construction, not at first write."""
+        monkeypatch.setenv(CATALOG_PREFIXES_ENV_VAR, raw)
+        with pytest.raises(ValidationError, match="invalid model_type prefix"):
+            ServerSettings()
+
+    @pytest.mark.parametrize("value", [5, [1, 2], b"acme."])
+    def test_non_string_value_fails_as_a_validation_error(self, value: object) -> None:
+        """A programmatic caller passing the wrong shape gets a ValidationError.
+
+        ``parse_prefixes`` assumes strings; reached with a non-string it raises
+        TypeError/AttributeError, neither of which pydantic converts. Without
+        the validator's shape guard such a value escapes settings construction
+        as a bare traceback out of the catalog instead of a field-named error.
+        """
+        with pytest.raises(ValidationError, match="invalid model_type prefix"):
+            ServerSettings(catalog_model_type_prefixes=value)
+
+    def test_description_present(self) -> None:
+        """The field carries an operator-facing description."""
+        field = ServerSettings.model_fields["catalog_model_type_prefixes"]
+        assert field.description is not None
+
+    def test_env_var_name_matches_the_catalog_allowlist_variable(self) -> None:
+        """One variable serves both layers — a rename on either side breaks here.
+
+        The catalog reads this variable lazily as its own default in every
+        process; infra reads it as a typed field and then overrides the catalog's
+        lazy read. Two differently-named variables for one process-wide policy is
+        exactly the failure mode this pins.
+        """
+        field_name = "catalog_model_type_prefixes"
+        # Without this the field name below is just a literal: renaming the
+        # field would leave the derivation intact and this test green, which is
+        # the exact silent split it exists to prevent.
+        assert field_name in ServerSettings.model_fields
+        derived = ServerSettings.model_config["env_prefix"] + field_name.upper()
+        assert derived == CATALOG_PREFIXES_ENV_VAR

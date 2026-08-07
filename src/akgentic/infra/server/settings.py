@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Annotated, TypeGuard
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from akgentic.catalog import parse_prefixes
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+
+def _is_string_sequence(v: object) -> TypeGuard[Sequence[str]]:
+    """Report whether ``v`` is a non-string sequence whose items are all strings."""
+    return isinstance(v, Sequence) and all(isinstance(item, str) for item in v)
 
 
 class ServerSettings(BaseSettings):
@@ -83,6 +92,50 @@ class ServerSettings(BaseSettings):
             "cross-subsystem starvation."
         ),
     )
+    # ``NoDecode`` is load-bearing, not decoration: pydantic-settings
+    # json-decodes complex fields in its env source *before* any mode="before"
+    # validator runs, so a bare ``list[str]`` would make the comma form raise
+    # SettingsError at construction and never reach the validator below.
+    # ``cors_origins`` above is not a precedent — it is JSON-only.
+    catalog_model_type_prefixes: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Extra module prefixes an Entry.model_type may name, on top of the "
+            "always-allowed 'akgentic.'. Comma-separated (acme.,contoso.models.) "
+            'or a JSON list (["acme."]). The policy is process-wide and read at '
+            "startup, so every process that constructs or resolves catalog "
+            "entries — the server and the ak-catalog CLI — must carry the same "
+            "value, or an entry writable in one is unresolvable in the other. "
+            "Workers are unaffected: they receive a resolved TeamCard rather "
+            "than an Entry and never consult this policy."
+        ),
+    )
+
+    @field_validator("catalog_model_type_prefixes", mode="before")
+    @classmethod
+    def _normalize_catalog_model_type_prefixes(cls, v: object) -> list[str]:
+        """Normalize and validate through the catalog's own parser.
+
+        Infra deliberately owns no splitting, stripping, trailing-dot, or
+        identifier-shape logic — one parser, so the settings field and the
+        catalog's own lazy environment read can never disagree. A malformed
+        prefix raises ``ValueError`` here, which pydantic surfaces as a
+        ``ValidationError`` at settings construction rather than at the first
+        catalog write.
+
+        ``v`` is typed ``object`` because a ``mode="before"`` validator is
+        handed whatever the caller passed. The shape guard is not parsing: it
+        exists because ``parse_prefixes`` assumes strings, so a programmatic
+        caller passing ``5`` or ``[1, 2]`` would otherwise surface a bare
+        ``TypeError``/``AttributeError`` from inside the catalog — pydantic
+        converts neither, so that value would escape settings construction as
+        something other than a ``ValidationError``.
+        """
+        if v is None or isinstance(v, str) or _is_string_sequence(v):
+            return list(parse_prefixes(v))
+        raise ValueError(
+            f"invalid model_type prefix: {v!r} is not a string or a sequence of strings"
+        )
 
 
 class CommunitySettings(ServerSettings):

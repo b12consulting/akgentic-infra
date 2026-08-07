@@ -553,6 +553,7 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_LOG_LEVEL`           | `INFO`        | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Invalid values fall back to `INFO`. |
 | `AKGENTIC_CORS_ORIGINS`        | `["*"]`       | Allowed CORS origins (JSON list) |
 | `AKGENTIC_FRONTEND_ADAPTER`    | `None`        | Frontend adapter plugin FQDN     |
+| `AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES` | `[]` | Extra module prefixes a catalog `Entry.model_type` may name, on top of the always-present `akgentic.`. Comma-separated or JSON list. Startup-only — see [Catalog model_type prefixes](#catalog-model_type-prefixes) below. |
 
 ### Community Settings (extends server)
 
@@ -562,6 +563,51 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_EVENT_STORE_PATH`    | `data/event_store` | Root directory for event store persistence |
 | `AKGENTIC_CATALOG_PATH`        | `data/catalog` | Catalog directory for team/agent/tool/template definitions |
 | `AKGENTIC_CHANNEL_REGISTRY_PATH` | `None`      | Path to channel registry YAML; disabled when unset |
+
+### Catalog `model_type` prefixes
+
+A catalog entry's `model_type` is a dotted class path, restricted by default to the
+`akgentic.` namespace. A deployment that defines its own Pydantic config models
+widens that allowlist with `AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES`. Both formats are
+accepted:
+
+```bash
+# comma-separated
+AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES=acme.core.models.,contoso.models.
+
+# JSON list — equivalent
+AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES=["acme.core.models.","contoso.models."]
+```
+
+`akgentic.` is always present and can never be removed; the setting only ever
+widens. A missing trailing dot is added for you (`acme` becomes `acme.`), and a
+malformed value fails at settings construction. Prefer the narrowest prefix that
+covers your models (`acme.core.models.`, not `acme.`) — any catalog entry can cause
+any module under an allowed prefix to be imported, so the setting is a blast radius
+as well as a gate.
+
+Two properties matter operationally:
+
+- **Give every process that resolves catalog entries the same value** — today the
+  server and the `ak-catalog` CLI. The value is read at **startup only**. If the two
+  disagree, one accepts entries the other refuses to resolve. Workers are not
+  affected: they receive an already-resolved team card rather than a catalog entry,
+  so they never consult this policy — setting the variable in a worker container is
+  harmless but does nothing. There is deliberately no `AKGENTIC_WORKER_`-prefixed
+  variant: one policy, one variable name, so any process that later begins resolving
+  entries picks it up with no extra wiring.
+- **The setting authorises; it does not import.** `GET /admin/catalog/model_types`
+  lists only the classes the process has **already imported**. Your models normally
+  appear because your own wiring imports them; if a module nothing imports should
+  appear in the picker, import it from your startup code — nothing imports on a
+  prefix's behalf. An empty-looking picker with a correctly-set prefix is therefore
+  expected rather than a bug: entries under that prefix still validate and resolve
+  normally, because resolution imports on demand. Confirm the prefix took effect from
+  the boot log line naming the effective policy:
+
+  ```text
+  2026-01-15 09:00:00 INFO     [akgentic.infra.server.app] Catalog model_type allowlist: ('akgentic.', 'acme.core.models.')
+  ```
 
 ## Installation
 

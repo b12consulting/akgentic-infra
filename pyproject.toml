@@ -1,6 +1,6 @@
 [project]
 name = "akgentic-infra"
-version = "1.8.1"
+version = "1.8.2"
 description = "Infrastructure backend: protocol abstractions and community-tier implementations for akgentic"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,7 +22,7 @@ keywords = ["agents", "ai", "akgentic", "infrastructure"]
 dependencies = [
     "akgentic-core>=1.5.0",
     "akgentic-team>=1.5.0",
-    "akgentic-catalog>=2.2.0",
+    "akgentic-catalog>=2.2.2",
     "akgentic-agent>=1.6.0",
     "akgentic-llm>=1.6.0",
     "akgentic-tool>=1.6.0",
@@ -36,7 +36,9 @@ dependencies = [
     # lazy-inclusion model.
     "fastapi>=0.100.0,<0.137",
     "starlette>=0.46.0,<1.1",
-    "pydantic-settings>=2.0.0",
+    # >=2.3.0 for the NoDecode annotation, which ServerSettings.catalog_model_type_prefixes
+    # needs to suppress the env source's pre-validator JSON decode (see settings.py).
+    "pydantic-settings>=2.3.0",
     "logfire>=0.1.0",
     "typer[all]>=0.9.0",
     "httpx>=0.27.0",
