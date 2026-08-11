@@ -41,6 +41,7 @@ class _RaisingPlacement:
         user_email: str = "",
         team_id: uuid.UUID | None = None,
         catalog_namespace: str | None = None,
+        metadata: object | None = None,
     ) -> object:
         raise self._error
 

@@ -67,6 +67,8 @@ def test_create_team_forwards_user_email_and_team_id(team_service: TeamService) 
         "user_email": "alice@example.com",
         "team_id": explicit_id,
         "catalog_namespace": "test-team",
+        # Always forwarded, None when the caller supplied no metadata.
+        "metadata": None,
     }
 
 

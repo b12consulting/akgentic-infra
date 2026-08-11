@@ -10,7 +10,21 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class CreateTeamRequest(BaseModel):
-    """Request body for POST /teams."""
+    """Request body for POST /teams.
+
+    ``metadata`` is raw JSON that the route deserializes immediately into the
+    team's declared metadata model; it never becomes application state, so this
+    is NOT the ``dict[str, Any]`` anti-pattern (Golden Rule #1) — the same
+    documented exception ``SendMessageRequest.message`` carries.
+
+    It differs from that field in the way that matters: ``message`` is a
+    polymorphic *wire envelope* whose ``__model__`` tag names the class to
+    reconstruct, whereas this field carries **no type name at all**. The type is
+    resolved server-side from the team's ``TeamCard.metadata_type`` — catalog
+    data the deployment controls — and the body is validated against it. A
+    ``__model__`` key here is therefore a request error (422), never an
+    instruction. See ADR-24 §D3.
+    """
 
     catalog_namespace: str = Field(
         description="Catalog namespace (v2) whose team entry resolves into a TeamCard"
@@ -18,6 +32,14 @@ class CreateTeamRequest(BaseModel):
     params: dict[str, str] = Field(
         default_factory=dict,
         description="Pass-through configuration parameters",
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Plain-JSON business metadata, validated against the metadata_type the "
+            "team's catalog entry declares. Names no type: a __model__ key at any "
+            "depth is rejected with 422."
+        ),
     )
 
 
@@ -30,6 +52,14 @@ class TeamResponse(BaseModel):
     user_id: str = Field(description="Owner user identifier")
     created_at: datetime = Field(description="Team creation timestamp")
     updated_at: datetime = Field(description="Last status change timestamp")
+    metadata: dict[str, object] | None = Field(
+        default=None,
+        description=(
+            "The team's business metadata as plain JSON, or null when it carries "
+            "none. Never includes the __model__ tag — that is a persistence "
+            "concern, and this value is accepted verbatim back on create/update."
+        ),
+    )
 
 
 class TeamListResponse(BaseModel):

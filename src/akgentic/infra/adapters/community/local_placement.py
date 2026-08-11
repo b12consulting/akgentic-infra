@@ -12,6 +12,7 @@ from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
 
 if TYPE_CHECKING:
+    from akgentic.core.utils.serializer import SerializableBaseModel
     from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import TeamCard
 
@@ -48,6 +49,7 @@ class LocalPlacement:
         user_email: str = "",
         team_id: uuid.UUID | None = None,
         catalog_namespace: str | None = None,
+        metadata: SerializableBaseModel | None = None,
     ) -> TeamHandle:
         """Create a team in the local process and return a handle.
 
@@ -61,6 +63,9 @@ class LocalPlacement:
                 the team was instantiated from. Forwarded verbatim to
                 ``TeamManager.create_team`` so the persisted ``Process``
                 records it. ``None`` for teams not sourced from a catalog.
+            metadata: Pre-validated business metadata, forwarded verbatim to
+                ``TeamManager.create_team`` so it lands on the persisted
+                ``Process.metadata`` alongside its derived index.
 
         Returns:
             A LocalTeamHandle for interacting with the newly created team.
@@ -78,6 +83,7 @@ class LocalPlacement:
                 user_email=user_email,
                 team_id=team_id,
                 catalog_namespace=catalog_namespace,
+                metadata=metadata,
             )
         except PlacementError:
             # Already typed — re-raise so the create-path surfaces the carried

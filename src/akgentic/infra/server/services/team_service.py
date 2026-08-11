@@ -6,7 +6,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.orchestrator import SentMessage
@@ -15,6 +15,7 @@ from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.deps import TierServices
+from akgentic.infra.server.services._metadata_payload import validate_metadata
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
 
 if TYPE_CHECKING:
@@ -81,6 +82,7 @@ class TeamService:
         user_id: str,
         user_email: str = "",
         team_id: uuid.UUID | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Process:
         """Resolve a catalog namespace to a TeamCard and create a running team.
 
@@ -95,6 +97,11 @@ class TeamService:
             user_email: Email of the user creating the team.
             team_id: Optional caller-supplied team identifier; the placement
                 layer auto-generates a UUID when None.
+            metadata: Optional plain-JSON business metadata. Validated against
+                the ``metadata_type`` the resolved card declares — the client
+                never names the type — and forwarded down the create path so it
+                lands on the persisted ``Process.metadata``. The derived index
+                is computed once, inside ``akgentic-team``, never here.
 
         Returns:
             The persisted ``Process`` for the newly created team.
@@ -105,6 +112,10 @@ class TeamService:
                 ``CatalogValidationError``; this layer translates it so
                 the existing teams router's ``EntryNotFoundError → 404``
                 handler applies unchanged.
+            MetadataValidationError: If ``metadata`` carries a ``__model__`` key,
+                is supplied for a card declaring no contract, or fails the
+                declared schema. Raised before placement runs, so a rejected
+                body never leaves a half-created team behind.
         """
         logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
         try:
@@ -114,12 +125,15 @@ class TeamService:
             # exception so the teams router's error-handling stays a no-op
             # for this story (Story 18.3 consolidates error handling).
             raise EntryNotFoundError(catalog_namespace) from exc
+        # Before placement, never after: nothing is created when this rejects.
+        validated_metadata = validate_metadata(team_card.metadata_type, metadata)
         handle = self._services.placement.create_team(
             team_card,
             user_id,
             user_email=user_email,
             team_id=team_id,
             catalog_namespace=catalog_namespace,
+            metadata=validated_metadata,
         )
         self._cache.store(handle.team_id, handle)
         # Consistency invariant: create_team() writes to event store, so

@@ -53,7 +53,10 @@ class FakeEventStore:
         """No-op stub."""
 
     def list_teams(
-        self, user_id: str | None = None, status: TeamStatus | None = None
+        self,
+        user_id: str | None = None,
+        status: TeamStatus | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> list[Process]:
         """Return empty list."""
         return []
@@ -134,6 +137,8 @@ class TestFakeEventStoreProtocolShape:
         assert store.list_teams(user_id="u1") == []
         assert store.list_teams(status=TeamStatus.RUNNING) == []
         assert store.list_teams(user_id="u1", status=TeamStatus.RUNNING) == []
+        assert store.list_teams(metadata={"tenant": "acme"}) == []
+        assert store.list_teams(user_id="u1", metadata={"tenant": "acme"}) == []
 
     @pytest.mark.parametrize("method_name", _PROTOCOL_METHODS)
     def test_method_signature_matches_the_protocol(self, method_name: str) -> None:

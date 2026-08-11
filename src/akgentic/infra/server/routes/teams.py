@@ -9,6 +9,7 @@ from typing import NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from akgentic.catalog.models.errors import EntryNotFoundError
+from akgentic.infra.errors import MetadataValidationError
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.models import (
     AgentStateListResponse,
@@ -24,6 +25,7 @@ from akgentic.infra.server.models import (
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
 from akgentic.infra.server.routes._team_access import get_team_service, require_team_access
+from akgentic.infra.server.services._metadata_payload import dump_metadata
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.state_keys import CONNECTION_MANAGER
 from akgentic.team import EventNotFoundError
@@ -35,7 +37,13 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 
 
 def _process_to_response(process: Process) -> TeamResponse:
-    """Convert a Process model to a TeamResponse."""
+    """Convert a Process model to a TeamResponse.
+
+    The single conversion point for every route returning a ``TeamResponse``,
+    which is why the metadata ``__model__`` strip belongs here: the persisted
+    value carries the tag for the store's benefit, the wire never does, and one
+    site means no route can forget.
+    """
     team_name = process.team_card.name or process.catalog_namespace or str(process.team_id)
     return TeamResponse(
         team_id=process.team_id,
@@ -44,6 +52,7 @@ def _process_to_response(process: Process) -> TeamResponse:
         user_id=process.user_id,
         created_at=process.created_at,
         updated_at=process.updated_at,
+        metadata=dump_metadata(process.metadata),
     )
 
 
@@ -53,14 +62,24 @@ def create_team(
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
 ) -> TeamResponse:
-    """Create a new team from a catalog namespace."""
+    """Create a new team from a catalog namespace, optionally with metadata.
+
+    ``body.metadata`` is plain JSON validated server-side against the type the
+    team's catalog entry declares; a rejected body is a 422 and creates nothing.
+    """
     logger.info("POST /teams — catalog_namespace=%s", body.catalog_namespace)
     try:
         process = service.create_team(
             catalog_namespace=body.catalog_namespace,
             user_id=user.user_id,
             user_email=user.email,
+            metadata=body.metadata,
         )
+    except MetadataValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would report a validation failure as a conflict.
+        logger.warning("Team creation rejected — invalid metadata: %s", exc.detail)
+        raise HTTPException(status_code=422, detail=exc.detail) from None
     except EntryNotFoundError:
         logger.warning(
             "Team creation failed: catalog namespace %s not found",

@@ -687,15 +687,23 @@ def test_runtime_cache_method_count() -> None:
 
 def test_placement_strategy_return_type() -> None:
     """PlacementStrategy.create_team returns TeamHandle."""
+    from akgentic.core.utils.serializer import SerializableBaseModel
     from akgentic.team.models import TeamCard
 
     from akgentic.infra.protocols import PlacementStrategy, TeamHandle
 
     hints = get_type_hints(
         PlacementStrategy.create_team,
-        localns={"TeamCard": TeamCard, "TeamHandle": TeamHandle},
+        localns={
+            "TeamCard": TeamCard,
+            "TeamHandle": TeamHandle,
+            "SerializableBaseModel": SerializableBaseModel,
+        },
     )
     assert hints["return"] is TeamHandle
+    # Optional metadata pass-through: the seam that carries a validated model
+    # from the service down to the persisted Process.
+    assert hints["metadata"] == SerializableBaseModel | None
 
 
 def test_recovery_policy_return_type() -> None:
