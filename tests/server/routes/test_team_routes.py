@@ -277,3 +277,104 @@ def test_pages_consistent_across_independent_replicas(
 
     assert page1.isdisjoint(page2)  # B did not re-show A's page
     assert len(page1 | page2) == 4  # contiguous walk across the replica boundary
+
+
+# --- Optional ?status= lifecycle filter (Epic 49) ---
+#
+# The filtered requests use "/teams" with no trailing slash: that is the
+# registered path, so the query string never depends on Starlette's
+# slash-redirect preserving it.
+
+
+def test_list_teams_status_running_excludes_stopped(client: TestClient) -> None:
+    """?status=running returns only the running team; omitting it returns both."""
+    running = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    stopped = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    assert running.status_code == 201
+    assert stopped.status_code == 201
+    running_id = running.json()["team_id"]
+    stopped_id = stopped.json()["team_id"]
+    assert client.post(f"/teams/{stopped_id}/stop").status_code == 204
+
+    filtered = client.get("/teams", params={"status": "running"})
+    assert filtered.status_code == 200
+    assert [t["team_id"] for t in filtered.json()["teams"]] == [running_id]
+
+    unfiltered = client.get("/teams")
+    assert unfiltered.status_code == 200
+    assert {t["team_id"] for t in unfiltered.json()["teams"]} == {running_id, stopped_id}
+
+
+def test_list_teams_status_total_count_is_filtered(client: TestClient) -> None:
+    """total_count counts the STATUS-FILTERED set, not the whole owned set.
+
+    A total carried over from the unfiltered query would tell a paginating
+    client there are more pages than the filter can ever produce. Both teams
+    are owned by the same identity, so only the status filter can move the
+    number.
+    """
+    _create_teams(client, 3)
+    unfiltered = client.get("/teams")
+    assert unfiltered.status_code == 200
+    stopped_id = unfiltered.json()["teams"][0]["team_id"]
+    assert client.post(f"/teams/{stopped_id}/stop").status_code == 204
+
+    assert unfiltered.json()["total_count"] == 3
+
+    filtered = client.get("/teams", params={"status": "running"})
+    assert filtered.status_code == 200
+    body = filtered.json()
+    assert body["total_count"] == 2
+    assert len(body["teams"]) == 2
+
+    stopped_only = client.get("/teams", params={"status": "stopped"})
+    assert stopped_only.status_code == 200
+    assert stopped_only.json()["total_count"] == 1
+
+
+def test_list_teams_status_paginates_within_the_filtered_set(client: TestClient) -> None:
+    """?status= composes with ?page=/?size=: the page slices the filtered set."""
+    _create_teams(client, 4)
+    stopped_id = client.get("/teams").json()["teams"][0]["team_id"]
+    assert client.post(f"/teams/{stopped_id}/stop").status_code == 204
+
+    page1 = client.get("/teams", params={"status": "running", "page": 1, "size": 2})
+    page2 = client.get("/teams", params={"status": "running", "page": 2, "size": 2})
+    assert page1.status_code == page2.status_code == 200
+
+    # Three running teams remain, so the total is 3 on every page of the filter.
+    assert page1.json()["total_count"] == page2.json()["total_count"] == 3
+    ids = [t["team_id"] for t in page1.json()["teams"] + page2.json()["teams"]]
+    assert len(ids) == 3
+    assert stopped_id not in ids  # the filter holds across the page boundary
+
+
+def test_list_teams_unknown_status_returns_422(client: TestClient) -> None:
+    """An unknown status is rejected by FastAPI's own enum validation."""
+    resp = client.get("/teams", params={"status": "bogus"})
+    assert resp.status_code == 422
+
+
+def test_list_teams_status_does_not_reach_across_users(app: FastAPI) -> None:
+    """?status=running narrows within the caller's teams — it never widens past them.
+
+    Another user's *running* team is the case that would surface a bypassed
+    owner filter, so one is created under a second identity first. The total
+    must stay owner-scoped too, or the count alone leaks the other user's team.
+    """
+    app.dependency_overrides[get_request_user] = lambda: RequestUser(
+        user_id="alice", email="alice@example.com"
+    )
+    alice_resp = TestClient(app).post("/teams/", json={"catalog_namespace": "test-team"})
+    assert alice_resp.status_code == 201
+    app.dependency_overrides.clear()
+
+    default_client = TestClient(app)
+    own_resp = default_client.post("/teams/", json={"catalog_namespace": "test-team"})
+    assert own_resp.status_code == 201
+
+    resp = default_client.get("/teams", params={"status": "running"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [own_resp.json()["team_id"]]
+    assert body["total_count"] == 1
