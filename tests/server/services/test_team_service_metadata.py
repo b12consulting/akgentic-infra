@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from akgentic.infra.errors import MetadataValidationError
+from akgentic.infra.errors import MetadataValidationError, PlacementConsistencyError
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
@@ -55,7 +55,11 @@ def test_validated_model_is_forwarded_to_placement(metadata_service: TeamService
     """
     placement = _mock_placement(metadata_service)
 
-    with pytest.raises(Exception):  # noqa: B017 — the mock never persists a Process
+    # The specific type, not a bare Exception: the mock placement persists no
+    # Process, so the consistency guard is the *expected* failure. A bare
+    # Exception would also swallow a regression that failed earlier, for an
+    # unrelated reason, on its way to the same assertions.
+    with pytest.raises(PlacementConsistencyError):
         metadata_service.create_team(
             catalog_namespace=TYPED_NS,
             user_id="alice",
@@ -116,7 +120,7 @@ def test_omitted_metadata_forwards_none(metadata_service: TeamService) -> None:
     """A caller that supplies no metadata forwards ``None``, unchanged behaviour."""
     placement = _mock_placement(metadata_service)
 
-    with pytest.raises(Exception):  # noqa: B017 — the mock never persists a Process
+    with pytest.raises(PlacementConsistencyError):
         metadata_service.create_team(catalog_namespace=TYPED_NS, user_id="alice")
 
     assert placement.create_team.call_args.kwargs["metadata"] is None

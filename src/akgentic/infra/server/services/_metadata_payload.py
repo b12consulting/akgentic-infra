@@ -139,6 +139,13 @@ def dump_metadata(metadata: SerializableBaseModel | None) -> dict[str, object] |
         The JSON-mode dump with every ``__model__`` key stripped recursively, or
         ``None`` when the team carries no metadata. The result round-trips: it is
         accepted verbatim as the body of a subsequent create or update.
+
+    The round-trip holds because the type is resolved from the team's card, so
+    every sub-model is reconstructed from its declared annotation. It therefore
+    constrains what a metadata model may declare: a **polymorphic** sub-model
+    field — a union of ``SerializableBaseModel`` subclasses, or one typed as a
+    base class — has no concrete annotation to reconstruct from, and the tag that
+    would have disambiguated it is gone. Declare sub-models concretely.
     """
     if metadata is None:
         return None

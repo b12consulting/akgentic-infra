@@ -21,6 +21,7 @@ from akgentic.infra.server.models import (
     TeamResponse,
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
+from akgentic.infra.server.services._metadata_payload import dump_metadata
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.state_keys import SERVICES
 from akgentic.team.models import Process, TeamCard, TeamRuntime
@@ -36,6 +37,13 @@ class WorkerCreateTeamRequest(BaseModel):
 
     The worker receives the already-resolved TeamCard and user identity from
     the server — catalog resolution happens server-side.
+
+    Carries **no** team metadata yet: a create routed through a worker drops the
+    value the server validated. The worker holds ``team_card``, so it already
+    knows ``metadata_type`` and could re-run ``validate_metadata`` on a plain-JSON
+    field — but wiring that also changes what the remote placement adapters in the
+    deployment repos must send, so it is a separate story. Community-tier creates
+    go through ``LocalPlacement`` and are unaffected.
     """
 
     team_card: TeamCard = Field(description="Pre-resolved TeamCard for team creation")
@@ -57,7 +65,14 @@ def get_services(request: Request) -> WorkerServices:
 
 
 def _process_to_response(process: Process) -> TeamResponse:
-    """Convert a Process model to a TeamResponse."""
+    """Convert a Process model to a TeamResponse.
+
+    Populates ``metadata`` through the same ``dump_metadata`` helper the server
+    router uses: ``TeamResponse`` is one shared model with two producers, and a
+    producer that left the field at its default would report ``null`` for a team
+    that carries metadata. The tag strip comes along for free, so the worker can
+    never emit a ``__model__`` the server-side API would refuse back in.
+    """
     team_name = process.team_card.name or process.catalog_namespace or str(process.team_id)
     return TeamResponse(
         team_id=process.team_id,
@@ -66,6 +81,7 @@ def _process_to_response(process: Process) -> TeamResponse:
         user_id=process.user_id,
         created_at=process.created_at,
         updated_at=process.updated_at,
+        metadata=dump_metadata(process.metadata),
     )
 
 
