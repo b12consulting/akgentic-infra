@@ -749,6 +749,9 @@ def test_worker_handle_is_runtime_checkable() -> None:
         def get_team(self, team_id: uuid.UUID) -> object:
             return None
 
+        def update_team_metadata(self, team_id: uuid.UUID, metadata: object) -> object:
+            return None
+
         def stop_all(self) -> None:
             pass
 
@@ -833,6 +836,35 @@ def test_worker_handle_get_team_returns_process_or_none() -> None:
     assert hints["return"] == Process | None
 
 
+def test_worker_handle_has_update_team_metadata() -> None:
+    """WorkerHandle defines update_team_metadata with team_id and metadata parameters."""
+    from akgentic.infra.protocols import WorkerHandle
+
+    assert hasattr(WorkerHandle, "update_team_metadata")
+    sig = inspect.signature(WorkerHandle.update_team_metadata)
+    assert "team_id" in sig.parameters
+    assert "metadata" in sig.parameters
+
+
+def test_worker_handle_update_team_metadata_types() -> None:
+    """update_team_metadata takes a validated model (or None) and returns a Process.
+
+    The metadata parameter is the *model*, not a raw dict: validation belongs
+    above this seam, and the type below it is what the store persists.
+    """
+    from akgentic.core.utils.serializer import SerializableBaseModel
+    from akgentic.team.models import Process
+
+    from akgentic.infra.protocols import WorkerHandle
+
+    hints = get_type_hints(
+        WorkerHandle.update_team_metadata,
+        localns={"Process": Process, "SerializableBaseModel": SerializableBaseModel},
+    )
+    assert hints["metadata"] == SerializableBaseModel | None
+    assert hints["return"] is Process
+
+
 def test_worker_handle_has_stop_all() -> None:
     """WorkerHandle defines stop_all with no parameters (besides self)."""
     from akgentic.infra.protocols import WorkerHandle
@@ -852,10 +884,15 @@ def test_worker_handle_stop_all_returns_none() -> None:
 
 
 def test_worker_handle_method_count() -> None:
-    """WorkerHandle has exactly 5 public methods."""
+    """WorkerHandle has exactly 6 public methods.
+
+    A count rather than a set, so widening the Protocol is a deliberate act:
+    every tier implementation and every test fake has to grow the method too,
+    and this failing is the reminder to sweep them.
+    """
     from akgentic.infra.protocols import WorkerHandle
 
     public_methods = [
         m for m in dir(WorkerHandle) if not m.startswith("_") and callable(getattr(WorkerHandle, m))
     ]
-    assert len(public_methods) == 5
+    assert len(public_methods) == 6

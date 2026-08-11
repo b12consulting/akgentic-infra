@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.orchestrator import SentMessage
+from akgentic.core.utils.serializer import SerializableBaseModel
 from akgentic.infra.errors import PlacementConsistencyError
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
@@ -200,6 +201,53 @@ class TeamService:
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         """Get a single team by ID."""
         return self._services.worker_handle.get_team(team_id)
+
+    def update_team_metadata(
+        self, team_id: uuid.UUID, raw: dict[str, Any]
+    ) -> SerializableBaseModel | None:
+        """Replace a team's business metadata with a complete new document.
+
+        Validation happens here, against the ``metadata_type`` the team's card
+        declared **at creation** and carries on the persisted ``Process`` — not
+        against the catalog entry as it stands now, which may have been edited
+        since. The type cannot change for a live team (ADR-24 §D7), so
+        re-resolving it would let a catalog edit silently change what an
+        existing team accepts.
+
+        The write itself belongs to ``akgentic-team``: validate → one database
+        write of the value and its re-derived index → best-effort push to a live
+        orchestrator. This layer adds nothing around it — no cache write, no
+        event publish, no re-read to "confirm", and no inspection of the push
+        outcome. The database is the system of record, so a failed push is not
+        an error: the index stays truthful and the actor repopulates from the
+        ``Process`` on its next resume.
+
+        Args:
+            team_id: The team whose metadata is being replaced.
+            raw: The complete plain-JSON document. An empty dict clears the
+                team's metadata.
+
+        Returns:
+            The metadata carried on the ``Process`` the write path returned —
+            what was persisted, not what was sent.
+
+        Raises:
+            ValueError: If the team is unknown or has been deleted. The message
+                carries ``not found`` for the unknown case, which the router's
+                ``_raise_action_error`` maps to 404.
+            MetadataValidationError: If the body carries a ``__model__`` key at
+                any depth, if the team declares no metadata contract, or if the
+                body fails the declared schema. Raised before the write path is
+                reached, so a rejected body changes nothing.
+        """
+        process = self._services.worker_handle.get_team(team_id)
+        if process is None:
+            msg = f"Team {team_id} not found"
+            raise ValueError(msg)
+        validated = validate_metadata(process.team_card.metadata_type, raw)
+        updated = self._services.worker_handle.update_team_metadata(team_id, validated)
+        logger.info("Team metadata updated: team_id=%s", team_id)
+        return updated.metadata
 
     def delete_team(self, team_id: uuid.UUID) -> None:
         """Stop (if running) and delete a team.

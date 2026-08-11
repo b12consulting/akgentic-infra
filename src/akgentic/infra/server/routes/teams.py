@@ -21,7 +21,9 @@ from akgentic.infra.server.models import (
     HumanInputRequest,
     SendMessageRequest,
     TeamListResponse,
+    TeamMetadataResponse,
     TeamResponse,
+    UpdateTeamMetadataRequest,
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
 from akgentic.infra.server.routes._team_access import get_team_service, require_team_access
@@ -210,6 +212,46 @@ def delete_team(
         service.delete_team(team_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
+
+
+@router.patch(
+    "/{team_id}/metadata",
+    status_code=200,
+    response_model=TeamMetadataResponse,
+    dependencies=[Depends(require_team_access)],
+)
+def update_team_metadata(
+    team_id: uuid.UUID,
+    body: UpdateTeamMetadataRequest,
+    service: TeamService = Depends(get_team_service),
+) -> TeamMetadataResponse:
+    """Replace a team's business metadata with a complete new document.
+
+    ``body.metadata`` replaces the stored value outright — a field omitted here
+    is gone from the value and from the ``?meta.`` filter index alike. It is
+    plain JSON validated server-side against the type the team's card declares;
+    a rejected body is a 422 and writes nothing.
+
+    The response carries what was persisted. A failed best-effort push of the
+    new value to a live orchestrator is deliberately NOT reflected here: the
+    database is the system of record and the actor re-reads on its next resume,
+    so reporting an error would misdescribe a write that stands.
+
+    Ownership comes from ``require_team_access`` — the request identity seam and
+    the wired policy, never the body — and a team the caller may not see is a
+    404, identical to one that does not exist.
+    """
+    logger.info("PATCH /teams/%s/metadata", team_id)  # never the body: caller business context
+    try:
+        metadata = service.update_team_metadata(team_id, body.metadata)
+    except MetadataValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would report a validation failure as a conflict.
+        logger.warning("Metadata update rejected — invalid metadata: %s", exc.detail)
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+    except ValueError as exc:
+        _raise_action_error(exc)
+    return TeamMetadataResponse(metadata=dump_metadata(metadata))
 
 
 # --- Action Endpoints ---

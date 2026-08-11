@@ -32,9 +32,16 @@ class TestLocalWorkerHandleProtocolCompliance:
         assert isinstance(adapter, WorkerHandle)
 
     def test_has_all_protocol_methods(self) -> None:
-        """LocalWorkerHandle exposes all 5 WorkerHandle methods."""
+        """LocalWorkerHandle exposes every WorkerHandle method."""
         adapter, _, _ = _make_adapter()
-        for method in ("stop_team", "delete_team", "resume_team", "get_team", "stop_all"):
+        for method in (
+            "stop_team",
+            "delete_team",
+            "resume_team",
+            "get_team",
+            "update_team_metadata",
+            "stop_all",
+        ):
             assert callable(getattr(adapter, method))
 
     def test_stop_team_signature(self) -> None:
@@ -56,6 +63,12 @@ class TestLocalWorkerHandleProtocolCompliance:
         """get_team has team_id parameter."""
         sig = inspect.signature(LocalWorkerHandle.get_team)
         assert "team_id" in sig.parameters
+
+    def test_update_team_metadata_signature(self) -> None:
+        """update_team_metadata has team_id and metadata parameters."""
+        sig = inspect.signature(LocalWorkerHandle.update_team_metadata)
+        assert "team_id" in sig.parameters
+        assert "metadata" in sig.parameters
 
     def test_stop_all_signature(self) -> None:
         """stop_all takes no parameters (besides self)."""
@@ -115,6 +128,36 @@ class TestLocalWorkerHandleBehavior:
         tm.get_team.return_value = None
         result = adapter.get_team(uuid.uuid4())
         assert result is None
+
+
+class TestUpdateTeamMetadata:
+    """The metadata seam is a delegation, not a second write path."""
+
+    def test_delegates_to_team_manager(self) -> None:
+        """update_team_metadata forwards team_id and the model verbatim."""
+        adapter, tm, _ = _make_adapter()
+        tid = uuid.uuid4()
+        metadata = MagicMock()
+        adapter.update_team_metadata(tid, metadata)
+        tm.update_team_metadata.assert_called_once_with(tid, metadata)
+
+    def test_returns_the_team_manager_process(self) -> None:
+        """The returned Process is TeamManager's, not one rebuilt here.
+
+        The caller reads the persisted value off this return; an adapter that
+        echoed its argument back would hide a write that never landed.
+        """
+        adapter, tm, _ = _make_adapter()
+        sentinel = MagicMock()
+        tm.update_team_metadata.return_value = sentinel
+        assert adapter.update_team_metadata(uuid.uuid4(), None) is sentinel
+
+    def test_clearing_forwards_none(self) -> None:
+        """Clearing metadata passes None down rather than an empty model."""
+        adapter, tm, _ = _make_adapter()
+        tid = uuid.uuid4()
+        adapter.update_team_metadata(tid, None)
+        tm.update_team_metadata.assert_called_once_with(tid, None)
 
 
 class TestStopAll:

@@ -62,6 +62,56 @@ class TeamResponse(BaseModel):
     )
 
 
+class UpdateTeamMetadataRequest(BaseModel):
+    """Request body for PATCH /teams/{team_id}/metadata.
+
+    ``metadata`` is raw JSON that the route deserializes immediately into the
+    team's declared metadata model; it never becomes application state, so this
+    is NOT the ``dict[str, Any]`` anti-pattern (Golden Rule #1) — the same
+    documented exception ``SendMessageRequest.message`` and
+    ``EmitMessageRequest.message`` carry.
+
+    It differs from those two in the way that matters: they are polymorphic
+    *wire envelopes* whose ``__model__`` tag names the class to reconstruct,
+    whereas this field carries **no type name at all**. The type is chosen by
+    the server from the team's persisted ``TeamCard.metadata_type`` — catalog
+    data the deployment controls — and the body is validated against it. A
+    ``__model__`` key here is therefore a request error (422), never an
+    instruction. See ADR-24 §D3.
+
+    The document is complete and replaces the stored one outright: a field set
+    before and absent here is gone. Merging would make "which fields are
+    indexed now" a function of write history rather than of the current value.
+    """
+
+    metadata: dict[str, Any] = Field(
+        description=(
+            "The COMPLETE plain-JSON business metadata document, validated against "
+            "the metadata_type the team's card declares. Replaces the stored value "
+            "outright. Names no type: a __model__ key at any depth is rejected with "
+            "422. An empty object clears the team's metadata."
+        )
+    )
+
+
+class TeamMetadataResponse(BaseModel):
+    """Response body for PATCH /teams/{team_id}/metadata.
+
+    Symmetric with ``UpdateTeamMetadataRequest`` and with
+    ``CreateTeamRequest.metadata``: same key, same plain-JSON shape, so the
+    value a client reads back is the value it may send again.
+    """
+
+    metadata: dict[str, Any] | None = Field(
+        description=(
+            "The team's metadata after the update, as plain JSON, or null when the "
+            "update cleared it. Never includes the __model__ tag — that is a "
+            "persistence concern, and this value is accepted verbatim back on "
+            "create/update."
+        )
+    )
+
+
 class TeamListResponse(BaseModel):
     """Response body for GET /teams (one numbered page + full owned count)."""
 

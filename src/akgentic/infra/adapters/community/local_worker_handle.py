@@ -12,6 +12,7 @@ from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
 
 if TYPE_CHECKING:
+    from akgentic.core.utils.serializer import SerializableBaseModel
     from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import Process
 
@@ -55,6 +56,15 @@ class LocalWorkerHandle:
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         """Get team metadata by delegating to TeamManager."""
         return self._team_manager.get_team(team_id)
+
+    def update_team_metadata(
+        self,
+        team_id: uuid.UUID,
+        metadata: SerializableBaseModel | None,
+    ) -> Process:
+        """Replace team metadata by delegating to TeamManager's ordered path."""
+        logger.debug("Updating metadata for team: %s", team_id)
+        return self._team_manager.update_team_metadata(team_id, metadata)
 
     def stop_all(self) -> None:
         """Shut down the actor system, force-stopping all actors.
