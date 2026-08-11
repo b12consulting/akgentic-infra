@@ -38,15 +38,25 @@ class AcmeOwner(SerializableBaseModel):
 class AcmeCaseMetadata(TeamMetadata):
     """Business metadata for a support-case team.
 
-    ``tenant`` and ``case`` are indexed (filterable); the rest are not, and do
-    not need to be. ``owner`` nests a sub-model and ``watchers`` holds a *list*
-    of them — the two shapes that carry a nested ``__model__`` tag, so both the
-    inbound scan and the outbound strip are exercised on real data rather than
-    on a hand-built dict.
+    ``tenant``, ``case`` and ``channel`` are indexed (filterable); the rest are
+    not, and do not need to be. ``owner`` nests a sub-model and ``watchers``
+    holds a *list* of them — the two shapes that carry a nested ``__model__``
+    tag, so both the inbound scan and the outbound strip are exercised on real
+    data rather than on a hand-built dict.
+
+    ``channel`` is indexed *and optional*, which the two required indexed fields
+    cannot stand in for: an indexed field that goes absent must take its index
+    entry with it, so replace-vs-merge is only observable through the index when
+    an entry can disappear rather than merely be overwritten.
     """
 
     tenant: str = Field(json_schema_extra={"indexed": True}, description="Owning tenant")
     case: str = Field(json_schema_extra={"indexed": True}, description="Case reference")
+    channel: str | None = Field(
+        default=None,
+        json_schema_extra={"indexed": True},
+        description="Intake channel, when known; indexed and optional",
+    )
     owner: AcmeOwner | None = Field(default=None, description="Case owner, when assigned")
     watchers: list[AcmeOwner] = Field(
         default_factory=list, description="Additional watchers; not filterable"

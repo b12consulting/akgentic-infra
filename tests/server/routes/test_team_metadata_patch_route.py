@@ -214,7 +214,68 @@ def test_patch_replaces_document_omitted_field_is_gone(
     assert stored.note is None
     assert stored.tenant == "contoso"
 
+    # Both halves: the old entry is gone AND the new one is there. Asserting only
+    # the empty result would also pass against a filter that matches nothing at all.
+    assert _filter(metadata_client, "case", "C-9999") == ([team_id], 1)
     assert _filter(metadata_client, "case", "C-1234") == ([], 0)
+
+
+def test_patch_drops_the_index_entry_of_an_omitted_indexed_field(
+    metadata_client: TestClient,
+    metadata_services: CommunityServices,
+) -> None:
+    """An *indexed* field that goes absent takes its index entry with it.
+
+    The distinct half of replace-vs-merge, and the one the required indexed
+    fields cannot show: ``tenant`` and ``case`` always have a value, so every
+    other assertion here only proves an entry was **overwritten**. A write path
+    that rewrote the entries it was given and left the rest of the previous
+    index in place passes all of them and fails only this one — the index has to
+    *shrink*, not merely change.
+    """
+    team_id = _create(metadata_client, tenant="acme", case="C-1", channel="email")
+    bystander = _create(metadata_client, tenant="acme", case="C-2", channel="email")
+
+    matched, total = _filter(metadata_client, "channel", "email")
+    assert set(matched) == {team_id, bystander}
+    assert total == 2
+
+    resp = _patch(metadata_client, team_id, {"tenant": "acme", "case": "C-1"})
+    assert resp.status_code == 200
+    assert resp.json()["metadata"]["channel"] is None
+
+    stored = _stored_metadata(metadata_services, team_id)
+    assert isinstance(stored, AcmeCaseMetadata)
+    assert stored.channel is None
+
+    # The entry is gone for this team only; the bystander still carries its own.
+    assert _filter(metadata_client, "channel", "email") == ([bystander], 1)
+    assert _filter(metadata_client, "case", "C-1") == ([team_id], 1)
+
+
+def test_empty_document_clears_metadata_and_its_whole_index(
+    metadata_client: TestClient,
+    metadata_services: CommunityServices,
+) -> None:
+    """An empty document is the limit case of replace: value and index both empty.
+
+    It is the only path on which infra hands ``None`` down to the write seam,
+    and the only one that produces a null ``metadata`` in the response — the
+    reason ``TeamMetadataResponse.metadata`` is nullable at all. Every indexed
+    entry must go, not just the ones a new document would have overwritten.
+    """
+    team_id = _create(metadata_client, tenant="acme", case="C-1", channel="email")
+    bystander = _create(metadata_client, tenant="acme", case="C-2", channel="email")
+
+    resp = _patch(metadata_client, team_id, {})
+    assert resp.status_code == 200
+    assert resp.json()["metadata"] is None
+
+    assert _stored_metadata(metadata_services, team_id) is None
+
+    assert _filter(metadata_client, "tenant", "acme") == ([bystander], 1)
+    assert _filter(metadata_client, "case", "C-1") == ([], 0)
+    assert _filter(metadata_client, "channel", "email") == ([bystander], 1)
 
 
 # --- AC3: a __model__ key is a 422, even for a real class ---
