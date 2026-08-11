@@ -517,6 +517,31 @@ def test_distinct_meta_keys_and_combine(metadata_client: TestClient) -> None:
     assert body["total_count"] == 1
 
 
+def test_meta_filter_value_containing_the_index_separator_round_trips(
+    metadata_client: TestClient,
+) -> None:
+    """AC #3: a ``|`` in a filter value crosses the whole chain unaltered.
+
+    ``|`` separates key from value inside an index entry and is escaped exactly
+    once, inside akgentic-team, on the derivation and the query side alike. The
+    service-level guard asserts the delegated kwargs; this closes the half above
+    it, which that guard cannot see: a value normalised, trimmed or pre-escaped
+    inside the route would satisfy the kwargs assertion against a mock and still
+    match nothing against a real store.
+
+    The unpiped team is seeded alongside so the filter has to distinguish the
+    two rather than merely return the only row present.
+    """
+    piped_id = _create_team_with(metadata_client, tenant="ac|me", case="C-1")
+    _create_team_with(metadata_client, tenant="acme", case="C-1")
+
+    resp = metadata_client.get("/teams", params={"meta.tenant": "ac|me"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [piped_id]
+    assert body["total_count"] == 1
+
+
 def test_meta_filter_matching_nothing_is_empty_with_zero_total(
     metadata_client: TestClient,
 ) -> None:
