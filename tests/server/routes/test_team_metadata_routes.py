@@ -1,10 +1,15 @@
-"""Route-level tests for team metadata on create — Story 53.1.
+"""Route-level tests for the team-metadata HTTP surface — Stories 53.1 and 53.2.
 
 Two catalog namespaces are seeded: ``acme-cases`` whose card declares a
 ``metadata_type``, and ``acme-plain`` whose card declares none. Everything here
 goes through the real HTTP surface and the real community wiring, so a value
 asserted on a response has genuinely travelled catalog → validation → placement
-→ event store → conversion point.
+→ event store → conversion point — and, for the ``?meta.`` filter, back out
+through the store's own index matching rather than a mock's recorded call.
+
+The ``?meta.`` cases that need no metadata at all — the 422s and the
+no-filter backward-compatibility check — live in test_team_routes.py beside the
+plain catalog fixture.
 """
 
 from __future__ import annotations
@@ -15,9 +20,11 @@ from typing import Any
 
 import pytest
 from akgentic.infra.server.app import create_app
+from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from tests.fixtures.team_metadata import (
@@ -62,12 +69,18 @@ def metadata_services(
 
 
 @pytest.fixture()
-def metadata_client(
+def metadata_app(
     metadata_services: CommunityServices,
     metadata_settings: CommunitySettings,
-) -> TestClient:
+) -> FastAPI:
+    """The metadata-aware app itself, for tests that override a dependency on it."""
+    return create_app(metadata_services, metadata_settings)
+
+
+@pytest.fixture()
+def metadata_client(metadata_app: FastAPI) -> TestClient:
     """HTTP client over the metadata-aware app."""
-    return TestClient(create_app(metadata_services, metadata_settings))
+    return TestClient(metadata_app)
 
 
 def _team_count(client: TestClient) -> int:
@@ -443,3 +456,204 @@ def test_a_second_replica_reads_the_same_metadata(
         assert fetched.json()["metadata"] == created.json()["metadata"]
     finally:
         replica_services.actor_system.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Story 53.2 — GET /teams ?meta.<key>=<value>
+#
+# These run against the real YAML event store, so the filter genuinely travels
+# route → service → store and is matched against the index the store derived on
+# create. Nothing here re-derives an index entry or escapes a value: that is
+# akgentic-team's job and happens exactly once, there.
+# ---------------------------------------------------------------------------
+
+
+def _create_team_with(client: TestClient, **fields: Any) -> str:
+    """Create a typed-namespace team carrying ``fields`` and return its id."""
+    resp = client.post(
+        "/teams/",
+        json={"catalog_namespace": TYPED_NS, "metadata": make_metadata_body(**fields)},
+    )
+    assert resp.status_code == 201
+    return str(resp.json()["team_id"])
+
+
+def _has_model_tag(value: Any) -> bool:
+    """Report whether ``__model__`` appears anywhere in *value*.
+
+    Deliberately a local walk rather than the server's own scanner: checking the
+    strip with the code it ships beside would let a shared blind spot — a
+    container neither of them recurses into — pass as a green test.
+    """
+    if isinstance(value, dict):
+        return "__model__" in value or any(_has_model_tag(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_model_tag(item) for item in value)
+    return False
+
+
+def test_single_meta_filter_narrows_the_page(metadata_client: TestClient) -> None:
+    """AC #1: ``?meta.tenant=acme`` returns only the teams carrying that value."""
+    acme_id = _create_team_with(metadata_client, tenant="acme", case="C-1")
+    _create_team_with(metadata_client, tenant="contoso", case="C-2")
+
+    resp = metadata_client.get("/teams", params={"meta.tenant": "acme"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [acme_id]
+    assert body["total_count"] == 1
+
+
+def test_distinct_meta_keys_and_combine(metadata_client: TestClient) -> None:
+    """AC #2: two keys are a conjunction — matching one of them is not enough."""
+    both_id = _create_team_with(metadata_client, tenant="acme", case="C-1")
+    _create_team_with(metadata_client, tenant="acme", case="C-2")
+    _create_team_with(metadata_client, tenant="contoso", case="C-1")
+
+    resp = metadata_client.get("/teams", params={"meta.tenant": "acme", "meta.case": "C-1"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [both_id]
+    assert body["total_count"] == 1
+
+
+def test_meta_filter_matching_nothing_is_empty_with_zero_total(
+    metadata_client: TestClient,
+) -> None:
+    """A filter no team satisfies is an empty page and a zero total, not a 404."""
+    _create_team_with(metadata_client, tenant="acme", case="C-1")
+
+    resp = metadata_client.get("/teams", params={"meta.tenant": "nobody"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["teams"] == []
+    assert body["total_count"] == 0
+
+
+def test_meta_filter_total_count_is_the_filtered_count_across_pages(
+    metadata_client: TestClient,
+) -> None:
+    """AC #4: the total is the FILTERED count, and it holds on every page.
+
+    Seven teams are owned and three match. A total carried over from the
+    unfiltered set would promise a paginating client four more pages than the
+    filter can ever produce — the failure mode of filtering the slice instead of
+    pushing the filter down, which also yields short pages for no visible reason.
+    """
+    matching = {_create_team_with(metadata_client, tenant="acme", case=f"C-{i}") for i in range(3)}
+    for i in range(4):
+        _create_team_with(metadata_client, tenant="contoso", case=f"C-{i}")
+
+    params = {"meta.tenant": "acme", "size": 2}
+    page1 = metadata_client.get("/teams", params={**params, "page": 1})
+    page2 = metadata_client.get("/teams", params={**params, "page": 2})
+    page3 = metadata_client.get("/teams", params={**params, "page": 3})
+    assert page1.status_code == page2.status_code == page3.status_code == 200
+
+    totals = [page1.json()["total_count"], page2.json()["total_count"], page3.json()["total_count"]]
+    assert totals == [3, 3, 3]
+    assert 7 not in totals  # the unfiltered count never surfaces in a filtered answer
+
+    assert len(page1.json()["teams"]) == 2
+    assert len(page2.json()["teams"]) == 1
+    assert page3.json()["teams"] == []
+
+    walked = [t["team_id"] for t in page1.json()["teams"] + page2.json()["teams"]]
+    assert len(walked) == len(set(walked))  # contiguous, no overlap across the boundary
+    assert set(walked) == matching
+
+
+def test_meta_filter_does_not_reach_across_users(metadata_app: FastAPI) -> None:
+    """AC #5: another user's identically-tagged team is neither returned NOR counted.
+
+    Metadata is caller-supplied and non-secret, so a filter evaluated without the
+    owner scope would turn this route into a cross-tenant enumeration primitive:
+    guess a tenant, read the total, learn whether another customer exists. The
+    count is asserted for exactly that reason — a leak through it alone is a leak.
+    """
+    metadata_app.dependency_overrides[get_request_user] = lambda: RequestUser(
+        user_id="alice", email="alice@example.com"
+    )
+    _create_team_with(TestClient(metadata_app), tenant="acme", case="C-1")
+    metadata_app.dependency_overrides.clear()
+
+    default_client = TestClient(metadata_app)
+    own_id = _create_team_with(default_client, tenant="acme", case="C-1")
+
+    resp = default_client.get("/teams", params={"meta.tenant": "acme", "meta.case": "C-1"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [own_id]
+    assert body["total_count"] == 1
+
+
+def test_meta_filter_composes_with_the_status_filter(metadata_client: TestClient) -> None:
+    """AC #6: the metadata and status filters narrow together, and the total follows."""
+    running_id = _create_team_with(metadata_client, tenant="acme", case="C-1")
+    stopped_id = _create_team_with(metadata_client, tenant="acme", case="C-2")
+    _create_team_with(metadata_client, tenant="contoso", case="C-3")
+    assert metadata_client.post(f"/teams/{stopped_id}/stop").status_code == 204
+
+    resp = metadata_client.get("/teams", params={"meta.tenant": "acme", "status": "running"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [running_id]
+    assert body["total_count"] == 1
+
+
+def test_listed_entries_carry_no_model_tag_at_any_depth(metadata_client: TestClient) -> None:
+    """AC #11: no ``__model__`` survives to the list wire, nested or in a list element.
+
+    Inherited from the shared conversion point rather than implemented here, but
+    asserted here because GET /teams is the highest-volume path and the likeliest
+    place a later refactor grows its own converter and quietly re-emits the tag.
+    """
+    _create_team_with(
+        metadata_client,
+        tenant="acme",
+        case="C-1",
+        owner={"email": "ops@contoso.example", "squad": "support"},
+        watchers=[{"email": "watcher@contoso.example"}],
+    )
+
+    resp = metadata_client.get("/teams", params={"meta.tenant": "acme"})
+    assert resp.status_code == 200
+    entry = resp.json()["teams"][0]
+    metadata = entry["metadata"]
+
+    # The nested shapes are actually present, so the walk below has something to find.
+    assert metadata["owner"]["email"] == "ops@contoso.example"
+    assert metadata["watchers"][0]["email"] == "watcher@contoso.example"
+    assert not _has_model_tag(entry)
+
+
+def test_filtered_pages_are_consistent_across_independent_replicas(
+    metadata_client: TestClient,
+    metadata_settings: CommunitySettings,
+) -> None:
+    """AC #9: a separately wired app serves the same filtered walk over the same store.
+
+    Nothing about the parsed filter or the page is cached in app state, a module
+    global or a service attribute, so which replica answers cannot change the
+    answer.
+    """
+    for i in range(4):
+        _create_team_with(metadata_client, tenant="acme", case=f"C-{i}")
+
+    first = metadata_client.get("/teams", params={"meta.tenant": "acme", "page": 1, "size": 2})
+    assert first.status_code == 200
+    assert first.json()["total_count"] == 4
+    page1 = {t["team_id"] for t in first.json()["teams"]}
+
+    replica_services = wire_community(metadata_settings)
+    try:
+        replica = TestClient(create_app(replica_services, metadata_settings))
+        second = replica.get("/teams", params={"meta.tenant": "acme", "page": 2, "size": 2})
+        assert second.status_code == 200
+        assert second.json()["total_count"] == 4
+        page2 = {t["team_id"] for t in second.json()["teams"]}
+    finally:
+        replica_services.actor_system.shutdown()
+
+    assert page1.isdisjoint(page2)
+    assert len(page1 | page2) == 4

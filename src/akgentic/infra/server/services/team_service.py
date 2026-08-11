@@ -155,28 +155,41 @@ class TeamService:
         *,
         user_id: str,
         status: TeamStatus | None = None,
+        metadata: dict[str, str] | None = None,
         page: int = 1,
         size: int = 250,
     ) -> tuple[list[Process], int]:
-        """Return one numbered page of the user's teams plus the full owned count.
+        """Return one numbered page of the user's teams plus the filtered count.
 
-        Phase 1: the store returns the full owned set, sorted ``created_at DESC,
+        Phase 1: the store returns the matching set, sorted ``created_at DESC,
         team_id DESC`` and sliced here (ADR-032 §Decision 2). Stateless — a pure
-        function of ``user_id`` + ``status`` + ``page`` + ``size`` + store
-        contents. An out-of-range page yields an empty list with the correct
-        total.
+        function of ``user_id`` + ``status`` + ``metadata`` + ``page`` + ``size``
+        + store contents. An out-of-range page yields an empty list with the
+        correct total.
 
-        Both filters push into the EventStore rather than loading every team
-        into Python and filtering here, so per-request cost scales with the
-        answer rather than with the archive. ``status=None`` is *no status
-        filter* — every state is returned, ``DELETED`` included — so a caller
-        that passes no status gets exactly the result set it got before.
-        ``status`` only narrows *within* the user's teams; it never replaces
-        the owner filter. The returned total counts the filtered set, so it
-        agrees with the page it accompanies. See team-package ADR-16 (owner)
-        and ADR-23 (lifecycle state) for the Protocol changes.
+        Every filter pushes into the EventStore rather than loading the user's
+        teams into Python and filtering here, so per-request cost scales with
+        the answer rather than with the archive — and so the total, counted from
+        what the store returned, is the FILTERED count on every page rather than
+        a count of the set the filter was drawn from. Nothing filters after the
+        slice; that ordering is what keeps pages contiguous.
+
+        ``status=None`` and ``metadata=None`` each mean *no such filter*, so a
+        caller passing neither gets exactly the result set it got before. Both
+        are forwarded unconditionally: a branch that omits a kwarg when it is
+        ``None`` is how a filter later gets silently dropped. ``metadata``
+        values travel verbatim — index derivation and ``|`` escaping happen once,
+        inside ``akgentic-team`` (ADR-24 §D4).
+
+        Neither filter replaces the owner filter: they only narrow *within* the
+        user's teams. Metadata is caller-supplied and non-secret, so allowing it
+        to widen the set — or the count — would make this a cross-tenant
+        enumeration primitive. See team-package ADR-16 (owner), ADR-23
+        (lifecycle state) and ADR-24 (metadata) for the Protocol changes.
         """
-        rows = self._services.event_store.list_teams(user_id=user_id, status=status)
+        rows = self._services.event_store.list_teams(
+            user_id=user_id, status=status, metadata=metadata
+        )
         rows.sort(key=lambda p: (p.created_at, p.team_id), reverse=True)
         total = len(rows)
         size = max(1, min(size, MAX_PAGE_SIZE))

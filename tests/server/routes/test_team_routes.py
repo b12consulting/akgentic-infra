@@ -378,3 +378,68 @@ def test_list_teams_status_does_not_reach_across_users(app: FastAPI) -> None:
     body = resp.json()
     assert [t["team_id"] for t in body["teams"]] == [own_resp.json()["team_id"]]
     assert body["total_count"] == 1
+
+
+# --- Repeated ?meta.<key>=<value> filter — parsing and no-filter behaviour (Epic 53) ---
+#
+# The teams seeded here carry no metadata (the ``test-team`` card declares no
+# metadata_type), so this file covers the halves that need none: rejection of a
+# malformed parameter, and the guarantee that a request without any ``meta.``
+# parameter is unchanged. The filtering behaviour itself lives beside the
+# metadata-carrying catalog fixture, in test_team_metadata_routes.py.
+
+
+def test_list_teams_repeated_same_meta_key_is_422_naming_it(client: TestClient) -> None:
+    """Two values for one key is a 422, not a silently resolved first/last win.
+
+    Matching is equality-only, so ``tenant == acme AND tenant == contoso`` can
+    never hold. Keeping one of the two would answer a question the client did
+    not ask, with no signal that it happened.
+    """
+    resp = client.get("/teams", params=[("meta.tenant", "acme"), ("meta.tenant", "contoso")])
+    assert resp.status_code == 422
+    assert "meta.tenant" in resp.json()["detail"]
+
+
+def test_list_teams_empty_meta_key_is_422(client: TestClient) -> None:
+    """``?meta.=acme`` names no key, so there is nothing to filter on."""
+    resp = client.get("/teams", params={"meta.": "acme"})
+    assert resp.status_code == 422
+    assert "meta." in resp.json()["detail"]
+
+
+def test_list_teams_without_meta_params_is_unchanged_field_by_field(client: TestClient) -> None:
+    """No ``meta.`` parameter: every pre-existing field keeps its name, type and value.
+
+    Asserted field by field rather than against a frozen response dict — each
+    entry legitimately gained a ``metadata`` key in Story 53-1, and a whole-dict
+    comparison would pin the absence of the very field the epic adds.
+    """
+    created = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    assert created.status_code == 201
+    created_body = created.json()
+
+    resp = client.get("/teams")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_count"] == 1
+    entry = body["teams"][0]
+
+    assert entry["team_id"] == created_body["team_id"]
+    assert entry["name"] == "Test Team"
+    assert entry["status"] == "running"
+    assert entry["user_id"] == "anonymous"
+    assert entry["created_at"] == created_body["created_at"]
+    assert entry["updated_at"] == created_body["updated_at"]
+    # The one additive change, null for a team that carries no metadata.
+    assert entry["metadata"] is None
+
+
+def test_list_teams_unknown_non_meta_params_are_still_ignored(client: TestClient) -> None:
+    """A parameter that is not ``meta.``-prefixed is ignored, and page/size still apply."""
+    _create_teams(client, 3)
+    resp = client.get("/teams", params={"page": 2, "size": 2, "metaphor": "not-a-filter"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_count"] == 3
+    assert len(body["teams"]) == 1  # second page of a 3-team set at size 2
