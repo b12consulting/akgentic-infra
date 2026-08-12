@@ -404,7 +404,7 @@ Content-Type: application/json
 }
 ```
 
-```json
+```http
 201 Created
 
 {
@@ -418,14 +418,14 @@ Content-Type: application/json
 }
 ```
 
-`metadata` is optional; omitting it (or sending `null`) creates a team carrying none. Validation runs *before* the team is placed, so a rejected body creates nothing. Every route returning a team — `POST /teams`, `GET /teams`, `GET /teams/{team_id}`, `POST /teams/{team_id}/restore` — carries the same `metadata` field.
+`metadata` is optional; omitting it, or sending `null` or `{}`, creates a team carrying none. Validation runs *before* the team is placed, so a rejected body creates nothing. Every route returning a team — `POST /teams`, `GET /teams`, `GET /teams/{team_id}`, `POST /teams/{team_id}/restore` — carries the same `metadata` field.
 
 The three rejections, each a `422` with the message in `detail`:
 
 | Condition | `detail` |
 |---|---|
 | Body carries `__model__` at any depth | `metadata must not contain a '__model__' key at any depth: the metadata type is chosen by the team's catalog entry, never by the request body` |
-| Metadata sent to a team whose card declares no `metadata_type` | `this team declares no metadata contract, so metadata cannot be supplied` |
+| **Non-empty** metadata sent to a team whose card declares no `metadata_type` | `this team declares no metadata contract, so metadata cannot be supplied` |
 | Body fails the declared schema | `metadata field '<field>' is invalid: <reason>` |
 
 An unknown `catalog_namespace` is a `404` (`Catalog namespace not found`).
@@ -438,7 +438,7 @@ GET /teams?meta.tenant=acme&meta.case_ref=C-1234
 GET /teams?meta.tenant=acme&status=running&page=1&size=250
 ```
 
-```json
+```http
 200 OK
 
 {
@@ -459,9 +459,11 @@ GET /teams?meta.tenant=acme&status=running&page=1&size=250
 
 `total_count` is the **filtered** total — the number of the caller's teams matching every filter given, not their unfiltered team count — and it stays consistent across page boundaries. Owner scoping is server-side and no filter weakens it: a `meta.` parameter can only narrow the caller's own teams, and another user's team is neither returned nor counted.
 
+A filter narrows the *result set*, not the per-page cost: the store returns every matching row and the page is sorted and sliced in the server, so a request still costs in proportion to the number of matching teams rather than to `size`.
+
 Values travel verbatim; the server escapes the index separator, so a value containing `|` needs nothing from the client. Filtering on a key the metadata model does not mark as indexed is not an error — it simply matches nothing. Two `422`s guard the parameter itself: `?meta.=x` (`query parameter 'meta.' names no metadata key`) and the same key given twice (`query parameter 'meta.tenant' is repeated; metadata filtering is equality-only, so one key cannot carry two values`).
 
-**Replace a team's metadata.** `PATCH` takes a `metadata` envelope and **replaces the stored document outright — it does not merge**. The caller sends a complete document; a field omitted from it is gone, both from the stored value and from the `meta.` filter index. An empty object clears the metadata.
+**Replace a team's metadata.** `PATCH` takes a `metadata` envelope and **replaces the stored document outright — it does not merge**. The caller sends a complete document; a field omitted from it is gone, both from the stored value and from the `meta.` filter index. An empty object clears the metadata, and the response then reads `{"metadata": null}` — a cleared team carries `null`, never `{}`. Clearing is the one body an otherwise-rejecting team accepts: `{"metadata": {}}` succeeds even on a team whose card declares no `metadata_type`.
 
 ```http
 PATCH /teams/6f1e8c4a-.../metadata
@@ -470,7 +472,7 @@ Content-Type: application/json
 {"metadata": {"tenant": "contoso", "case_ref": "C-9999"}}
 ```
 
-```json
+```http
 200 OK
 
 {"metadata": {"tenant": "contoso", "case_ref": "C-9999"}}
