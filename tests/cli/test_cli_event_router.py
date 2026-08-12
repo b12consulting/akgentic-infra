@@ -408,6 +408,9 @@ class TestToWidgetWarningMessage:
         """AC6: the two branches do not cross."""
         router, registry = _make_widget_router()
         widget = router.to_widget(build_warning_message(), registry)
+        # Assert the positive type too: `not isinstance(None, ErrorWidget)` is True,
+        # so dropping the warning branch entirely would satisfy the negative alone.
+        assert isinstance(widget, WarningWidget)
         assert not isinstance(widget, ErrorWidget)
 
     def test_error_never_produces_a_warning_widget(self) -> None:

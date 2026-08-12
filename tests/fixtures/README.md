@@ -42,9 +42,11 @@ team = make_team_info(name="My Team", status="stopped")
 | `make_tool_return_event()` | `ToolReturnEvent` | akgentic-llm |
 | `make_llm_usage_event()` | `LlmUsageEvent` | akgentic-llm |
 
-Core event factories have a `build_*` twin (`build_error_message`,
-`build_warning_message`, ...) returning the typed instance instead of a dict, for
-tests that drive the typed pipeline rather than the API layer.
+Some — not all — of these factories have a `build_*` twin returning the typed
+instance instead of a dict, for tests that drive the typed pipeline rather than the
+API layer: `build_sent_message`, `build_event_message`, `build_error_message`,
+`build_warning_message`, `build_start_message`, `build_tool_call_event`,
+`build_tool_return_event`.
 
 ### Model factories (`tests/fixtures/models.py`)
 
