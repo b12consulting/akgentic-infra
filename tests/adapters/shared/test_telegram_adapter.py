@@ -166,7 +166,7 @@ class _RaisingMessage:
 class TestMatchesGuard:
     """AC 3: a raising recipient yields False rather than propagating."""
 
-    def test_raising_recipient_returns_false(self) -> None:
+    def test_raising_recipient_access_returns_false(self) -> None:
         adapter = _make_adapter()
         assert adapter.matches(cast(SentMessage, _RaisingMessage())) is False
 
@@ -176,12 +176,12 @@ class TestMatchesGuard:
 
 
 # ---------------------------------------------------------------------------
-# AC 4: deliver() POSTs to Telegram API
+# deliver() POSTs to Telegram API
 # ---------------------------------------------------------------------------
 
 
 class TestDeliver:
-    """AC 5: deliver() sends correct POST to Telegram sendMessage."""
+    """deliver() sends the correct POST to Telegram sendMessage."""
 
     def test_posts_to_send_message(self) -> None:
         transport = _CaptureTransport()
@@ -199,12 +199,12 @@ class TestDeliver:
 
 
 # ---------------------------------------------------------------------------
-# AC 4: deliver() handles errors without raising
+# deliver() handles errors without raising
 # ---------------------------------------------------------------------------
 
 
 class TestDeliverError:
-    """AC 4: Telegram API error → logged, no exception raised."""
+    """Telegram API error → logged, no exception raised."""
 
     def test_api_error_does_not_raise(self) -> None:
         transport = _CaptureTransport(
