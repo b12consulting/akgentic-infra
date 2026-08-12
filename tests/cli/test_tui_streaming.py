@@ -49,6 +49,10 @@ class FakeAddress(ActorAddress):
     def squad_id(self) -> uuid.UUID | None:
         return None
 
+    @property
+    def is_user_proxy(self) -> bool:
+        return False
+
     def send(self, recipient: ActorAddress, message: Any) -> None:
         pass
 
