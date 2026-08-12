@@ -1,6 +1,13 @@
 """Worker team operation routes.
 
-create, message, send_to, send_from_to, human-input, get, metadata, stop, delete, resume.
+create, message, send_to, send_from_to, notification, human-input, metadata, stop,
+delete, resume.
+
+There is deliberately **no read route** here. Verbs on the live actor go to the
+worker, because only the worker holds it; reads of persisted state go to the
+event store, which is the source of truth. A read routed through a worker would
+let a momentarily-unreachable worker report a team that plainly exists as "not
+found", and a worker response cannot carry a full ``Process`` anyway.
 """
 
 from __future__ import annotations
@@ -97,19 +104,6 @@ def _process_to_response(process: Process) -> TeamResponse:
         updated_at=process.updated_at,
         metadata=dump_metadata(process.metadata),
     )
-
-
-@router.get("/{team_id}", response_model=TeamResponse)
-def get_team(
-    team_id: uuid.UUID,
-    services: WorkerServices = Depends(get_services),
-) -> TeamResponse:
-    """Get team metadata by ID."""
-    logger.info("GET /teams/%s", team_id)
-    process = services.worker_handle.get_team(team_id)
-    if process is None:
-        raise HTTPException(status_code=404, detail="Team not found")
-    return _process_to_response(process)
 
 
 @router.post("", status_code=201, response_model=TeamResponse)
