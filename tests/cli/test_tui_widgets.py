@@ -14,6 +14,7 @@ from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 from akgentic.infra.cli.tui.widgets.human_input import HumanInputPrompt
 from akgentic.infra.cli.tui.widgets.system_message import HistorySeparator, SystemMessage
 from akgentic.infra.cli.tui.widgets.tool_call import ToolCallWidget
+from akgentic.infra.cli.tui.widgets.warning import WarningWidget
 
 
 def _render_to_str(renderable: object) -> str:
@@ -179,6 +180,20 @@ async def test_error_widget_renders() -> None:
         rendered = _render_to_str(err.render())
         assert "error" in rendered
         assert "Something failed" in rendered
+
+
+@pytest.mark.asyncio
+async def test_warning_widget_renders() -> None:
+    app = _make_app()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        conv = pilot.app.query_one("#conversation")
+        warn = WarningWidget(content="Something to watch")
+        await conv.mount(warn)
+        rendered = _render_to_str(warn.render())
+        assert "warning" in rendered
+        assert "Something to watch" in rendered
+        assert "[error]" not in rendered
 
 
 @pytest.mark.asyncio

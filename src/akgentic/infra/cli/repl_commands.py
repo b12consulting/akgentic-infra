@@ -264,10 +264,17 @@ async def _history_handler(args: str, session: ChatSession) -> None:
 
     # Pass typed Message instances to the rendering pipeline
     from akgentic.core.messages.message import Message
-    from akgentic.core.messages.orchestrator import ErrorMessage, EventMessage, SentMessage
+    from akgentic.core.messages.orchestrator import (
+        ErrorMessage,
+        EventMessage,
+        SentMessage,
+        WarningMessage,
+    )
 
     displayable = [
-        e.event for e in events if isinstance(e.event, (SentMessage, ErrorMessage, EventMessage))
+        e.event
+        for e in events
+        if isinstance(e.event, (SentMessage, ErrorMessage, EventMessage, WarningMessage))
     ]
     for evt in displayable[-limit:]:
         if isinstance(evt, Message):

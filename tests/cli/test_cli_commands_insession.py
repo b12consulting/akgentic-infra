@@ -43,6 +43,7 @@ from tests.fixtures.events import (
     _make_proxy,
     build_start_message,
     make_sent_message,
+    make_warning_message,
 )
 
 from .conftest import captured_renderer as _captured_renderer
@@ -587,6 +588,27 @@ class TestHistoryHandler:
 
         out = capsys.readouterr().out
         assert "Usage" in out
+
+    async def test_shows_warning_message(self) -> None:
+        """AC4: the displayable filter admits a WarningMessage and it reaches output."""
+        events = [
+            EventInfo(
+                team_id="t1",
+                sequence=1,
+                event=make_warning_message(content="something to watch"),
+                timestamp="2026-01-01T00:00:00",
+            ),
+        ]
+        client = _mock_client()
+        client.get_events.return_value = events
+        renderer, buf = _captured_renderer()
+        session = _make_session(client=client, renderer=renderer)
+
+        await _history_handler("", session)
+
+        out = buf.getvalue()
+        assert "something to watch" in out
+        assert "warning" in out
 
     async def test_filters_non_displayable(self) -> None:
         events = [

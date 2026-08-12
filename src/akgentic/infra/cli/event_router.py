@@ -8,7 +8,12 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from akgentic.core.messages.message import Message
-from akgentic.core.messages.orchestrator import ErrorMessage, EventMessage, SentMessage
+from akgentic.core.messages.orchestrator import (
+    ErrorMessage,
+    EventMessage,
+    SentMessage,
+    WarningMessage,
+)
 from akgentic.infra.cli.renderers import RichRenderer
 from akgentic.llm.event import ToolCallEvent, ToolReturnEvent
 
@@ -42,6 +47,8 @@ class EventRouter:
                 return self._handle_sent_message(event)
             if isinstance(event, ErrorMessage):
                 return self._handle_error_message(event)
+            if isinstance(event, WarningMessage):
+                return self._handle_warning_message(event)
             if isinstance(event, EventMessage):
                 return self._handle_event_message(event)
             return False
@@ -52,6 +59,16 @@ class EventRouter:
     def _handle_error_message(self, event: ErrorMessage) -> bool:
         """Render an ErrorMessage event."""
         self._renderer.render_error(event.content)
+        return True
+
+    def _handle_warning_message(self, event: WarningMessage) -> bool:
+        """Render a WarningMessage event.
+
+        A sibling of _handle_error_message, kept separate rather than widened to
+        NotificationMessage: the two render at different severities, so one branch
+        could not pick a colour.
+        """
+        self._renderer.render_warning(event.content)
         return True
 
     def _handle_sent_message(self, event: SentMessage) -> bool:
@@ -149,6 +166,8 @@ class EventRouter:
         try:
             if isinstance(event, ErrorMessage):
                 return self._error_to_widget(event)
+            if isinstance(event, WarningMessage):
+                return self._warning_to_widget(event)
             if isinstance(event, SentMessage):
                 return self._sent_to_widget(event, color_registry)
             if isinstance(event, EventMessage):
@@ -162,6 +181,12 @@ class EventRouter:
         from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 
         return ErrorWidget(content=event.content)
+
+    def _warning_to_widget(self, event: WarningMessage) -> Widget:
+        """Convert a WarningMessage event to a WarningWidget."""
+        from akgentic.infra.cli.tui.widgets.warning import WarningWidget
+
+        return WarningWidget(content=event.content)
 
     def _sent_to_widget(
         self,

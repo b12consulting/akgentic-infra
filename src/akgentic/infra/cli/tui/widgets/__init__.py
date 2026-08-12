@@ -11,6 +11,7 @@ from akgentic.infra.cli.tui.widgets.status_header import StatusHeader
 from akgentic.infra.cli.tui.widgets.system_message import HistorySeparator, SystemMessage
 from akgentic.infra.cli.tui.widgets.thinking import ThinkingIndicator
 from akgentic.infra.cli.tui.widgets.tool_call import ToolCallWidget
+from akgentic.infra.cli.tui.widgets.warning import WarningWidget
 
 __all__ = [
     "AgentMessage",
@@ -25,4 +26,5 @@ __all__ = [
     "SystemMessage",
     "ThinkingIndicator",
     "ToolCallWidget",
+    "WarningWidget",
 ]

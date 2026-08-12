@@ -74,6 +74,21 @@ class TestRenderError:
         assert "something broke" in output
 
 
+class TestRenderWarning:
+    def test_warning_prefix_and_content(self) -> None:
+        renderer, buf = _make_renderer()
+        renderer.render_warning("something to watch")
+        output = buf.getvalue()
+        assert "warning" in output
+        assert "something to watch" in output
+
+    def test_warning_does_not_use_the_error_marker(self) -> None:
+        """A handled condition must not be presented as a failure."""
+        renderer, buf = _make_renderer()
+        renderer.render_warning("something to watch")
+        assert "[error]" not in buf.getvalue()
+
+
 class TestRenderToolCall:
     def test_tool_name_and_input_in_output(self) -> None:
         renderer, buf = _make_renderer()
