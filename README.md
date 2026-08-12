@@ -364,9 +364,10 @@ The server is built around a tier-agnostic `TeamService` that delegates all infr
 | Method   | Path                            | Description                          |
 |----------|---------------------------------|--------------------------------------|
 | `POST`   | `/teams/`                       | Create a team from a catalog entry   |
-| `GET`    | `/teams/`                       | List all teams                       |
+| `GET`    | `/teams/`                       | List all teams — accepts `?meta.<key>=<value>` metadata filters |
 | `GET`    | `/teams/{team_id}`              | Get team metadata                    |
 | `DELETE` | `/teams/{team_id}`              | Stop and delete a team               |
+| `PATCH`  | `/teams/{team_id}/metadata`     | Replace a team's business metadata   |
 | `POST`   | `/teams/{team_id}/message`      | Send a message to a running team     |
 | `POST`   | `/teams/{team_id}/human-input`  | Provide human input to an agent      |
 | `POST`   | `/teams/{team_id}/stop`         | Stop a team (preserve data)          |
@@ -379,6 +380,105 @@ The server is built around a tier-agnostic `TeamService` that delegates all infr
 | `POST`   | `/webhook/{channel}`            | Inbound channel webhook              |
 
 Catalog endpoints are mounted under `/catalog/` and provided by `akgentic-catalog`.
+
+### Team metadata
+
+A team can carry **business metadata** — a small typed document (`{"tenant": "acme", "case_ref": "C-1234"}`) that the deployment defines, the server validates, and callers filter teams by. Three surfaces cover it: `POST /teams` sets it at creation, `GET /teams?meta.<key>=<value>` filters on it, and `PATCH /teams/{team_id}/metadata` replaces it.
+
+Two rules govern all three, and neither is guessable from the endpoint shapes:
+
+- **Metadata is plain JSON, and the client never names its type.** The server resolves the validating type itself, from the team's `catalog_namespace` → `TeamCard.metadata_type`. A `__model__` key anywhere in a metadata body is a **422** — not a hint the server follows, and not silently dropped. This is deliberately unlike `SendMessageRequest.message` / `EmitMessageRequest.message`, which *are* `__model__`-tagged wire envelopes.
+- **Metadata filters are equality-only and AND-combined.** No ranges, no prefix or substring matching, no sort-by-metadata. Multiple `meta.` parameters only ever narrow the result set.
+
+Responses carry the metadata as plain JSON too, with the `__model__` tag stripped — so a document read from a response can be sent straight back on a create or an update.
+
+**Create a team with metadata.**
+
+```http
+POST /teams
+Content-Type: application/json
+
+{
+  "catalog_namespace": "acme-support",
+  "metadata": {"tenant": "acme", "case_ref": "C-1234"}
+}
+```
+
+```json
+201 Created
+
+{
+  "team_id": "6f1e8c4a-...",
+  "name": "acme-support",
+  "status": "running",
+  "user_id": "anonymous",
+  "created_at": "2026-08-11T09:00:00Z",
+  "updated_at": "2026-08-11T09:00:00Z",
+  "metadata": {"tenant": "acme", "case_ref": "C-1234"}
+}
+```
+
+`metadata` is optional; omitting it (or sending `null`) creates a team carrying none. Validation runs *before* the team is placed, so a rejected body creates nothing. Every route returning a team — `POST /teams`, `GET /teams`, `GET /teams/{team_id}`, `POST /teams/{team_id}/restore` — carries the same `metadata` field.
+
+The three rejections, each a `422` with the message in `detail`:
+
+| Condition | `detail` |
+|---|---|
+| Body carries `__model__` at any depth | `metadata must not contain a '__model__' key at any depth: the metadata type is chosen by the team's catalog entry, never by the request body` |
+| Metadata sent to a team whose card declares no `metadata_type` | `this team declares no metadata contract, so metadata cannot be supplied` |
+| Body fails the declared schema | `metadata field '<field>' is invalid: <reason>` |
+
+An unknown `catalog_namespace` is a `404` (`Catalog namespace not found`).
+
+**Filter teams by metadata.** Repeated `?meta.<key>=<value>` parameters add equality filters, AND-combined across distinct keys, on top of the existing `status` and pagination parameters:
+
+```http
+GET /teams?meta.tenant=acme
+GET /teams?meta.tenant=acme&meta.case_ref=C-1234
+GET /teams?meta.tenant=acme&status=running&page=1&size=250
+```
+
+```json
+200 OK
+
+{
+  "teams": [
+    {
+      "team_id": "6f1e8c4a-...",
+      "name": "acme-support",
+      "status": "running",
+      "user_id": "anonymous",
+      "created_at": "2026-08-11T09:00:00Z",
+      "updated_at": "2026-08-11T09:00:00Z",
+      "metadata": {"tenant": "acme", "case_ref": "C-1234"}
+    }
+  ],
+  "total_count": 1
+}
+```
+
+`total_count` is the **filtered** total — the number of the caller's teams matching every filter given, not their unfiltered team count — and it stays consistent across page boundaries. Owner scoping is server-side and no filter weakens it: a `meta.` parameter can only narrow the caller's own teams, and another user's team is neither returned nor counted.
+
+Values travel verbatim; the server escapes the index separator, so a value containing `|` needs nothing from the client. Filtering on a key the metadata model does not mark as indexed is not an error — it simply matches nothing. Two `422`s guard the parameter itself: `?meta.=x` (`query parameter 'meta.' names no metadata key`) and the same key given twice (`query parameter 'meta.tenant' is repeated; metadata filtering is equality-only, so one key cannot carry two values`).
+
+**Replace a team's metadata.** `PATCH` takes a `metadata` envelope and **replaces the stored document outright — it does not merge**. The caller sends a complete document; a field omitted from it is gone, both from the stored value and from the `meta.` filter index. An empty object clears the metadata.
+
+```http
+PATCH /teams/6f1e8c4a-.../metadata
+Content-Type: application/json
+
+{"metadata": {"tenant": "contoso", "case_ref": "C-9999"}}
+```
+
+```json
+200 OK
+
+{"metadata": {"tenant": "contoso", "case_ref": "C-9999"}}
+```
+
+The response body carries what was persisted. The same three `422`s apply. A team that does not exist and a team belonging to another user are both `404` (`Team not found`) — `require_team_access` answers 404-over-403 so the API leaks no team-existence signal. Note the envelope: `PATCH` wraps the document under a required `metadata` key (a bare `{"tenant": "contoso"}` body is a `422`), whereas `TeamResponse.metadata` carries the document directly.
+
+The write is database-first, then a best-effort push to the live team; a `200` means the system of record was updated, so a subsequent `GET /teams?meta.<key>=<new-value>` finds the team.
 
 ### Authentication contract & enforcement
 
