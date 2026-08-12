@@ -29,9 +29,12 @@ from akgentic.infra.worker.routes.teams import (
     create_team,
     delete_team,
     emit_notification,
+    get_team,
     send_message,
     stop_team,
 )
+
+from tests.fixtures.team_metadata import AcmeCaseMetadata, AcmeOwner
 
 _TEAM_CARD_PAYLOAD = {
     "name": "Test Team",
@@ -146,6 +149,47 @@ def test_create_team_stores_handle_in_cache() -> None:
     assert response.name == "Test Team"
     assert response.user_id == "user-1"
     assert response.status == TeamStatus.RUNNING.value
+
+
+def test_get_team_returns_metadata_with_the_tag_stripped() -> None:
+    """The worker fills ``TeamResponse.metadata`` through the shared helper.
+
+    ``TeamResponse`` is one model with two producers. The worker's converter left
+    the field at its default, so a team carrying metadata was reported as
+    ``metadata: null`` here while the server router reported the real value — and
+    a bare ``model_dump`` would have leaked the ``__model__`` tag the server-side
+    API refuses back in. Nested sub-model included, since that is the depth a
+    top-level-only strip would miss.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    process = _build_process(team_id, team_card)
+    process.metadata = AcmeCaseMetadata(
+        tenant="acme",
+        case="C-1234",
+        owner=AcmeOwner(email="ops@contoso.example"),
+    )
+    services = _build_services(_FakeRuntime(team_id), process, LocalRuntimeCache())
+
+    response = get_team(team_id, services)  # type: ignore[arg-type]
+
+    assert response.metadata is not None
+    assert response.metadata["tenant"] == "acme"
+    assert "__model__" not in response.metadata
+    owner = response.metadata["owner"]
+    assert isinstance(owner, dict)
+    assert "__model__" not in owner
+    assert owner["email"] == "ops@contoso.example"
+
+
+def test_get_team_without_metadata_returns_none() -> None:
+    """A team carrying no metadata still reports ``None``, not an empty dict."""
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    process = _build_process(team_id, team_card)
+    services = _build_services(_FakeRuntime(team_id), process, LocalRuntimeCache())
+
+    assert get_team(team_id, services).metadata is None  # type: ignore[arg-type]
 
 
 def test_create_then_message_hits_cache_and_returns_204() -> None:

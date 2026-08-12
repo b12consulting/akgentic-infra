@@ -37,6 +37,56 @@ def test_create_team_request_with_params() -> None:
     assert req.params == {"key": "value"}
 
 
+def test_create_team_request_metadata_defaults_to_none() -> None:
+    """metadata is optional — omitting it keeps today's behaviour."""
+    assert CreateTeamRequest(catalog_namespace="test-team").metadata is None
+
+
+def test_create_team_request_accepts_plain_json_metadata() -> None:
+    """metadata is carried verbatim; the model itself applies no schema.
+
+    The schema comes from the team's catalog entry, resolved server-side — which
+    is why the request model cannot type this field beyond raw JSON.
+    """
+    req = CreateTeamRequest(
+        catalog_namespace="acme-cases",
+        metadata={"tenant": "acme", "case": "C-1234"},
+    )
+    assert req.metadata == {"tenant": "acme", "case": "C-1234"}
+
+
+def test_team_response_metadata_defaults_to_none() -> None:
+    """metadata is optional and additive — a client that ignores it is unaffected."""
+    now = datetime.now(tz=UTC)
+    resp = TeamResponse(
+        team_id=uuid.uuid4(),
+        name="Test",
+        status="running",
+        user_id="anonymous",
+        created_at=now,
+        updated_at=now,
+    )
+    assert resp.metadata is None
+    assert resp.model_dump(mode="json")["metadata"] is None
+
+
+def test_team_response_metadata_round_trips() -> None:
+    """A populated metadata value survives serialization unchanged."""
+    now = datetime.now(tz=UTC)
+    resp = TeamResponse(
+        team_id=uuid.uuid4(),
+        name="Test",
+        status="running",
+        user_id="anonymous",
+        created_at=now,
+        updated_at=now,
+        metadata={"tenant": "acme", "owner": {"email": "ops@contoso.example"}},
+    )
+    dumped = resp.model_dump(mode="json")
+    assert dumped["metadata"]["tenant"] == "acme"
+    assert dumped["metadata"]["owner"]["email"] == "ops@contoso.example"
+
+
 def test_team_response_serialization() -> None:
     """TeamResponse serializes all fields correctly."""
     tid = uuid.uuid4()

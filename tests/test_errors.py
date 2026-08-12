@@ -8,7 +8,11 @@ that placement errors are still caught by ``except RuntimeError``.
 from __future__ import annotations
 
 import pytest
-from akgentic.infra.errors import PlacementConsistencyError, ServerError
+from akgentic.infra.errors import (
+    MetadataValidationError,
+    PlacementConsistencyError,
+    ServerError,
+)
 from akgentic.infra.protocols.placement import (
     NoCapacityError,
     NoSandboxCapacityError,
@@ -135,6 +139,27 @@ class TestPlacementConsistencyError:
     def test_is_server_error_not_placement_error(self) -> None:
         err = PlacementConsistencyError("missing")
         assert isinstance(err, ServerError)
+        assert not isinstance(err, PlacementError)
+
+
+class TestMetadataValidationError:
+    """Story 53.1: the metadata refusal carries 422 and is not a ValueError."""
+
+    def test_status_and_code(self) -> None:
+        err = MetadataValidationError("bad body")
+        assert err.status_code == 422
+        assert err.code == "invalid_metadata"
+
+    def test_is_server_error_but_not_a_value_error(self) -> None:
+        """Its own type on purpose.
+
+        The teams router maps ``ValueError`` by string-matching the message to
+        404/409, so a validation failure raised as one would be reported as a
+        conflict. Distinguishability is the whole point of the type.
+        """
+        err = MetadataValidationError("bad body")
+        assert isinstance(err, ServerError)
+        assert not isinstance(err, ValueError)
         assert not isinstance(err, PlacementError)
 
 

@@ -107,12 +107,25 @@ def _filtering_store(*seeded: Process) -> MagicMock:
     A bare ``MagicMock`` returns its canned list whatever the arguments, so it
     cannot tell a pushed-down filter from an ignored one — an accept-and-ignore
     fake would let a broken push-down go green. This stub models the store
-    contract instead: ``None`` means "do not filter on this axis", the two
-    filters combine with AND.
+    contract instead: ``None`` means "do not filter on this axis", the filters
+    combine with AND.
+
+    It carries the ``metadata`` axis to stay shape-faithful to the EventStore
+    Protocol even though the warm read never uses it. The Protocol is not
+    ``@runtime_checkable`` and mypy does not type-check ``tests/``, so a stub
+    narrower than the contract drifts in silence until the caller grows an
+    argument it cannot take. Matching on it is deliberately NOT implemented —
+    index derivation belongs to akgentic-team and must not be copied here — so
+    the unsupported axis fails loudly rather than being quietly ignored.
     """
     rows = list(seeded)
 
-    def list_teams(user_id: str | None = None, status: TeamStatus | None = None) -> list[Process]:
+    def list_teams(
+        user_id: str | None = None,
+        status: TeamStatus | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> list[Process]:
+        assert metadata is None, "the warm read must not push a metadata filter"
         matched = rows if user_id is None else [p for p in rows if p.user_id == user_id]
         return matched if status is None else [p for p in matched if p.status == status]
 

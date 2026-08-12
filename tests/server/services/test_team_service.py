@@ -67,6 +67,8 @@ def test_create_team_forwards_user_email_and_team_id(team_service: TeamService) 
         "user_email": "alice@example.com",
         "team_id": explicit_id,
         "catalog_namespace": "test-team",
+        # Always forwarded, None when the caller supplied no metadata.
+        "metadata": None,
     }
 
 
@@ -105,12 +107,20 @@ def test_list_teams_delegates_to_event_store_with_user_id(team_service: TeamServ
 
     page, total = team_service.list_teams(user_id="alice")
 
-    # The delegating call shape — exactly one call, both filters as kwargs.
+    # The delegating call shape — exactly one call, every filter as a kwarg.
     # Phase-2 (store-side offset pushdown) is out of scope: NO page/size here.
-    mock_event_store.list_teams.assert_called_once_with(user_id="alice", status=None)
+    # ``metadata=None`` is unconditional: a branch that omits the kwarg when no
+    # filter was given is how a filter later gets silently dropped.
+    mock_event_store.list_teams.assert_called_once_with(
+        user_id="alice", status=None, metadata=None
+    )
     # The call must NOT be a no-arg call followed by an in-Python filter.
     assert mock_event_store.list_teams.call_args.args == ()
-    assert mock_event_store.list_teams.call_args.kwargs == {"user_id": "alice", "status": None}
+    assert mock_event_store.list_teams.call_args.kwargs == {
+        "user_id": "alice",
+        "status": None,
+        "metadata": None,
+    }
     # Empty owned set -> empty page, zero total.
     assert page == []
     assert total == 0
@@ -130,7 +140,7 @@ def test_list_teams_passes_empty_string_user_id_verbatim(team_service: TeamServi
 
     team_service.list_teams(user_id="")
 
-    mock_event_store.list_teams.assert_called_once_with(user_id="", status=None)
+    mock_event_store.list_teams.assert_called_once_with(user_id="", status=None, metadata=None)
 
 
 def test_list_teams_delegates_status_to_event_store(team_service: TeamService) -> None:
@@ -146,8 +156,48 @@ def test_list_teams_delegates_status_to_event_store(team_service: TeamService) -
 
     team_service.list_teams(user_id="alice", status=TeamStatus.RUNNING)
 
-    mock_event_store.list_teams.assert_called_once_with(user_id="alice", status=TeamStatus.RUNNING)
+    mock_event_store.list_teams.assert_called_once_with(
+        user_id="alice", status=TeamStatus.RUNNING, metadata=None
+    )
     assert mock_event_store.list_teams.call_args.args == ()
+
+
+def test_list_teams_forwards_the_metadata_filter_verbatim(team_service: TeamService) -> None:
+    """The metadata filter reaches the store raw — no escaping, no normalising.
+
+    ``|`` is the index separator and is escaped inside akgentic-team, exactly
+    once; a value carrying one that arrived pre-escaped would be escaped twice
+    and match nothing. Asserted on the delegated kwargs rather than on the
+    returned rows because a stub store returns the same rows either way.
+    """
+    mock_event_store = MagicMock()
+    mock_event_store.list_teams.return_value = []
+    team_service._services.event_store = mock_event_store  # type: ignore[assignment]
+
+    team_service.list_teams(user_id="alice", metadata={"tenant": "ac|me", "case": "C-1234"})
+
+    mock_event_store.list_teams.assert_called_once_with(
+        user_id="alice", status=None, metadata={"tenant": "ac|me", "case": "C-1234"}
+    )
+    assert mock_event_store.list_teams.call_args.args == ()
+
+
+def test_list_teams_metadata_filter_narrows_within_user(team_service: TeamService) -> None:
+    """The push-down against the real YAML store returns only the matching team.
+
+    Companion to the kwargs guard above: that one proves the call shape, this
+    one proves the shape actually produces the right answer end to end.
+    """
+    team_service.create_team("test-team", user_id="alice")
+    unmatched, unmatched_total = team_service.list_teams(
+        user_id="alice", metadata={"tenant": "acme"}
+    )
+    assert unmatched == []
+    # The total follows the filter, not the owned set the filter was drawn from.
+    assert unmatched_total == 0
+
+    _, owned_total = team_service.list_teams(user_id="alice")
+    assert owned_total == 1
 
 
 def test_list_teams_status_narrows_within_user(team_service: TeamService) -> None:
@@ -658,3 +708,74 @@ def test_list_teams_holds_no_per_request_state() -> None:
     # No new attribute, and the wired collaborators are unchanged identities.
     assert before.keys() == after.keys()
     assert all(before[k] is after[k] for k in before)
+
+
+# ---------------------------------------------------------------------------
+# Story 53.2 — the metadata filter and pagination together.
+#
+# The stub store below stands in for the store-side push-down: a filtered call
+# gets back only the matching rows. That is the whole reason ``total`` is the
+# filtered count by construction — the service counts what the store returned
+# and never counts a second time.
+# ---------------------------------------------------------------------------
+
+
+def _service_over_filtered(rows: list[Process], matching: list[Process]) -> TeamService:
+    """TeamService whose store returns ``matching`` for a metadata-filtered call."""
+    services = MagicMock()
+
+    def _list_teams(**kwargs: object) -> list[Process]:
+        return list(matching) if kwargs.get("metadata") else list(rows)
+
+    services.event_store.list_teams.side_effect = _list_teams
+    return TeamService(services, workspaces_root=Path("/unused"))
+
+
+_ACME = {"tenant": "acme"}
+
+
+def test_filtered_total_is_the_matching_count_on_every_page() -> None:
+    """50 owned, 3 matching: the total is 3 on pages 1, 2 and 3 alike.
+
+    The opposite implementation — fetch the owned set, slice it, filter the
+    slice — reports 50 and hands back pages shorter than ``size`` for no visible
+    reason. Checked across the page boundary because a single page cannot tell
+    the two apart.
+    """
+    rows = _distinct_rows(50)
+    matching = sorted(rows[:3], key=lambda p: (p.created_at, p.team_id), reverse=True)
+    service = _service_over_filtered(rows, matching)
+
+    page1, total1 = service.list_teams(user_id="alice", metadata=_ACME, page=1, size=2)
+    page2, total2 = service.list_teams(user_id="alice", metadata=_ACME, page=2, size=2)
+    page3, total3 = service.list_teams(user_id="alice", metadata=_ACME, page=3, size=2)
+
+    assert [total1, total2, total3] == [3, 3, 3]
+    assert len(rows) not in (total1, total2, total3)
+    assert [p.team_id for p in page1] == [p.team_id for p in matching[0:2]]
+    assert [p.team_id for p in page2] == [p.team_id for p in matching[2:3]]
+    assert page3 == []
+
+
+def test_filtered_page_followable_on_a_fresh_service_instance() -> None:
+    """A filtered walk survives crossing to a separately constructed instance.
+
+    Same guarantee the unfiltered path already gives: the filter lives in the
+    arguments and the store, never in the instance that happened to serve the
+    previous page.
+    """
+    rows = _distinct_rows(20)
+    matching = rows[:6]
+
+    page1, total1 = _service_over_filtered(rows, matching).list_teams(
+        user_id="alice", metadata=_ACME, page=1, size=3
+    )
+    page2, total2 = _service_over_filtered(rows, matching).list_teams(
+        user_id="alice", metadata=_ACME, page=2, size=3
+    )
+
+    assert total1 == total2 == 6
+    ids1 = {p.team_id for p in page1}
+    ids2 = {p.team_id for p in page2}
+    assert ids1.isdisjoint(ids2)
+    assert len(ids1 | ids2) == 6

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from akgentic.infra.errors import ServerError
 
 if TYPE_CHECKING:
+    from akgentic.core.utils.serializer import SerializableBaseModel
     from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import TeamCard
 
@@ -94,6 +95,7 @@ class PlacementStrategy(Protocol):
         user_email: str = "",
         team_id: uuid.UUID | None = None,
         catalog_namespace: str | None = None,
+        metadata: SerializableBaseModel | None = None,
     ) -> TeamHandle:
         """Create a team on a worker instance and return a handle.
 
@@ -108,6 +110,11 @@ class PlacementStrategy(Protocol):
                 ``TeamManager.create_team`` (community tier) or the remote
                 worker (department / enterprise tiers). ``None`` for teams
                 not sourced from a v2 catalog namespace.
+            metadata: Business metadata for the team, already validated by the
+                caller against ``team_card.metadata_type``. Forwarded so it lands
+                on the persisted ``Process.metadata``; the derived index is
+                computed once inside ``akgentic-team``, never here. Optional and
+                defaulting to ``None``, so existing callers are unaffected.
 
         Returns:
             A TeamHandle for interacting with the newly created team.

@@ -47,3 +47,19 @@ class PlacementConsistencyError(ServerError):
 
     status_code = 502
     code = "placement_consistency"
+
+
+class MetadataValidationError(ServerError):
+    """A team-metadata request body was refused before anything was written.
+
+    Its own type, not a bare ``ValueError``: the teams router maps ``ValueError``
+    by string-matching the message to 404/409, which would turn a validation
+    failure into a conflict. 422 matches FastAPI's own request-validation status.
+
+    Raised by ``server/services/_metadata_payload.validate_metadata`` for a
+    ``__model__`` key in the body, for metadata sent to a team that declares no
+    contract, and for a body that fails the declared schema. See ADR-24 §D3.
+    """
+
+    status_code = 422
+    code = "invalid_metadata"

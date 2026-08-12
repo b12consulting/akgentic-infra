@@ -9,6 +9,7 @@ from typing import NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from akgentic.catalog.models.errors import EntryNotFoundError
+from akgentic.infra.errors import MetadataValidationError
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.models import (
     AgentStateListResponse,
@@ -20,10 +21,13 @@ from akgentic.infra.server.models import (
     HumanInputRequest,
     SendMessageRequest,
     TeamListResponse,
+    TeamMetadataResponse,
     TeamResponse,
+    UpdateTeamMetadataRequest,
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
 from akgentic.infra.server.routes._team_access import get_team_service, require_team_access
+from akgentic.infra.server.services._metadata_payload import dump_metadata
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.state_keys import CONNECTION_MANAGER
 from akgentic.team import EventNotFoundError
@@ -35,7 +39,13 @@ router = APIRouter(prefix="/teams", tags=["teams"])
 
 
 def _process_to_response(process: Process) -> TeamResponse:
-    """Convert a Process model to a TeamResponse."""
+    """Convert a Process model to a TeamResponse.
+
+    The single conversion point for every route returning a ``TeamResponse``,
+    which is why the metadata ``__model__`` strip belongs here: the persisted
+    value carries the tag for the store's benefit, the wire never does, and one
+    site means no route can forget.
+    """
     team_name = process.team_card.name or process.catalog_namespace or str(process.team_id)
     return TeamResponse(
         team_id=process.team_id,
@@ -44,6 +54,7 @@ def _process_to_response(process: Process) -> TeamResponse:
         user_id=process.user_id,
         created_at=process.created_at,
         updated_at=process.updated_at,
+        metadata=dump_metadata(process.metadata),
     )
 
 
@@ -53,14 +64,24 @@ def create_team(
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
 ) -> TeamResponse:
-    """Create a new team from a catalog namespace."""
+    """Create a new team from a catalog namespace, optionally with metadata.
+
+    ``body.metadata`` is plain JSON validated server-side against the type the
+    team's catalog entry declares; a rejected body is a 422 and creates nothing.
+    """
     logger.info("POST /teams — catalog_namespace=%s", body.catalog_namespace)
     try:
         process = service.create_team(
             catalog_namespace=body.catalog_namespace,
             user_id=user.user_id,
             user_email=user.email,
+            metadata=body.metadata,
         )
+    except MetadataValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would report a validation failure as a conflict.
+        logger.warning("Team creation rejected — invalid metadata: %s", exc.detail)
+        raise HTTPException(status_code=422, detail=exc.detail) from None
     except EntryNotFoundError:
         logger.warning(
             "Team creation failed: catalog namespace %s not found",
@@ -70,8 +91,54 @@ def create_team(
     return _process_to_response(process)
 
 
+METADATA_FILTER_PREFIX = "meta."
+"""Query-parameter prefix that marks a business-metadata equality filter."""
+
+
+def _parse_metadata_filter(request: Request) -> dict[str, str] | None:
+    """Collect repeated ``?meta.<key>=<value>`` parameters into a filter.
+
+    Read from the raw multi-item query string rather than declared as a route
+    parameter because the key set is open: it is whatever the team's metadata
+    model declares, which the HTTP layer neither knows nor needs to know.
+
+    Returns:
+        The ``key -> value`` filter, or ``None`` when no ``meta.`` parameter was
+        given. ``None`` rather than ``{}``: an empty dict is an empty
+        conjunction that some backends would still translate into a query, and
+        "no filter" is not a filter that matches everything by coincidence.
+
+    Raises:
+        HTTPException: 422 naming the offending parameter, when a key is empty
+            or repeated. Two values for one key can never both hold under
+            equality matching, so first-wins or last-wins would answer a
+            question the client did not ask, silently.
+    """
+    filters: dict[str, str] = {}
+    for name, value in request.query_params.multi_items():
+        if not name.startswith(METADATA_FILTER_PREFIX):
+            continue
+        key = name[len(METADATA_FILTER_PREFIX) :]
+        if not key:
+            raise HTTPException(
+                status_code=422,
+                detail=f"query parameter '{name}' names no metadata key",
+            )
+        if key in filters:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"query parameter '{name}' is repeated; metadata filtering is "
+                    "equality-only, so one key cannot carry two values"
+                ),
+            )
+        filters[key] = value
+    return filters or None
+
+
 @router.get("", response_model=TeamListResponse)
 def list_teams(
+    request: Request,
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
     status: TeamStatus | None = None,
@@ -82,14 +149,30 @@ def list_teams(
 
     ``status`` is validated by FastAPI against ``TeamStatus``; an unknown value
     is a 422 raised by the framework, not handled here. Omitting it returns
-    every status, ``DELETED`` included. A status only narrows within the
-    caller's own teams — it never widens the set beyond them, and
+    every status, ``DELETED`` included.
+
+    Repeated ``?meta.<key>=<value>`` parameters add an equality filter on the
+    team's business metadata; distinct keys AND-combine. Values travel to the
+    store verbatim — deriving the index entry and escaping the ``|`` separator
+    happen exactly once, inside ``akgentic-team``, and duplicating either here
+    would double-escape and match nothing.
+
+    No filter widens the set beyond the caller's own teams: ``user_id`` comes
+    from the request identity seam and is always pushed down alongside, so a
+    metadata filter can never reach — or count — another owner's team.
     ``total_count`` counts the filtered set, so it stays consistent with the
     page slice it accompanies.
     """
-    logger.debug("GET /teams — status=%s page=%s size=%s", status, page, size)
+    metadata = _parse_metadata_filter(request)
+    logger.debug(
+        "GET /teams — status=%s meta_keys=%s page=%s size=%s",
+        status,
+        sorted(metadata) if metadata else None,
+        page,
+        size,
+    )
     page_slice, total = service.list_teams(
-        user_id=user.user_id, status=status, page=page, size=size
+        user_id=user.user_id, status=status, metadata=metadata, page=page, size=size
     )
     return TeamListResponse(
         teams=[_process_to_response(p) for p in page_slice],
@@ -129,6 +212,46 @@ def delete_team(
         service.delete_team(team_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
+
+
+@router.patch(
+    "/{team_id}/metadata",
+    status_code=200,
+    response_model=TeamMetadataResponse,
+    dependencies=[Depends(require_team_access)],
+)
+def update_team_metadata(
+    team_id: uuid.UUID,
+    body: UpdateTeamMetadataRequest,
+    service: TeamService = Depends(get_team_service),
+) -> TeamMetadataResponse:
+    """Replace a team's business metadata with a complete new document.
+
+    ``body.metadata`` replaces the stored value outright — a field omitted here
+    is gone from the value and from the ``?meta.`` filter index alike. It is
+    plain JSON validated server-side against the type the team's card declares;
+    a rejected body is a 422 and writes nothing.
+
+    The response carries what was persisted. A failed best-effort push of the
+    new value to a live orchestrator is deliberately NOT reflected here: the
+    database is the system of record and the actor re-reads on its next resume,
+    so reporting an error would misdescribe a write that stands.
+
+    Ownership comes from ``require_team_access`` — the request identity seam and
+    the wired policy, never the body — and a team the caller may not see is a
+    404, identical to one that does not exist.
+    """
+    logger.info("PATCH /teams/%s/metadata", team_id)  # never the body: caller business context
+    try:
+        metadata = service.update_team_metadata(team_id, body.metadata)
+    except MetadataValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would report a validation failure as a conflict.
+        logger.warning("Metadata update rejected — invalid metadata: %s", exc.detail)
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+    except ValueError as exc:
+        _raise_action_error(exc)
+    return TeamMetadataResponse(metadata=dump_metadata(metadata))
 
 
 # --- Action Endpoints ---

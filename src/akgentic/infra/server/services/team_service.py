@@ -6,15 +6,17 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.orchestrator import SentMessage
+from akgentic.core.utils.serializer import SerializableBaseModel
 from akgentic.infra.errors import PlacementConsistencyError
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.deps import TierServices
+from akgentic.infra.server.services._metadata_payload import validate_metadata
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
 
 if TYPE_CHECKING:
@@ -81,6 +83,7 @@ class TeamService:
         user_id: str,
         user_email: str = "",
         team_id: uuid.UUID | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Process:
         """Resolve a catalog namespace to a TeamCard and create a running team.
 
@@ -95,6 +98,11 @@ class TeamService:
             user_email: Email of the user creating the team.
             team_id: Optional caller-supplied team identifier; the placement
                 layer auto-generates a UUID when None.
+            metadata: Optional plain-JSON business metadata. Validated against
+                the ``metadata_type`` the resolved card declares — the client
+                never names the type — and forwarded down the create path so it
+                lands on the persisted ``Process.metadata``. The derived index
+                is computed once, inside ``akgentic-team``, never here.
 
         Returns:
             The persisted ``Process`` for the newly created team.
@@ -105,6 +113,10 @@ class TeamService:
                 ``CatalogValidationError``; this layer translates it so
                 the existing teams router's ``EntryNotFoundError → 404``
                 handler applies unchanged.
+            MetadataValidationError: If ``metadata`` carries a ``__model__`` key,
+                is supplied for a card declaring no contract, or fails the
+                declared schema. Raised before placement runs, so a rejected
+                body never leaves a half-created team behind.
         """
         logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
         try:
@@ -114,12 +126,15 @@ class TeamService:
             # exception so the teams router's error-handling stays a no-op
             # for this story (Story 18.3 consolidates error handling).
             raise EntryNotFoundError(catalog_namespace) from exc
+        # Before placement, never after: nothing is created when this rejects.
+        validated_metadata = validate_metadata(team_card.metadata_type, metadata)
         handle = self._services.placement.create_team(
             team_card,
             user_id,
             user_email=user_email,
             team_id=team_id,
             catalog_namespace=catalog_namespace,
+            metadata=validated_metadata,
         )
         self._cache.store(handle.team_id, handle)
         # Consistency invariant: create_team() writes to event store, so
@@ -141,28 +156,41 @@ class TeamService:
         *,
         user_id: str,
         status: TeamStatus | None = None,
+        metadata: dict[str, str] | None = None,
         page: int = 1,
         size: int = 250,
     ) -> tuple[list[Process], int]:
-        """Return one numbered page of the user's teams plus the full owned count.
+        """Return one numbered page of the user's teams plus the filtered count.
 
-        Phase 1: the store returns the full owned set, sorted ``created_at DESC,
+        Phase 1: the store returns the matching set, sorted ``created_at DESC,
         team_id DESC`` and sliced here (ADR-032 §Decision 2). Stateless — a pure
-        function of ``user_id`` + ``status`` + ``page`` + ``size`` + store
-        contents. An out-of-range page yields an empty list with the correct
-        total.
+        function of ``user_id`` + ``status`` + ``metadata`` + ``page`` + ``size``
+        + store contents. An out-of-range page yields an empty list with the
+        correct total.
 
-        Both filters push into the EventStore rather than loading every team
-        into Python and filtering here, so per-request cost scales with the
-        answer rather than with the archive. ``status=None`` is *no status
-        filter* — every state is returned, ``DELETED`` included — so a caller
-        that passes no status gets exactly the result set it got before.
-        ``status`` only narrows *within* the user's teams; it never replaces
-        the owner filter. The returned total counts the filtered set, so it
-        agrees with the page it accompanies. See team-package ADR-16 (owner)
-        and ADR-23 (lifecycle state) for the Protocol changes.
+        Every filter pushes into the EventStore rather than loading the user's
+        teams into Python and filtering here, so per-request cost scales with
+        the answer rather than with the archive — and so the total, counted from
+        what the store returned, is the FILTERED count on every page rather than
+        a count of the set the filter was drawn from. Nothing filters after the
+        slice; that ordering is what keeps pages contiguous.
+
+        ``status=None`` and ``metadata=None`` each mean *no such filter*, so a
+        caller passing neither gets exactly the result set it got before. Both
+        are forwarded unconditionally: a branch that omits a kwarg when it is
+        ``None`` is how a filter later gets silently dropped. ``metadata``
+        values travel verbatim — index derivation and ``|`` escaping happen once,
+        inside ``akgentic-team`` (ADR-24 §D4).
+
+        Neither filter replaces the owner filter: they only narrow *within* the
+        user's teams. Metadata is caller-supplied and non-secret, so allowing it
+        to widen the set — or the count — would make this a cross-tenant
+        enumeration primitive. See team-package ADR-16 (owner), ADR-23
+        (lifecycle state) and ADR-24 (metadata) for the Protocol changes.
         """
-        rows = self._services.event_store.list_teams(user_id=user_id, status=status)
+        rows = self._services.event_store.list_teams(
+            user_id=user_id, status=status, metadata=metadata
+        )
         rows.sort(key=lambda p: (p.created_at, p.team_id), reverse=True)
         total = len(rows)
         size = max(1, min(size, MAX_PAGE_SIZE))
@@ -173,6 +201,53 @@ class TeamService:
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         """Get a single team by ID."""
         return self._services.worker_handle.get_team(team_id)
+
+    def update_team_metadata(
+        self, team_id: uuid.UUID, raw: dict[str, Any]
+    ) -> SerializableBaseModel | None:
+        """Replace a team's business metadata with a complete new document.
+
+        Validation happens here, against the ``metadata_type`` the team's card
+        declared **at creation** and carries on the persisted ``Process`` — not
+        against the catalog entry as it stands now, which may have been edited
+        since. The type cannot change for a live team (ADR-24 §D7), so
+        re-resolving it would let a catalog edit silently change what an
+        existing team accepts.
+
+        The write itself belongs to ``akgentic-team``: validate → one database
+        write of the value and its re-derived index → best-effort push to a live
+        orchestrator. This layer adds nothing around it — no cache write, no
+        event publish, no re-read to "confirm", and no inspection of the push
+        outcome. The database is the system of record, so a failed push is not
+        an error: the index stays truthful and the actor repopulates from the
+        ``Process`` on its next resume.
+
+        Args:
+            team_id: The team whose metadata is being replaced.
+            raw: The complete plain-JSON document. An empty dict clears the
+                team's metadata.
+
+        Returns:
+            The metadata carried on the ``Process`` the write path returned —
+            what was persisted, not what was sent.
+
+        Raises:
+            ValueError: If the team is unknown or has been deleted. The message
+                carries ``not found`` for the unknown case, which the router's
+                ``_raise_action_error`` maps to 404.
+            MetadataValidationError: If the body carries a ``__model__`` key at
+                any depth, if the team declares no metadata contract, or if the
+                body fails the declared schema. Raised before the write path is
+                reached, so a rejected body changes nothing.
+        """
+        process = self._services.worker_handle.get_team(team_id)
+        if process is None:
+            msg = f"Team {team_id} not found"
+            raise ValueError(msg)
+        validated = validate_metadata(process.team_card.metadata_type, raw)
+        updated = self._services.worker_handle.update_team_metadata(team_id, validated)
+        logger.info("Team metadata updated: team_id=%s", team_id)
+        return updated.metadata
 
     def delete_team(self, team_id: uuid.UUID) -> None:
         """Stop (if running) and delete a team.

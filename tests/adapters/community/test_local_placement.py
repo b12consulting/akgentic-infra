@@ -14,6 +14,8 @@ from akgentic.infra.protocols.placement import (
     PlacementStrategy,
 )
 
+from tests.fixtures.team_metadata import AcmeCaseMetadata
+
 
 def _make_adapter() -> LocalPlacement:
     """Create a LocalPlacement with mock dependencies."""
@@ -44,6 +46,9 @@ class TestLocalPlacementProtocolCompliance:
         assert "team_id" in sig.parameters
         assert "catalog_namespace" in sig.parameters
         assert sig.parameters["catalog_namespace"].default is None
+        # Optional and defaulting to None, so pre-metadata callers are unaffected.
+        assert "metadata" in sig.parameters
+        assert sig.parameters["metadata"].default is None
 
 
 class TestLocalPlacementBehavior:
@@ -57,7 +62,7 @@ class TestLocalPlacementBehavior:
         team_card = MagicMock()
         adapter.create_team(team_card, "user-1")
         team_manager.create_team.assert_called_once_with(
-            team_card, "user-1", user_email="", team_id=None, catalog_namespace=None
+            team_card, "user-1", user_email="", team_id=None, catalog_namespace=None, metadata=None
         )
 
     def test_create_team_forwards_catalog_namespace(self) -> None:
@@ -68,7 +73,12 @@ class TestLocalPlacementBehavior:
         team_card = MagicMock()
         adapter.create_team(team_card, "user-1", catalog_namespace="ns-abc")
         team_manager.create_team.assert_called_once_with(
-            team_card, "user-1", user_email="", team_id=None, catalog_namespace="ns-abc"
+            team_card,
+            "user-1",
+            user_email="",
+            team_id=None,
+            catalog_namespace="ns-abc",
+            metadata=None,
         )
 
     def test_create_team_forwards_user_email_and_team_id(self) -> None:
@@ -85,7 +95,24 @@ class TestLocalPlacementBehavior:
             user_email="user@example.com",
             team_id=explicit_id,
             catalog_namespace=None,
+            metadata=None,
         )
+
+    def test_create_team_forwards_validated_metadata(self) -> None:
+        """A validated metadata model reaches TeamManager.create_team verbatim.
+
+        Asserted on the *call*, not only on a persisted result: a MagicMock
+        TeamManager accepts any kwargs silently, so a pass-through that dropped
+        the value would otherwise go green.
+        """
+        team_manager = MagicMock()
+        adapter = LocalPlacement(team_manager, MagicMock())
+        team_card = MagicMock()
+        metadata = AcmeCaseMetadata(tenant="acme", case="C-1234")
+
+        adapter.create_team(team_card, "user-1", metadata=metadata)
+
+        assert team_manager.create_team.call_args.kwargs["metadata"] is metadata
 
     def test_create_team_returns_local_team_handle(self) -> None:
         """create_team wraps TeamManager result in LocalTeamHandle."""
