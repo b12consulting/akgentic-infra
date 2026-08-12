@@ -72,7 +72,7 @@ def _build_message_envelope(event: Message, timestamp: str) -> MessagePayload:
 
     if isinstance(event, ErrorMessage):
         message_type = "system"
-        content = event.exception_value
+        content = event.content
     elif isinstance(event, SentMessage):
         message_type = _classify_inner_message_type(inner)
     else:
@@ -174,7 +174,7 @@ def _build_error_envelope(event: ErrorMessage, timestamp: str) -> ErrorPayload:
         ErrorPayload with V1 error envelope fields.
     """
     return ErrorPayload(
-        message=event.exception_value,
+        message=event.content,
         timestamp=timestamp,
     )
 

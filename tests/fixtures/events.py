@@ -99,8 +99,8 @@ def make_event_message(**overrides: Any) -> dict[str, Any]:
 def make_error_message(**overrides: Any) -> dict[str, Any]:
     """Create an ``ErrorMessage`` fixture dict from a real model instance."""
     defaults: dict[str, Any] = {
-        "exception_type": "ValueError",
-        "exception_value": "something went wrong",
+        "content_type": "ValueError",
+        "content": "something went wrong",
     }
     defaults.update(overrides)
     return ErrorMessage(**defaults).model_dump()
@@ -206,8 +206,8 @@ def build_sent_message(**overrides: Any) -> SentMessage:
 def build_error_message(**overrides: Any) -> ErrorMessage:
     """Create an ``ErrorMessage`` typed instance."""
     defaults: dict[str, Any] = {
-        "exception_type": "ValueError",
-        "exception_value": "something went wrong",
+        "content_type": "ValueError",
+        "content": "something went wrong",
     }
     defaults.update(overrides)
     return ErrorMessage(**defaults)
