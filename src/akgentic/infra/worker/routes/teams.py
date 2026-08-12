@@ -1,27 +1,36 @@
 """Worker team operation routes.
 
-create, message, send_to, send_from_to, human-input, get, stop, delete, resume.
+create, message, send_to, send_from_to, notification, human-input, metadata, stop,
+delete, resume.
+
+There is deliberately **no read route** here. Verbs on the live actor go to the
+worker, because only the worker holds it; reads of persisted state go to the
+event store, which is the source of truth. A read routed through a worker would
+let a momentarily-unreachable worker report a team that plainly exists as "not
+found", and a worker response cannot carry a full ``Process`` anyway.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
+from akgentic.infra.errors import MetadataValidationError
 from akgentic.infra.server.models import (
     EmitMessageRequest,
     HumanInputRequest,
     SendMessageRequest,
     TeamResponse,
+    UpdateTeamMetadataRequest,
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
-from akgentic.infra.server.services._metadata_payload import dump_metadata
+from akgentic.infra.server.services._metadata_payload import dump_metadata, validate_metadata
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.state_keys import SERVICES
 from akgentic.team.models import Process, TeamCard, TeamRuntime
@@ -38,12 +47,13 @@ class WorkerCreateTeamRequest(BaseModel):
     The worker receives the already-resolved TeamCard and user identity from
     the server — catalog resolution happens server-side.
 
-    Carries **no** team metadata yet: a create routed through a worker drops the
-    value the server validated. The worker holds ``team_card``, so it already
-    knows ``metadata_type`` and could re-run ``validate_metadata`` on a plain-JSON
-    field — but wiring that also changes what the remote placement adapters in the
-    deployment repos must send, so it is a separate story. Community-tier creates
-    go through ``LocalPlacement`` and are unaffected.
+    ``metadata`` travels as plain JSON and is **revalidated here**, against the
+    ``metadata_type`` the carried ``team_card`` declares — the worker does not
+    take the server's word for it. A worker is reachable by anything holding its
+    address, so "the server already checked" is a deployment assumption, not a
+    security property; the server-side check protects the server's callers and
+    says nothing about who else can reach this route. The validation is the same
+    shared helper the server calls, never a second copy.
     """
 
     team_card: TeamCard = Field(description="Pre-resolved TeamCard for team creation")
@@ -56,6 +66,17 @@ class WorkerCreateTeamRequest(BaseModel):
     catalog_namespace: str | None = Field(
         default=None,
         description="Catalog namespace the team was instantiated from; None if not catalog-sourced",
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Plain-JSON business metadata, revalidated here against the metadata_type "
+            "team_card declares. Names no type: a __model__ key at any depth is "
+            "rejected with 422. Raw wire body, deserialized immediately into a "
+            "validated model and never held as state, so it is NOT the "
+            "dict[str, Any] anti-pattern (Golden Rule #1) — the same documented "
+            "exception CreateTeamRequest.metadata carries."
+        ),
     )
 
 
@@ -85,36 +106,36 @@ def _process_to_response(process: Process) -> TeamResponse:
     )
 
 
-@router.get("/{team_id}", response_model=TeamResponse)
-def get_team(
-    team_id: uuid.UUID,
-    services: WorkerServices = Depends(get_services),
-) -> TeamResponse:
-    """Get team metadata by ID."""
-    logger.info("GET /teams/%s", team_id)
-    process = services.worker_handle.get_team(team_id)
-    if process is None:
-        raise HTTPException(status_code=404, detail="Team not found")
-    return _process_to_response(process)
-
-
 @router.post("", status_code=201, response_model=TeamResponse)
 def create_team(
     body: WorkerCreateTeamRequest,
     services: WorkerServices = Depends(get_services),
 ) -> TeamResponse:
-    """Create a new team from a pre-resolved TeamCard.
+    """Create a new team from a pre-resolved TeamCard, optionally with metadata.
 
     The server resolves the catalog namespace to a TeamCard and forwards it
     to the worker. The worker calls team_manager.create_team() directly.
+
+    ``body.metadata`` is revalidated here against the card's own
+    ``metadata_type`` — the worker never trusts an upstream check it cannot see.
+    A rejected body is a 422 and creates nothing.
     """
     logger.info("POST /teams — user_id=%s", body.user_id)
+    try:
+        metadata = validate_metadata(body.team_card.metadata_type, body.metadata)
+    except MetadataValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would report a validation failure as a conflict.
+        logger.warning("Team creation rejected — invalid metadata: %s", exc.detail)
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+
     runtime: TeamRuntime = services.team_manager.create_team(
         team_card=body.team_card,
         user_id=body.user_id,
         user_email=body.user_email,
         team_id=body.team_id,
         catalog_namespace=body.catalog_namespace,
+        metadata=metadata,
     )
 
     # Make the team reachable by this router's message / human-input routes,
@@ -280,6 +301,67 @@ def delete_team(
         services.worker_handle.delete_team(team_id)
         services.runtime_cache.remove(team_id)
     except ValueError as exc:
+        _raise_action_error(exc)
+
+
+@router.patch("/{team_id}/metadata", status_code=200, response_model=None)
+def update_team_metadata(
+    team_id: uuid.UUID,
+    body: UpdateTeamMetadataRequest,
+    services: WorkerServices = Depends(get_services),
+) -> Process:
+    """Replace a team's business metadata and return the persisted ``Process``.
+
+    Mirrors the server's ``PATCH /teams/{team_id}/metadata`` in path and verb —
+    this module's first ``PATCH``, deliberately, so the operation has one shape
+    on both surfaces. The body is a COMPLETE document: a field omitted here is
+    gone from the stored value and from the derived filter index alike.
+
+    ``body.metadata`` is revalidated against the ``metadata_type`` the
+    **persisted** card declares, never a fresh catalog lookup — the type cannot
+    change for a live team (ADR-24 §D7), and re-resolving would let a catalog
+    edit silently change what an existing team accepts.
+
+    The response is the persisted ``Process`` **unmodified**, with its
+    ``__model__`` tag intact. That is the exception in this module, and the
+    reason is structural: this is a worker-to-server internal hop, not a client
+    response, and the caller is a tier adapter that must reconstruct a typed
+    ``Process`` — including a ``metadata`` value of the team's concrete declared
+    class — to satisfy the ``WorkerHandle`` protocol's ``-> Process``. So it is
+    neither passed through ``dump_metadata`` nor through ``_process_to_response``
+    (which is flat, carries no ``team_card`` and no ``metadata_indexes``).
+    Returning it is not a courtesy either: the write path re-derives
+    ``metadata_indexes``, and this response is the only place that re-derivation
+    becomes observable to the caller.
+
+    A FAILED best-effort push of the new value to a live orchestrator is
+    deliberately NOT reflected here (ADR-24 §D7/§D8): the database is the system
+    of record and the actor re-reads on its next resume, so reporting an error
+    would misdescribe a write that stands. Hence no branch on the push outcome
+    and no re-read after the update call.
+
+    ``services.runtime_cache`` is deliberately untouched: it maps team ids to
+    live ``TeamHandle``s and holds no metadata, so there is nothing to
+    invalidate — a write or eviction here would 404 the cache-reading routes.
+    """
+    logger.info("PATCH /teams/%s/metadata", team_id)  # never the body: caller business context
+    process = services.worker_handle.get_team(team_id)
+    if process is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    try:
+        metadata = validate_metadata(process.team_card.metadata_type, body.metadata)
+    except MetadataValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would report a validation failure as a conflict.
+        logger.warning("Metadata update rejected — invalid metadata: %s", exc.detail)
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+
+    try:
+        return services.worker_handle.update_team_metadata(team_id, metadata)
+    except ValueError as exc:
+        # Lifecycle failures only (unknown / deleted team) — the mapper's
+        # "not found" / "deleted" match is exactly right for those.
         _raise_action_error(exc)
 
 
