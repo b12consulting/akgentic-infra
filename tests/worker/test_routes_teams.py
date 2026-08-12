@@ -902,11 +902,21 @@ class _MetadataWorkerHandle:
 
         The swallow belongs to ``akgentic-team`` and is tested there; mirrored
         here so the route sees exactly what production hands it — a normal
-        return. The database write is the system of record and the actor
-        re-reads from ``Process`` on its next resume.
+        return after a push that *genuinely* raised. The database write above is
+        the system of record and the actor re-reads from ``Process`` on its next
+        resume, so ``push_failures`` counts real swallowed failures rather than
+        the fixture's intention to have one.
         """
-        if self._push_fails:
+        try:
+            self._push_to_orchestrator()
+        except RuntimeError:
             self.push_failures += 1
+
+    def _push_to_orchestrator(self) -> None:
+        """The orchestrator hop itself; raises when the test asks it to fail."""
+        if self._push_fails:
+            msg = "orchestrator unreachable"
+            raise RuntimeError(msg)
 
 
 def _build_metadata_process(
