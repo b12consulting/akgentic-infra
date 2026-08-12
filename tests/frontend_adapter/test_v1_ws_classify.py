@@ -56,7 +56,7 @@ class TestWebSocketErrorEnvelope:
             _classify_envelope_type,
         )
 
-        msg = ErrorMessage(exception_value="test error", exception_type="ValueError")
+        msg = ErrorMessage(content="test error", content_type="ValueError")
         result = _classify_envelope_type(msg)
         assert result == "error"
 
@@ -69,7 +69,7 @@ class TestWebSocketErrorEnvelope:
             wrap_event,
         )
 
-        msg = ErrorMessage(exception_value="something broke", exception_type="RuntimeError")
+        msg = ErrorMessage(content="something broke", content_type="RuntimeError")
         wrapped = wrap_event(msg)
         assert isinstance(wrapped.payload, ErrorPayload)
         assert wrapped.payload.type == "error"

@@ -383,8 +383,8 @@ class TestV1WebSocketEnvelopes:
         from akgentic.infra.server.routes.frontend_adapter.angular_v1.ws import wrap_event
 
         msg = ErrorMessage(
-            exception_type="ValueError",
-            exception_value="test error",
+            content_type="ValueError",
+            content="test error",
         )
         result = wrap_event(msg)
         assert result.payload.type == "error"

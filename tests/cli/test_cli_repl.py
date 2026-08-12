@@ -222,7 +222,7 @@ class TestRenderEvent:
         renderer, buf = _captured_renderer()
         session = _make_session(renderer=renderer)
         result = session._render_event(
-            build_error_message(exception_value="something broke")
+            build_error_message(content="something broke")
         )
         assert result is True
         out = buf.getvalue()

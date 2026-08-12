@@ -79,7 +79,7 @@ class TestRouteErrorMessage:
     def test_valid_error_message_renders(self) -> None:
         renderer, buf = _captured_renderer()
         router = EventRouter(renderer)
-        event = build_error_message(exception_value="something broke")
+        event = build_error_message(content="something broke")
         result = router.route(event)
         assert result is True
         out = buf.getvalue()
@@ -332,7 +332,7 @@ class TestToWidgetSentMessage:
 class TestToWidgetErrorMessage:
     def test_returns_error_widget(self) -> None:
         router, registry = _make_widget_router()
-        event = build_error_message(exception_value="boom")
+        event = build_error_message(content="boom")
         widget = router.to_widget(event, registry)
         assert isinstance(widget, ErrorWidget)
 

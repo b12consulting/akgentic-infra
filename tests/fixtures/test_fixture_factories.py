@@ -81,17 +81,17 @@ class TestErrorMessageFactory:
     def test_round_trip_defaults(self) -> None:
         data = make_error_message()
         model = ErrorMessage.model_validate(data)
-        assert model.exception_type == "ValueError"
+        assert model.content_type == "ValueError"
 
     def test_round_trip_with_overrides(self) -> None:
-        data = make_error_message(exception_type="RuntimeError", exception_value="boom")
+        data = make_error_message(content_type="RuntimeError", content="boom")
         model = ErrorMessage.model_validate(data)
-        assert model.exception_type == "RuntimeError"
-        assert model.exception_value == "boom"
+        assert model.content_type == "RuntimeError"
+        assert model.content == "boom"
 
     def test_override_appears_in_output(self) -> None:
-        data = make_error_message(exception_type="KeyError")
-        assert data["exception_type"] == "KeyError"
+        data = make_error_message(content_type="KeyError")
+        assert data["content_type"] == "KeyError"
 
 
 class TestStartMessageFactory:

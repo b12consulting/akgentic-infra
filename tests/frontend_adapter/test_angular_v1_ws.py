@@ -295,17 +295,17 @@ class TestWrapErrorMessage:
     def test_error_message_type(self) -> None:
         """ErrorMessage produces type: 'error' envelope."""
         msg = ErrorMessage(
-            exception_type="ValueError",
-            exception_value="something went wrong",
+            content_type="ValueError",
+            content="something went wrong",
         )
         result = wrap_event(msg)
         assert result.payload.type == "error"
 
     def test_error_message_has_message_field(self) -> None:
-        """ErrorMessage envelope has message field with exception_value."""
+        """ErrorMessage envelope has message field carrying the error content."""
         msg = ErrorMessage(
-            exception_type="ValueError",
-            exception_value="something went wrong",
+            content_type="ValueError",
+            content="something went wrong",
         )
         result = wrap_event(msg)
         assert result.payload.message == "something went wrong"
@@ -372,8 +372,8 @@ class TestWrappedEventSerialization:
     def test_error_message_json_serializable(self) -> None:
         """WrappedWsEvent from ErrorMessage serializes to valid JSON."""
         msg = ErrorMessage(
-            exception_type="RuntimeError",
-            exception_value="oops",
+            content_type="RuntimeError",
+            content="oops",
         )
         result = wrap_event(msg)
         json_str = result.model_dump_json()

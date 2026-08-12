@@ -20,7 +20,7 @@ event = make_sent_message()
 
 # Override only the fields you care about
 event = make_sent_message(content="custom greeting")
-error = make_error_message(exception_type="RuntimeError")
+error = make_error_message(content_type="RuntimeError")
 team = make_team_info(name="My Team", status="stopped")
 ```
 
@@ -54,8 +54,8 @@ Every factory accepts `**overrides` to customize fields:
 ```python
 def make_error_message(**overrides):
     defaults = {
-        "exception_type": "ValueError",
-        "exception_value": "something went wrong",
+        "content_type": "ValueError",
+        "content": "something went wrong",
     }
     defaults.update(overrides)
     return ErrorMessage(**defaults).model_dump()

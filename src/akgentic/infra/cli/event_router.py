@@ -51,7 +51,7 @@ class EventRouter:
 
     def _handle_error_message(self, event: ErrorMessage) -> bool:
         """Render an ErrorMessage event."""
-        self._renderer.render_error(event.exception_value)
+        self._renderer.render_error(event.content)
         return True
 
     def _handle_sent_message(self, event: SentMessage) -> bool:
@@ -161,7 +161,7 @@ class EventRouter:
         """Convert an ErrorMessage event to an ErrorWidget."""
         from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 
-        return ErrorWidget(content=event.exception_value)
+        return ErrorWidget(content=event.content)
 
     def _sent_to_widget(
         self,
