@@ -335,6 +335,9 @@ class TestToWidgetErrorMessage:
         event = build_error_message(content="boom")
         widget = router.to_widget(event, registry)
         assert isinstance(widget, ErrorWidget)
+        # Assert the value, not just the type: ErrorMessage ignores unknown
+        # keywords, so a stale field name blanks content instead of raising.
+        assert "boom" in str(widget.render())
 
 
 class TestToWidgetToolCall:
