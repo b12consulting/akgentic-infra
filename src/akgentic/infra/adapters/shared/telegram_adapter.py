@@ -13,8 +13,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_USER_ROLE = "UserProxy"
-
 
 class TelegramChannelAdapter:
     """Delivers outbound agent messages to Telegram chats via the Bot API.
@@ -22,10 +20,11 @@ class TelegramChannelAdapter:
     Satisfies the ``InteractionChannelAdapter`` protocol via structural
     subtyping.
 
-    ``matches()`` returns ``True`` when the ``SentMessage`` recipient has
-    a role of ``"UserProxy"`` — indicating the message is destined for a
-    human user. The architecture states: "checks if recipient is UserProxy
-    and channel is configured."
+    ``matches()`` returns ``True`` when the ``SentMessage`` recipient is
+    structurally a ``UserProxy`` actor — or a subclass such as
+    ``HumanProxy`` — indicating the message is destined for a human user.
+    The architecture states: "checks if recipient is UserProxy and channel
+    is configured."
 
     ``deliver()`` sends a synchronous POST to the Telegram ``sendMessage``
     endpoint. The ``chat_id`` is resolved from the recipient's ``name``
@@ -48,8 +47,11 @@ class TelegramChannelAdapter:
     def matches(self, msg: SentMessage) -> bool:
         """Check if this adapter should deliver the message.
 
-        Returns True when the recipient's role is "UserProxy", indicating
-        the message is headed to a human participant.
+        Returns True when the recipient actor is a ``UserProxy``, or a
+        subclass such as ``HumanProxy``, indicating the message is headed
+        to a human participant. The check is structural rather than a
+        comparison against the recipient's ``role`` string, so a team is
+        free to name its human-in-the-loop member anything.
 
         Args:
             msg: The outbound message to check.
@@ -58,7 +60,7 @@ class TelegramChannelAdapter:
             True if the recipient is a UserProxy agent.
         """
         try:
-            return msg.recipient.role == _USER_ROLE
+            return msg.recipient.is_user_proxy
         except Exception:  # noqa: BLE001
             return False
 
