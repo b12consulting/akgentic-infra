@@ -13,6 +13,7 @@ worker handle, so the assertion is on the genuine cache interaction.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -734,7 +735,10 @@ def test_worker_create_rejection_is_422_not_the_action_error_mapping() -> None:
         )
 
     assert exc_info.value.status_code == 422
-    assert exc_info.value.status_code not in (404, 409)
+    # The mapper would have answered 409 carrying this very message, so the
+    # status code is the only thing separating the two paths — asserting the
+    # code is not 404/409 after pinning it to 422 would assert nothing at all.
+    assert "metadata" in str(exc_info.value.detail)
 
 
 def test_worker_create_without_metadata_is_unchanged() -> None:
@@ -759,6 +763,65 @@ def test_worker_create_without_metadata_is_unchanged() -> None:
     # ...and nothing was persisted for it either.
     assert services.team_manager.teams[team_id].metadata is None
     assert isinstance(cache.get(team_id), LocalTeamHandle)
+
+
+def test_worker_create_request_survives_the_json_round_trip() -> None:
+    """The seam the tier adapters consume: ``metadata_type`` must survive JSON.
+
+    Every other test here builds the request in-process, with the metadata_type
+    class already sitting on the card. Production never does that: the tier's
+    placement adapter serializes this body, HTTP carries it as text, and FastAPI
+    validates it back. If the card's ``__type__`` tag did not survive that trip
+    the worker would see ``metadata_type=None`` and answer every metadata create
+    with "this team declares no metadata contract" — while every in-process test
+    here stayed green, and the failure surfaced only in the deployment repos
+    blocked on this story.
+
+    ``json.loads(model_dump_json())`` rather than ``model_dump(mode="json")``: a
+    real text round-trip cannot let a live Python object through by accident.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    body = make_metadata_body(note="over-http")
+    original = _make_create_body(team_id, team_card, metadata=body)
+
+    parsed = WorkerCreateTeamRequest.model_validate(json.loads(original.model_dump_json()))
+
+    assert parsed.team_card.metadata_type is AcmeCaseMetadata
+    assert parsed.metadata == original.metadata
+
+    cache = LocalRuntimeCache()
+    services = _build_metadata_services(_FakeRuntime(team_id), parsed.team_card, cache)
+    response = create_team(parsed, services)  # type: ignore[arg-type]
+
+    # Validated against the reconstructed type, not waved through as a raw dict.
+    assert isinstance(services.team_manager.calls[-1]["metadata"], AcmeCaseMetadata)
+    assert response.metadata is not None
+    assert response.metadata["note"] == "over-http"
+
+
+def test_worker_create_over_the_json_round_trip_still_rejects_a_model_tag() -> None:
+    """The rejection half survives the wire too, not just the accept half.
+
+    A body that reached the route through JSON is the only form an attacker ever
+    sends. Pinning the 422 on the in-process object alone would leave the actual
+    attack path unasserted.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    tagged = {"__model__": ACME_METADATA_TYPE, "tenant": "acme", "case": "C-1234"}
+    original = _make_create_body(team_id, team_card, metadata=tagged)
+
+    parsed = WorkerCreateTeamRequest.model_validate(json.loads(original.model_dump_json()))
+    cache = LocalRuntimeCache()
+    services = _build_metadata_services(_FakeRuntime(team_id), parsed.team_card, cache)
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_team(parsed, services)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 422
+    assert "__model__" in str(exc_info.value.detail)
+    assert services.team_manager.teams == {}
 
 
 def test_worker_create_with_empty_metadata_creates_the_team() -> None:
