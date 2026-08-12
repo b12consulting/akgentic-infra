@@ -22,8 +22,10 @@ from typing import Any
 import pytest
 from akgentic.core.messages.message import UserMessage
 from akgentic.core.utils.serializer import SerializableBaseModel
+from akgentic.team import derive_metadata_indexes, make_index_entry
 from akgentic.team.models import Process, TeamCard, TeamStatus
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
@@ -34,10 +36,11 @@ from akgentic.infra.worker.routes.teams import (
     delete_team,
     emit_notification,
     get_team,
+    router,
     send_message,
     stop_team,
 )
-
+from akgentic.infra.worker.state_keys import SERVICES
 from tests.fixtures.team_metadata import (
     ACME_METADATA_TYPE,
     AcmeCaseMetadata,
@@ -452,9 +455,7 @@ def test_emit_notification_bad_envelope_returns_400() -> None:
 
     create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
 
-    body = EmitMessageRequest(
-        message={"__model__": "akgentic.core.messages.message.NoSuchMessage"}
-    )
+    body = EmitMessageRequest(message={"__model__": "akgentic.core.messages.message.NoSuchMessage"})
     with pytest.raises(HTTPException) as exc_info:
         emit_notification(team_id, body, services)  # type: ignore[arg-type]
 
@@ -838,3 +839,418 @@ def test_worker_create_with_empty_metadata_creates_the_team() -> None:
 
     assert response.metadata is None
     assert services.team_manager.calls[-1]["metadata"] is None
+
+
+# ---------------------------------------------------------------------------
+# Story 54.2 — PATCH /teams/{team_id}/metadata, the worker's metadata WRITE.
+#
+# Driven through a real ``TestClient`` rather than by calling the handler: the
+# response is the persisted ``Process`` with its ``__model__`` tag INTACT — the
+# module's one exception to the outbound strip — because the caller is a tier
+# adapter reconstructing a typed ``Process``, not a client. That reconstruction
+# only exists on the far side of JSON, so an in-process assertion would pin
+# nothing and the failure would surface first in the two downstream repos.
+# ---------------------------------------------------------------------------
+
+
+class _MetadataWorkerHandle:
+    """WorkerHandle stub running the ordered write path ``TeamManager`` owns.
+
+    The index is re-derived through the shipped ``derive_metadata_indexes`` —
+    hand-assembling ``"key|value"`` strings here would test the test. Persisted
+    with ``model_copy(update=...)`` so a field added to ``Process`` later rides
+    along (Golden Rule #12).
+    """
+
+    def __init__(self, process: Process, *, push_fails: bool = False) -> None:
+        self.teams: dict[uuid.UUID, Process] = {process.team_id: process}
+        self.get_team_calls = 0
+        self.push_failures = 0
+        self._push_fails = push_fails
+
+    def get_team(self, team_id: uuid.UUID) -> Process | None:
+        """Resolve the persisted team; counted, so a re-read is observable."""
+        self.get_team_calls += 1
+        return self.teams.get(team_id)
+
+    def update_team_metadata(
+        self,
+        team_id: uuid.UUID,
+        metadata: SerializableBaseModel | None,
+    ) -> Process:
+        """Single DB write of value + re-derived index, then a best-effort push."""
+        process = self.teams.get(team_id)
+        if process is None:
+            msg = f"Team {team_id} not found"
+            raise ValueError(msg)
+        if process.status is TeamStatus.DELETED:
+            msg = f"Cannot update metadata for team {team_id}: team has been deleted"
+            raise ValueError(msg)
+        updated = process.model_copy(
+            update={
+                "updated_at": datetime.now(UTC),
+                "metadata": metadata,
+                "metadata_indexes": derive_metadata_indexes(metadata),
+            }
+        )
+        self.teams[team_id] = updated
+        self._push()
+        return updated
+
+    def _push(self) -> None:
+        """Push the new value to the live orchestrator, swallowing a failure.
+
+        The swallow belongs to ``akgentic-team`` and is tested there; mirrored
+        here so the route sees exactly what production hands it — a normal
+        return. The database write is the system of record and the actor
+        re-reads from ``Process`` on its next resume.
+        """
+        if self._push_fails:
+            self.push_failures += 1
+
+
+def _build_metadata_process(
+    team_id: uuid.UUID,
+    *,
+    metadata_type: type[SerializableBaseModel] | None = AcmeCaseMetadata,
+    metadata: SerializableBaseModel | None = None,
+    status: TeamStatus = TeamStatus.RUNNING,
+) -> Process:
+    """Build the persisted Process the update route resolves and rewrites."""
+    process = _build_process(team_id, _build_team_card(metadata_type=metadata_type))
+    return process.model_copy(
+        update={
+            "status": status,
+            "metadata": metadata,
+            "metadata_indexes": derive_metadata_indexes(metadata),
+        }
+    )
+
+
+def _build_update_client(
+    handle: _MetadataWorkerHandle,
+    cache: LocalRuntimeCache | None = None,
+) -> TestClient:
+    """Mount the worker router on a bare app carrying only what the route uses."""
+    app = FastAPI()
+    app.include_router(router)
+    services = SimpleNamespace(worker_handle=handle, runtime_cache=cache or LocalRuntimeCache())
+    SERVICES.set(app, services)  # type: ignore[arg-type]
+    return TestClient(app)
+
+
+def test_worker_metadata_update_round_trips_the_typed_value_through_json() -> None:
+    """AC #4: the 200 body is the persisted Process, reconstructible by the caller.
+
+    The tag survives here and nowhere else in this module. A tier adapter must
+    rebuild a ``Process`` — metadata included, as the team's concrete declared
+    class — to satisfy ``WorkerHandle.update_team_metadata() -> Process``, and
+    the ``__model__`` tag is what makes that rebuild possible. Reconstructed from
+    ``response.json()``, so the serialization seam is genuinely crossed.
+    """
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id))
+    client = _build_update_client(handle)
+    body = make_metadata_body(
+        note="escalated",
+        owner={"email": "ops@contoso.example", "squad": "support"},
+        watchers=[{"email": "watcher@contoso.example"}],
+    )
+
+    response = client.patch(f"/teams/{team_id}/metadata", json={"metadata": body})
+
+    assert response.status_code == 200
+    payload = response.json()
+    # Not a TeamResponse and not dump_metadata's output: both would have dropped
+    # the tag, and TeamResponse carries no team_card and no metadata_indexes.
+    assert payload["metadata"]["__model__"] == ACME_METADATA_TYPE
+    restored = Process.model_validate(payload)
+    assert restored.team_id == team_id
+    assert restored.team_card.metadata_type is AcmeCaseMetadata
+    assert isinstance(restored.metadata, AcmeCaseMetadata)
+    assert restored.metadata.tenant == "acme"
+    assert restored.metadata.case == "C-1234"
+    assert restored.metadata.note == "escalated"
+    assert restored.metadata.owner is not None
+    assert restored.metadata.owner.email == "ops@contoso.example"
+    assert restored.metadata.watchers[0].email == "watcher@contoso.example"
+    assert restored.metadata_indexes
+    assert restored.metadata_indexes == derive_metadata_indexes(restored.metadata)
+
+
+def test_worker_metadata_update_returns_the_rederived_index_not_an_echo() -> None:
+    """AC #5: the response carries the index the NEW document derives.
+
+    A route that echoed the request body would carry no ``metadata_indexes`` at
+    all, and one that returned the pre-update Process would carry the old
+    entries — so the assertion is on the index, not on the value.
+    """
+    team_id = uuid.uuid4()
+    seeded = AcmeCaseMetadata(tenant="acme", case="C-1234")
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id, metadata=seeded))
+    client = _build_update_client(handle)
+
+    response = client.patch(
+        f"/teams/{team_id}/metadata",
+        json={"metadata": make_metadata_body(case="C-9999")},
+    )
+
+    assert response.status_code == 200
+    after = response.json()["metadata_indexes"]
+    assert make_index_entry("case", "C-9999") in after
+    assert make_index_entry("case", "C-1234") not in after
+    assert after == derive_metadata_indexes(handle.teams[team_id].metadata)
+
+
+def test_worker_metadata_update_shrinks_the_index_when_an_indexed_field_is_omitted() -> None:
+    """AC #6: replace, never merge — an omitted indexed field loses its entry.
+
+    ``channel`` is indexed *and* optional, so its disappearance is observable in
+    the index rather than merely overwritten. "The value changed" would not
+    distinguish a replace from a merge; a strictly SMALLER index does.
+    """
+    team_id = uuid.uuid4()
+    seeded = AcmeCaseMetadata(tenant="acme", case="C-1234", channel="email")
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id, metadata=seeded))
+    client = _build_update_client(handle)
+    before = list(handle.teams[team_id].metadata_indexes)
+    assert make_index_entry("channel", "email") in before
+
+    response = client.patch(
+        f"/teams/{team_id}/metadata",
+        json={"metadata": make_metadata_body(tenant="acme", case="C-1234")},
+    )
+
+    assert response.status_code == 200
+    restored = Process.model_validate(response.json())
+    assert isinstance(restored.metadata, AcmeCaseMetadata)
+    assert restored.metadata.channel is None
+    after = restored.metadata_indexes
+    assert len(after) < len(before)
+    assert make_index_entry("channel", "email") not in after
+    # No channel entry under any value: derivation of a channel=None model emits
+    # none, so whole-list equality is the strict form of "the entry is gone".
+    assert after == derive_metadata_indexes(restored.metadata)
+
+
+def test_worker_metadata_update_succeeds_when_the_orchestrator_push_fails() -> None:
+    """AC #7: a failed best-effort push is still a 200 carrying the written value.
+
+    The write path is database-first by decision: the index stays truthful and
+    the actor self-heals from ``Process`` on its next resume, so turning a failed
+    push into an error would invert that ordering and misdescribe a write that
+    stands. ``get_team`` is counted because the route's other obligation is to
+    add no re-read "confirming" the update.
+    """
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id), push_fails=True)
+    client = _build_update_client(handle)
+
+    response = client.patch(
+        f"/teams/{team_id}/metadata",
+        json={"metadata": make_metadata_body(case="C-9999", channel="phone")},
+    )
+
+    assert response.status_code == 200
+    assert handle.push_failures == 1
+    assert handle.get_team_calls == 1, "the route must not re-read after the update"
+    restored = Process.model_validate(response.json())
+    persisted = handle.teams[team_id]
+    assert isinstance(restored.metadata, AcmeCaseMetadata)
+    assert restored.metadata.case == "C-9999"
+    assert restored.metadata.channel == "phone"
+    assert restored.metadata_indexes == persisted.metadata_indexes
+    assert make_index_entry("channel", "phone") in restored.metadata_indexes
+
+
+def test_worker_metadata_update_clears_the_value_on_an_empty_document() -> None:
+    """An empty document clears; it is not an error, even for a typed card.
+
+    A declared type constrains metadata's *shape*, not its *presence* — the same
+    rule the server applies, inherited by calling the same helper.
+    """
+    team_id = uuid.uuid4()
+    seeded = AcmeCaseMetadata(tenant="acme", case="C-1234", channel="email")
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id, metadata=seeded))
+    client = _build_update_client(handle)
+
+    response = client.patch(f"/teams/{team_id}/metadata", json={"metadata": {}})
+
+    assert response.status_code == 200
+    restored = Process.model_validate(response.json())
+    assert restored.metadata is None
+    assert restored.metadata_indexes == []
+
+
+def test_worker_metadata_update_leaves_the_runtime_cache_alone() -> None:
+    """The cache maps team ids to live handles and holds no metadata.
+
+    The module's other mutating routes all touch it — create stores, stop and
+    delete evict — so pattern-matching leads straight into it. An eviction here
+    would 404 the five cache-reading routes for a team that is plainly running.
+    """
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id))
+    cache = LocalRuntimeCache()
+    team_handle = LocalTeamHandle(_FakeRuntime(team_id))
+    cache.store(team_id, team_handle)
+    client = _build_update_client(handle, cache)
+
+    response = client.patch(
+        f"/teams/{team_id}/metadata",
+        json={"metadata": make_metadata_body()},
+    )
+
+    assert response.status_code == 200
+    assert cache.get(team_id) is team_handle
+
+
+def test_worker_metadata_update_for_an_untyped_card_is_422_and_writes_nothing() -> None:
+    """AC #8: a non-empty document against a card declaring no metadata_type."""
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id, metadata_type=None))
+    client = _build_update_client(handle)
+    before = handle.teams[team_id]
+
+    response = client.patch(
+        f"/teams/{team_id}/metadata",
+        json={"metadata": {"tenant": "acme"}},
+    )
+
+    assert response.status_code == 422
+    assert "no metadata contract" in response.json()["detail"]
+    assert handle.teams[team_id] is before
+
+
+def test_worker_metadata_update_with_schema_failure_is_422_and_writes_nothing() -> None:
+    """AC #9: a document failing the card's declared schema names the field."""
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id))
+    client = _build_update_client(handle)
+    before = handle.teams[team_id]
+
+    response = client.patch(f"/teams/{team_id}/metadata", json={"metadata": {"tenant": "acme"}})
+
+    assert response.status_code == 422
+    assert "case" in response.json()["detail"]
+    assert handle.teams[team_id] is before
+
+
+def test_worker_metadata_update_with_a_model_tag_is_422_and_writes_nothing() -> None:
+    """AC #9: a ``__model__`` key is refused, and the class named is importable.
+
+    A fake dotted path would let this pass on an ImportError even if the route
+    had honoured the tag — the false green that hides the very gadget the rule
+    exists for. Pydantic catches none of this: unknown keys are ignored and the
+    serializer strips the tag for its own declared class, so a tagged body
+    validates *cleanly* and the key vanishes with no signal.
+    """
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id))
+    client = _build_update_client(handle)
+    before = handle.teams[team_id]
+    tagged = {"__model__": ACME_METADATA_TYPE, "tenant": "acme", "case": "C-1234"}
+
+    response = client.patch(f"/teams/{team_id}/metadata", json={"metadata": tagged})
+
+    assert response.status_code == 422
+    assert "__model__" in response.json()["detail"]
+    assert handle.teams[team_id] is before
+
+
+def test_worker_metadata_update_with_a_nested_model_tag_is_422() -> None:
+    """AC #9: a ``__model__`` one level down is refused too — the scan recurses."""
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id))
+    client = _build_update_client(handle)
+    before = handle.teams[team_id]
+    nested = {
+        "tenant": "acme",
+        "case": "C-1234",
+        "owner": {"__model__": ACME_METADATA_TYPE, "email": "ops@contoso.example"},
+    }
+
+    response = client.patch(f"/teams/{team_id}/metadata", json={"metadata": nested})
+
+    assert response.status_code == 422
+    assert "__model__" in response.json()["detail"]
+    assert handle.teams[team_id] is before
+
+
+def test_worker_metadata_update_model_tag_beats_the_no_contract_message() -> None:
+    """AC #9: the scan runs first and unconditionally, as it does server-side.
+
+    Against a card declaring no contract the caller must still be told about
+    ``__model__``: the type-naming attempt is the security-relevant condition,
+    and "this team takes no metadata" would hide that it was noticed at all.
+    """
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id, metadata_type=None))
+    client = _build_update_client(handle)
+
+    response = client.patch(
+        f"/teams/{team_id}/metadata",
+        json={"metadata": {"__model__": ACME_METADATA_TYPE}},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "__model__" in detail
+    assert "no metadata contract" not in detail
+
+
+def test_worker_metadata_update_rejection_is_422_not_the_action_error_mapping() -> None:
+    """AC #11: the rejection never travels through the ValueError → 404/409 mapper.
+
+    That helper maps any message carrying neither "not found" nor "deleted" to
+    409, so a regression routing this through it would report a validation
+    failure as a conflict. The status code is the only thing separating the two
+    paths — asserting it is not 404/409 after pinning it to 422 would assert
+    nothing at all, so the detail text is asserted instead.
+    """
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id))
+    client = _build_update_client(handle)
+
+    response = client.patch(f"/teams/{team_id}/metadata", json={"metadata": {"tenant": "acme"}})
+
+    assert response.status_code == 422
+    assert "metadata field 'case' is invalid" in response.json()["detail"]
+
+
+def test_worker_metadata_update_for_an_unknown_team_is_404() -> None:
+    """AC #10: an id the worker cannot resolve is a 404 before any validation."""
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(_build_metadata_process(team_id))
+    client = _build_update_client(handle)
+
+    response = client.patch(
+        f"/teams/{uuid.uuid4()}/metadata",
+        json={"metadata": make_metadata_body()},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Team not found"
+
+
+def test_worker_metadata_update_for_a_deleted_team_is_404() -> None:
+    """AC #10: a deleted team 404s through the lifecycle mapper, not 409.
+
+    A deleted team still resolves, so the refusal comes from the update call as
+    a ``ValueError`` — which is exactly what ``_raise_action_error`` is for.
+    """
+    team_id = uuid.uuid4()
+    handle = _MetadataWorkerHandle(
+        _build_metadata_process(team_id, status=TeamStatus.DELETED),
+    )
+    client = _build_update_client(handle)
+    before = handle.teams[team_id]
+
+    response = client.patch(
+        f"/teams/{team_id}/metadata",
+        json={"metadata": make_metadata_body()},
+    )
+
+    assert response.status_code == 404
+    assert "deleted" in response.json()["detail"]
+    assert handle.teams[team_id] is before

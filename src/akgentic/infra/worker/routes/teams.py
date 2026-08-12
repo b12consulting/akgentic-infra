@@ -1,6 +1,6 @@
 """Worker team operation routes.
 
-create, message, send_to, send_from_to, human-input, get, stop, delete, resume.
+create, message, send_to, send_from_to, human-input, get, metadata, stop, delete, resume.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from akgentic.infra.server.models import (
     HumanInputRequest,
     SendMessageRequest,
     TeamResponse,
+    UpdateTeamMetadataRequest,
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
 from akgentic.infra.server.services._metadata_payload import dump_metadata, validate_metadata
@@ -306,6 +307,67 @@ def delete_team(
         services.worker_handle.delete_team(team_id)
         services.runtime_cache.remove(team_id)
     except ValueError as exc:
+        _raise_action_error(exc)
+
+
+@router.patch("/{team_id}/metadata", status_code=200, response_model=None)
+def update_team_metadata(
+    team_id: uuid.UUID,
+    body: UpdateTeamMetadataRequest,
+    services: WorkerServices = Depends(get_services),
+) -> Process:
+    """Replace a team's business metadata and return the persisted ``Process``.
+
+    Mirrors the server's ``PATCH /teams/{team_id}/metadata`` in path and verb —
+    this module's first ``PATCH``, deliberately, so the operation has one shape
+    on both surfaces. The body is a COMPLETE document: a field omitted here is
+    gone from the stored value and from the derived filter index alike.
+
+    ``body.metadata`` is revalidated against the ``metadata_type`` the
+    **persisted** card declares, never a fresh catalog lookup — the type cannot
+    change for a live team (ADR-24 §D7), and re-resolving would let a catalog
+    edit silently change what an existing team accepts.
+
+    The response is the persisted ``Process`` **unmodified**, with its
+    ``__model__`` tag intact. That is the exception in this module, and the
+    reason is structural: this is a worker-to-server internal hop, not a client
+    response, and the caller is a tier adapter that must reconstruct a typed
+    ``Process`` — including a ``metadata`` value of the team's concrete declared
+    class — to satisfy the ``WorkerHandle`` protocol's ``-> Process``. So it is
+    neither passed through ``dump_metadata`` nor through ``_process_to_response``
+    (which is flat, carries no ``team_card`` and no ``metadata_indexes``).
+    Returning it is not a courtesy either: the write path re-derives
+    ``metadata_indexes``, and this response is the only place that re-derivation
+    becomes observable to the caller.
+
+    A FAILED best-effort push of the new value to a live orchestrator is
+    deliberately NOT reflected here (ADR-24 §D7/§D8): the database is the system
+    of record and the actor re-reads on its next resume, so reporting an error
+    would misdescribe a write that stands. Hence no branch on the push outcome
+    and no re-read after the update call.
+
+    ``services.runtime_cache`` is deliberately untouched: it maps team ids to
+    live ``TeamHandle``s and holds no metadata, so there is nothing to
+    invalidate — a write or eviction here would 404 the cache-reading routes.
+    """
+    logger.info("PATCH /teams/%s/metadata", team_id)  # never the body: caller business context
+    process = services.worker_handle.get_team(team_id)
+    if process is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    try:
+        metadata = validate_metadata(process.team_card.metadata_type, body.metadata)
+    except MetadataValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would report a validation failure as a conflict.
+        logger.warning("Metadata update rejected — invalid metadata: %s", exc.detail)
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+
+    try:
+        return services.worker_handle.update_team_metadata(team_id, metadata)
+    except ValueError as exc:
+        # Lifecycle failures only (unknown / deleted team) — the mapper's
+        # "not found" / "deleted" match is exactly right for those.
         _raise_action_error(exc)
 
 
