@@ -1229,3 +1229,31 @@ def test_worker_metadata_update_for_a_deleted_team_is_404() -> None:
     assert response.status_code == 404
     assert "deleted" in response.json()["detail"]
     assert handle.teams[team_id] is before
+
+
+# ---------------------------------------------------------------------------
+# Story 54.4 — the worker has NO read route, and that absence is an invariant.
+#
+# Verbs on the live actor go to the worker; reads of persisted state go to the
+# event store. The worker once exposed a ``GET /teams/{team_id}`` that no tier
+# called and that could not satisfy ``WorkerHandle.get_team() -> Process | None``
+# (a flat DTO carries no ``team_card``), and routing a read through a worker
+# would let a momentarily-unreachable worker 404 a team that plainly exists.
+# Deleting it left the rule stated only in prose, which nothing enforces. This
+# is the executable half: re-add a read route here and it goes red.
+# ---------------------------------------------------------------------------
+
+
+def test_worker_exposes_no_team_read_route() -> None:
+    """A GET on the team path is a 405 — the path exists, the verb does not.
+
+    405 rather than 404 because ``DELETE /teams/{team_id}`` still matches the
+    path, so the router rejects the method. A 200 here means someone re-added a
+    read route; a 404 means the DELETE verb went missing with it.
+    """
+    team_id = uuid.uuid4()
+    client = _build_update_client(_MetadataWorkerHandle(_build_metadata_process(team_id)))
+
+    assert client.get(f"/teams/{team_id}").status_code == 405
+    # The collection path has no read either — only the create POST lives there.
+    assert client.get("/teams").status_code == 405
