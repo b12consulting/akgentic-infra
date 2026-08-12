@@ -16,10 +16,13 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from akgentic.core.messages.message import UserMessage
+from akgentic.core.utils.serializer import SerializableBaseModel
 from akgentic.team.models import Process, TeamCard, TeamStatus
+from fastapi import HTTPException
 
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
@@ -34,7 +37,12 @@ from akgentic.infra.worker.routes.teams import (
     stop_team,
 )
 
-from tests.fixtures.team_metadata import AcmeCaseMetadata, AcmeOwner
+from tests.fixtures.team_metadata import (
+    ACME_METADATA_TYPE,
+    AcmeCaseMetadata,
+    AcmeOwner,
+    make_metadata_body,
+)
 
 _TEAM_CARD_PAYLOAD = {
     "name": "Test Team",
@@ -89,9 +97,18 @@ class _FakeRuntime:
         self.emitted.append(message)
 
 
-def _build_team_card() -> TeamCard:
-    """Build a validated minimal TeamCard for the worker create request."""
-    return TeamCard.model_validate(_TEAM_CARD_PAYLOAD)
+def _build_team_card(*, metadata_type: type[SerializableBaseModel] | None = None) -> TeamCard:
+    """Build a validated minimal TeamCard for the worker create request.
+
+    The worker receives the card *in the request body*, already resolved by the
+    server, so declaring ``metadata_type`` here needs no catalog seeding — the
+    class goes straight onto the card. Omitting it is the "team declares no
+    metadata contract" card.
+    """
+    payload = dict(_TEAM_CARD_PAYLOAD)
+    if metadata_type is not None:
+        payload["metadata_type"] = metadata_type
+    return TeamCard.model_validate(payload)
 
 
 def _build_process(team_id: uuid.UUID, team_card: TeamCard) -> Process:
@@ -120,13 +137,23 @@ def _build_services(
     )
 
 
-def _make_create_body(team_id: uuid.UUID, team_card: TeamCard) -> WorkerCreateTeamRequest:
-    """Build a valid WorkerCreateTeamRequest for the given team."""
+def _make_create_body(
+    team_id: uuid.UUID,
+    team_card: TeamCard,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> WorkerCreateTeamRequest:
+    """Build a valid WorkerCreateTeamRequest for the given team.
+
+    ``metadata`` defaults to ``None`` so every pre-existing caller keeps
+    producing exactly the body it produced before.
+    """
     return WorkerCreateTeamRequest(
         team_card=team_card,
         user_id="user-1",
         user_email="user@example.com",
         team_id=team_id,
+        metadata=metadata,
     )
 
 
@@ -450,3 +477,301 @@ def test_send_message_without_create_returns_404() -> None:
         )
 
     assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Story 54.1 — the worker's INBOUND metadata half.
+#
+# The worker revalidates rather than trusting the server: it holds the resolved
+# TeamCard, so it knows metadata_type and runs the same check the server ran. A
+# worker is reachable by anything holding its address, so "the server already
+# checked" is a deployment assumption, not a security property.
+#
+# ``ACME_METADATA_TYPE`` is the ``__model__`` value throughout: a real,
+# importable, harmless class. A nonexistent path would let these tests pass on an
+# ImportError even if the worker had honoured the tag — the false green that
+# hides exactly the vulnerability the rule exists for.
+# ---------------------------------------------------------------------------
+
+
+class _PersistingTeamManager:
+    """TeamManager stub that stores what it is handed, as the real one does.
+
+    ``create_team`` is the call that writes the team into the event store, so
+    recording it here is what makes "validation ran before anything was created"
+    observable: a route that created first and validated afterwards would leave a
+    team behind even while answering 422. Counting the store is the assertion;
+    the 422 alone would pass either way.
+    """
+
+    def __init__(self, runtime: _FakeRuntime, team_card: TeamCard) -> None:
+        self._runtime = runtime
+        self._team_card = team_card
+        self.teams: dict[uuid.UUID, Process] = {}
+        self.calls: list[dict[str, Any]] = []
+
+    def create_team(self, **kwargs: Any) -> _FakeRuntime:
+        """Persist a Process carrying the forwarded metadata; return the runtime."""
+        self.calls.append(kwargs)
+        team_id = kwargs.get("team_id") or self._runtime.id
+        base = _build_process(team_id, self._team_card)
+        self.teams[team_id] = base.model_copy(update={"metadata": kwargs.get("metadata")})
+        return self._runtime
+
+
+def _build_metadata_services(
+    runtime: _FakeRuntime,
+    team_card: TeamCard,
+    cache: LocalRuntimeCache,
+) -> SimpleNamespace:
+    """WorkerServices stub whose team manager genuinely persists the create.
+
+    Unlike ``_build_services``, nothing is pre-seeded: the store starts empty, so
+    the team count before and after a request is a real measurement of what the
+    route did rather than of what the fixture arranged.
+    """
+    manager = _PersistingTeamManager(runtime, team_card)
+    return SimpleNamespace(
+        team_manager=manager,
+        worker_handle=SimpleNamespace(get_team=lambda tid: manager.teams.get(tid)),
+        runtime_cache=cache,
+    )
+
+
+def _has_model_tag(value: Any) -> bool:
+    """Report whether ``__model__`` appears anywhere in *value*.
+
+    Deliberately a local walk rather than the shipped scanner: checking the strip
+    with the code it ships beside would let a shared blind spot — a container
+    neither of them recurses into — pass as a green test.
+    """
+    if isinstance(value, dict):
+        return "__model__" in value or any(_has_model_tag(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_model_tag(item) for item in value)
+    return False
+
+
+def test_worker_create_with_metadata_persists_it_and_reads_back_as_plain_json() -> None:
+    """AC #2/#8: a worker-routed create carries metadata through to the store.
+
+    The nested ``owner`` and the ``watchers`` list are populated so the outbound
+    recursion runs on real data — the two shapes a top-level-only strip misses.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    cache = LocalRuntimeCache()
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, cache)
+    body = make_metadata_body(
+        note="escalated",
+        owner={"email": "ops@contoso.example", "squad": "support"},
+        watchers=[{"email": "watcher@contoso.example"}],
+    )
+
+    created = create_team(_make_create_body(team_id, team_card, metadata=body), services)  # type: ignore[arg-type]
+
+    assert created.team_id == team_id
+    # The VALIDATED MODEL reached the team manager, not the raw dict: the derived
+    # index is computed once, inside akgentic-team, from a real instance.
+    forwarded = services.team_manager.calls[-1]["metadata"]
+    assert isinstance(forwarded, AcmeCaseMetadata)
+    assert forwarded.tenant == "acme"
+    assert forwarded.owner is not None
+    assert forwarded.owner.email == "ops@contoso.example"
+
+    fetched = get_team(team_id, services)  # type: ignore[arg-type]
+    assert fetched.metadata is not None
+    assert fetched.metadata["tenant"] == "acme"
+    assert fetched.metadata["case"] == "C-1234"
+    assert fetched.metadata["note"] == "escalated"
+    owner = fetched.metadata["owner"]
+    assert isinstance(owner, dict)
+    assert owner["email"] == "ops@contoso.example"
+    watchers = fetched.metadata["watchers"]
+    assert isinstance(watchers, list)
+    assert watchers[0]["email"] == "watcher@contoso.example"
+    assert not _has_model_tag(fetched.metadata)
+
+
+def test_worker_create_response_carries_the_metadata() -> None:
+    """The 201 body itself carries the metadata, not just a later GET."""
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, LocalRuntimeCache())
+
+    response = create_team(  # type: ignore[arg-type]
+        _make_create_body(team_id, team_card, metadata=make_metadata_body(note="from-create")),
+        services,
+    )
+
+    assert response.metadata is not None
+    assert response.metadata["note"] == "from-create"
+    assert not _has_model_tag(response.metadata)
+
+
+def test_worker_create_with_schema_failure_is_422_and_creates_nothing() -> None:
+    """AC #3/#6: a body failing the card's schema is refused AT THE WORKER."""
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    cache = LocalRuntimeCache()
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, cache)
+    before = len(services.team_manager.teams)
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_team(  # type: ignore[arg-type]
+            _make_create_body(team_id, team_card, metadata={"tenant": "acme"}),
+            services,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "case" in str(exc_info.value.detail)
+    assert len(services.team_manager.teams) == before
+    assert cache.get(team_id) is None
+
+
+def test_worker_create_metadata_for_an_untyped_card_is_422_and_creates_nothing() -> None:
+    """AC #4/#6: metadata for a card declaring ``metadata_type=None`` is refused."""
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    cache = LocalRuntimeCache()
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, cache)
+    before = len(services.team_manager.teams)
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_team(  # type: ignore[arg-type]
+            _make_create_body(team_id, team_card, metadata={"tenant": "acme"}),
+            services,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "no metadata contract" in str(exc_info.value.detail)
+    assert len(services.team_manager.teams) == before
+    assert cache.get(team_id) is None
+
+
+def test_worker_create_with_a_model_tag_is_422_and_creates_nothing() -> None:
+    """AC #5/#6: a ``__model__`` key is refused, and the class named is importable.
+
+    Pydantic would not catch this: unknown keys are ignored and the serializer
+    strips the tag for its own declared class, so a tagged body validates
+    *cleanly* and the key vanishes with no signal. The explicit recursive scan is
+    the only thing that turns it into a 422 — which is why the worker reuses the
+    shared helper rather than calling ``model_validate`` itself.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    cache = LocalRuntimeCache()
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, cache)
+    before = len(services.team_manager.teams)
+    tagged = {"__model__": ACME_METADATA_TYPE, "tenant": "acme", "case": "C-1234"}
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_team(_make_create_body(team_id, team_card, metadata=tagged), services)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 422
+    assert "__model__" in str(exc_info.value.detail)
+    assert len(services.team_manager.teams) == before
+    assert cache.get(team_id) is None
+
+
+def test_worker_create_with_a_nested_model_tag_is_422() -> None:
+    """AC #5: a ``__model__`` one level down is refused too — the scan recurses."""
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, LocalRuntimeCache())
+    nested = {
+        "tenant": "acme",
+        "case": "C-1234",
+        "owner": {"__model__": ACME_METADATA_TYPE, "email": "ops@contoso.example"},
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_team(_make_create_body(team_id, team_card, metadata=nested), services)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 422
+    assert "__model__" in str(exc_info.value.detail)
+    assert services.team_manager.teams == {}
+
+
+def test_worker_create_model_tag_beats_the_no_contract_message() -> None:
+    """The scan runs first and unconditionally, exactly as it does server-side.
+
+    Against a card declaring no contract the caller must still be told about
+    ``__model__``: the type-naming attempt is the security-relevant condition,
+    and "this team takes no metadata" would hide that it was noticed at all.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, LocalRuntimeCache())
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_team(  # type: ignore[arg-type]
+            _make_create_body(team_id, team_card, metadata={"__model__": ACME_METADATA_TYPE}),
+            services,
+        )
+
+    detail = str(exc_info.value.detail)
+    assert exc_info.value.status_code == 422
+    assert "__model__" in detail
+    assert "no metadata contract" not in detail
+
+
+def test_worker_create_rejection_is_422_not_the_action_error_mapping() -> None:
+    """AC #9: the rejection never travels through the ValueError → 404/409 mapper.
+
+    That helper maps any message without "not found" / "deleted" to 409, so a
+    regression routing this through it would report a validation failure as a
+    conflict.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, LocalRuntimeCache())
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_team(  # type: ignore[arg-type]
+            _make_create_body(team_id, team_card, metadata={"tenant": "acme"}),
+            services,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.status_code not in (404, 409)
+
+
+def test_worker_create_without_metadata_is_unchanged() -> None:
+    """AC #7: omitting metadata behaves exactly as it did before this story.
+
+    Asserted field by field rather than against a frozen response dict: the
+    response has carried a ``metadata`` key since the outbound half shipped, so a
+    whole-dict comparison would pin the wrong thing.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    cache = LocalRuntimeCache()
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, cache)
+
+    response = create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
+
+    assert response.team_id == team_id
+    assert response.name == "Test Team"
+    assert response.user_id == "user-1"
+    assert response.status == TeamStatus.RUNNING.value
+    assert response.metadata is None
+    # ...and nothing was persisted for it either.
+    assert services.team_manager.teams[team_id].metadata is None
+    assert isinstance(cache.get(team_id), LocalTeamHandle)
+
+
+def test_worker_create_with_empty_metadata_creates_the_team() -> None:
+    """An empty body is not an error, even for a card that declares a type.
+
+    A declared type constrains metadata's *shape*, not its *presence* — the same
+    rule the server applies, inherited by calling the same helper.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card(metadata_type=AcmeCaseMetadata)
+    services = _build_metadata_services(_FakeRuntime(team_id), team_card, LocalRuntimeCache())
+
+    response = create_team(_make_create_body(team_id, team_card, metadata={}), services)  # type: ignore[arg-type]
+
+    assert response.metadata is None
+    assert services.team_manager.calls[-1]["metadata"] is None

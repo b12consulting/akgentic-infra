@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
+from akgentic.infra.errors import MetadataValidationError
 from akgentic.infra.server.models import (
     EmitMessageRequest,
     HumanInputRequest,
@@ -21,7 +22,7 @@ from akgentic.infra.server.models import (
     TeamResponse,
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
-from akgentic.infra.server.services._metadata_payload import dump_metadata
+from akgentic.infra.server.services._metadata_payload import dump_metadata, validate_metadata
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.state_keys import SERVICES
 from akgentic.team.models import Process, TeamCard, TeamRuntime
@@ -38,12 +39,13 @@ class WorkerCreateTeamRequest(BaseModel):
     The worker receives the already-resolved TeamCard and user identity from
     the server — catalog resolution happens server-side.
 
-    Carries **no** team metadata yet: a create routed through a worker drops the
-    value the server validated. The worker holds ``team_card``, so it already
-    knows ``metadata_type`` and could re-run ``validate_metadata`` on a plain-JSON
-    field — but wiring that also changes what the remote placement adapters in the
-    deployment repos must send, so it is a separate story. Community-tier creates
-    go through ``LocalPlacement`` and are unaffected.
+    ``metadata`` travels as plain JSON and is **revalidated here**, against the
+    ``metadata_type`` the carried ``team_card`` declares — the worker does not
+    take the server's word for it. A worker is reachable by anything holding its
+    address, so "the server already checked" is a deployment assumption, not a
+    security property; the server-side check protects the server's callers and
+    says nothing about who else can reach this route. The validation is the same
+    shared helper the server calls, never a second copy.
     """
 
     team_card: TeamCard = Field(description="Pre-resolved TeamCard for team creation")
@@ -56,6 +58,17 @@ class WorkerCreateTeamRequest(BaseModel):
     catalog_namespace: str | None = Field(
         default=None,
         description="Catalog namespace the team was instantiated from; None if not catalog-sourced",
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Plain-JSON business metadata, revalidated here against the metadata_type "
+            "team_card declares. Names no type: a __model__ key at any depth is "
+            "rejected with 422. Raw wire body, deserialized immediately into a "
+            "validated model and never held as state, so it is NOT the "
+            "dict[str, Any] anti-pattern (Golden Rule #1) — the same documented "
+            "exception CreateTeamRequest.metadata carries."
+        ),
     )
 
 
@@ -103,18 +116,31 @@ def create_team(
     body: WorkerCreateTeamRequest,
     services: WorkerServices = Depends(get_services),
 ) -> TeamResponse:
-    """Create a new team from a pre-resolved TeamCard.
+    """Create a new team from a pre-resolved TeamCard, optionally with metadata.
 
     The server resolves the catalog namespace to a TeamCard and forwards it
     to the worker. The worker calls team_manager.create_team() directly.
+
+    ``body.metadata`` is revalidated here against the card's own
+    ``metadata_type`` — the worker never trusts an upstream check it cannot see.
+    A rejected body is a 422 and creates nothing.
     """
     logger.info("POST /teams — user_id=%s", body.user_id)
+    try:
+        metadata = validate_metadata(body.team_card.metadata_type, body.metadata)
+    except MetadataValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would report a validation failure as a conflict.
+        logger.warning("Team creation rejected — invalid metadata: %s", exc.detail)
+        raise HTTPException(status_code=422, detail=exc.detail) from None
+
     runtime: TeamRuntime = services.team_manager.create_team(
         team_card=body.team_card,
         user_id=body.user_id,
         user_email=body.user_email,
         team_id=body.team_id,
         catalog_namespace=body.catalog_namespace,
+        metadata=metadata,
     )
 
     # Make the team reachable by this router's message / human-input routes,
