@@ -43,6 +43,14 @@ class RichRenderer:
         """Render an error message with red styling."""
         self._console.print(f"[bold red]\\[error][/bold red] {content}")
 
+    def render_warning(self, content: str) -> None:
+        """Render a warning message with yellow styling.
+
+        Distinct from render_error: a WarningMessage reports a condition the
+        actor already handled, so it must not carry the [error] marker.
+        """
+        self._console.print(f"[bold yellow]\\[warning][/bold yellow] {content}")
+
     def render_tool_call(
         self,
         tool_name: str,

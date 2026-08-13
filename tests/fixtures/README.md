@@ -21,6 +21,7 @@ event = make_sent_message()
 # Override only the fields you care about
 event = make_sent_message(content="custom greeting")
 error = make_error_message(content_type="RuntimeError")
+warning = make_warning_message(content="disk is nearly full")
 team = make_team_info(name="My Team", status="stopped")
 ```
 
@@ -33,12 +34,19 @@ team = make_team_info(name="My Team", status="stopped")
 | `make_sent_message()` | `SentMessage` | akgentic-core |
 | `make_event_message()` | `EventMessage` | akgentic-core |
 | `make_error_message()` | `ErrorMessage` | akgentic-core |
+| `make_warning_message()` | `WarningMessage` | akgentic-core |
 | `make_start_message()` | `StartMessage` | akgentic-core |
 | `make_received_message()` | `ReceivedMessage` | akgentic-core |
 | `make_processed_message()` | `ProcessedMessage` | akgentic-core |
 | `make_tool_call_event()` | `ToolCallEvent` | akgentic-llm |
 | `make_tool_return_event()` | `ToolReturnEvent` | akgentic-llm |
 | `make_llm_usage_event()` | `LlmUsageEvent` | akgentic-llm |
+
+Some — not all — of these factories have a `build_*` twin returning the typed
+instance instead of a dict, for tests that drive the typed pipeline rather than the
+API layer: `build_sent_message`, `build_event_message`, `build_error_message`,
+`build_warning_message`, `build_start_message`, `build_tool_call_event`,
+`build_tool_return_event`.
 
 ### Model factories (`tests/fixtures/models.py`)
 

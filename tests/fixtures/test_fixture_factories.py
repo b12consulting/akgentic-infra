@@ -14,6 +14,7 @@ from akgentic.core.messages.orchestrator import (
     ReceivedMessage,
     SentMessage,
     StartMessage,
+    WarningMessage,
 )
 from akgentic.llm.event import LlmUsageEvent, ToolCallEvent, ToolReturnEvent
 
@@ -28,6 +29,7 @@ from tests.fixtures.events import (
     make_start_message,
     make_tool_call_event,
     make_tool_return_event,
+    make_warning_message,
 )
 from tests.fixtures.models import make_event_info, make_team_info
 
@@ -92,6 +94,29 @@ class TestErrorMessageFactory:
     def test_override_appears_in_output(self) -> None:
         data = make_error_message(content_type="KeyError")
         assert data["content_type"] == "KeyError"
+
+
+class TestWarningMessageFactory:
+    """Round-trip tests for make_warning_message."""
+
+    def test_round_trip_defaults(self) -> None:
+        data = make_warning_message()
+        model = WarningMessage.model_validate(data)
+        assert model.content == "something to watch"
+
+    def test_round_trip_with_overrides(self) -> None:
+        data = make_warning_message(content_type="RetryWarningError", content="retrying")
+        model = WarningMessage.model_validate(data)
+        assert model.content_type == "RetryWarningError"
+        assert model.content == "retrying"
+
+    def test_override_appears_in_output(self) -> None:
+        data = make_warning_message(content_type="QuotaWarningError")
+        assert data["content_type"] == "QuotaWarningError"
+
+    def test_default_content_differs_from_the_error_factory(self) -> None:
+        """A shared default would let an assertion pass against the wrong path."""
+        assert make_warning_message()["content"] != make_error_message()["content"]
 
 
 class TestStartMessageFactory:

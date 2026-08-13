@@ -34,6 +34,7 @@ from akgentic.core.messages.orchestrator import (
     ReceivedMessage,
     SentMessage,
     StartMessage,
+    WarningMessage,
 )
 from akgentic.core.utils.deserializer import ActorAddressDict
 from akgentic.llm.event import LlmUsageEvent, ToolCallEvent, ToolReturnEvent
@@ -104,6 +105,20 @@ def make_error_message(**overrides: Any) -> dict[str, Any]:
     }
     defaults.update(overrides)
     return ErrorMessage(**defaults).model_dump()
+
+
+def make_warning_message(**overrides: Any) -> dict[str, Any]:
+    """Create a ``WarningMessage`` fixture dict from a real model instance.
+
+    The default content deliberately differs from ``make_error_message``'s, so an
+    assertion cannot pass against the wrong rendering path.
+    """
+    defaults: dict[str, Any] = {
+        "content_type": "DeprecationWarningError",
+        "content": "something to watch",
+    }
+    defaults.update(overrides)
+    return WarningMessage(**defaults).model_dump()
 
 
 def make_start_message(**overrides: Any) -> dict[str, Any]:
@@ -211,6 +226,20 @@ def build_error_message(**overrides: Any) -> ErrorMessage:
     }
     defaults.update(overrides)
     return ErrorMessage(**defaults)
+
+
+def build_warning_message(**overrides: Any) -> WarningMessage:
+    """Create a ``WarningMessage`` typed instance.
+
+    The default content deliberately differs from ``build_error_message``'s, so an
+    assertion cannot pass against the wrong rendering path.
+    """
+    defaults: dict[str, Any] = {
+        "content_type": "DeprecationWarningError",
+        "content": "something to watch",
+    }
+    defaults.update(overrides)
+    return WarningMessage(**defaults)
 
 
 def build_event_message(**overrides: Any) -> EventMessage:

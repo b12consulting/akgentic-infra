@@ -16,6 +16,7 @@ from akgentic.infra.cli.tui.widgets.agent_message import AgentMessage
 from akgentic.infra.cli.tui.widgets.error import ErrorWidget
 from akgentic.infra.cli.tui.widgets.human_input import HumanInputPrompt
 from akgentic.infra.cli.tui.widgets.tool_call import ToolCallWidget
+from akgentic.infra.cli.tui.widgets.warning import WarningWidget
 from tests.fixtures.events import (
     build_error_message,
     build_event_message,
@@ -23,6 +24,7 @@ from tests.fixtures.events import (
     build_start_message,
     build_tool_call_event,
     build_tool_return_event,
+    build_warning_message,
 )
 
 from .conftest import captured_renderer as _captured_renderer
@@ -85,6 +87,58 @@ class TestRouteErrorMessage:
         out = buf.getvalue()
         assert "error" in out
         assert "something broke" in out
+
+
+class TestRouteWarningMessage:
+    def test_valid_warning_message_renders(self) -> None:
+        """AC1: a WarningMessage renders its content and reports it was handled."""
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        event = build_warning_message(content="something to watch")
+        result = router.route(event)
+        assert result is True
+        out = buf.getvalue()
+        assert "warning" in out
+        assert "something to watch" in out
+
+    def test_warning_is_not_rendered_as_an_error(self) -> None:
+        """AC2: warning severity is visually distinct — no [error] marker."""
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        router.route(build_warning_message(content="something to watch"))
+        assert "[error]" not in buf.getvalue()
+
+
+class TestRouteErrorMessageUnchanged:
+    """AC5: NFR1 — the error path is untouched by the warning branch."""
+
+    def test_error_message_still_renders_content_and_returns_true(self) -> None:
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        result = router.route(build_error_message(content="something broke"))
+        assert result is True
+        out = buf.getvalue()
+        assert "error" in out
+        assert "something broke" in out
+
+    def test_error_message_does_not_take_the_warning_path(self) -> None:
+        renderer, buf = _captured_renderer()
+        router = EventRouter(renderer)
+        router.route(build_error_message(content="something broke"))
+        assert "[warning]" not in buf.getvalue()
+
+
+class TestFallThroughNotWidened:
+    """AC7: adding the warning branch must not widen the fall-through."""
+
+    def test_non_displayable_message_returns_false(self) -> None:
+        renderer, _buf = _captured_renderer()
+        router = EventRouter(renderer)
+        assert router.route(build_start_message()) is False
+
+    def test_non_displayable_message_yields_no_widget(self) -> None:
+        router, registry = _make_widget_router()
+        assert router.to_widget(build_start_message(), registry) is None
 
 
 class TestRouteToolCall:
@@ -337,6 +391,34 @@ class TestToWidgetErrorMessage:
         assert isinstance(widget, ErrorWidget)
         # Assert the value, not just the type: ErrorMessage ignores unknown
         # keywords, so a stale field name blanks content instead of raising.
+        assert "boom" in str(widget.render())
+
+
+class TestToWidgetWarningMessage:
+    def test_returns_warning_widget(self) -> None:
+        """AC3: assert the rendered value — WarningMessage ignores unknown keywords,
+        so a stale field name blanks content instead of raising."""
+        router, registry = _make_widget_router()
+        event = build_warning_message(content="something to watch")
+        widget = router.to_widget(event, registry)
+        assert isinstance(widget, WarningWidget)
+        assert "something to watch" in str(widget.render())
+
+    def test_warning_never_produces_an_error_widget(self) -> None:
+        """AC6: the two branches do not cross."""
+        router, registry = _make_widget_router()
+        widget = router.to_widget(build_warning_message(), registry)
+        # Assert the positive type too: `not isinstance(None, ErrorWidget)` is True,
+        # so dropping the warning branch entirely would satisfy the negative alone.
+        assert isinstance(widget, WarningWidget)
+        assert not isinstance(widget, ErrorWidget)
+
+    def test_error_never_produces_a_warning_widget(self) -> None:
+        """AC5/AC6: ErrorMessage still yields an ErrorWidget carrying its content."""
+        router, registry = _make_widget_router()
+        widget = router.to_widget(build_error_message(content="boom"), registry)
+        assert isinstance(widget, ErrorWidget)
+        assert not isinstance(widget, WarningWidget)
         assert "boom" in str(widget.render())
 
 
