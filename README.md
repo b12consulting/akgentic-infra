@@ -7,7 +7,7 @@
 
 ## What is akgentic-infra?
 
-Infrastructure backend for the Akgentic platform. It provides protocol abstractions that decouple the server and CLI from any specific deployment model, plus a complete set of community-tier implementations for single-process deployment. The department (`akgentic-infra-department`, Docker Compose) and enterprise (`akgentic-infra-enterprise`, Kubernetes/Dapr) tiers implement these same protocols for distributed deployment.
+Infrastructure backend for the [Akgentic](https://github.com/b12consulting/akgentic-framework) platform (open-source bundle). It provides protocol abstractions that decouple the server and CLI from any specific deployment model, plus a complete set of community-tier implementations for single-process deployment. The department (`akgentic-infra-department`, Docker Compose) and enterprise (`akgentic-infra-enterprise`, Kubernetes/Dapr) tiers implement these same protocols for distributed deployment.
 
 ## Three-Tier Architecture
 
@@ -804,43 +804,76 @@ Two properties matter operationally:
 
 ## Installation
 
-### Within Monorepo Workspace
+Published on PyPI. Python 3.12 or newer.
 
 ```bash
-# From workspace root
-source .venv/bin/activate
-
-# Package is already installed in editable mode via workspace
-# No additional installation needed
+uv add akgentic-infra
+# or
+pip install akgentic-infra
 ```
 
-### Standalone Package
+That is the whole install. Every other akgentic package — `akgentic-core`,
+`akgentic-llm`, `akgentic-tool`, `akgentic-agent`, `akgentic-team`,
+`akgentic-catalog` — comes with it as an ordinary dependency, along with
+`fastapi`, `typer`, `httpx`, `websockets` and `logfire`. No workspace checkout,
+no submodules.
+
+The install covers the **community tier** only. The department and enterprise
+tiers are separate distributions (`akgentic-infra-department`,
+`akgentic-infra-enterprise`) that implement the same protocols; install the one
+matching your deployment alongside this package.
+
+### As part of the framework bundle
+
+`akgentic-framework` is the meta-distribution that pins every akgentic package
+at versions built and tested together. Install `akgentic-infra` through it when
+you want the release-wide pin rather than a single package:
 
 ```bash
-cd packages/akgentic-infra
-
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+pip install "akgentic-framework[infra]"   # this package + the whole set, release-pinned
+pip install "akgentic-framework[all]"     # the whole framework
 ```
+
+Because `akgentic-infra` already depends on every library package, `[infra]` and
+`[all]` resolve to the same closure — `[infra]` simply states the intent.
+
+### Working on the package itself
+
+To develop `akgentic-infra` rather than use it, clone the open-source bundle
+[akgentic-framework](https://github.com/b12consulting/akgentic-framework), which
+carries every package together as submodules:
+
+```bash
+git clone git@github.com:b12consulting/akgentic-framework.git
+cd akgentic-framework
+git submodule update --init
+# uncomment the two "SOURCE MODE" blocks in pyproject.toml
+uv sync
+```
+
+Source mode resolves `akgentic-*` to the local checkouts, editable — which is
+what you want here, since a change in this package usually rides on an
+unreleased change in a library package below it.
 
 ## Development
 
+All commands run from this repository's root:
+
 ```bash
 # Run all tests
-pytest packages/akgentic-infra/tests/
+uv run pytest tests/
 
 # Run integration tests (requires API keys in .env)
-pytest packages/akgentic-infra/tests/integration/ -m integration
+uv run pytest tests/integration/ -m integration
 
 # Type checking (strict mode)
-mypy packages/akgentic-infra/src/
+uv run mypy src/
 
 # Lint
-ruff check packages/akgentic-infra/src/
+uv run ruff check src/
 
 # Format
-ruff format packages/akgentic-infra/src/
+uv run ruff format src/
 ```
 
 Coverage target: **90%** (higher than other packages at 80%).
@@ -857,7 +890,7 @@ Coverage target: **90%** (higher than other packages at 80%).
 By default, `integration` tests are excluded (`-m 'not integration'`). Run them explicitly:
 
 ```bash
-pytest packages/akgentic-infra/tests/ -m integration
+uv run pytest tests/ -m integration
 ```
 
 ## Dependencies
