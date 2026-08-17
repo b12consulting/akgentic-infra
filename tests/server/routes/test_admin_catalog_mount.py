@@ -101,7 +101,6 @@ def test_mutation_log_records_stashed_principal_id_on_post(
             "description": "mount smoke",
             "entry_point": {
                 "card": {
-                    "role": "Human",
                     "description": "Human",
                     "skills": [],
                     "agent_class": "akgentic.core.agent.Akgent",
@@ -150,7 +149,6 @@ def test_mutation_log_community_anonymous_principal_on_post(
             "description": "mount smoke anon",
             "entry_point": {
                 "card": {
-                    "role": "Human",
                     "description": "Human",
                     "skills": [],
                     "agent_class": "akgentic.core.agent.Akgent",

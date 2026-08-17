@@ -69,7 +69,6 @@ def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
         "description": "v2 test team for infra tests",
         "entry_point": {
             "card": {
-                "role": "Human",
                 "description": "Human user interface",
                 "skills": [],
                 "agent_class": "akgentic.core.agent.Akgent",
@@ -82,7 +81,6 @@ def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
         "members": [
             {
                 "card": {
-                    "role": "Manager",
                     "description": "Test manager agent",
                     "skills": ["coordination"],
                     "agent_class": "akgentic.core.agent.Akgent",
