@@ -27,8 +27,10 @@ from pydantic_ai.models.test import TestModel
 from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
-from akgentic.infra.server.app import _build_app, create_app
+from akgentic.infra.server.app import create_app
+from akgentic.infra.server.assembly import build_app
 from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.modules import CoreModule
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
@@ -203,15 +205,18 @@ def channel_app(
 ) -> FastAPI:
     """FastAPI app with webhook wiring for channel integration tests.
 
-    Uses _build_app with overridden channel deps on the services container.
+    Composes ``CoreModule`` directly through ``build_app`` with overridden
+    channel deps on the services container — deliberately NOT ``create_app``,
+    which would run the process globals and overwrite the fixture's explicitly
+    wired ``channel_ingestion.team_service`` backref.
     """
     integration_services.channel_parser_registry = channel_parser_registry
     integration_services.channel_registry = channel_registry_instance
     integration_services.ingestion = channel_ingestion
-    return _build_app(
-        integration_services,
-        integration_team_service,
+    return build_app(
         integration_settings,
+        integration_services,
+        [CoreModule(services=integration_services, settings=integration_settings)],
     )
 
 

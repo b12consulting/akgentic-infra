@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from akgentic.infra.server.app import create_app
+from akgentic.infra.server.app import create_app, create_server_app, server_modules
 from akgentic.infra.server.assembly import (
     APPLICATION,
     IDENTITY,
@@ -19,10 +19,12 @@ from akgentic.infra.server.assembly import (
     BuildContext,
     DuplicateModuleNameError,
     DuplicateStateProviderError,
+    ExceptionHandlerRegistrar,
     ExceptionHandlerSpec,
     MiddlewareSpec,
     MissingStateProviderError,
     RouteSpec,
+    StateEntry,
     UnpopulatedStateError,
     build_app,
     build_manifest,
@@ -61,6 +63,7 @@ __all__ = [
     "DuplicateStateProviderError",
     "EventListResponse",
     "EventResponse",
+    "ExceptionHandlerRegistrar",
     "ExceptionHandlerSpec",
     "HumanInputRequest",
     "MiddlewareSpec",
@@ -68,6 +71,7 @@ __all__ = [
     "RouteSpec",
     "SendMessageRequest",
     "ServerSettings",
+    "StateEntry",
     "TeamListResponse",
     "TeamResponse",
     "TeamService",
@@ -76,4 +80,6 @@ __all__ = [
     "build_app",
     "build_manifest",
     "create_app",
+    "create_server_app",
+    "server_modules",
 ]

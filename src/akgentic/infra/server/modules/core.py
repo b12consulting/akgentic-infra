@@ -1,31 +1,34 @@
 """``CoreModule`` — the community tier's base composition module (epic 57).
 
-Re-expresses the legacy factory's route mounting and middleware registration
-as an ``AppModule``: readiness, ``/teams``, ``/workspace``, ``/ws``,
-``/webhook`` and the ``/admin`` catalog surface (router-level auth pair plus
-the per-route owner-or-admin gates, built exactly as before); CORS at
-TRANSPORT only when origins are configured; the admin-catalog mutation log at
-APPLICATION; the ``/readiness`` allowlist; the graceful-shutdown drain
-lifespan.
+Re-expresses the legacy factory as a **self-contained** ``AppModule``:
+readiness, ``/teams``, ``/workspace``, ``/ws``, ``/webhook`` and the
+``/admin`` catalog surface (router-level auth pair plus the per-route
+owner-or-admin gates, built exactly as before); CORS at TRANSPORT only when
+origins are configured; the admin-catalog mutation log at APPLICATION; the
+``/readiness`` allowlist. Self-contained means the full contract, with no
+wrapper residue:
 
-Two legacy responsibilities deliberately stay in the tier wrapper
-(``akgentic.infra.server.app``), recorded as exemptions in Story 57.2's Dev
-Agent Record:
-
-- the community ``app.state`` keys are populated at **build time** by the
-  wrapper's ``_store_state`` so non-lifespan test clients keep working; this
-  module's lifespan writes only ``draining``;
-- exception handlers register through the catalog package's
-  ``add_exception_handlers`` and infra's ``add_server_exception_handlers``
-  helpers — their handler callables are package-private, so decomposing them
-  into ``ExceptionHandlerSpec`` pairs would couple this module to another
-  package's private names.
+- ``__init__`` constructs the module's own ``TeamService`` (exposed as
+  ``.team_service`` for the community wrapper's ingestion backref);
+- the community ``app.state`` keys are contributed at **build time** via
+  ``contribute_state`` (builder-applied, readable without a lifespan); the
+  lifespan writes only ``draining``;
+- exception handlers register through ``ExceptionHandlerRegistrar``
+  contributions wrapping the catalog package's ``add_exception_handlers`` and
+  infra's ``add_server_exception_handlers`` — package-private handler
+  callables stay private, the builder invokes the helpers during composition;
+- the graceful-shutdown drain lifespan is owned here outright
+  (:func:`_drain_lifespan`).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+import logging
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI
 from fastapi.dependencies.utils import get_parameterless_sub_dependant
@@ -33,6 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.params import Depends as DependsParam
 from fastapi.routing import APIRoute
 
+from akgentic.catalog.api import add_exception_handlers
 from akgentic.catalog.api._settings import CatalogRouterSettings
 from akgentic.catalog.api.router import build_router as build_catalog_router
 from akgentic.catalog.api.router import set_catalog as set_unified_catalog
@@ -42,10 +46,14 @@ from akgentic.infra.server.assembly import (
     AllowlistSpec,
     BaseAppModule,
     BuildContext,
+    ExceptionHandlerRegistrar,
+    ExceptionHandlerSpec,
     MiddlewareSpec,
     RouteSpec,
+    StateEntry,
 )
 from akgentic.infra.server.deps import TierServices
+from akgentic.infra.server.errors import add_server_exception_handlers
 from akgentic.infra.server.routes._admin_mutation_log import AdminCatalogMutationLogMiddleware
 from akgentic.infra.server.routes._auth_dep import require_authenticated_principal
 from akgentic.infra.server.routes._catalog_authz import (
@@ -57,12 +65,26 @@ from akgentic.infra.server.routes.readiness import router as readiness_router
 from akgentic.infra.server.routes.teams import router as teams_router
 from akgentic.infra.server.routes.webhook import router as webhook_router
 from akgentic.infra.server.routes.workspace import router as workspace_router
+from akgentic.infra.server.routes.ws import ConnectionManager, shutdown_reader_pool
 from akgentic.infra.server.routes.ws import router as ws_router
+from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.state_keys import (
+    CHANNEL_PARSERS,
+    CHANNEL_REGISTRY,
+    CONNECTION_MANAGER,
+    DRAINING,
+    INGESTION,
+    SERVICES,
+    SETTINGS,
+    TEAM_SERVICE,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class CoreModule(BaseAppModule):
-    """Community base module: core routes, CORS + mutation log, drain lifespan.
+    """Community base module: routes, CORS + mutation log, state, drain lifespan.
 
     Constructed with the concrete objects it needs — ``build_app``
     deliberately reads nothing from its own ``settings``/``services``
@@ -75,6 +97,12 @@ class CoreModule(BaseAppModule):
     def __init__(self, services: TierServices, settings: ServerSettings) -> None:
         self._services = services
         self._settings = settings
+        # ``workspaces_root`` is declared on ``CommunitySettings``; base
+        # ``ServerSettings`` callers fall back to the same default the field
+        # declares so ``TeamService`` always has a valid FS-cleanup root.
+        workspaces_root = getattr(settings, "workspaces_root", Path("workspaces"))
+        # Public: the community wrapper's ingestion backref reads it.
+        self.team_service = TeamService(services, workspaces_root=workspaces_root)
 
     def contribute_routes(self) -> list[RouteSpec]:
         """Core routers in the legacy mount order, then the ``/admin`` catalog.
@@ -128,20 +156,92 @@ class CoreModule(BaseAppModule):
         """Only ``/readiness`` is reachable without an authenticated principal."""
         return AllowlistSpec(exact=frozenset({"/readiness"}))
 
+    def contribute_state(self) -> Sequence[StateEntry[Any]]:
+        """The seven community state keys, applied by the builder at build time."""
+        entries: list[StateEntry[Any]] = [
+            SERVICES.entry(self._services),
+            TEAM_SERVICE.entry(self.team_service),
+            SETTINGS.entry(self._settings),
+            CONNECTION_MANAGER.entry(ConnectionManager()),
+        ]
+        # ``channel_parser_registry`` is optional on the services container (only the
+        # community tier declares it). CHANNEL_PARSERS is a required key, so the slot
+        # is only set when the services container actually exposes a registry; a tier
+        # without one leaves the slot unset and any webhook request fails loud
+        # (``require()`` → LookupError → 500) instead of reading back a silent None.
+        channel_parsers = getattr(self._services, "channel_parser_registry", None)
+        if channel_parsers is not None:
+            entries.append(CHANNEL_PARSERS.entry(channel_parsers))
+        entries.append(CHANNEL_REGISTRY.entry(self._services.channel_registry))
+        entries.append(INGESTION.entry(self._services.ingestion))
+        return entries
+
+    def contribute_exception_handlers(
+        self,
+    ) -> list[ExceptionHandlerSpec | ExceptionHandlerRegistrar]:
+        """The catalog and ``ServerError`` handler families, via registrars.
+
+        Both helpers' handler callables are package-private; registrars let
+        the builder invoke the packages' own registration helpers without
+        coupling this module to another package's private names.
+        """
+        return [
+            ExceptionHandlerRegistrar(install=add_exception_handlers),
+            ExceptionHandlerRegistrar(install=add_server_exception_handlers),
+        ]
+
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncIterator[None]:
         """Drain lifespan: ``draining`` flag on startup, graceful shutdown sequence.
 
-        Delegates to the wrapper module's ``_lifespan``, which keeps the drain
-        implementation (pre-drain delay, ``disconnect_all``, ``stop_all`` with
-        logged timeout, reader-pool shutdown) in ``app.py`` where the existing
-        lifespan tests patch their collaborators. Imported lazily because the
-        wrapper composes this module — a top-level import would be circular.
+        Delegates to the module-level :func:`_drain_lifespan` so the lifespan
+        unit tests keep their construct-and-drive shape without instantiating
+        ``CoreModule`` (whose ``__init__`` builds a ``TeamService``).
         """
-        from akgentic.infra.server.app import _lifespan
-
-        async with _lifespan(app):
+        async with _drain_lifespan(app):
             yield
+
+
+@asynccontextmanager
+async def _drain_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Drain lifespan implementing the ADR-013 graceful shutdown sequence.
+
+    Startup: sets ``app.state.draining = False``.
+    Shutdown: sets draining flag, waits pre-drain delay, disconnects all
+    WebSocket clients, then stops all teams via ``worker_handle.stop_all()``.
+    """
+    DRAINING.set(app, value=False)
+    logger.info("Lifespan startup: draining=False")
+    yield
+    # --- Shutdown sequence (ADR-013 Decision 2) ---
+    DRAINING.set(app, value=True)
+    logger.info("Lifespan shutdown: draining=True")
+
+    delay = SETTINGS.require(app).shutdown_pre_drain_delay
+    if delay > 0:
+        logger.info("Pre-drain delay: sleeping %ds", delay)
+        await asyncio.sleep(delay)
+
+    logger.info("Disconnecting all WebSocket clients")
+    await CONNECTION_MANAGER.require(app).disconnect_all()
+
+    timeout = SETTINGS.require(app).shutdown_drain_timeout
+    logger.info("Stopping all teams (timeout=%ds)", timeout)
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(SERVICES.require(app).worker_handle.stop_all),
+            timeout=timeout,
+        )
+        logger.info("stop_all() completed successfully")
+    except TimeoutError:
+        logger.warning(
+            "stop_all() exceeded shutdown_drain_timeout=%ds, proceeding with exit",
+            timeout,
+        )
+
+    # Shut down the dedicated WS reader thread pool — see issue #227.
+    shutdown_reader_pool()
+    logger.info("WebSocket reader pool shut down")
 
 
 def _build_admin_catalog_router() -> APIRouter:

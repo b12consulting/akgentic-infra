@@ -258,7 +258,7 @@ class TestLifespanShutdownOrder:
     """
 
     async def test_full_shutdown_sequence_order(self) -> None:
-        from akgentic.infra.server.app import _lifespan
+        from akgentic.infra.server.modules.core import _drain_lifespan as _lifespan
 
         call_order: list[str] = []
 
@@ -293,7 +293,7 @@ class TestLifespanShutdownOrder:
             patch.object(asyncio, "sleep", _fake_sleep),
             patch.object(asyncio, "to_thread", _fake_to_thread),
             patch(
-                "akgentic.infra.server.app.shutdown_reader_pool",
+                "akgentic.infra.server.modules.core.shutdown_reader_pool",
                 side_effect=lambda: call_order.append("shutdown_reader_pool"),
             ),
         ):

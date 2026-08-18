@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from akgentic.infra.server.app import _lifespan
+from akgentic.infra.server.modules.core import _drain_lifespan as _lifespan
 
 
 def _make_app_state(
@@ -95,7 +95,7 @@ class TestLifespanShutdown:
         """AC #9: shutdown calls asyncio.sleep with shutdown_pre_drain_delay when > 0."""
         app = _make_app_state(pre_drain_delay=5)
 
-        with patch("akgentic.infra.server.app.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("akgentic.infra.server.modules.core.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             ctx = _lifespan(app)
             await ctx.__aenter__()
             await ctx.__aexit__(None, None, None)
@@ -106,7 +106,7 @@ class TestLifespanShutdown:
         """AC #9: shutdown skips sleep when shutdown_pre_drain_delay == 0."""
         app = _make_app_state(pre_drain_delay=0)
 
-        with patch("akgentic.infra.server.app.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch("akgentic.infra.server.modules.core.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             ctx = _lifespan(app)
             await ctx.__aenter__()
             await ctx.__aexit__(None, None, None)
@@ -117,7 +117,9 @@ class TestLifespanShutdown:
         """Lifespan teardown releases the dedicated WS reader pool (issue #227)."""
         app = _make_app_state()
 
-        with patch("akgentic.infra.server.app.shutdown_reader_pool") as mock_shutdown_pool:
+        with patch(
+            "akgentic.infra.server.modules.core.shutdown_reader_pool"
+        ) as mock_shutdown_pool:
             ctx = _lifespan(app)
             await ctx.__aenter__()
             await ctx.__aexit__(None, None, None)
@@ -135,10 +137,10 @@ class TestLifespanShutdown:
 
         with (
             patch(
-                "akgentic.infra.server.app.asyncio.to_thread",
+                "akgentic.infra.server.modules.core.asyncio.to_thread",
                 side_effect=_slow_to_thread,
             ),
-            patch("akgentic.infra.server.app.logger") as mock_logger,
+            patch("akgentic.infra.server.modules.core.logger") as mock_logger,
         ):
             ctx = _lifespan(app)
             await ctx.__aenter__()

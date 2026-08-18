@@ -120,6 +120,16 @@ def test_set_get_round_trip_on_fastapi() -> None:
     assert key.get(app) == 42
 
 
+def test_entry_applies_the_paired_value_to_the_keys_slot() -> None:
+    # KEY.entry(value) pairs key and value as a StateEntry contribution;
+    # applying it is behaviorally KEY.set(app, value).
+    app = FastAPI()
+    sentinel = object()
+    key: StateKey[object] = StateKey("entry_slot", required=True)
+    key.entry(sentinel).apply(app)
+    assert key.get(app) is sentinel
+
+
 def test_state_resolves_via_app_for_request_like_source() -> None:
     app = FastAPI()
     key: StateKey[str] = StateKey("token", required=True)

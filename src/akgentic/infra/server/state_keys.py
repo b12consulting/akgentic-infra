@@ -3,9 +3,9 @@
 Each module-level :class:`~akgentic.infra.utils.StateKey` constant pins one
 server ``app.state`` slot's name, type, default, and required-ness. Declaring a
 key *is* the registration — there is no central runtime-mutable registry. The
-keys live in the package that writes the slot (``server/app.py``'s
-``_store_state`` / ``_lifespan``) so the type contract and the producer stay
-together and no import cycle is introduced.
+keys live in the package that writes the slot (``CoreModule.contribute_state``
+/ the core drain lifespan in ``server/modules/core.py``) so the type contract
+and the producer stay together and no import cycle is introduced.
 
 The slot *names* are the exact attribute strings the current producers and
 consumers use against ``app.state``, so a later consumer migration (Story 34.2)

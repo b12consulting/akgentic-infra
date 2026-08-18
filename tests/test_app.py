@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Sequence
 from types import ModuleType
 
 import pytest
@@ -14,8 +15,8 @@ from fastapi.testclient import TestClient
 
 from akgentic.infra.server import app as app_module
 from akgentic.infra.server.app import create_app
+from akgentic.infra.server.assembly import AppModule
 from akgentic.infra.server.deps import CommunityServices, TierServices
-from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 
@@ -154,10 +155,10 @@ def test_policy_is_applied_before_routes_are_mounted(
     community_services: CommunityServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The policy is live by the time _build_app mounts the catalog routes.
+    """The policy is live by the time build_app mounts the catalog routes.
 
     Asserting the post-conditions of create_app is not enough: moving
-    set_allowed_prefixes below _build_app would leave every other test in this
+    set_allowed_prefixes below build_app would leave every other test in this
     section green while re-opening the window this ordering exists to close —
     a route accepting an Entry under the pre-application policy.
     """
@@ -166,17 +167,17 @@ def test_policy_is_applied_before_routes_are_mounted(
         catalog_model_type_prefixes=["acme."],
     )
     seen: list[tuple[str, ...]] = []
-    real_build_app = app_module._build_app
+    real_build_app = app_module.build_app
 
     def _spy(
-        services: TierServices,
-        team_service: TeamService,
         build_settings: ServerSettings,
+        services: TierServices,
+        modules: Sequence[AppModule],
     ) -> FastAPI:
         seen.append(allowed_prefixes())
-        return real_build_app(services, team_service, build_settings)
+        return real_build_app(build_settings, services, modules)
 
-    monkeypatch.setattr(app_module, "_build_app", _spy)
+    monkeypatch.setattr(app_module, "build_app", _spy)
     create_app(community_services, settings)
 
     assert seen == [("akgentic.", "acme.")]

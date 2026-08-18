@@ -3,10 +3,11 @@
 The FastAPI app is composed from an **explicit ordered list of modules**. Each
 module alters the app exclusively through a closed verb vocabulary —
 ``contribute_routes`` / ``contribute_middleware`` / ``contribute_allowlist`` /
-``contribute_exception_handlers`` / ``lifespan`` — and only :func:`build_app`
-ever touches the ``FastAPI`` object. No module (and no tier) calls
-``app.add_middleware``, ``app.include_router``, ``app.add_exception_handler``,
-or writes ``app.state`` outside its own lifespan.
+``contribute_exception_handlers`` / ``contribute_state`` / ``lifespan`` — and
+only :func:`build_app` ever touches the ``FastAPI`` object. No module (and no
+tier) calls ``app.add_middleware``, ``app.include_router``,
+``app.add_exception_handler``, or writes ``app.state`` outside builder-applied
+``contribute_state`` entries and its own lifespan.
 
 Key semantics, fixed here and nowhere else:
 
@@ -20,11 +21,15 @@ Key semantics, fixed here and nowhere else:
   simply listed before the module it overrides.
 - **Lifespans compose** via ``AsyncExitStack``: startup in module-list order,
   shutdown in reverse.
-- **State follows a single-writer rule**: exactly one module may list a key in
-  ``provides_state``. The builder validates at build time that no key has two
-  producers and that every middleware ``requires_state`` key has a producing
-  module, then re-verifies at the end of startup that every required key was
-  actually populated — a missed wire is a named startup crash, not an
+- **State follows a single-writer rule spanning two phases**: a key is written
+  either at build time (a ``contribute_state`` entry, applied by the builder
+  after routes so it is readable without a lifespan) or at startup (listed in
+  ``provides_state`` and populated by the declaring module's lifespan) — never
+  both, and never by two modules. The builder validates at build time that no
+  key has two producers across both phases and that every middleware
+  ``requires_state`` key has a producing module in either phase, then
+  re-verifies at the end of startup that every required key was actually
+  populated — a missed wire is a named startup crash, not an
   ``AttributeError`` on the first unlucky request.
 
 ``build_manifest`` snapshots a composed app's route table and middleware order;
@@ -36,7 +41,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from typing import Any, Final, Protocol, runtime_checkable
+from typing import Any, Final, Generic, Protocol, TypeVar, runtime_checkable
 
 from fastapi import APIRouter, FastAPI
 from pydantic import BaseModel, ConfigDict, Field, InstanceOf
@@ -45,6 +50,9 @@ from starlette.responses import Response
 
 from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.utils import StateKey
+
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +200,48 @@ class ExceptionHandlerSpec(BaseModel):
     )
 
 
+class ExceptionHandlerRegistrar(BaseModel):
+    """Builder-mediated exception-handler registration (the registrar form).
+
+    For handler families whose callables are package-private (the catalog's
+    ``add_exception_handlers``, infra's ``add_server_exception_handlers``),
+    decomposing into ``ExceptionHandlerSpec`` pairs would couple the module to
+    another package's private names. A registrar instead hands the builder the
+    package's own registration helper; the builder invokes it during
+    composition, in module-list order — the module never holds the app outside
+    ``lifespan``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    # Named ``install`` (not ``register``): pydantic warns that ``register``
+    # shadows a ``BaseModel`` attribute.
+    install: Callable[[FastAPI], None] = Field(
+        description="Registration helper the builder invokes on the composed app",
+    )
+
+
+class StateEntry(Generic[T]):  # noqa: UP046  # mirrors StateKey's ADR-030 classic Generic[T] form
+    """One build-time state contribution: a ``StateKey`` paired with its value.
+
+    Deliberately a plain generic class (``StateKey``'s own idiom), NOT a
+    Pydantic model: ``value`` carries live services (``TierServices``,
+    ``TeamService``) that have no serialized form. The key/value pairing is
+    mypy-checked at the construction site through the shared ``T`` exactly as
+    ``key.set(app, value)`` would be — no ``object``-typed mapping, no cast.
+    """
+
+    __slots__ = ("key", "value")
+
+    def __init__(self, key: StateKey[T], value: T) -> None:
+        self.key = key
+        self.value = value
+
+    def apply(self, app: FastAPI) -> None:
+        """Write ``value`` into ``key``'s ``app.state`` slot (builder-invoked)."""
+        self.key.set(app, self.value)
+
+
 # --- The module contract --- #
 
 
@@ -199,9 +249,11 @@ class ExceptionHandlerSpec(BaseModel):
 class AppModule(Protocol):
     """The only legal way anything alters the app — a closed verb vocabulary.
 
-    The vocabulary is CLOSED: exactly the five contribution verbs plus ``name``
+    The vocabulary is CLOSED: exactly the six contribution verbs plus ``name``
     and ``provides_state``. A module that needs anything else is a
-    contract-change discussion, not a workaround.
+    contract-change discussion, not a workaround. No module writes
+    ``app.state`` outside builder-applied ``contribute_state`` entries and its
+    own lifespan.
     """
 
     name: str
@@ -222,8 +274,14 @@ class AppModule(Protocol):
         """Return paths this module needs reachable without a principal."""
         ...
 
-    def contribute_exception_handlers(self) -> list[ExceptionHandlerSpec]:
+    def contribute_exception_handlers(
+        self,
+    ) -> list[ExceptionHandlerSpec | ExceptionHandlerRegistrar]:
         """Return exception handlers to register, in contribution order."""
+        ...
+
+    def contribute_state(self) -> Sequence[StateEntry[Any]]:
+        """Return build-time state entries, applied by the builder after routes."""
         ...
 
     def lifespan(self, app: FastAPI) -> AbstractAsyncContextManager[None]:
@@ -253,8 +311,14 @@ class BaseAppModule:
         """Contribute an empty allowlist."""
         return AllowlistSpec()
 
-    def contribute_exception_handlers(self) -> list[ExceptionHandlerSpec]:
+    def contribute_exception_handlers(
+        self,
+    ) -> list[ExceptionHandlerSpec | ExceptionHandlerRegistrar]:
         """Contribute no exception handlers."""
+        return []
+
+    def contribute_state(self) -> Sequence[StateEntry[Any]]:
+        """Contribute no build-time state."""
         return []
 
     @asynccontextmanager
@@ -307,7 +371,13 @@ def build_app(
     - **Exception handlers** register in module-list order. Starlette keeps
       handlers in a per-exception-class dict, so when two modules register a
       handler for the *same* exception class the later module's handler wins
-      (last-wins, plain Starlette semantics).
+      (last-wins, plain Starlette semantics). ``ExceptionHandlerRegistrar``
+      contributions are invoked in place, preserving the same order.
+    - **Build-time state entries** apply after routes and exception handlers,
+      before middleware registration (pinned here; no request exists before
+      return, so any post-route point is behaviorally equivalent) — module-list
+      order, each module's entries in contribution order — so contributed
+      state is readable without a lifespan.
 
     Args:
         settings: The tier's server settings. Threaded for a uniform tier
@@ -324,11 +394,13 @@ def build_app(
 
     Raises:
         DuplicateModuleNameError: Two modules share a ``name``.
-        DuplicateStateProviderError: Two modules provide the same state key.
+        DuplicateStateProviderError: Two modules provide the same state key,
+            in either phase or across the two.
         MissingStateProviderError: A ``requires_state`` key has no producer.
     """
     module_list = list(modules)
-    providers = _validate_composition(module_list)
+    contributions = [list(module.contribute_state()) for module in module_list]
+    providers = _validate_composition(module_list, contributions)
     context = BuildContext(allowlist=_merge_allowlists(module_list))
     ordered = _collect_middleware(module_list, context)
     requirements = _validate_required_state(ordered, providers)
@@ -338,6 +410,7 @@ def build_app(
     )
     _mount_routes(app, module_list)
     _register_exception_handlers(app, module_list)
+    _apply_state_entries(app, contributions)
     # Middleware are added strictly AFTER all routes so an APPLICATION-layer
     # middleware wraps every mounted response (mutation-log requirement).
     _add_middleware(app, ordered)
@@ -349,11 +422,18 @@ def build_app(
     return app
 
 
-def _validate_composition(modules: list[AppModule]) -> dict[str, str]:
+def _validate_composition(
+    modules: list[AppModule],
+    contributions: list[list[StateEntry[Any]]],
+) -> dict[str, str]:
     """Reject duplicate module names and duplicate state producers (build time).
 
+    The single-writer namespace spans both phases: a key may be written by
+    exactly one ``contribute_state`` entry OR one ``provides_state``
+    declaration, never twice in either phase and never once in each.
+
     Returns:
-        Mapping of each provided state key to its single producing module.
+        Mapping of each state key (both phases) to its single producing module.
     """
     names: set[str] = set()
     for module in modules:
@@ -363,6 +443,14 @@ def _validate_composition(modules: list[AppModule]) -> dict[str, str]:
             )
         names.add(module.name)
     providers: dict[str, str] = {}
+    for module, entries in zip(modules, contributions, strict=True):
+        for entry in entries:
+            if entry.key.name in providers:
+                raise DuplicateStateProviderError(
+                    f"state key '{entry.key.name}' has two producers: "
+                    f"modules '{providers[entry.key.name]}' and '{module.name}'"
+                )
+            providers[entry.key.name] = module.name
     for module in modules:
         for key in module.provides_state:
             if key in providers:
@@ -470,10 +558,25 @@ def _mount_routes(app: FastAPI, modules: list[AppModule]) -> None:
 
 
 def _register_exception_handlers(app: FastAPI, modules: list[AppModule]) -> None:
-    """Register handlers in module-list order (same-class re-registration: last wins)."""
+    """Register handlers in module-list order (same-class re-registration: last wins).
+
+    ``ExceptionHandlerRegistrar`` contributions are invoked in place, so a
+    registrar's registrations interleave with sibling ``ExceptionHandlerSpec``
+    contributions exactly in contribution order.
+    """
     for module in modules:
         for spec in module.contribute_exception_handlers():
-            app.add_exception_handler(spec.exception_class, spec.handler)
+            if isinstance(spec, ExceptionHandlerRegistrar):
+                spec.install(app)
+            else:
+                app.add_exception_handler(spec.exception_class, spec.handler)
+
+
+def _apply_state_entries(app: FastAPI, contributions: list[list[StateEntry[Any]]]) -> None:
+    """Apply build-time state entries: module-list order, contribution order within."""
+    for entries in contributions:
+        for entry in entries:
+            entry.apply(app)
 
 
 def _add_middleware(app: FastAPI, ordered: list[_OrderedMiddleware]) -> None:

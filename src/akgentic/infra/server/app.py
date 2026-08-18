@@ -5,57 +5,51 @@ Per ADR-023: the ``/admin/catalog/*`` HTTP surface IS the v2 unified router
 as a FastAPI dependency. The catalog package itself owns request/response
 validation, error mapping, and CRUD semantics; infra owns only the mount
 point, the auth gate, and the structured mutation log middleware — all of
-which now live in ``CoreModule`` (ADR-039, epic 57).
+which live in ``CoreModule`` (ADR-039, epic 57).
 
-``create_app`` is the community tier's entry point: process-global pre-steps
-(logging, catalog prefix policy), ``TeamService`` construction and ingestion
-wiring, then composition of ``CoreModule`` through the modular ``build_app``
-builder, plus the wrapper-level legacy responsibilities documented on
-``_build_app``.
+Uniform tier bootstrap (ADR-039 §5): :func:`server_modules` declares the
+community composition (the ONE place it exists — tiers append their modules
+to it), :func:`create_server_app` is the settings-only factory a bare
+``uvicorn --factory`` target can call, and :func:`create_app` is the
+pre-wired-services entry point carrying the assembly sequence exactly once —
+process-global pre-steps (logging, catalog prefix policy), the community-only
+ingestion backref, then ``build_app``. ``CoreModule`` is self-contained:
+state, exception handlers, and the drain lifespan are its contributions, and
+nothing mutates the app after ``build_app`` returns.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 
 from akgentic.catalog import allowed_prefixes, set_allowed_prefixes
-from akgentic.catalog.api import add_exception_handlers
-from akgentic.infra.server.assembly import build_app
+from akgentic.infra.server.assembly import AppModule, build_app
 from akgentic.infra.server.deps import TierServices
-from akgentic.infra.server.errors import add_server_exception_handlers
 from akgentic.infra.server.logging_config import configure_logging
 from akgentic.infra.server.modules import CoreModule
-from akgentic.infra.server.routes.ws import ConnectionManager, shutdown_reader_pool
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.infra.server.settings import ServerSettings
-from akgentic.infra.server.state_keys import (
-    CHANNEL_PARSERS,
-    CHANNEL_REGISTRY,
-    CONNECTION_MANAGER,
-    DRAINING,
-    INGESTION,
-    SERVICES,
-    SETTINGS,
-    TEAM_SERVICE,
-)
+from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 logger = logging.getLogger(__name__)
+
+
+def server_modules(services: TierServices, settings: ServerSettings) -> list[AppModule]:
+    """Declare the community composition: ``CoreModule`` alone.
+
+    The one place the community module list exists. Tier assembly functions
+    build their lists around it — hence the deliberately wide
+    ``list[AppModule]`` return type.
+    """
+    return [CoreModule(services=services, settings=settings)]
 
 
 def create_app(
     services: TierServices,
     settings: ServerSettings | None = None,
 ) -> FastAPI:
-    """Create and configure the FastAPI application.
-
-    Entry-point factory: constructs ``TeamService``, completes deferred
-    ``LocalIngestion`` wiring, and composes the app from ``CoreModule``.
+    """Create and configure the FastAPI application from pre-wired services.
 
     Args:
         services: Pre-wired tier services container.
@@ -69,17 +63,31 @@ def create_app(
     logger.info("Logging configured: level=%s", settings.log_level)
     # Make the passed settings authoritative over the catalog's own lazy read of
     # AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES, before any route can accept an entry.
-    # Deliberately here and not in ``_build_app``: that is the shared test-facing
-    # assembler and must not acquire a process-global side effect.
+    # Deliberately a process-global pre-step of this wrapper, never a build_app
+    # concern: the shared assembler must not acquire a process-global side effect.
     set_allowed_prefixes(settings.catalog_model_type_prefixes)
     logger.info("Catalog model_type allowlist: %s", allowed_prefixes())
-    # ``workspaces_root`` is declared on ``CommunitySettings``; base
-    # ``ServerSettings`` callers fall back to the same default the field
-    # declares so ``TeamService`` always has a valid FS-cleanup root.
-    workspaces_root = getattr(settings, "workspaces_root", Path("workspaces"))
-    team_service = TeamService(services, workspaces_root=workspaces_root)
-    _wire_ingestion(services, team_service)
-    return _build_app(services, team_service, settings)
+    modules = server_modules(services, settings)
+    core = next(m for m in modules if isinstance(m, CoreModule))
+    _wire_ingestion(services, core.team_service)
+    return build_app(settings, services, modules)
+
+
+def create_server_app(settings: CommunitySettings | None = None) -> FastAPI:
+    """Settings-only community factory: default settings, wire, compose.
+
+    The uniform tier-bootstrap entry point (department and enterprise expose
+    the same name). Constructs the default settings itself so a bare
+    ``uvicorn --factory`` target works, wires the community services, then
+    delegates to :func:`create_app` — the assembly sequence exists once.
+    """
+    # Function-local: ``wiring`` reaches back into server internals
+    # (auth_loader → adapters), so a module-level import here is circular.
+    from akgentic.infra.wiring import wire_community
+
+    settings = settings or CommunitySettings()
+    services = wire_community(settings)
+    return create_app(services, settings)
 
 
 def _wire_ingestion(services: TierServices, team_service: TeamService) -> None:
@@ -96,106 +104,3 @@ def _wire_ingestion(services: TierServices, team_service: TeamService) -> None:
 
     if isinstance(services.ingestion, LocalIngestion):
         services.ingestion.team_service = team_service
-
-
-@asynccontextmanager
-async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Lifespan handler implementing the ADR-013 graceful shutdown sequence.
-
-    Invoked through ``CoreModule.lifespan`` (the composed app's only lifespan
-    contributor); the implementation stays in this module so the drain
-    collaborators (``shutdown_reader_pool``, ``logger``) keep their
-    long-standing patch targets.
-
-    Startup: sets ``app.state.draining = False``.
-    Shutdown: sets draining flag, waits pre-drain delay, disconnects all
-    WebSocket clients, then stops all teams via ``worker_handle.stop_all()``.
-    """
-    DRAINING.set(app, value=False)
-    logger.info("Lifespan startup: draining=False")
-    yield
-    # --- Shutdown sequence (ADR-013 Decision 2) ---
-    DRAINING.set(app, value=True)
-    logger.info("Lifespan shutdown: draining=True")
-
-    delay = SETTINGS.require(app).shutdown_pre_drain_delay
-    if delay > 0:
-        logger.info("Pre-drain delay: sleeping %ds", delay)
-        await asyncio.sleep(delay)
-
-    logger.info("Disconnecting all WebSocket clients")
-    await CONNECTION_MANAGER.require(app).disconnect_all()
-
-    timeout = SETTINGS.require(app).shutdown_drain_timeout
-    logger.info("Stopping all teams (timeout=%ds)", timeout)
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(SERVICES.require(app).worker_handle.stop_all),
-            timeout=timeout,
-        )
-        logger.info("stop_all() completed successfully")
-    except TimeoutError:
-        logger.warning(
-            "stop_all() exceeded shutdown_drain_timeout=%ds, proceeding with exit",
-            timeout,
-        )
-
-    # Shut down the dedicated WS reader thread pool — see issue #227.
-    shutdown_reader_pool()
-    logger.info("WebSocket reader pool shut down")
-
-
-def _build_app(
-    services: TierServices,
-    team_service: TeamService,
-    settings: ServerSettings,
-) -> FastAPI:
-    """Assemble the app over the modular builder (shared by create_app and tests).
-
-    Composes ``CoreModule`` through ``build_app``, then applies the wrapper
-    responsibilities that deliberately stay OUTSIDE the module contract
-    (Story 57.2 adjudicated exemptions):
-
-    - ``_store_state`` populates the community state keys at **build time**,
-      exactly as before, so non-lifespan test clients keep working
-      (``CoreModule``'s lifespan writes only ``draining``);
-    - exception handlers register through the two package helpers because
-      their handler callables are package-private, not cleanly expressible as
-      ``ExceptionHandlerSpec`` pairs.
-
-    Args:
-        services: Wired tier services container.
-        team_service: Pre-built team service.
-        settings: Server settings.
-
-    Returns:
-        Configured FastAPI application instance.
-    """
-    app = build_app(settings, services, [CoreModule(services=services, settings=settings)])
-    _store_state(app, services, team_service, settings)
-    add_exception_handlers(app)
-    add_server_exception_handlers(app)
-    return app
-
-
-def _store_state(
-    app: FastAPI,
-    services: TierServices,
-    team_service: TeamService,
-    settings: ServerSettings,
-) -> None:
-    """Store services and configuration on app.state for dependency injection."""
-    SERVICES.set(app, services)
-    TEAM_SERVICE.set(app, team_service)
-    SETTINGS.set(app, settings)
-    CONNECTION_MANAGER.set(app, ConnectionManager())
-    # ``channel_parser_registry`` is optional on the services container (only the
-    # community tier declares it). CHANNEL_PARSERS is a required key, so the slot
-    # is only set when the services container actually exposes a registry; a tier
-    # without one leaves the slot unset and any webhook request fails loud
-    # (``require()`` → LookupError → 500) instead of reading back a silent None.
-    channel_parsers = getattr(services, "channel_parser_registry", None)
-    if channel_parsers is not None:
-        CHANNEL_PARSERS.set(app, channel_parsers)
-    CHANNEL_REGISTRY.set(app, services.channel_registry)
-    INGESTION.set(app, services.ingestion)

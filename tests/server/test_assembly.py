@@ -12,8 +12,9 @@ receive what they need at construction time — so the tests pass a default
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from typing import Any
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request
@@ -34,10 +35,12 @@ from akgentic.infra.server.assembly import (
     BuildContext,
     DuplicateModuleNameError,
     DuplicateStateProviderError,
+    ExceptionHandlerRegistrar,
     ExceptionHandlerSpec,
     MiddlewareSpec,
     MissingStateProviderError,
     RouteSpec,
+    StateEntry,
     UnpopulatedStateError,
     build_app,
     build_manifest,
@@ -593,3 +596,113 @@ class TestContractSurface:
         # "/auth/" appears once (auth module contributed it first), then "/extra/".
         assert capturing.captured.allowlist.prefixes == ("/auth/", "/extra/")
         assert "/readiness" in capturing.captured.allowlist.exact
+
+
+_BUILD_TIME: StateKey[object] = StateKey("build_time_slot", required=True)
+
+
+class _BuildTimeStateModule(BaseAppModule):
+    """Contributes one build-time state entry through the typed StateEntry pair."""
+
+    name = "build-time-state"
+
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def contribute_state(self) -> Sequence[StateEntry[Any]]:
+        return [_BUILD_TIME.entry(self._value)]
+
+
+class TestContributeState:
+    """AC 3 (Story 57.5): build-time state entries and the two-phase single-writer rule."""
+
+    def test_entry_readable_immediately_after_build_without_lifespan(self) -> None:
+        sentinel = object()
+        app = _build([_CoreModule(), _BuildTimeStateModule(sentinel)])
+        # No TestClient, no lifespan — the builder applied the entry at build time.
+        assert _BUILD_TIME.require(app) is sentinel
+
+    def test_two_build_time_writers_rejected(self) -> None:
+        class _SecondWriter(BaseAppModule):
+            name = "second-writer"
+
+            def contribute_state(self) -> Sequence[StateEntry[Any]]:
+                return [_BUILD_TIME.entry(object())]
+
+        with pytest.raises(
+            DuplicateStateProviderError,
+            match="build_time_slot.*build-time-state.*second-writer",
+        ):
+            _build([_BuildTimeStateModule(object()), _SecondWriter()])
+
+    def test_build_time_key_clashing_with_lifespan_provider_rejected(self) -> None:
+        class _LifespanWriter(BaseAppModule):
+            name = "lifespan-writer"
+            provides_state = ("build_time_slot",)
+
+        with pytest.raises(
+            DuplicateStateProviderError,
+            match="build_time_slot.*build-time-state.*lifespan-writer",
+        ):
+            _build([_BuildTimeStateModule(object()), _LifespanWriter()])
+
+    def test_same_module_writing_both_phases_rejected(self) -> None:
+        class _BothPhasesModule(BaseAppModule):
+            name = "both-phases"
+            provides_state = ("build_time_slot",)
+
+            def contribute_state(self) -> Sequence[StateEntry[Any]]:
+                return [_BUILD_TIME.entry(object())]
+
+        with pytest.raises(
+            DuplicateStateProviderError,
+            match="build_time_slot.*both-phases.*both-phases",
+        ):
+            _build([_BothPhasesModule()])
+
+    def test_requires_state_satisfied_by_build_time_entry(self) -> None:
+        class _BuildTimeRequirer(BaseAppModule):
+            name = "build-time-requirer"
+
+            def contribute_middleware(self, context: BuildContext) -> list[MiddlewareSpec]:
+                return [
+                    MiddlewareSpec(
+                        middleware_class=_NoopMiddleware,
+                        layer=POLICY,
+                        requires_state=(_BUILD_TIME.name,),
+                    )
+                ]
+
+        # Build-time validation passes (the entry is the producer) AND startup
+        # verification passes (the slot is populated before startup runs).
+        modules: list[BaseAppModule] = [_BuildTimeStateModule(object()), _BuildTimeRequirer()]
+        with TestClient(_build(modules)):
+            pass
+
+
+class TestExceptionHandlerRegistrarForm:
+    """AC 3 (Story 57.5): the builder-mediated registrar handler form."""
+
+    def test_registrar_invoked_by_builder_and_never_outside_composition(self) -> None:
+        installed: list[FastAPI] = []
+
+        def _install(app: FastAPI) -> None:
+            installed.append(app)
+            app.add_exception_handler(_DemoError, _first_handler)
+
+        class _RegistrarModule(_RaisingModule):
+            name = "registrar"
+
+            def contribute_exception_handlers(
+                self,
+            ) -> list[ExceptionHandlerSpec | ExceptionHandlerRegistrar]:
+                return [ExceptionHandlerRegistrar(install=_install)]
+
+        module = _RegistrarModule()
+        assert installed == []  # never invoked before/outside composition
+        app = _build([module])
+        assert installed == [app]  # invoked exactly once, by the builder, on the composed app
+        with TestClient(app) as client:
+            response = client.get("/boom")
+            assert response.status_code == 418
+            assert response.json() == {"handler": "first"}
