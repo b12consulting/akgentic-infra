@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Sequence
 from types import ModuleType
 
 import pytest
@@ -13,10 +14,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from akgentic.infra.server import app as app_module
-from akgentic.infra.server.app import create_app
+from akgentic.infra.server.app import create_app, create_server_app
+from akgentic.infra.server.assembly import AppModule, build_manifest
 from akgentic.infra.server.deps import CommunityServices, TierServices
-from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
+from akgentic.infra.server.state_keys import SERVICES, SETTINGS
 
 
 def test_create_app_returns_fastapi(
@@ -63,6 +65,48 @@ def test_custom_cors_origins(
         },
     )
     assert resp.headers.get("access-control-allow-origin") == "http://example.com"
+
+
+# ---------------------------------------------------------------------------
+# create_server_app — the uniform tier-bootstrap factory (Story 57.5, AC 5)
+# ---------------------------------------------------------------------------
+
+
+def test_create_server_app_wires_services_and_delegates_to_create_app(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+) -> None:
+    """create_server_app wires its own CommunityServices, then delegates.
+
+    The composed app carries the passed settings and a freshly wired services
+    container, and is manifest-identical to the pre-wired-services entry
+    point's app — the assembly sequence exists once, in create_app.
+    """
+    app = create_server_app(seeded_settings)
+    services = SERVICES.require(app)
+    assert isinstance(services, CommunityServices)
+    try:
+        assert SETTINGS.require(app) is seeded_settings
+        assert services is not community_services  # wired by the factory, not reused
+        reference = create_app(community_services, seeded_settings)
+        assert build_manifest(app) == build_manifest(reference)
+    finally:
+        services.actor_system.shutdown()
+
+
+def test_create_server_app_constructs_default_settings_for_a_bare_factory_target(
+    seeded_settings: CommunitySettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-argument call builds CommunitySettings itself (the --factory contract)."""
+    monkeypatch.setattr(app_module, "CommunitySettings", lambda: seeded_settings)
+    app = create_server_app()
+    services = SERVICES.require(app)
+    assert isinstance(services, CommunityServices)
+    try:
+        assert SETTINGS.require(app) is seeded_settings
+    finally:
+        services.actor_system.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -134,9 +178,10 @@ def test_boot_log_names_the_effective_prefix_tuple(
     )
     app_logger = logging.getLogger("akgentic.infra.server.app")
     caplog.set_level(logging.INFO, logger=app_logger.name)
-    # create_app calls configure_logging(), which replaces the ROOT logger's
-    # handlers wholesale — dropping caplog's own handler mid-call. Attaching it
-    # to the module logger instead keeps the boot line captured.
+    # Attaching caplog's handler to the module logger keeps the boot line
+    # captured independently of the ROOT logger's handler set — historically
+    # configure_logging() replaced root handlers wholesale mid-call; since
+    # story 57.7 it is additive, but this test stays decoupled either way.
     app_logger.addHandler(caplog.handler)
     try:
         create_app(community_services, settings)
@@ -154,10 +199,10 @@ def test_policy_is_applied_before_routes_are_mounted(
     community_services: CommunityServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The policy is live by the time _build_app mounts the catalog routes.
+    """The policy is live by the time build_app mounts the catalog routes.
 
     Asserting the post-conditions of create_app is not enough: moving
-    set_allowed_prefixes below _build_app would leave every other test in this
+    set_allowed_prefixes below build_app would leave every other test in this
     section green while re-opening the window this ordering exists to close —
     a route accepting an Entry under the pre-application policy.
     """
@@ -166,17 +211,17 @@ def test_policy_is_applied_before_routes_are_mounted(
         catalog_model_type_prefixes=["acme."],
     )
     seen: list[tuple[str, ...]] = []
-    real_build_app = app_module._build_app
+    real_build_app = app_module.build_app
 
     def _spy(
-        services: TierServices,
-        team_service: TeamService,
         build_settings: ServerSettings,
+        services: TierServices,
+        modules: Sequence[AppModule],
     ) -> FastAPI:
         seen.append(allowed_prefixes())
-        return real_build_app(services, team_service, build_settings)
+        return real_build_app(build_settings, services, modules)
 
-    monkeypatch.setattr(app_module, "_build_app", _spy)
+    monkeypatch.setattr(app_module, "build_app", _spy)
     create_app(community_services, settings)
 
     assert seen == [("akgentic.", "acme.")]

@@ -27,8 +27,10 @@ from pydantic_ai.models.test import TestModel
 from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
-from akgentic.infra.server.app import _build_app, create_app
+from akgentic.infra.server.app import create_app
+from akgentic.infra.server.assembly import build_app
 from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.modules import CoreModule
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
@@ -126,13 +128,10 @@ def integration_services(
 @pytest.fixture()
 def integration_team_service(
     integration_services: CommunityServices,
-    integration_settings: CommunitySettings,
 ) -> TeamService:
-    """TeamService wired to integration services."""
-    return TeamService(
-        services=integration_services,
-        workspaces_root=integration_settings.workspaces_root,
-    )
+    """The wired TeamService carried by the integration services container."""
+    assert integration_services.team_service is not None
+    return integration_services.team_service
 
 
 @pytest.fixture()
@@ -149,43 +148,6 @@ def integration_app(
 def integration_client(integration_app: FastAPI) -> TestClient:
     """Sync HTTP test client hitting a real FastAPI app."""
     return TestClient(integration_app)
-
-
-# ---------------------------------------------------------------------------
-# V1 Adapter Fixtures
-# ---------------------------------------------------------------------------
-
-V1_ADAPTER_FQDN = "akgentic.infra.server.routes.frontend_adapter.angular_v1.AngularV1Adapter"
-
-
-@pytest.fixture()
-def v1_adapter_settings(tmp_path: Path) -> CommunitySettings:
-    """CommunitySettings with V1 frontend adapter enabled."""
-    settings = CommunitySettings(
-        workspaces_root=tmp_path / "workspaces",
-        event_store_path=tmp_path / "event_store",
-        catalog_path=tmp_path / "catalog",
-        frontend_adapter=V1_ADAPTER_FQDN,
-    )
-    seed_integration_catalog(settings.catalog_path)
-    return settings
-
-
-@pytest.fixture()
-def v1_adapter_app(
-    v1_adapter_settings: CommunitySettings,
-) -> Generator[FastAPI, None, None]:
-    """FastAPI app with V1 frontend adapter loaded."""
-    services = wire_community(v1_adapter_settings)
-    application = create_app(services, v1_adapter_settings)
-    yield application
-    services.actor_system.shutdown()
-
-
-@pytest.fixture()
-def v1_adapter_client(v1_adapter_app: FastAPI) -> TestClient:
-    """Sync HTTP test client hitting a V1-adapter-enabled FastAPI app."""
-    return TestClient(v1_adapter_app)
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +194,6 @@ def channel_ingestion(
 @pytest.fixture()
 def channel_app(
     integration_services: CommunityServices,
-    integration_team_service: TeamService,
     integration_settings: CommunitySettings,
     channel_parser_registry: ChannelParserRegistry,
     channel_registry_instance: YamlChannelRegistry,
@@ -240,15 +201,18 @@ def channel_app(
 ) -> FastAPI:
     """FastAPI app with webhook wiring for channel integration tests.
 
-    Uses _build_app with overridden channel deps on the services container.
+    Composes ``CoreModule`` directly through ``build_app`` with overridden
+    channel deps on the services container — deliberately NOT ``create_app``,
+    which would re-run the process-global pre-steps (logging, catalog prefix
+    policy) this fixture does not want.
     """
     integration_services.channel_parser_registry = channel_parser_registry
     integration_services.channel_registry = channel_registry_instance
     integration_services.ingestion = channel_ingestion
-    return _build_app(
-        integration_services,
-        integration_team_service,
+    return build_app(
         integration_settings,
+        integration_services,
+        [CoreModule(services=integration_services, settings=integration_settings)],
     )
 
 

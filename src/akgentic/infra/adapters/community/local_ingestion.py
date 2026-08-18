@@ -25,9 +25,10 @@ class LocalIngestion:
 
     Deferred wiring pattern:
         ``team_service`` is ``None`` at construction because
-        ``wire_community()`` must return ``CommunityServices`` before
+        ``wire_community()`` must build ``CommunityServices`` before
         ``TeamService`` exists (TeamService requires CommunityServices).
-        The setter is called later by ``_wire_ingestion`` in ``app.py``.
+        ``wire_community`` calls the setter itself once the container is
+        complete, so the instance it returns is already bound.
         Enterprise implementations won't use this pattern — their ingestion
         adapters communicate over the network and are fully wired at
         construction time.

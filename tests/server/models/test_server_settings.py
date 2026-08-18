@@ -26,11 +26,6 @@ class TestServerSettingsDefaults:
         settings = ServerSettings()
         assert settings.port == 8000
 
-    def test_default_frontend_adapter(self) -> None:
-        """Default frontend_adapter is None."""
-        settings = ServerSettings()
-        assert settings.frontend_adapter is None
-
     def test_no_workspaces_root_on_base(self) -> None:
         """ServerSettings does not have workspaces_root (community-specific)."""
         assert "workspaces_root" not in ServerSettings.model_fields
@@ -57,14 +52,21 @@ class TestServerSettingsEnvOverride:
         finally:
             del os.environ["AKGENTIC_PORT"]
 
-    def test_frontend_adapter_from_env(self) -> None:
-        """AKGENTIC_FRONTEND_ADAPTER overrides frontend_adapter field."""
-        os.environ["AKGENTIC_FRONTEND_ADAPTER"] = "my.adapter.Class"
-        try:
-            settings = ServerSettings()
-            assert settings.frontend_adapter == "my.adapter.Class"
-        finally:
-            del os.environ["AKGENTIC_FRONTEND_ADAPTER"]
+    def test_stray_frontend_adapter_env_is_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A leftover AKGENTIC_FRONTEND_ADAPTER env var can never break boot.
+
+        The frontend-adapter plugin system is removed. pydantic-settings
+        ignores unknown env keys by default (``extra="ignore"``), so an
+        operator's stale variable must neither reject construction nor
+        surface as an attribute — on the base settings or the community
+        subclass. This pins that a future ``extra="forbid"`` hardening
+        cannot silently break operators' environments.
+        """
+        monkeypatch.setenv("AKGENTIC_FRONTEND_ADAPTER", "my.adapter.Class")
+        for settings in (ServerSettings(), CommunitySettings()):
+            assert not hasattr(settings, "frontend_adapter")
 
 
 class TestServerSettingsLogLevel:
@@ -141,7 +143,6 @@ class TestSettingsHierarchy:
             "port",
             "log_level",
             "cors_origins",
-            "frontend_adapter",
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "ws_reader_pool_size",

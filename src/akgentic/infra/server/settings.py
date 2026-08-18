@@ -56,10 +56,6 @@ class ServerSettings(BaseSettings):
             return "INFO"
         return upper
 
-    frontend_adapter: str | None = Field(
-        default=None,
-        description="FQDN for frontend adapter plugin class",
-    )
     # Community-tier permissive default. Department/enterprise tiers must
     # override with explicit origins in their environment configuration.
     # Set to [] to disable the CORS middleware entirely — useful when an

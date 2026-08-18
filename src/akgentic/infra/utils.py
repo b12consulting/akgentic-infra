@@ -11,10 +11,13 @@ it and receive a typed object — no ``cast``, no string literal at the call sit
 
 from __future__ import annotations
 
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from fastapi import FastAPI, Request, WebSocket
 from starlette.datastructures import State
+
+if TYPE_CHECKING:
+    from akgentic.infra.server.assembly import StateEntry
 
 T = TypeVar("T")
 
@@ -58,6 +61,19 @@ class StateKey(Generic[T]):  # noqa: UP046  # ADR-030 pins the classic Generic[T
                 raise LookupError(f"app.state.{self.name} is not set")
             return self.default
         return value  # type: ignore[no-any-return]  # invariant: only set() writes this slot
+
+    def entry(self, value: T) -> StateEntry[T]:
+        """Pair this key with a build-time value as a ``StateEntry`` contribution.
+
+        ``SERVICES.entry(services)`` is mypy-checked through the shared ``T``
+        exactly as ``SERVICES.set(app, services)`` would be. Imported at call
+        time: ``StateEntry`` lives in ``server.assembly``, and a generic util
+        importing server assembly at module level would be a layering
+        inversion (no cycle exists today, but the direction is wrong).
+        """
+        from akgentic.infra.server.assembly import StateEntry
+
+        return StateEntry(key=self, value=value)
 
     def require(self, source: FastAPI | Request | WebSocket) -> T:
         """Return the slot's value, raising ``LookupError`` if it is missing.

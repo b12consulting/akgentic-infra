@@ -23,7 +23,6 @@ from akgentic.core.messages import Message
 from akgentic.infra.protocols.authz import TeamAccessContext
 from akgentic.infra.protocols.event_stream import StreamClosed, StreamReader
 from akgentic.infra.server.auth import get_request_user
-from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.models import TeamStatus
 
@@ -206,15 +205,11 @@ async def websocket_events(websocket: WebSocket, team_id: uuid.UUID) -> None:
     conn_mgr.track(websocket)
     logger.info("WebSocket connected: team_id=%s", team_id)
 
-    from akgentic.infra.server.state_keys import FRONTEND_ADAPTER
-
-    adapter = FRONTEND_ADAPTER.get(websocket)
-
     try:
         if process.status == TeamStatus.RUNNING:
-            await _run_streaming_loop(websocket, service, team_id, conn_mgr, adapter)
+            await _run_streaming_loop(websocket, service, team_id, conn_mgr)
         else:
-            await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
+            await _run_idle_loop(websocket, team_id, conn_mgr, service)
     finally:
         conn_mgr.untrack(websocket)
 
@@ -224,7 +219,6 @@ async def _run_streaming_loop(
     service: TeamService,
     team_id: uuid.UUID,
     conn_mgr: ConnectionManager,
-    adapter: FrontendAdapter | None = None,
 ) -> None:
     """Subscribe to EventStream and forward events over WebSocket.
 
@@ -241,30 +235,25 @@ async def _run_streaming_loop(
     except StreamClosed:
         logger.debug("Stream already closed for team %s, entering idle loop", team_id)
         conn_mgr.clear_restored(team_id)
-        await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
+        await _run_idle_loop(websocket, team_id, conn_mgr, service)
         return
 
-    stream_closed = await _supervise_stream(websocket, reader, adapter, team_id)
+    stream_closed = await _supervise_stream(websocket, reader, team_id)
 
     if stream_closed:
         logger.debug("StreamClosed for team %s, transitioning to idle loop", team_id)
         conn_mgr.clear_restored(team_id)
-        await _run_idle_loop(websocket, team_id, conn_mgr, service, adapter)
+        await _run_idle_loop(websocket, team_id, conn_mgr, service)
 
 
 async def _send_event(
     websocket: WebSocket,
     event: Message,
-    adapter: FrontendAdapter | None,
     team_id: uuid.UUID,
 ) -> None:
     """Serialize and forward a single event, logging and skipping on failure."""
     try:
-        if adapter is not None:
-            wrapped = adapter.wrap_ws_event(event)
-            await websocket.send_text(wrapped.model_dump_json())
-        else:
-            await websocket.send_text(event.model_dump_json())
+        await websocket.send_text(event.model_dump_json())
         logger.debug("Event forwarded to client: team_id=%s", team_id)
     except WebSocketDisconnect:
         raise
@@ -281,7 +270,6 @@ async def _await_and_suppress(task: asyncio.Task[None]) -> None:
 async def _supervise_stream(
     websocket: WebSocket,
     reader: StreamReader,
-    adapter: FrontendAdapter | None,
     team_id: uuid.UUID,
 ) -> bool:
     """Race ``pump`` against ``watch_disconnect`` until one finishes.
@@ -307,7 +295,7 @@ async def _supervise_stream(
                 event = await loop.run_in_executor(pool, reader.read_next, 0.5)
                 if event is None:
                     continue
-                await _send_event(websocket, event, adapter, team_id)
+                await _send_event(websocket, event, team_id)
         except StreamClosed:
             stream_closed = True
 
@@ -344,7 +332,6 @@ async def _run_idle_loop(
     team_id: uuid.UUID,
     conn_mgr: ConnectionManager,
     service: TeamService,
-    adapter: FrontendAdapter | None = None,
 ) -> None:
     """Wait for team restore or client disconnect.
 
@@ -360,7 +347,7 @@ async def _run_idle_loop(
                 await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
             except TimeoutError:
                 if conn_mgr.is_restored(team_id):
-                    await _run_streaming_loop(websocket, service, team_id, conn_mgr, adapter)
+                    await _run_streaming_loop(websocket, service, team_id, conn_mgr)
                     return
             except WebSocketDisconnect:
                 return

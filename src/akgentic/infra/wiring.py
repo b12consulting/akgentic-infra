@@ -17,6 +17,7 @@ from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSu
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.server.auth_loader import load_auth_strategy
 from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import NullServiceRegistry
@@ -28,8 +29,10 @@ logger = logging.getLogger(__name__)
 def wire_community(settings: CommunitySettings) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
 
-    ``LocalIngestion`` is created with deferred ``team_service`` wiring —
-    callers must set ``ingestion.team_service`` after constructing ``TeamService``.
+    The container is returned fully wired: ``TeamService`` is constructed here
+    (it needs the finished container) and the ``LocalIngestion`` back-reference
+    is bound here too — the one two-phase bind, owned by the layer that owns
+    services. No caller has any wiring left to do.
 
     Args:
         settings: Community-tier configuration
@@ -72,7 +75,7 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     runtime_cache = LocalRuntimeCache()
     runtime_cache.warm(worker_handle, event_store)
 
-    return CommunityServices(
+    services = CommunityServices(
         # Server services
         auth=auth,
         ingestion=ingestion,
@@ -90,3 +93,11 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
         worker_handle=worker_handle,
         runtime_cache=runtime_cache,
     )
+
+    # TeamService needs the finished container, so it is the one two-phase
+    # bind: construct, assign onto the container, then complete the deferred
+    # LocalIngestion back-reference on the concrete instance built above.
+    team_service = TeamService(services, workspaces_root=settings.workspaces_root)
+    services.team_service = team_service
+    ingestion.team_service = team_service
+    return services

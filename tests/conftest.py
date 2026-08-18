@@ -69,7 +69,6 @@ def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
         "description": "v2 test team for infra tests",
         "entry_point": {
             "card": {
-                "role": "Human",
                 "description": "Human user interface",
                 "skills": [],
                 "agent_class": "akgentic.core.agent.Akgent",
@@ -82,7 +81,6 @@ def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
         "members": [
             {
                 "card": {
-                    "role": "Manager",
                     "description": "Test manager agent",
                     "skills": ["coordination"],
                     "agent_class": "akgentic.core.agent.Akgent",
@@ -170,13 +168,10 @@ def community_services(
 @pytest.fixture()
 def team_service(
     community_services: CommunityServices,
-    seeded_settings: CommunitySettings,
 ) -> TeamService:
-    """TeamService wired to community services."""
-    return TeamService(
-        services=community_services,
-        workspaces_root=seeded_settings.workspaces_root,
-    )
+    """The wired TeamService carried by the community services container."""
+    assert community_services.team_service is not None
+    return community_services.team_service
 
 
 @pytest.fixture()
@@ -194,29 +189,3 @@ def app(
 def client(app: FastAPI) -> TestClient:
     """Sync HTTP test client."""
     return TestClient(app)
-
-
-@pytest.fixture()
-def v1_seeded_settings(tmp_path: Path) -> CommunitySettings:
-    """Server settings with V1 frontend adapter enabled and pre-seeded catalog."""
-    settings = CommunitySettings(
-        workspaces_root=tmp_path / "workspaces",
-        event_store_path=tmp_path / "event_store",
-        catalog_path=tmp_path / "catalog",
-        frontend_adapter=(
-            "akgentic.infra.server.routes.frontend_adapter.angular_v1.AngularV1Adapter"
-        ),
-    )
-    _seed_catalog(settings.catalog_path)
-    return settings
-
-
-@pytest.fixture()
-def v1_client(
-    v1_seeded_settings: CommunitySettings,
-) -> Generator[TestClient, None, None]:
-    """Sync HTTP test client with V1 frontend adapter routes mounted."""
-    services = wire_community(v1_seeded_settings)
-    application = create_app(services, v1_seeded_settings)
-    yield TestClient(application)
-    services.actor_system.shutdown()

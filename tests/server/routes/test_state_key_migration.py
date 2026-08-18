@@ -2,10 +2,10 @@
 
 These are *behaviour* tests for the migrated consumer sites (ADR-030 §Decision 2,
 §Validation): a **required** dependency raises ``LookupError`` (not
-``AttributeError``) when exercised against an app that never ran
-``_store_state``, and returns the wired service after the normal app factory; a
-**soft** slot still yields ``None`` when unset and the route path tolerates it
-exactly as before. No assertion checks for a comment/docstring/ADR string
+``AttributeError``) when exercised against an app whose community state keys
+were never populated (``CoreModule.contribute_state`` never applied), and
+returns the wired service after the normal app factory.
+No assertion checks for a comment/docstring/ADR string
 (Golden Rule #8); the concrete-type headline is left to ``mypy --strict`` and
 ``test_state_key.py``'s ``assert_type`` coverage.
 """
@@ -16,14 +16,14 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from akgentic.infra.server.app import _store_state
 from akgentic.infra.server.deps import TierServices
+from akgentic.infra.server.modules import CoreModule
 from akgentic.infra.server.routes.teams import get_team_service
 from akgentic.infra.server.routes.webhook import get_channel_parser_registry
 from akgentic.infra.server.routes.webhook import router as webhook_router
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
-from akgentic.infra.server.state_keys import CHANNEL_PARSERS, FRONTEND_ADAPTER
+from akgentic.infra.server.state_keys import CHANNEL_PARSERS
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.routes.teams import get_services as worker_get_services
 from akgentic.infra.worker.state_keys import SERVICES as WORKER_SERVICES
@@ -50,7 +50,7 @@ class _RequestStub:
 
 
 def test_get_team_service_raises_lookup_error_on_bare_app() -> None:
-    """A bare FastAPI (never ran ``_store_state``) makes the required server
+    """A bare FastAPI (no state contribution applied) makes the required server
     dependency raise ``LookupError``, not ``AttributeError``."""
     request = cast(Request, _RequestStub(FastAPI()))
     with pytest.raises(LookupError):
@@ -58,7 +58,7 @@ def test_get_team_service_raises_lookup_error_on_bare_app() -> None:
 
 
 def test_get_team_service_returns_wired_service(client: TestClient) -> None:
-    """After the normal ``create_app`` (which runs ``_store_state``), the
+    """After the normal ``create_app`` (which applies ``contribute_state``), the
     required server dependency returns the wired ``TeamService``."""
     request = cast(Request, _RequestStub(cast(FastAPI, client.app)))
     assert isinstance(get_team_service(request), TeamService)
@@ -81,7 +81,7 @@ def test_worker_get_services_returns_wired_services() -> None:
     assert worker_get_services(request) is services
 
 
-# --- AC 19/23: required parser-registry raises; surviving soft slot stays None
+# --- AC 19/23: required parser-registry raises when unset -------------------
 
 
 def test_get_channel_parser_registry_raises_when_unset() -> None:
@@ -91,13 +91,6 @@ def test_get_channel_parser_registry_raises_when_unset() -> None:
     request = cast(Request, _RequestStub(FastAPI()))
     with pytest.raises(LookupError):
         get_channel_parser_registry(request)
-
-
-def test_frontend_adapter_get_is_none_when_unset() -> None:
-    """The soft ``FRONTEND_ADAPTER`` slot resolves to ``None`` when unset, so the
-    WS handler runs its unwrapped-event-send path exactly as before."""
-    request = cast(Request, _RequestStub(FastAPI()))
-    assert FRONTEND_ADAPTER.get(request) is None
 
 
 def _build_webhook_app_without_parser_registry() -> FastAPI:
@@ -130,23 +123,22 @@ def test_webhook_returns_500_when_parser_registry_unset() -> None:
 # --- AC 1: producer leaves the parser-registry slot unset when absent --------
 
 
-def test_store_state_leaves_channel_parsers_unset_when_services_lacks_it() -> None:
-    """``_store_state`` must NOT raise when the services container has no
-    ``channel_parser_registry`` attribute (a base ``TierServices`` deployment has
-    no channel parsers): it simply leaves the slot unset. Because
-    ``CHANNEL_PARSERS`` is now required, a later read raises ``LookupError``
-    rather than reading back a silent ``None``."""
+def test_contribute_state_leaves_channel_parsers_unset_when_services_lacks_it() -> None:
+    """``CoreModule.contribute_state`` must NOT raise when the services container
+    has no ``channel_parser_registry`` attribute (a base ``TierServices``
+    deployment has no channel parsers): it simply contributes no entry for the
+    slot. Because ``CHANNEL_PARSERS`` is required, a later read raises
+    ``LookupError`` rather than reading back a silent ``None``."""
     app = FastAPI()
-    services = MagicMock(spec=["channel_registry", "ingestion"])
+    # ``team_service`` is in the spec because CoreModule.__init__ requires a
+    # wired ``services.team_service`` (a MagicMock value satisfies the check).
+    services = MagicMock(spec=["channel_registry", "ingestion", "team_service"])
     services.channel_registry = MagicMock()
     services.ingestion = StubIngestion()
 
-    _store_state(
-        app,
-        cast(TierServices, services),
-        cast(TeamService, MagicMock()),
-        ServerSettings(),
-    )
+    module = CoreModule(services=cast(TierServices, services), settings=ServerSettings())
+    for entry in module.contribute_state():
+        entry.apply(app)
 
     with pytest.raises(LookupError):
         CHANNEL_PARSERS.require(app)

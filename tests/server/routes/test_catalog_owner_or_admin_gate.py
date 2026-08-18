@@ -327,7 +327,6 @@ def test_create_entry_not_gated(gated_client: TestClient) -> None:
             "description": "fresh",
             "entry_point": {
                 "card": {
-                    "role": "Human",
                     "description": "Human",
                     "skills": [],
                     "agent_class": "akgentic.core.agent.Akgent",

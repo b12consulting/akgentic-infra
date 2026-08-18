@@ -232,7 +232,7 @@ async def test_shutdown_reader_pool_resets_singleton() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Supervisor behaviour: event forwarding and adapter wrapping
+# Supervisor behaviour: event forwarding
 # ---------------------------------------------------------------------------
 
 
