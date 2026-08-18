@@ -128,13 +128,10 @@ def integration_services(
 @pytest.fixture()
 def integration_team_service(
     integration_services: CommunityServices,
-    integration_settings: CommunitySettings,
 ) -> TeamService:
-    """TeamService wired to integration services."""
-    return TeamService(
-        services=integration_services,
-        workspaces_root=integration_settings.workspaces_root,
-    )
+    """The wired TeamService carried by the integration services container."""
+    assert integration_services.team_service is not None
+    return integration_services.team_service
 
 
 @pytest.fixture()
@@ -206,8 +203,8 @@ def channel_app(
 
     Composes ``CoreModule`` directly through ``build_app`` with overridden
     channel deps on the services container — deliberately NOT ``create_app``,
-    which would run the process globals and overwrite the fixture's explicitly
-    wired ``channel_ingestion.team_service`` backref.
+    which would re-run the process-global pre-steps (logging, catalog prefix
+    policy) this fixture does not want.
     """
     integration_services.channel_parser_registry = channel_parser_registry
     integration_services.channel_registry = channel_registry_instance

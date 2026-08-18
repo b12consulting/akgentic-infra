@@ -8,8 +8,8 @@ origins are configured; the admin-catalog mutation log at APPLICATION; the
 ``/readiness`` allowlist. Self-contained means the full contract, with no
 wrapper residue:
 
-- ``__init__`` constructs the module's own ``TeamService`` (exposed as
-  ``.team_service`` for the community wrapper's ingestion backref);
+- ``__init__`` requires the wired ``services.team_service`` and fails loud
+  at composition time when the container arrives unwired;
 - the community ``app.state`` keys are contributed at **build time** via
   ``contribute_state`` (builder-applied, readable without a lifespan); the
   lifespan writes only ``draining``;
@@ -27,7 +27,6 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI
@@ -67,7 +66,6 @@ from akgentic.infra.server.routes.webhook import router as webhook_router
 from akgentic.infra.server.routes.workspace import router as workspace_router
 from akgentic.infra.server.routes.ws import ConnectionManager, shutdown_reader_pool
 from akgentic.infra.server.routes.ws import router as ws_router
-from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
 from akgentic.infra.server.state_keys import (
     CHANNEL_PARSERS,
@@ -97,12 +95,13 @@ class CoreModule(BaseAppModule):
     def __init__(self, services: TierServices, settings: ServerSettings) -> None:
         self._services = services
         self._settings = settings
-        # ``workspaces_root`` is declared on ``CommunitySettings``; base
-        # ``ServerSettings`` callers fall back to the same default the field
-        # declares so ``TeamService`` always has a valid FS-cleanup root.
-        workspaces_root = getattr(settings, "workspaces_root", Path("workspaces"))
-        # Public: the community wrapper's ingestion backref reads it.
-        self.team_service = TeamService(services, workspaces_root=workspaces_root)
+        if services.team_service is None:
+            msg = (
+                "services.team_service is not set — wire_* must construct "
+                "TeamService and assign it before composing CoreModule"
+            )
+            raise ValueError(msg)
+        self.team_service = services.team_service
 
     def contribute_routes(self) -> list[RouteSpec]:
         """Core routers in the legacy mount order, then the ``/admin`` catalog.
@@ -196,7 +195,7 @@ class CoreModule(BaseAppModule):
 
         Delegates to the module-level :func:`_drain_lifespan` so the lifespan
         unit tests keep their construct-and-drive shape without instantiating
-        ``CoreModule`` (whose ``__init__`` builds a ``TeamService``).
+        ``CoreModule`` (whose ``__init__`` requires a wired services container).
         """
         async with _drain_lifespan(app):
             yield

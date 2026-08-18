@@ -15,6 +15,7 @@ from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.worker_handle import WorkerHandle
+from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import EventStore, ServiceRegistry
 
@@ -51,6 +52,15 @@ class TierServices(BaseModel):
         description="Registry mapping channel IDs to team IDs"
     )
     catalog: Catalog = Field(description="v2 unified catalog service")
+    team_service: TeamService | None = Field(
+        default=None,
+        description=(
+            "Catalog-resolution and team-lifecycle service — always set by wire_* "
+            "before the container reaches any consumer; None only during two-phase "
+            "construction (the container must exist before TeamService(services, ...) "
+            "can be built)"
+        ),
+    )
 
 
 class CommunityServices(TierServices):

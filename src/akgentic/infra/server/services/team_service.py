@@ -15,12 +15,12 @@ from akgentic.infra.errors import PlacementConsistencyError
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
-from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.services._metadata_payload import validate_metadata
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
 
 if TYPE_CHECKING:
     from akgentic.core.messages.message import Message
+    from akgentic.infra.server.deps import TierServices
 
 logger = logging.getLogger(__name__)
 

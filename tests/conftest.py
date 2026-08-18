@@ -168,13 +168,10 @@ def community_services(
 @pytest.fixture()
 def team_service(
     community_services: CommunityServices,
-    seeded_settings: CommunitySettings,
 ) -> TeamService:
-    """TeamService wired to community services."""
-    return TeamService(
-        services=community_services,
-        workspaces_root=seeded_settings.workspaces_root,
-    )
+    """The wired TeamService carried by the community services container."""
+    assert community_services.team_service is not None
+    return community_services.team_service
 
 
 @pytest.fixture()

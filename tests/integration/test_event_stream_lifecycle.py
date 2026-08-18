@@ -18,7 +18,6 @@ from akgentic.infra.adapters.community.local_event_stream import LocalEventStrea
 from akgentic.infra.protocols.event_stream import StreamClosed
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
-from akgentic.infra.server.settings import CommunitySettings
 
 
 @pytest.mark.smoke
@@ -26,17 +25,10 @@ class TestEventStreamLifecycle:
     """Team lifecycle populates and cleans up the event stream."""
 
     @pytest.fixture()
-    def team_service(
-        self,
-        smoke_services: CommunityServices,
-        smoke_settings: CommunitySettings,
-    ) -> TeamService:
-        svc = TeamService(
-            services=smoke_services,
-            workspaces_root=smoke_settings.workspaces_root,
-        )
-        smoke_services.ingestion.team_service = svc
-        return svc
+    def team_service(self, smoke_services: CommunityServices) -> TeamService:
+        """The wired TeamService — wire_community already bound the ingestion backref."""
+        assert smoke_services.team_service is not None
+        return smoke_services.team_service
 
     @pytest.fixture()
     def event_stream(self, smoke_services: CommunityServices) -> LocalEventStream:

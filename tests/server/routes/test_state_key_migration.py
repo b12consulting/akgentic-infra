@@ -130,9 +130,9 @@ def test_contribute_state_leaves_channel_parsers_unset_when_services_lacks_it() 
     slot. Because ``CHANNEL_PARSERS`` is required, a later read raises
     ``LookupError`` rather than reading back a silent ``None``."""
     app = FastAPI()
-    # ``runtime_cache`` is in the spec because CoreModule.__init__ constructs
-    # its own TeamService, which reads services.runtime_cache.
-    services = MagicMock(spec=["channel_registry", "ingestion", "runtime_cache"])
+    # ``team_service`` is in the spec because CoreModule.__init__ requires a
+    # wired ``services.team_service`` (a MagicMock value satisfies the check).
+    services = MagicMock(spec=["channel_registry", "ingestion", "team_service"])
     services.channel_registry = MagicMock()
     services.ingestion = StubIngestion()
 

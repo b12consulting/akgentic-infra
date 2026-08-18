@@ -19,6 +19,7 @@ from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelR
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 from akgentic.infra.worker.deps import WorkerServices
@@ -180,6 +181,43 @@ class TestWireCommunityEventStream:
         subscribers = services.team_manager._shared_subscribers
         has_event_stream_sub = any(isinstance(s, EventStreamSubscriber) for s in subscribers)
         assert has_event_stream_sub
+
+
+class TestWireCommunityTeamService:
+    """Story 57.6: ``TeamService`` is built and bound inside ``wire_community``."""
+
+    @pytest.fixture()
+    def settings(self, tmp_path: Path) -> CommunitySettings:
+        return CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
+
+    @pytest.fixture()
+    def services(
+        self, settings: CommunitySettings
+    ) -> Generator[CommunityServices, None, None]:
+        svc = wire_community(settings)
+        yield svc
+        svc.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_team_service_is_constructed(self, services: CommunityServices) -> None:
+        """The container arrives with a real TeamService — no caller wiring left."""
+        assert isinstance(services.team_service, TeamService)
+
+    def test_ingestion_backref_is_same_instance(
+        self, services: CommunityServices
+    ) -> None:
+        """The LocalIngestion backref holds the SAME instance as the container."""
+        assert services.ingestion.team_service is services.team_service
+
+    def test_workspaces_root_propagates_from_settings(
+        self, services: CommunityServices, settings: CommunitySettings
+    ) -> None:
+        """wire_community reads settings.workspaces_root directly — no fallback."""
+        assert services.team_service is not None
+        assert services.team_service._workspaces_root == settings.workspaces_root
 
 
 class TestWireCommunityDropsTelemetryField:
