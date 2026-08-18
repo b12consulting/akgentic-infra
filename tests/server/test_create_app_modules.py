@@ -49,6 +49,11 @@ class TestTierShapedCompositionThroughCreateApp:
     ) -> None:
         """Tier route + middleware serve, community surface intact, globals set."""
         settings = seeded_settings.model_copy(update={"catalog_model_type_prefixes": ["acme."]})
+        # Force a known pre-state: earlier suite tests routinely leave the root
+        # logger at INFO, so INFO-after-call proves nothing without this. With
+        # WARNING forced, the closing level assertion can only be satisfied by
+        # create_app's own configure_logging (mirrors the AC 3 hook test).
+        logging.getLogger().setLevel(logging.WARNING)
         app = create_app(
             community_services,
             settings,
