@@ -18,7 +18,13 @@ Key semantics, fixed here and nowhere else:
   exists.
 - **Routes mount in module-list order**; on a path collision the earlier
   module's route wins (Starlette matches first), so an override module is
-  simply listed before the module it overrides.
+  simply listed before the module it overrides. That runtime rule is
+  unchanged, but shadowing must now be **stated by the party doing it**: the
+  earlier (winning) ``RouteSpec`` lists the shadowed ``"METHOD /path"`` in
+  ``overrides`` or the build fails with :class:`RouteCollisionError`. A client
+  colliding with a framework route by accident, and a framework upgrade that
+  steals a client's route, both surface at build time instead of silently
+  changing behaviour in production.
 - **Lifespans compose** via ``AsyncExitStack``: startup in module-list order,
   shutdown in reverse.
 - **State follows a single-writer rule spanning two phases**: a key is written
@@ -33,7 +39,11 @@ Key semantics, fixed here and nowhere else:
   ``AttributeError`` on the first unlucky request.
 
 ``build_manifest`` snapshots a composed app's route table and middleware order;
-migration stories pin it as a golden-manifest regression test.
+migration stories pin it as a golden-manifest regression test. ``manifest_delta``
+is its client-side counterpart, pointed the other way: it diffs two manifests so
+a client package splicing its own modules into a tier's composition can assert,
+from its own repo and in its own CI, that it added exactly what it meant to and
+disturbed nothing stock.
 """
 
 from __future__ import annotations
@@ -60,6 +70,14 @@ logger = logging.getLogger(__name__)
 # Named integer anchors, deliberately NOT an enum: any integer is a legal
 # layer, so a tier may slot between bands (the POLICY band conventionally uses
 # sub-slots 510-570 as plain integers). Lower ordinal = outermost.
+#
+# ``EXTENSION`` is the documented default for a third-party module's
+# middleware: it sits inside everything the framework owns, so a client's
+# middleware sees only requests that already passed the identity gate. It is a
+# default, not a restriction — a client whose middleware genuinely belongs
+# further out (a signed-webhook verifier that must run before identity, say)
+# states that ordinal deliberately, and the builder neither checks band
+# membership nor warns.
 
 OBSERVABILITY: Final = 50  # OTel ASGI instrumentation
 TRANSPORT: Final = 100  # CORS — outermost of the functional stack
@@ -67,7 +85,8 @@ PROXY: Final = 200  # trusted-CIDR proxy-header rewriting
 SESSION: Final = 300  # cookie / Redis session decode — outside IDENTITY
 IDENTITY: Final = 400  # RequireAuth — resolve once, stash, 401 pre-routing
 POLICY: Final = 500  # rate limit, content security, payload, idempotency
-APPLICATION: Final = 600  # route-adjacent concerns (mutation log) — innermost
+APPLICATION: Final = 600  # route-adjacent concerns (mutation log)
+EXTENSION: Final = 700  # third-party client middleware — innermost
 
 # Typed ``Any`` sentinel (same idiom as ``akgentic.infra.utils``) so the
 # ``getattr(state, name, _MISSING)`` read stays ``Any`` under mypy strict.
@@ -94,6 +113,10 @@ class DuplicateStateProviderError(AssemblyError):
 
 class MissingStateProviderError(AssemblyError):
     """A middleware ``requires_state`` key has no producing module (build time)."""
+
+
+class RouteCollisionError(AssemblyError):
+    """Two route specs mount the same METHOD /path without a declared override (build time)."""
 
 
 class UnpopulatedStateError(AssemblyError):
@@ -169,6 +192,11 @@ class RouteSpec(BaseModel):
     The router arrives pre-built: router-level dependencies (auth gates,
     caller-identity scoping) are the contributing module's business,
     constructed before contribution.
+
+    ``overrides`` is how a spec *states* that it deliberately shadows another
+    module's route. It belongs to the winner — the earliest contributing spec
+    for that path — because the loser declaring it would invert the guarantee:
+    a client could declare away a collision it is in fact losing.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -179,6 +207,10 @@ class RouteSpec(BaseModel):
     prefix: str = Field(
         default="",
         description="Mount prefix passed to include_router",
+    )
+    overrides: tuple[str, ...] = Field(
+        default=(),
+        description="'METHOD /path' entries this spec deliberately shadows (WS for websockets)",
     )
 
 
@@ -341,6 +373,15 @@ class _OrderedMiddleware(BaseModel):
     spec: MiddlewareSpec = Field(description="The contributed middleware spec")
 
 
+class _ContributedRoute(BaseModel):
+    """One route spec tagged with the module that contributed it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    module_name: str = Field(description="Name of the contributing module")
+    spec: RouteSpec = Field(description="The contributed route spec")
+
+
 class _StateRequirement(BaseModel):
     """One required state key with its declared producer and requirer, for boot checks."""
 
@@ -361,7 +402,11 @@ def build_app(
     Order semantics (fixed, documented, tier-independent):
 
     - **Routes** mount in module-list order; on a path collision the earlier
-      module's route wins (Starlette matches first).
+      module's route wins (Starlette matches first). The winning spec must
+      declare the shadowed ``"METHOD /path"`` in its ``overrides``; an
+      undeclared collision is a build-time error, so neither an accidental
+      client collision nor a framework upgrade stealing a client's route can
+      change behaviour silently.
     - **Middleware** sort by ``(layer, module index, spec index)`` and are all
       added after all routes; the lowest layer ends up outermost regardless of
       module-list order.
@@ -397,10 +442,18 @@ def build_app(
         DuplicateStateProviderError: Two modules provide the same state key,
             in either phase or across the two.
         MissingStateProviderError: A ``requires_state`` key has no producer.
+        RouteCollisionError: Two specs mount the same ``METHOD /path`` and the
+            earlier (winning) one does not declare it in ``overrides``.
     """
     module_list = list(modules)
     contributions = [list(module.contribute_state()) for module in module_list]
     providers = _validate_composition(module_list, contributions)
+    # Routes are collected only once the composition is known-good: a module is
+    # entitled to side effects inside contribute_routes (CoreModule sets the
+    # process-global unified catalog there), and a composition rejected for a
+    # duplicate name or a duplicate state provider must not have run them.
+    contributed = _collect_routes(module_list)
+    _validate_route_collisions(contributed)
     context = BuildContext(allowlist=_merge_allowlists(module_list))
     ordered = _collect_middleware(module_list, context)
     requirements = _validate_required_state(ordered, providers)
@@ -408,7 +461,7 @@ def build_app(
         title="Akgentic Platform API",
         lifespan=_compose_lifespan(module_list, requirements),
     )
-    _mount_routes(app, module_list)
+    _mount_routes(app, contributed)
     _register_exception_handlers(app, module_list)
     _apply_state_entries(app, contributions)
     # Middleware are added strictly AFTER all routes so an APPLICATION-layer
@@ -550,11 +603,84 @@ def _verify_startup_state(app: FastAPI, requirements: list[_StateRequirement]) -
         raise UnpopulatedStateError("; ".join(missing))
 
 
-def _mount_routes(app: FastAPI, modules: list[AppModule]) -> None:
-    """Mount every module's routers in module-list order (earlier wins collisions)."""
-    for module in modules:
-        for route_spec in module.contribute_routes():
-            app.include_router(route_spec.router, prefix=route_spec.prefix)
+def _collect_routes(modules: list[AppModule]) -> list[_ContributedRoute]:
+    """Call ``contribute_routes`` once per module, in composition order.
+
+    The ONLY call site of ``contribute_routes`` in the builder. A module is
+    entitled to construct its routers inside it, so calling it a second time
+    for mounting would double-construct and could yield routers other than the
+    ones the collision check just cleared.
+
+    Returns:
+        Every contributed spec, tagged with its module, in composition order.
+    """
+    return [
+        _ContributedRoute(module_name=module.name, spec=spec)
+        for module in modules
+        for spec in module.contribute_routes()
+    ]
+
+
+def _route_keys(spec: RouteSpec) -> list[str]:
+    """Full mounted ``"METHOD /path"`` keys for one spec — one entry per method.
+
+    The key is per method (unlike ``build_manifest``'s comma-joined form), so
+    ``GET /x`` and ``POST /x`` are different routes. Route attributes are read
+    with the same defensive ``getattr`` idiom ``build_manifest`` uses rather
+    than by ``isinstance`` on FastAPI/Starlette route classes: a version bump
+    reshaping that hierarchy then costs nothing here. Websocket routes carry no
+    methods and key as ``WS``.
+
+    Returns:
+        The spec's mounted keys, in router order then method-sorted order.
+    """
+    return [
+        f"{method} {spec.prefix}{path}"
+        for route in spec.router.routes
+        if (path := getattr(route, "path", None)) is not None
+        for method in sorted(getattr(route, "methods", None) or {"WS"})
+    ]
+
+
+def _validate_route_collisions(contributed: list[_ContributedRoute]) -> None:
+    """Reject a shadowed ``METHOD /path`` its winning spec never declared.
+
+    Detection covers module-contributed routes only. FastAPI's own built-ins
+    (``/openapi.json``, ``/docs``, ``/redoc``) are added by the ``FastAPI(...)``
+    constructor, belong to no module, and could not be declared against — so
+    raising on them would be a build failure the client cannot fix.
+
+    One declaration on the earliest spec satisfies the key however many later
+    specs collide on it; the check reports the first offending pair per key
+    rather than accumulating.
+
+    Raises:
+        RouteCollisionError: A later spec shadows an earlier one on the same
+            ``METHOD /path`` and the earlier (winning) spec does not list that
+            entry in ``overrides``.
+    """
+    winners: dict[str, _ContributedRoute] = {}
+    for entry in contributed:
+        # Keys are deduplicated per spec: one router registering the same
+        # METHOD /path twice is that module's own business, not the
+        # cross-module shadowing this check exists to surface.
+        for key in dict.fromkeys(_route_keys(entry.spec)):
+            winner = winners.get(key)
+            if winner is None:
+                winners[key] = entry
+            elif key not in winner.spec.overrides:
+                raise RouteCollisionError(
+                    f"route collision on '{key}': module '{entry.module_name}' shadows "
+                    f"module '{winner.module_name}'; the earlier module "
+                    f"'{winner.module_name}' wins at runtime and must declare it — "
+                    f'add overrides=("{key}",) to its RouteSpec'
+                )
+
+
+def _mount_routes(app: FastAPI, contributed: list[_ContributedRoute]) -> None:
+    """Mount every collected router in composition order (earlier wins collisions)."""
+    for entry in contributed:
+        app.include_router(entry.spec.router, prefix=entry.spec.prefix)
 
 
 def _register_exception_handlers(app: FastAPI, modules: list[AppModule]) -> None:
@@ -609,6 +735,46 @@ class AppManifest(BaseModel):
     )
 
 
+class ManifestDelta(BaseModel):
+    """What one composition adds to, removes from, and disturbs in another.
+
+    The client-side counterpart of :class:`AppManifest`: the framework pins a
+    manifest to prove a refactor changed nothing, a client diffs two manifests
+    to prove its own module added exactly what it meant to.
+
+    Membership only, per list. ``routes_added`` / ``routes_removed`` are sorted
+    so a client can assert plain list equality. ``middleware_added`` /
+    ``middleware_removed`` deliberately are NOT sorted: they keep manifest
+    order — composed order (outermost→innermost) for additions, stock order for
+    removals — because order is the only information a middleware name carries.
+
+    ``stock_middleware_reordered`` reports the **relative order of the stock
+    entries inside the composed list**, and is deliberately independent of both
+    additions and removals. A client module slotting in at any layer changes
+    absolute positions and must not raise the flag; a stock entry that
+    disappeared is reported by ``middleware_removed`` alone, never also as a
+    reorder.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    routes_added: list[str] = Field(
+        description="Sorted route entries in composed but not in stock",
+    )
+    routes_removed: list[str] = Field(
+        description="Sorted route entries in stock but not in composed",
+    )
+    middleware_added: list[str] = Field(
+        description="Middleware names new in composed, in composed (outermost-first) order",
+    )
+    middleware_removed: list[str] = Field(
+        description="Middleware names gone from composed, in stock order",
+    )
+    stock_middleware_reordered: bool = Field(
+        description="Whether the stock entries' relative order differs inside composed",
+    )
+
+
 def build_manifest(app: FastAPI) -> AppManifest:
     """Snapshot the route table and the outermost-to-innermost middleware order."""
     entries: list[str] = []
@@ -622,3 +788,47 @@ def build_manifest(app: FastAPI) -> AppManifest:
     # no static ``__name__``; every concrete middleware is a class and has one.
     middleware = [str(getattr(m.cls, "__name__", m.cls)) for m in app.user_middleware]
     return AppManifest(routes=sorted(entries), middleware=middleware)
+
+
+def manifest_delta(stock: AppManifest, composed: AppManifest) -> ManifestDelta:
+    """Diff a stock tier manifest against a composed one — the client's gate.
+
+    The argument order is part of the contract: ``stock`` first, so
+    ``manifest_delta(build_manifest(tier_app), build_manifest(client_app))``
+    reads the way a client means it. Swapping the two inverts every list
+    silently.
+
+    Both manifests are compared as **opaque entry strings** — no path parsing,
+    no method splitting. A stock ``"GET /x"`` that becomes ``"GET,POST /x"``
+    therefore reports as one removal plus one addition rather than as a single
+    addition; that is the honest reading of a manifest entry, and it fails in
+    the direction that makes a client look.
+
+    This function reports and never enforces: it does not raise, does not warn,
+    and has no strict mode. What counts as an acceptable delta is the client's
+    own assertion.
+
+    Args:
+        stock: Manifest of the tier app as the framework ships it.
+        composed: Manifest of that same app with the client's modules spliced
+            in.
+
+    Returns:
+        The route and middleware membership differences, plus whether the stock
+        middleware entries kept their relative order inside ``composed``.
+    """
+    stock_names = set(stock.middleware)
+    composed_names = set(composed.middleware)
+    # The filter is symmetric on purpose. Filtering only the composed side
+    # would leave a REMOVED stock entry in the stock sequence, so every removal
+    # would also raise the flag — and a client could no longer tell "the
+    # framework dropped a middleware" from "the framework restacked them".
+    shared_in_composed = [name for name in composed.middleware if name in stock_names]
+    shared_in_stock = [name for name in stock.middleware if name in composed_names]
+    return ManifestDelta(
+        routes_added=sorted(set(composed.routes) - set(stock.routes)),
+        routes_removed=sorted(set(stock.routes) - set(composed.routes)),
+        middleware_added=[name for name in composed.middleware if name not in stock_names],
+        middleware_removed=[name for name in stock.middleware if name not in composed_names],
+        stock_middleware_reordered=shared_in_composed != shared_in_stock,
+    )
