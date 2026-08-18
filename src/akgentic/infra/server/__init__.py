@@ -12,15 +12,20 @@ widening it would create a second published set needing its own policy.
 
 Compatibility policy for that surface:
 
-- **What is public is exactly ``__all__``.** That covers the six contribution
-  verbs (``contribute_routes``, ``contribute_middleware``,
-  ``contribute_allowlist``, ``contribute_exception_handlers``,
-  ``contribute_state``, ``lifespan``) together with ``name`` and
-  ``provides_state``; the spec models (``RouteSpec``, ``MiddlewareSpec``,
-  ``AllowlistSpec``, ``ExceptionHandlerSpec``, ``ExceptionHandlerRegistrar``,
-  ``BuildContext``, ``StateEntry``); the contract types (``AppModule``,
-  ``BaseAppModule``); the band anchors; ``create_app``, ``server_modules``,
-  ``build_app``, ``build_manifest``, ``manifest_delta``; and
+- **What is public is exactly ``__all__``** — every name listed there, and no
+  name that is not. It carries the contract types (``AppModule``,
+  ``BaseAppModule``) and, as members of those types rather than as exports of
+  their own, the six contribution verbs (``contribute_routes``,
+  ``contribute_middleware``, ``contribute_allowlist``,
+  ``contribute_exception_handlers``, ``contribute_state``, ``lifespan``)
+  together with ``name`` and ``provides_state``; the spec models
+  (``RouteSpec``, ``MiddlewareSpec``, ``AllowlistSpec``,
+  ``ExceptionHandlerSpec``, ``ExceptionHandlerRegistrar``, ``BuildContext``,
+  ``StateEntry``); the band anchors; the entry points ``create_app``,
+  ``server_modules``, ``build_app``, ``build_manifest`` and ``manifest_delta``
+  with the result types a client asserts on (``AppManifest``,
+  ``ManifestDelta``); the errors a composition can raise (``AssemblyError``
+  and its subclasses, ``RouteCollisionError`` among them); and
   ``get_request_user`` with ``RequestUser``. A breaking change to any of them
   requires a major version and a decision record.
 - **New contribution verbs arrive with a ``BaseAppModule`` default**, so a

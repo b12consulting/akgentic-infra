@@ -27,6 +27,8 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import akgentic.infra.server
+import akgentic.infra.server.app
+import akgentic.infra.server.assembly
 import akgentic.infra.server.auth
 from akgentic.infra.server.app import create_app, server_modules
 from akgentic.infra.server.assembly import (
@@ -109,6 +111,10 @@ _EXPECTED_ALL = [
 # The names the compatibility policy promises a client package: the entrypoints,
 # the spec models, the contract types and every band anchor. Checked as a subset
 # so a failure names the missing export, independent of the exact-order pin.
+# ``AppManifest`` / ``ManifestDelta`` (what the two instruments return) and the
+# assembly errors (what a client's build raises) are in the list because the
+# policy docstring publishes them; a client asserting on a delta or catching a
+# collision names them, so an accidental un-export is the same breakage.
 _POLICY_SURFACE = [
     "create_app",
     "server_modules",
@@ -116,6 +122,10 @@ _POLICY_SURFACE = [
     "build_manifest",
     "manifest_delta",
     "get_request_user",
+    "AppManifest",
+    "ManifestDelta",
+    "AssemblyError",
+    "RouteCollisionError",
     "RouteSpec",
     "MiddlewareSpec",
     "AllowlistSpec",
@@ -134,6 +144,39 @@ _POLICY_SURFACE = [
     "APPLICATION",
     "EXTENSION",
 ]
+
+# The module each published name is defined in. The re-export must be the *same
+# object*: the ``__all__`` equality above and the attribute-resolution sweep
+# below both stay green for a name this package **re-defines** instead of
+# re-exporting, and the two copies then drift apart with nothing failing. Band
+# anchors are absent on purpose — they are ``int``s, for which identity says
+# nothing; the published ``EXTENSION`` is pinned by value in ``TestExtensionBand``.
+_DEFINED_IN = {
+    "AllowlistSpec": akgentic.infra.server.assembly,
+    "AppManifest": akgentic.infra.server.assembly,
+    "AppModule": akgentic.infra.server.assembly,
+    "AssemblyError": akgentic.infra.server.assembly,
+    "BaseAppModule": akgentic.infra.server.assembly,
+    "BuildContext": akgentic.infra.server.assembly,
+    "DuplicateModuleNameError": akgentic.infra.server.assembly,
+    "DuplicateStateProviderError": akgentic.infra.server.assembly,
+    "ExceptionHandlerRegistrar": akgentic.infra.server.assembly,
+    "ExceptionHandlerSpec": akgentic.infra.server.assembly,
+    "ManifestDelta": akgentic.infra.server.assembly,
+    "MiddlewareSpec": akgentic.infra.server.assembly,
+    "MissingStateProviderError": akgentic.infra.server.assembly,
+    "RouteCollisionError": akgentic.infra.server.assembly,
+    "RouteSpec": akgentic.infra.server.assembly,
+    "StateEntry": akgentic.infra.server.assembly,
+    "UnpopulatedStateError": akgentic.infra.server.assembly,
+    "build_app": akgentic.infra.server.assembly,
+    "build_manifest": akgentic.infra.server.assembly,
+    "manifest_delta": akgentic.infra.server.assembly,
+    "create_app": akgentic.infra.server.app,
+    "server_modules": akgentic.infra.server.app,
+    "RequestUser": akgentic.infra.server.auth,
+    "get_request_user": akgentic.infra.server.auth,
+}
 
 
 class _AcmeExtensionMiddleware:
@@ -275,9 +318,17 @@ class TestExtensionBand:
     """AC 1, 4: a named anchor innermost of the framework's own, and nothing more."""
 
     def test_extension_is_seven_hundred_and_inside_application(self) -> None:
-        """The ordinal is fixed by the decision, not chosen by the implementation."""
+        """The ordinal is fixed by the decision, not chosen by the implementation.
+
+        Read through the published path as well as the defining one: a client is
+        told to import from ``akgentic.infra.server``, and an anchor re-declared
+        there instead of re-exported would satisfy ``__all__`` and every
+        attribute check while carrying whatever value someone typed twice.
+        """
         assert EXTENSION == 700
         assert APPLICATION < EXTENSION
+        assert akgentic.infra.server.EXTENSION == EXTENSION
+        assert akgentic.infra.server.APPLICATION == APPLICATION
 
     def test_unnamed_ordinals_compose_and_sort_by_integer_value(self) -> None:
         """The bands are anchors, not an enum: any integer stays a legal layer.
@@ -404,6 +455,22 @@ class TestPublishedSurface:
         server = akgentic.infra.server
         unresolved = [name for name in server.__all__ if not hasattr(server, name)]
         assert not unresolved, f"exported but unresolvable: {unresolved}"
+
+    def test_published_names_are_the_defining_modules_objects(self) -> None:
+        """Re-exports, not re-definitions — across the surface, not only auth.
+
+        AC 5/6 pin this for the identity seam; the same property is what makes
+        the rest of the contract usable. A client's ``isinstance`` check against
+        the published ``BaseAppModule``, or a ``MiddlewareSpec`` built from the
+        published class, only compose with the framework because the published
+        name IS the object the builder sees.
+        """
+        rebound = [
+            name
+            for name, module in _DEFINED_IN.items()
+            if getattr(akgentic.infra.server, name) is not getattr(module, name)
+        ]
+        assert not rebound, f"published as a copy, not a re-export: {rebound}"
 
     def test_every_policy_name_is_exported(self) -> None:
         """A future contributor who forgets an export learns which one."""
