@@ -70,6 +70,14 @@ logger = logging.getLogger(__name__)
 # Named integer anchors, deliberately NOT an enum: any integer is a legal
 # layer, so a tier may slot between bands (the POLICY band conventionally uses
 # sub-slots 510-570 as plain integers). Lower ordinal = outermost.
+#
+# ``EXTENSION`` is the documented default for a third-party module's
+# middleware: it sits inside everything the framework owns, so a client's
+# middleware sees only requests that already passed the identity gate. It is a
+# default, not a restriction — a client whose middleware genuinely belongs
+# further out (a signed-webhook verifier that must run before identity, say)
+# states that ordinal deliberately, and the builder neither checks band
+# membership nor warns.
 
 OBSERVABILITY: Final = 50  # OTel ASGI instrumentation
 TRANSPORT: Final = 100  # CORS — outermost of the functional stack
@@ -77,7 +85,8 @@ PROXY: Final = 200  # trusted-CIDR proxy-header rewriting
 SESSION: Final = 300  # cookie / Redis session decode — outside IDENTITY
 IDENTITY: Final = 400  # RequireAuth — resolve once, stash, 401 pre-routing
 POLICY: Final = 500  # rate limit, content security, payload, idempotency
-APPLICATION: Final = 600  # route-adjacent concerns (mutation log) — innermost
+APPLICATION: Final = 600  # route-adjacent concerns (mutation log)
+EXTENSION: Final = 700  # third-party client middleware — innermost
 
 # Typed ``Any`` sentinel (same idiom as ``akgentic.infra.utils``) so the
 # ``getattr(state, name, _MISSING)`` read stays ``Any`` under mypy strict.

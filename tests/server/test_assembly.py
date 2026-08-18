@@ -28,6 +28,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 import akgentic.infra.server
 from akgentic.infra.server.app import create_app, server_modules
 from akgentic.infra.server.assembly import (
+    EXTENSION,
     IDENTITY,
     POLICY,
     TRANSPORT,
@@ -962,9 +963,6 @@ _STOCK_ROUTES = ["GET /readiness", "GET /teams", "POST /teams"]
 _STOCK_STACK = ["CORSMiddleware", "RequireAuthMiddleware", "MutationLogMiddleware"]
 
 _ACME_ROUTE = "GET /acme/reports/{report_id}"
-# Layer 700 — innermost of the stock bands (APPLICATION is 600), where a client
-# module's middleware belongs. Story 63.4 gives this ordinal a name.
-_EXTENSION_LAYER = 700
 
 
 def _stock() -> AppManifest:
@@ -1146,7 +1144,7 @@ class _AcmeReportsModule(BaseAppModule):
         return [RouteSpec(router=router)]
 
     def contribute_middleware(self, context: BuildContext) -> list[MiddlewareSpec]:
-        return [MiddlewareSpec(middleware_class=_NoopMiddleware, layer=_EXTENSION_LAYER)]
+        return [MiddlewareSpec(middleware_class=_NoopMiddleware, layer=EXTENSION)]
 
 
 class TestManifestDeltaOnRealComposition:
