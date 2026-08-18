@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from akgentic.infra.server.app import configure_process, create_app, create_server_app
+from akgentic.infra.server.app import (
+    configure_process,
+    create_app,
+    create_server_app,
+    server_modules,
+)
 from akgentic.infra.server.assembly import (
     APPLICATION,
     IDENTITY,
@@ -82,4 +87,5 @@ __all__ = [
     "configure_process",
     "create_app",
     "create_server_app",
+    "server_modules",
 ]

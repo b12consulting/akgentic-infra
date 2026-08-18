@@ -48,6 +48,40 @@ def configure_process(settings: ServerSettings) -> None:
     """
 
 
+def server_modules(services: TierServices, settings: ServerSettings) -> list[AppModule]:
+    """The community tier's canonical composition, in canonical order.
+
+    Public API (ADR-040 §2), and the ONE place the community module list is
+    declared: :func:`create_app`'s ``modules`` default delegates here rather
+    than restating ``[CoreModule(...)]``. A client package extending this tier
+    from its own repo splices its modules into the returned list, so it never
+    retypes the composition — a retyped copy drifts silently at the next tier
+    upgrade — and never forks the tier.
+
+    Splicing rules:
+
+    - **Adding** → append: ``[*server_modules(services, settings),
+      AcmeModule(...)]``. Later modules cannot shadow earlier routes, so
+      appending is always safe.
+    - **Overriding** a stock route → insert *before* the module that owns it,
+      and declare the override.
+    - **Middleware placement is never a list position** — the layer ordinal
+      decides; list position is only the tiebreak between equal layers.
+
+    A fresh list holding a freshly constructed ``CoreModule`` is returned on
+    every call: a caller that appends to (or reorders) the result cannot
+    perturb the next caller's composition.
+
+    Args:
+        services: Pre-wired tier services container the composition builds on.
+        settings: Server settings the composition is built against.
+
+    Returns:
+        The community composition — ``CoreModule`` alone.
+    """
+    return [CoreModule(services=services, settings=settings)]
+
+
 def create_app(
     services: TierServices,
     settings: ServerSettings | None = None,
@@ -65,8 +99,8 @@ def create_app(
     Args:
         services: Pre-wired tier services container.
         settings: Server settings. Defaults to ``ServerSettings()``.
-        modules: Ordered module composition. ``None`` selects the community
-            composition — ``CoreModule`` alone.
+        modules: Ordered module composition. ``None`` (or empty) selects the
+            community composition as returned by :func:`server_modules`.
         configure_process: Additive tier process hook, invoked after the
             invariant process globals. Defaults to the module-level named
             no-op of the same name.
@@ -86,9 +120,12 @@ def create_app(
     logger.info("Catalog model_type allowlist: %s", allowed_prefixes())
     configure_process(settings)
 
-    return build_app(
-        settings, services, modules or [CoreModule(services=services, settings=settings)]
-    )
+    # Truthiness, not ``is not None``, and deliberately so: a falsy ``modules``
+    # — both ``None`` and ``[]`` — selects the community composition. Switching
+    # this to an identity check would silently turn
+    # ``create_app(services, settings, modules=[])`` from the community app
+    # into an empty one. Preserved here, not "fixed".
+    return build_app(settings, services, modules or server_modules(services, settings))
 
 
 def create_server_app(settings: CommunitySettings | None = None) -> FastAPI:
