@@ -290,7 +290,7 @@ src/akgentic/infra/
     community/          Single-process adapters (NoAuth, LocalPlacement, etc.)
     shared/             Tier-agnostic adapters (Telegram, telemetry, WebSocket)
   server/             FastAPI application
-    routes/             REST, WebSocket, webhook, and frontend adapter routes
+    routes/             REST, WebSocket, and webhook routes
     services/           TeamService (tier-agnostic orchestrator)
     settings.py         Pydantic-settings configuration classes
     state_keys.py       Typed app.state key declarations (server tier)
@@ -620,9 +620,9 @@ The load-bearing invariant — **resolve-once + stash key + 401-on-raise pre-rou
 
 **Namespace proximity — `akgentic.infra.auth` is the plugin's, not infra's.** The plugin's `akgentic.infra.auth` namespace merges into infra's shared `akgentic.infra.*` namespace via `pkgutil.extend_path`, so it sits **beside** the infra-owned `akgentic.infra.server.auth` and `akgentic.infra.protocols.auth` — but it is **not** infra-owned. Infra does not depend on, import, or ship the plugin; the entry-point group is the only seam between them.
 
-### Frontend Adapter Plugin
+### Frontend Adapter Plugin (removed)
 
-An optional plugin system for translating API responses to legacy frontend formats. Configured via `AKGENTIC_FRONTEND_ADAPTER` (FQDN of the adapter class). When absent, the server serves the native V2 API only.
+The V1 frontend-adapter plugin system was removed — the Angular frontend consumes the native V2 API directly; see the modular app assembly decision record (`_bmad-output/akgentic-infra/decisions/adr-039-modular-app-assembly-appmodule-contract.md`).
 
 ### Shared Adapters
 
@@ -659,7 +659,7 @@ TEAM_SERVICE.set(app, team_service)
 team_service = TEAM_SERVICE.require(request)
 ```
 
-**Soft defaults.** A key declared with a `default` reads that default back when its slot was never set: `CHANNEL_PARSERS` and `FRONTEND_ADAPTER` default to `None`, `DRAINING` defaults to `False`. So `CHANNEL_PARSERS.get(request)` returns `ChannelParserRegistry | None` without any `getattr(..., None)` at the call site.
+**Soft defaults.** A key declared with a `default` reads that default back when its slot was never set: `CHANNEL_PARSERS` defaults to `None`, `DRAINING` defaults to `False`. So `CHANNEL_PARSERS.get(request)` returns `ChannelParserRegistry | None` without any `getattr(..., None)` at the call site.
 
 **`Depends` bridge.** DI-shaped handlers wrap the same key in a one-line provider — no second source of truth:
 
@@ -745,7 +745,6 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_PORT`                | `8000`        | Port number                      |
 | `AKGENTIC_LOG_LEVEL`           | `INFO`        | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Invalid values fall back to `INFO`. |
 | `AKGENTIC_CORS_ORIGINS`        | `["*"]`       | Allowed CORS origins (JSON list) |
-| `AKGENTIC_FRONTEND_ADAPTER`    | `None`        | Frontend adapter plugin FQDN     |
 | `AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES` | `[]` | Extra module prefixes a catalog `Entry.model_type` may name, on top of the always-present `akgentic.`. Comma-separated or JSON list. Startup-only — see [Catalog model_type prefixes](#catalog-model_type-prefixes) below. |
 
 ### Community Settings (extends server)

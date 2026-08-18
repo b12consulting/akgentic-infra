@@ -31,7 +31,6 @@ from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.errors import add_server_exception_handlers
 from akgentic.infra.server.logging_config import configure_logging
 from akgentic.infra.server.modules import CoreModule
-from akgentic.infra.server.routes.frontend_adapter import load_frontend_adapter
 from akgentic.infra.server.routes.ws import ConnectionManager, shutdown_reader_pool
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
@@ -40,7 +39,6 @@ from akgentic.infra.server.state_keys import (
     CHANNEL_REGISTRY,
     CONNECTION_MANAGER,
     DRAINING,
-    FRONTEND_ADAPTER,
     INGESTION,
     SERVICES,
     SETTINGS,
@@ -163,10 +161,7 @@ def _build_app(
       (``CoreModule``'s lifespan writes only ``draining``);
     - exception handlers register through the two package helpers because
       their handler callables are package-private, not cleanly expressible as
-      ``ExceptionHandlerSpec`` pairs;
-    - the frontend adapter's plugin API is ``register_routes(app)`` — an app
-      surface modules must not touch — so its routes mount here, after
-      ``build_app`` returns, keeping adapter routes last exactly as before.
+      ``ExceptionHandlerSpec`` pairs.
 
     Args:
         services: Wired tier services container.
@@ -180,11 +175,6 @@ def _build_app(
     _store_state(app, services, team_service, settings)
     add_exception_handlers(app)
     add_server_exception_handlers(app)
-    if settings.frontend_adapter:
-        adapter = load_frontend_adapter(settings.frontend_adapter)
-        adapter.register_routes(app)
-        FRONTEND_ADAPTER.set(app, adapter)
-        logger.debug("Building app: Frontend adapter loaded: %s", settings.frontend_adapter)
     return app
 
 

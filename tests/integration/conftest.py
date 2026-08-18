@@ -152,43 +152,6 @@ def integration_client(integration_app: FastAPI) -> TestClient:
 
 
 # ---------------------------------------------------------------------------
-# V1 Adapter Fixtures
-# ---------------------------------------------------------------------------
-
-V1_ADAPTER_FQDN = "akgentic.infra.server.routes.frontend_adapter.angular_v1.AngularV1Adapter"
-
-
-@pytest.fixture()
-def v1_adapter_settings(tmp_path: Path) -> CommunitySettings:
-    """CommunitySettings with V1 frontend adapter enabled."""
-    settings = CommunitySettings(
-        workspaces_root=tmp_path / "workspaces",
-        event_store_path=tmp_path / "event_store",
-        catalog_path=tmp_path / "catalog",
-        frontend_adapter=V1_ADAPTER_FQDN,
-    )
-    seed_integration_catalog(settings.catalog_path)
-    return settings
-
-
-@pytest.fixture()
-def v1_adapter_app(
-    v1_adapter_settings: CommunitySettings,
-) -> Generator[FastAPI, None, None]:
-    """FastAPI app with V1 frontend adapter loaded."""
-    services = wire_community(v1_adapter_settings)
-    application = create_app(services, v1_adapter_settings)
-    yield application
-    services.actor_system.shutdown()
-
-
-@pytest.fixture()
-def v1_adapter_client(v1_adapter_app: FastAPI) -> TestClient:
-    """Sync HTTP test client hitting a V1-adapter-enabled FastAPI app."""
-    return TestClient(v1_adapter_app)
-
-
-# ---------------------------------------------------------------------------
 # Channel Integration Fixtures
 # ---------------------------------------------------------------------------
 

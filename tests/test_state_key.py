@@ -21,7 +21,6 @@ from akgentic.infra.server.state_keys import (
     CHANNEL_REGISTRY,
     CONNECTION_MANAGER,
     DRAINING,
-    FRONTEND_ADAPTER,
     INGESTION,
     SERVICES,
     SETTINGS,
@@ -85,9 +84,11 @@ def test_get_on_required_unset_raises() -> None:
 
 def test_soft_get_returns_none_default_when_unset() -> None:
     app = FastAPI()
-    # FRONTEND_ADAPTER is the surviving soft slot — its unset read is the None
-    # default (CHANNEL_PARSERS is now required; see the LookupError test below).
-    assert FRONTEND_ADAPTER.get(app) is None
+    # No declared server key carries a None-default soft slot any more (the last
+    # one left with the frontend adapter), so a local key pins the semantics: a
+    # soft key's unset read is its None default, not a LookupError.
+    key: StateKey[object] = StateKey("soft_slot")
+    assert key.get(app) is None
 
 
 def test_channel_parsers_get_raises_when_unset() -> None:
@@ -202,7 +203,6 @@ def test_server_keys_declare_expected_names_and_flags() -> None:
         (CHANNEL_REGISTRY, "channel_registry", True, None),
         (CHANNEL_PARSERS, "channel_parser_registry", True, None),
         (INGESTION, "ingestion", True, None),
-        (FRONTEND_ADAPTER, "frontend_adapter", False, None),
         (DRAINING, "draining", False, False),
     ]
     for key, name, required, default in expected:
@@ -211,9 +211,9 @@ def test_server_keys_declare_expected_names_and_flags() -> None:
         assert key.default == default
 
 
-def test_server_keys_module_exposes_nine_state_keys() -> None:
+def test_server_keys_module_exposes_eight_state_keys() -> None:
     keys = [v for v in vars(server_keys).values() if isinstance(v, StateKey)]
-    assert len(keys) == 9
+    assert len(keys) == 8
 
 
 # --- AC 9: worker-tier key declaration --------------------------------------

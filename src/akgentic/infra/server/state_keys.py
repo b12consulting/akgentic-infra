@@ -17,7 +17,6 @@ from __future__ import annotations
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
 from akgentic.infra.server.deps import TierServices
-from akgentic.infra.server.routes.frontend_adapter import FrontendAdapter
 from akgentic.infra.server.routes.ws import ConnectionManager
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
@@ -34,6 +33,3 @@ CHANNEL_PARSERS: StateKey[ChannelParserRegistry] = StateKey(
     "channel_parser_registry", required=True
 )
 INGESTION: StateKey[InteractionChannelIngestion] = StateKey("ingestion", required=True)
-
-# Soft key — only set when a frontend adapter is configured.
-FRONTEND_ADAPTER: StateKey[FrontendAdapter] = StateKey("frontend_adapter")

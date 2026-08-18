@@ -3,9 +3,8 @@
 These are *behaviour* tests for the migrated consumer sites (ADR-030 §Decision 2,
 §Validation): a **required** dependency raises ``LookupError`` (not
 ``AttributeError``) when exercised against an app that never ran
-``_store_state``, and returns the wired service after the normal app factory; a
-**soft** slot still yields ``None`` when unset and the route path tolerates it
-exactly as before. No assertion checks for a comment/docstring/ADR string
+``_store_state``, and returns the wired service after the normal app factory.
+No assertion checks for a comment/docstring/ADR string
 (Golden Rule #8); the concrete-type headline is left to ``mypy --strict`` and
 ``test_state_key.py``'s ``assert_type`` coverage.
 """
@@ -23,7 +22,7 @@ from akgentic.infra.server.routes.webhook import get_channel_parser_registry
 from akgentic.infra.server.routes.webhook import router as webhook_router
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
-from akgentic.infra.server.state_keys import CHANNEL_PARSERS, FRONTEND_ADAPTER
+from akgentic.infra.server.state_keys import CHANNEL_PARSERS
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.routes.teams import get_services as worker_get_services
 from akgentic.infra.worker.state_keys import SERVICES as WORKER_SERVICES
@@ -81,7 +80,7 @@ def test_worker_get_services_returns_wired_services() -> None:
     assert worker_get_services(request) is services
 
 
-# --- AC 19/23: required parser-registry raises; surviving soft slot stays None
+# --- AC 19/23: required parser-registry raises when unset -------------------
 
 
 def test_get_channel_parser_registry_raises_when_unset() -> None:
@@ -91,13 +90,6 @@ def test_get_channel_parser_registry_raises_when_unset() -> None:
     request = cast(Request, _RequestStub(FastAPI()))
     with pytest.raises(LookupError):
         get_channel_parser_registry(request)
-
-
-def test_frontend_adapter_get_is_none_when_unset() -> None:
-    """The soft ``FRONTEND_ADAPTER`` slot resolves to ``None`` when unset, so the
-    WS handler runs its unwrapped-event-send path exactly as before."""
-    request = cast(Request, _RequestStub(FastAPI()))
-    assert FRONTEND_ADAPTER.get(request) is None
 
 
 def _build_webhook_app_without_parser_registry() -> FastAPI:
