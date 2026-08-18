@@ -421,7 +421,7 @@ app = create_app(
 
 #### Extending a tier from your own package
 
-`server_modules(services, settings) -> list[AppModule]` is public API: it returns **the tier's canonical composition in canonical order**, so a package in a repository the framework does not own adds its own modules without retyping or forking the tier. A retyped copy drifts silently at the next upgrade — nothing tells you the tier grew a sixth module — which is exactly what this replaces. Full mechanism and rationale: the architecture shard `_bmad-output/akgentic-infra/architecture/09-app-assembly.md` (*Extending the app from a client package*).
+`server_modules(services, settings) -> list[AppModule]` is public API: it returns **the tier's canonical composition in canonical order**, so a package in a repository the framework does not own adds its own modules without retyping or forking the tier. A retyped copy drifts silently at the next upgrade — nothing tells you the tier grew a sixth module — which is exactly what this replaces. Full mechanism and rationale: *Extending the app from a client package* in the framework's app-assembly architecture shard (`_bmad-output/akgentic-infra/architecture/09-app-assembly.md`, which lives in the akgentic workspace rather than in this package).
 
 **Import from two places only.** `akgentic.infra.server` is the module-authoring surface — the contract types, the spec models, the band anchors, `server_modules`, `build_manifest` / `manifest_delta`, the assembly errors, `get_request_user` / `RequestUser`. `akgentic.infra` carries the deployment entrypoints (`wire_community`, `create_app`, `create_server_app`, `configure_process`). Anything reachable only at a deeper path (`…server.assembly`, `…server.app`, `…server.modules`, `…server.auth`) is internal and may move without notice; note in particular that `server_modules` is **not** re-exported from the package root, so `from akgentic.infra import server_modules` is an `ImportError`.
 
@@ -527,7 +527,7 @@ The example composes the **community** tier, which is the tier whose `server_mod
 
 **Splicing rules:**
 
-- **Adding** → append. Later modules cannot shadow earlier routes, so appending is always safe.
+- **Adding** → append. A later module can never shadow an earlier route at runtime, so appending can never quietly change stock behaviour; if one of your paths does collide with a framework one, the build says so (below) rather than losing the route silently.
 - **Overriding** a stock route → insert your module *before* the module that owns the route, and declare the override on your `RouteSpec`.
 - **Middleware placement is never a list position** — the layer ordinal decides. List position is only the tiebreak between equal layers. `EXTENSION` (700) is the documented default for a client module: inside identity, inside policy, inside the application band, so your middleware sees only requests that already passed the identity gate. Any integer is still legal — a signed-webhook verifier that must run *before* identity states its ordinal deliberately, where review can see it.
 
@@ -542,10 +542,17 @@ Two entry formats exist and they are **not** the same string:
 
 An `overrides` entry matching nothing is inert, not an error — over-declaring is safe, mis-spelling is silent.
 
-**Prove you disturbed nothing — the `manifest_delta` gate.** `manifest_delta(stock, composed)` diffs two manifests; the argument order is part of the contract (`stock` first — swapping them inverts every list silently):
+**Prove you disturbed nothing — the `manifest_delta` gate.** `manifest_delta(stock, composed)` diffs two manifests; the argument order is part of the contract (`stock` first — swapping them inverts every list silently). *Stock* is the tier built **without** your modules, *composed* is what your own factory returns — build both in the test, or the delta comes out empty and proves nothing:
 
 ```python
-from akgentic.infra.server import build_manifest, manifest_delta
+from akgentic.infra import wire_community
+from akgentic.infra.server import CommunitySettings, build_manifest, create_app, manifest_delta
+
+from acme_server.app import create_server_app
+
+settings = CommunitySettings()
+tier_app = create_app(wire_community(settings), settings)   # stock — the tier as shipped
+acme_app = create_server_app(settings)                      # composed — the tier plus your modules
 
 delta = manifest_delta(build_manifest(tier_app), build_manifest(acme_app))
 assert delta.routes_removed == [] and delta.middleware_removed == []
