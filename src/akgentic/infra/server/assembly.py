@@ -18,7 +18,13 @@ Key semantics, fixed here and nowhere else:
   exists.
 - **Routes mount in module-list order**; on a path collision the earlier
   module's route wins (Starlette matches first), so an override module is
-  simply listed before the module it overrides.
+  simply listed before the module it overrides. That runtime rule is
+  unchanged, but shadowing must now be **stated by the party doing it**: the
+  earlier (winning) ``RouteSpec`` lists the shadowed ``"METHOD /path"`` in
+  ``overrides`` or the build fails with :class:`RouteCollisionError`. A client
+  colliding with a framework route by accident, and a framework upgrade that
+  steals a client's route, both surface at build time instead of silently
+  changing behaviour in production.
 - **Lifespans compose** via ``AsyncExitStack``: startup in module-list order,
   shutdown in reverse.
 - **State follows a single-writer rule spanning two phases**: a key is written
@@ -96,6 +102,10 @@ class MissingStateProviderError(AssemblyError):
     """A middleware ``requires_state`` key has no producing module (build time)."""
 
 
+class RouteCollisionError(AssemblyError):
+    """Two route specs mount the same METHOD /path without a declared override (build time)."""
+
+
 class UnpopulatedStateError(AssemblyError):
     """A required state key was never populated by its producer's lifespan (boot time)."""
 
@@ -169,6 +179,11 @@ class RouteSpec(BaseModel):
     The router arrives pre-built: router-level dependencies (auth gates,
     caller-identity scoping) are the contributing module's business,
     constructed before contribution.
+
+    ``overrides`` is how a spec *states* that it deliberately shadows another
+    module's route. It belongs to the winner — the earliest contributing spec
+    for that path — because the loser declaring it would invert the guarantee:
+    a client could declare away a collision it is in fact losing.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -179,6 +194,10 @@ class RouteSpec(BaseModel):
     prefix: str = Field(
         default="",
         description="Mount prefix passed to include_router",
+    )
+    overrides: tuple[str, ...] = Field(
+        default=(),
+        description="'METHOD /path' entries this spec deliberately shadows (WS for websockets)",
     )
 
 
@@ -341,6 +360,15 @@ class _OrderedMiddleware(BaseModel):
     spec: MiddlewareSpec = Field(description="The contributed middleware spec")
 
 
+class _ContributedRoute(BaseModel):
+    """One route spec tagged with the module that contributed it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    module_name: str = Field(description="Name of the contributing module")
+    spec: RouteSpec = Field(description="The contributed route spec")
+
+
 class _StateRequirement(BaseModel):
     """One required state key with its declared producer and requirer, for boot checks."""
 
@@ -361,7 +389,11 @@ def build_app(
     Order semantics (fixed, documented, tier-independent):
 
     - **Routes** mount in module-list order; on a path collision the earlier
-      module's route wins (Starlette matches first).
+      module's route wins (Starlette matches first). The winning spec must
+      declare the shadowed ``"METHOD /path"`` in its ``overrides``; an
+      undeclared collision is a build-time error, so neither an accidental
+      client collision nor a framework upgrade stealing a client's route can
+      change behaviour silently.
     - **Middleware** sort by ``(layer, module index, spec index)`` and are all
       added after all routes; the lowest layer ends up outermost regardless of
       module-list order.
@@ -397,10 +429,14 @@ def build_app(
         DuplicateStateProviderError: Two modules provide the same state key,
             in either phase or across the two.
         MissingStateProviderError: A ``requires_state`` key has no producer.
+        RouteCollisionError: Two specs mount the same ``METHOD /path`` and the
+            earlier (winning) one does not declare it in ``overrides``.
     """
     module_list = list(modules)
     contributions = [list(module.contribute_state()) for module in module_list]
+    contributed = _collect_routes(module_list)
     providers = _validate_composition(module_list, contributions)
+    _validate_route_collisions(contributed)
     context = BuildContext(allowlist=_merge_allowlists(module_list))
     ordered = _collect_middleware(module_list, context)
     requirements = _validate_required_state(ordered, providers)
@@ -408,7 +444,7 @@ def build_app(
         title="Akgentic Platform API",
         lifespan=_compose_lifespan(module_list, requirements),
     )
-    _mount_routes(app, module_list)
+    _mount_routes(app, contributed)
     _register_exception_handlers(app, module_list)
     _apply_state_entries(app, contributions)
     # Middleware are added strictly AFTER all routes so an APPLICATION-layer
@@ -550,11 +586,84 @@ def _verify_startup_state(app: FastAPI, requirements: list[_StateRequirement]) -
         raise UnpopulatedStateError("; ".join(missing))
 
 
-def _mount_routes(app: FastAPI, modules: list[AppModule]) -> None:
-    """Mount every module's routers in module-list order (earlier wins collisions)."""
-    for module in modules:
-        for route_spec in module.contribute_routes():
-            app.include_router(route_spec.router, prefix=route_spec.prefix)
+def _collect_routes(modules: list[AppModule]) -> list[_ContributedRoute]:
+    """Call ``contribute_routes`` once per module, in composition order.
+
+    The ONLY call site of ``contribute_routes`` in the builder. A module is
+    entitled to construct its routers inside it, so calling it a second time
+    for mounting would double-construct and could yield routers other than the
+    ones the collision check just cleared.
+
+    Returns:
+        Every contributed spec, tagged with its module, in composition order.
+    """
+    return [
+        _ContributedRoute(module_name=module.name, spec=spec)
+        for module in modules
+        for spec in module.contribute_routes()
+    ]
+
+
+def _route_keys(spec: RouteSpec) -> list[str]:
+    """Full mounted ``"METHOD /path"`` keys for one spec — one entry per method.
+
+    The key is per method (unlike ``build_manifest``'s comma-joined form), so
+    ``GET /x`` and ``POST /x`` are different routes. Route attributes are read
+    with the same defensive ``getattr`` idiom ``build_manifest`` uses rather
+    than by ``isinstance`` on FastAPI/Starlette route classes: a version bump
+    reshaping that hierarchy then costs nothing here. Websocket routes carry no
+    methods and key as ``WS``.
+
+    Returns:
+        The spec's mounted keys, in router order then method-sorted order.
+    """
+    return [
+        f"{method} {spec.prefix}{path}"
+        for route in spec.router.routes
+        if (path := getattr(route, "path", None)) is not None
+        for method in sorted(getattr(route, "methods", None) or {"WS"})
+    ]
+
+
+def _validate_route_collisions(contributed: list[_ContributedRoute]) -> None:
+    """Reject a shadowed ``METHOD /path`` its winning spec never declared.
+
+    Detection covers module-contributed routes only. FastAPI's own built-ins
+    (``/openapi.json``, ``/docs``, ``/redoc``) are added by the ``FastAPI(...)``
+    constructor, belong to no module, and could not be declared against — so
+    raising on them would be a build failure the client cannot fix.
+
+    One declaration on the earliest spec satisfies the key however many later
+    specs collide on it; the check reports the first offending pair per key
+    rather than accumulating.
+
+    Raises:
+        RouteCollisionError: A later spec shadows an earlier one on the same
+            ``METHOD /path`` and the earlier (winning) spec does not list that
+            entry in ``overrides``.
+    """
+    winners: dict[str, _ContributedRoute] = {}
+    for entry in contributed:
+        # Keys are deduplicated per spec: one router registering the same
+        # METHOD /path twice is that module's own business, not the
+        # cross-module shadowing this check exists to surface.
+        for key in dict.fromkeys(_route_keys(entry.spec)):
+            winner = winners.get(key)
+            if winner is None:
+                winners[key] = entry
+            elif key not in winner.spec.overrides:
+                raise RouteCollisionError(
+                f"route collision on '{key}': module '{entry.module_name}' shadows "
+                f"module '{winner.module_name}'; the earlier module "
+                f"'{winner.module_name}' wins at runtime and must declare it — "
+                f'add overrides=("{key}",) to its RouteSpec'
+            )
+
+
+def _mount_routes(app: FastAPI, contributed: list[_ContributedRoute]) -> None:
+    """Mount every collected router in composition order (earlier wins collisions)."""
+    for entry in contributed:
+        app.include_router(entry.spec.router, prefix=entry.spec.prefix)
 
 
 def _register_exception_handlers(app: FastAPI, modules: list[AppModule]) -> None:

@@ -25,12 +25,14 @@ from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+import akgentic.infra.server
 from akgentic.infra.server.assembly import (
     IDENTITY,
     POLICY,
     TRANSPORT,
     AllowlistSpec,
     AppModule,
+    AssemblyError,
     BaseAppModule,
     BuildContext,
     DuplicateModuleNameError,
@@ -39,6 +41,7 @@ from akgentic.infra.server.assembly import (
     ExceptionHandlerSpec,
     MiddlewareSpec,
     MissingStateProviderError,
+    RouteCollisionError,
     RouteSpec,
     StateEntry,
     UnpopulatedStateError,
@@ -229,10 +232,20 @@ class _PolicyModule(BaseAppModule):
         self._events.append("stop:policy")
 
 
+_DELETE_TEAM = "DELETE /teams/{team_id}"
+
+
 class _TeamsOverrideModule(BaseAppModule):
-    """Overrides DELETE /teams/{id} — listed BEFORE core, so its route wins."""
+    """Overrides DELETE /teams/{id} — listed BEFORE core, so its route wins.
+
+    Winning is what obliges it to declare the shadow, so the declaration is the
+    default here; ``overrides=()`` builds the undeclared-collision case.
+    """
 
     name = "teams-override"
+
+    def __init__(self, *, overrides: tuple[str, ...] = (_DELETE_TEAM,)) -> None:
+        self._overrides = overrides
 
     def contribute_routes(self) -> list[RouteSpec]:
         router = APIRouter(prefix="/teams")
@@ -241,7 +254,7 @@ class _TeamsOverrideModule(BaseAppModule):
         def _delete_team(team_id: str) -> dict[str, str]:
             return {"team_id": team_id, "source": "override"}
 
-        return [RouteSpec(router=router)]
+        return [RouteSpec(router=router, overrides=self._overrides)]
 
 
 class _NoopMiddleware:
@@ -304,7 +317,7 @@ class TestCorsOutermost:
 
 
 class TestRouteCollision:
-    """AC 1.3: route collisions resolve by module-list order — earlier wins."""
+    """AC 1.3 / Story 63.2 AC 3-4: earlier wins at runtime, and must have declared it."""
 
     def test_earlier_module_wins_route_collision(self) -> None:
         modules: list[BaseAppModule] = [_TeamsOverrideModule(), *_demo_modules()]
@@ -312,11 +325,11 @@ class TestRouteCollision:
             response = client.delete("/teams/t1", headers={"X-API-Key": _KEY})
             assert response.json() == {"team_id": "t1", "source": "override"}
 
-    def test_later_module_loses_route_collision(self) -> None:
+    def test_later_module_declaring_the_shadow_still_raises(self) -> None:
+        """The declaration belongs to the winner; a loser cannot declare it away."""
         modules: list[BaseAppModule] = [*_demo_modules(), _TeamsOverrideModule()]
-        with TestClient(_build(modules)) as client:
-            response = client.delete("/teams/t1", headers={"X-API-Key": _KEY})
-            assert response.json() == {"team_id": "t1", "source": "core"}
+        with pytest.raises(RouteCollisionError, match=r"DELETE /teams/\{team_id\}"):
+            _build(modules)
 
 
 class TestAsyncStartupCollaborators:
@@ -678,6 +691,220 @@ class TestContributeState:
         modules: list[BaseAppModule] = [_BuildTimeStateModule(object()), _BuildTimeRequirer()]
         with TestClient(_build(modules)):
             pass
+
+
+class _PathModule(BaseAppModule):
+    """One route at a configurable method/path/prefix, answering with its own name.
+
+    The response body carries the module name, so a request proves *which*
+    module's handler served a shadowed path — never ``app.routes`` order.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        path: str,
+        *,
+        method: str = "GET",
+        prefix: str = "",
+        overrides: tuple[str, ...] = (),
+    ) -> None:
+        self.name = name
+        self._path = path
+        self._method = method
+        self._prefix = prefix
+        self._overrides = overrides
+
+    def contribute_routes(self) -> list[RouteSpec]:
+        router = APIRouter()
+        source = self.name
+
+        @router.api_route(self._path, methods=[self._method])
+        def _handler() -> dict[str, str]:
+            return {"source": source}
+
+        return [RouteSpec(router=router, prefix=self._prefix, overrides=self._overrides)]
+
+
+class _WsPathModule(BaseAppModule):
+    """One websocket route on a shared path — websocket specs collide too."""
+
+    def __init__(self, name: str, *, overrides: tuple[str, ...] = ()) -> None:
+        self.name = name
+        self._overrides = overrides
+
+    def contribute_routes(self) -> list[RouteSpec]:
+        router = APIRouter()
+
+        @router.websocket("/ws-shared")
+        async def _ws(websocket: object) -> None: ...
+
+        return [RouteSpec(router=router, overrides=self._overrides)]
+
+
+class _TwoSpecModule(BaseAppModule):
+    """One module contributing two specs that collide with each other."""
+
+    name = "twice"
+
+    def __init__(self, *, overrides: tuple[str, ...] = ()) -> None:
+        self._overrides = overrides
+
+    def contribute_routes(self) -> list[RouteSpec]:
+        first = APIRouter()
+
+        @first.get("/duplicated")
+        def _first() -> dict[str, str]:
+            return {"spec": "first"}
+
+        second = APIRouter()
+
+        @second.get("/duplicated")
+        def _second() -> dict[str, str]:
+            return {"spec": "second"}
+
+        return [RouteSpec(router=first, overrides=self._overrides), RouteSpec(router=second)]
+
+
+class _CountingRoutesModule(BaseAppModule):
+    """Counts ``contribute_routes`` invocations — the builder must call it once."""
+
+    name = "counting"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def contribute_routes(self) -> list[RouteSpec]:
+        self.calls += 1
+        router = APIRouter(prefix="/counted")
+
+        @router.get("/ping")
+        def _ping() -> dict[str, str]:
+            return {"status": "ok"}
+
+        return [RouteSpec(router=router)]
+
+
+class TestUndeclaredRouteCollision:
+    """Story 63.2 AC 2: an undeclared shadow is a named build-time error."""
+
+    def test_undeclared_collision_names_both_modules_and_the_literal_entry(self) -> None:
+        modules: list[BaseAppModule] = [_TeamsOverrideModule(overrides=()), *_demo_modules()]
+        with pytest.raises(RouteCollisionError) as excinfo:
+            _build(modules)
+        message = str(excinfo.value)
+        # The message IS the deliverable: it must carry the winner, the loser,
+        # the method, the path, and the literal line to paste. Asserted by
+        # fragment so a wording improvement is not a test edit.
+        for fragment in (
+            "teams-override",
+            "core",
+            "DELETE",
+            "/teams/{team_id}",
+            'overrides=("DELETE /teams/{team_id}",)',
+        ):
+            assert fragment in message
+
+    def test_same_module_colliding_with_itself_is_detected_identically(self) -> None:
+        with pytest.raises(RouteCollisionError, match=r"twice.*GET /duplicated") as excinfo:
+            _build([_TwoSpecModule()])
+        assert 'overrides=("GET /duplicated",)' in str(excinfo.value)
+
+    def test_earlier_spec_of_one_module_declares_and_wins(self) -> None:
+        with TestClient(_build([_TwoSpecModule(overrides=("GET /duplicated",))])) as client:
+            assert client.get("/duplicated").json() == {"spec": "first"}
+
+    def test_websocket_collision_is_keyed_ws(self) -> None:
+        modules: list[BaseAppModule] = [_WsPathModule("ws-a"), _WsPathModule("ws-b")]
+        with pytest.raises(RouteCollisionError, match=r"WS /ws-shared"):
+            _build(modules)
+
+    def test_declared_websocket_collision_builds(self) -> None:
+        modules: list[BaseAppModule] = [
+            _WsPathModule("ws-a", overrides=("WS /ws-shared",)),
+            _WsPathModule("ws-b"),
+        ]
+        assert "WS /ws-shared" in build_manifest(_build(modules)).routes
+
+
+class TestRouteCollisionKeying:
+    """Story 63.2 AC 3, 7-9: what counts as the same route, and what does not."""
+
+    def test_prefix_is_resolved_before_comparison(self) -> None:
+        modules: list[BaseAppModule] = [
+            _PathModule("acme-prefixed", "/reports", prefix="/acme"),
+            _PathModule("bare", "/acme/reports"),
+        ]
+        with pytest.raises(RouteCollisionError, match=r"GET /acme/reports"):
+            _build(modules)
+
+    def test_prefixed_route_does_not_collide_with_the_unprefixed_path(self) -> None:
+        modules: list[BaseAppModule] = [
+            _PathModule("acme-prefixed", "/reports", prefix="/acme"),
+            _PathModule("bare", "/reports"),
+        ]
+        with TestClient(_build(modules)) as client:
+            # Both survive as distinct routes — proven by two distinct bodies,
+            # which no shadowing composition could produce.
+            assert client.get("/acme/reports").json() == {"source": "acme-prefixed"}
+            assert client.get("/reports").json() == {"source": "bare"}
+
+    def test_declaring_module_serves_the_shadowed_path(self) -> None:
+        modules: list[BaseAppModule] = [
+            _PathModule(
+                "acme-prefixed", "/reports", prefix="/acme", overrides=("GET /acme/reports",)
+            ),
+            _PathModule("bare", "/acme/reports"),
+        ]
+        with TestClient(_build(modules)) as client:
+            assert client.get("/acme/reports").json() == {"source": "acme-prefixed"}
+
+    def test_different_methods_on_one_path_do_not_collide(self) -> None:
+        modules: list[BaseAppModule] = [
+            _PathModule("reader", "/acme/reports"),
+            _PathModule("writer", "/acme/reports", method="POST"),
+        ]
+        with TestClient(_build(modules)) as client:
+            assert client.get("/acme/reports").json() == {"source": "reader"}
+            assert client.post("/acme/reports").json() == {"source": "writer"}
+
+    def test_declaration_matching_nothing_is_inert(self) -> None:
+        """Over-declaring is the client's problem, never a build failure.
+
+        A client that keeps a declaration through a framework upgrade which
+        removed the stock route it shadowed must not be punished for it.
+        """
+        modules: list[BaseAppModule] = [
+            _PathModule("careful", "/acme/reports", overrides=("GET /gone-in-the-upgrade",)),
+        ]
+        with TestClient(_build(modules)) as client:
+            assert client.get("/acme/reports").status_code == 200
+
+
+class TestPublishedCollisionError:
+    """Story 63.2 AC 12: a client catches the error by the name it imports."""
+
+    def test_error_resolves_from_the_server_package_and_is_exported(self) -> None:
+        assert akgentic.infra.server.RouteCollisionError is RouteCollisionError
+        assert "RouteCollisionError" in akgentic.infra.server.__all__
+
+    def test_error_is_an_assembly_error(self) -> None:
+        """A client already catching ``AssemblyError`` keeps catching this one."""
+        assert issubclass(RouteCollisionError, AssemblyError)
+
+
+class TestRoutesCollectedOnce:
+    """Story 63.2 AC 10: detection and mounting consume ONE collection pass."""
+
+    def test_contribute_routes_invoked_once_and_its_result_is_what_mounts(self) -> None:
+        module = _CountingRoutesModule()
+        app = _build([_CoreModule(), module])
+        # A module may construct its routers inside contribute_routes; calling
+        # it twice would double-construct and the two results could differ.
+        assert module.calls == 1
+        assert "GET /counted/ping" in build_manifest(app).routes
+        with TestClient(app) as client:
+            assert client.get("/counted/ping").json() == {"status": "ok"}
 
 
 class TestExceptionHandlerRegistrarForm:
