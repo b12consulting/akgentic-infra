@@ -7,20 +7,22 @@ validation, error mapping, and CRUD semantics; infra owns only the mount
 point, the auth gate, and the structured mutation log middleware — all of
 which live in ``CoreModule`` (ADR-039, epic 57).
 
-Uniform tier bootstrap (ADR-039 §5): :func:`server_modules` declares the
-community composition (the ONE place it exists — tiers append their modules
-to it), :func:`create_server_app` is the settings-only factory a bare
-``uvicorn --factory`` target can call, and :func:`create_app` is the
+Uniform tier bootstrap (ADR-039 §5): :func:`create_app` is the
 pre-wired-services entry point carrying the assembly sequence exactly once —
-process-global pre-steps (logging, catalog prefix policy), then
-``build_app``. ``CoreModule`` is self-contained:
-state, exception handlers, and the drain lifespan are its contributions, and
-nothing mutates the app after ``build_app`` returns.
+the invariant process globals (logging, catalog prefix policy) hardwired
+first, then the additive ``configure_process`` tier hook, then ``build_app``
+over the ``modules`` argument (``None`` means the community composition:
+``CoreModule`` alone). A tier hands its module list and its process hook
+directly to ``create_app``; :func:`create_server_app` is the settings-only
+factory a bare ``uvicorn --factory`` target can call. ``CoreModule`` is
+self-contained: state, exception handlers, and the drain lifespan are its
+contributions, and nothing mutates the app after ``build_app`` returns.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 
 from fastapi import FastAPI
 
@@ -34,25 +36,40 @@ from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 logger = logging.getLogger(__name__)
 
 
-def server_modules(services: TierServices, settings: ServerSettings) -> list[AppModule]:
-    """Declare the community composition: ``CoreModule`` alone.
+def configure_process(settings: ServerSettings) -> None:
+    """Default tier process hook: do nothing.
 
-    The one place the community module list exists. Tier assembly functions
-    build their lists around it — hence the deliberately wide
-    ``list[AppModule]`` return type.
+    ``create_app`` invokes its ``configure_process`` argument AFTER the
+    invariant process globals (``configure_logging``,
+    ``set_allowed_prefixes``) — extension semantics: a tier passes its own
+    callable to ADD process configuration (e.g. OTel setup) on top of the
+    invariants, never to replace them. App contributions are the modules'
+    business, never this hook's.
     """
-    return [CoreModule(services=services, settings=settings)]
 
 
 def create_app(
     services: TierServices,
     settings: ServerSettings | None = None,
+    modules: Sequence[AppModule] | None = None,
+    configure_process: Callable[[ServerSettings], None] = configure_process,
 ) -> FastAPI:
     """Create and configure the FastAPI application from pre-wired services.
+
+    The assembly sequence, fixed here and nowhere else: ``configure_logging``
+    and ``set_allowed_prefixes`` run invariant and hardwired — a tier can
+    neither forget nor override them — then the ``configure_process`` hook
+    runs (additive tier process config, after both by construction), then
+    ``build_app`` composes the module list.
 
     Args:
         services: Pre-wired tier services container.
         settings: Server settings. Defaults to ``ServerSettings()``.
+        modules: Ordered module composition. ``None`` selects the community
+            composition — ``CoreModule`` alone.
+        configure_process: Additive tier process hook, invoked after the
+            invariant process globals. Defaults to the module-level named
+            no-op of the same name.
 
     Returns:
         Configured FastAPI application instance.
@@ -62,8 +79,10 @@ def create_app(
     logger.info("Logging configured: level=%s", settings.log_level)
     set_allowed_prefixes(settings.catalog_model_type_prefixes)
     logger.info("Catalog model_type allowlist: %s", allowed_prefixes())
-    modules = server_modules(services, settings)
-    return build_app(settings, services, modules)
+    configure_process(settings)
+    return build_app(
+        settings, services, modules or [CoreModule(services=services, settings=settings)]
+    )
 
 
 def create_server_app(settings: CommunitySettings | None = None) -> FastAPI:

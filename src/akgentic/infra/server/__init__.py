@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from akgentic.infra.server.app import create_app, create_server_app, server_modules
+from akgentic.infra.server.app import configure_process, create_app, create_server_app
 from akgentic.infra.server.assembly import (
     APPLICATION,
     IDENTITY,
@@ -79,7 +79,7 @@ __all__ = [
     "UnpopulatedStateError",
     "build_app",
     "build_manifest",
+    "configure_process",
     "create_app",
     "create_server_app",
-    "server_modules",
 ]

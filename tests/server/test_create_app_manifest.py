@@ -37,7 +37,7 @@ from fastapi.testclient import TestClient
 
 import akgentic.infra
 import akgentic.infra.server
-from akgentic.infra.server.app import create_app
+from akgentic.infra.server.app import configure_process, create_app
 from akgentic.infra.server.assembly import build_manifest
 
 if TYPE_CHECKING:
@@ -243,11 +243,18 @@ class TestSignatureAndImports:
         assert akgentic.infra.server.create_app is create_app
 
     def test_signature_unchanged(self) -> None:
-        """``create_app(services, settings=None)`` — names, order, default."""
+        """``create_app(services, settings=None, modules=None, configure_process=<no-op>)``.
+
+        Retargeted exactly once, by Story 57.7 (its AC 2 sanctioned retarget):
+        the two additive parameters extend the pinned list; names, order, and
+        defaults of the original pair are unchanged.
+        """
         params = list(inspect.signature(create_app).parameters.values())
-        assert [p.name for p in params] == ["services", "settings"]
+        assert [p.name for p in params] == ["services", "settings", "modules", "configure_process"]
         assert params[0].default is inspect.Parameter.empty
         assert params[1].default is None
+        assert params[2].default is None
+        assert params[3].default is configure_process
 
 
 class TestLifespanShutdownOrder:

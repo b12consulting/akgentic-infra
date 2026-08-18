@@ -44,7 +44,7 @@ from akgentic.infra.protocols import (
     WorkerHandle,
     WorkerRejectedError,
 )
-from akgentic.infra.server.app import create_app, create_server_app, server_modules
+from akgentic.infra.server.app import configure_process, create_app, create_server_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
 from akgentic.infra.server.models import (
     CreateTeamRequest,
@@ -120,9 +120,9 @@ __all__ = [
     "WorkspaceFileEntry",
     "WorkspaceFileUploadResponse",
     "WorkspaceTreeResponse",
+    "configure_process",
     "create_app",
     "create_server_app",
-    "server_modules",
     # Wiring
     "wire_community",
 ]

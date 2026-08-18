@@ -178,9 +178,10 @@ def test_boot_log_names_the_effective_prefix_tuple(
     )
     app_logger = logging.getLogger("akgentic.infra.server.app")
     caplog.set_level(logging.INFO, logger=app_logger.name)
-    # create_app calls configure_logging(), which replaces the ROOT logger's
-    # handlers wholesale — dropping caplog's own handler mid-call. Attaching it
-    # to the module logger instead keeps the boot line captured.
+    # Attaching caplog's handler to the module logger keeps the boot line
+    # captured independently of the ROOT logger's handler set — historically
+    # configure_logging() replaced root handlers wholesale mid-call; since
+    # story 57.7 it is additive, but this test stays decoupled either way.
     app_logger.addHandler(caplog.handler)
     try:
         create_app(community_services, settings)
