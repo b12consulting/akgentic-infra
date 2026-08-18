@@ -513,7 +513,7 @@ The `409` is deliberately the same status **and the same body** as `GET /admin/c
 
 | Condition | Status | Body |
 |---|---|---|
-| Unknown team, or a team the caller may not see | `404` | `detail`: `Team not found` (404-over-403, no existence leak) |
+| Unknown team, or a team the caller may not see | `404` | `detail`: `Team not found`, or `Team <id> not found` on the routes that echo the service's message (404-over-403, no existence leak) |
 | The team exists but its state forbids the operation — restoring a running team, stopping a stopped one, messaging a team that is not running | `409` | `detail`: the condition, e.g. `Team <id> is already running` |
 | The team has been deleted | `404` | `detail`: the message naming the deletion |
 

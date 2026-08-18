@@ -12,6 +12,8 @@ from akgentic.infra.errors import (
     MetadataValidationError,
     PlacementConsistencyError,
     ServerError,
+    TeamNotFoundError,
+    TeamStateConflictError,
 )
 from akgentic.infra.protocols.placement import (
     NoCapacityError,
@@ -161,6 +163,33 @@ class TestMetadataValidationError:
         assert isinstance(err, ServerError)
         assert not isinstance(err, ValueError)
         assert not isinstance(err, PlacementError)
+
+
+class TestTeamErrorClassification:
+    """Story 59.1: the two team errors are ``ValueError``s, deliberately not ``ServerError``s."""
+
+    @pytest.mark.parametrize("typ", [TeamNotFoundError, TeamStateConflictError])
+    def test_is_a_value_error(self, typ: type[ValueError]) -> None:
+        """The load-bearing detail of the whole type-based mapping.
+
+        Every pre-existing ``except ValueError`` — the routes still on
+        ``_raise_action_error``, the three routes' fallback, the CLI — keeps
+        catching these, which is what made the split additive rather than a
+        migration.
+        """
+        assert isinstance(typ("x"), ValueError)
+
+    @pytest.mark.parametrize("typ", [TeamNotFoundError, TeamStateConflictError])
+    def test_is_not_a_server_error(self, typ: type[ValueError]) -> None:
+        """Rebasing these onto ``ServerError`` would break them silently.
+
+        ``ServerError`` is tempting — it carries a ``status_code`` — but it is
+        not a ``ValueError``, so every existing catch site would stop catching
+        and the registered ``ServerError`` handler would answer 500 by default.
+        The routes map these by type instead; nothing handles them app-level,
+        which is what ``protocols/channels.py``'s error contract states.
+        """
+        assert not isinstance(typ("x"), ServerError)
 
 
 class TestModuleHygiene:

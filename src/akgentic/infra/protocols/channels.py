@@ -82,21 +82,25 @@ class InteractionChannelIngestion(Protocol):
       service invocation.
 
     Error contract:
-        - ``route_reply()`` raises ``ValueError`` if ``team_id`` does not
-          correspond to a running team — ``TeamNotFoundError`` when the team is
-          unknown, ``TeamStateConflictError`` when it exists in a state the
-          operation forbids. Both are ``ValueError`` subclasses, so a caller
-          that does not need the distinction is unaffected; one that does maps
-          them to 404 and 409 respectively.
         - ``initiate_team()`` raises, for a ``catalog_entry_id`` that does not
           yield a team, either ``EntryNotFoundError`` (the namespace holds
           nothing, or — as ``CatalogTeamEntryMissingError`` — holds no team
           entry) → HTTP 404, or ``CatalogValidationError`` (the namespace is
           present and its stored entries are invalid) → HTTP 409 carrying the
-          catalog's own message.
-        Callers that catch nothing get both mappings from the app-level
-        handlers, which is the intended path — a local catch that reports every
-        failure as 404 discards the diagnosis.
+          catalog's own message. **Catch neither.** Both belong to the catalog's
+          exception family, which the app registers handlers for, so letting
+          them propagate produces those two answers for free; a local catch that
+          reports every failure as 404 discards the diagnosis.
+        - ``route_reply()`` raises ``ValueError`` if ``team_id`` does not
+          correspond to a running team — ``TeamNotFoundError`` when the team is
+          unknown, ``TeamStateConflictError`` when it exists in a state the
+          operation forbids. Both are ``ValueError`` subclasses, so a caller
+          that does not need the distinction is unaffected.
+          **These two have no app-level handler.** They subclass ``ValueError``,
+          not ``ServerError``, and nothing registers a ``ValueError`` handler,
+          so a caller that lets them propagate gets a 500 — not a 404 or a 409.
+          A caller that wants those answers must map by type itself, the way
+          ``server/routes/teams.py`` does.
     """
 
     async def route_reply(
