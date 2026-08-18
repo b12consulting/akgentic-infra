@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from akgentic.infra.errors import TeamStateConflictError
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.settings import CommunitySettings
@@ -29,6 +30,72 @@ def test_create_team_invalid_entry(client: TestClient) -> None:
     """POST /teams with unknown catalog entry returns 404."""
     resp = client.post("/teams/", json={"catalog_namespace": "nonexistent"})
     assert resp.status_code == 404
+
+
+# --- POST /teams failure modes: absent, teamless, invalid (Epic 59 Part A) ---
+
+
+def test_create_team_absent_namespace_is_404_naming_the_namespace(client: TestClient) -> None:
+    """A namespace that holds nothing at all keeps today's 404 and its message."""
+    resp = client.post("/teams/", json={"catalog_namespace": "nonexistent"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Catalog namespace not found"
+
+
+def test_create_team_namespace_without_team_entry_is_404_saying_so(client: TestClient) -> None:
+    """A namespace that exists but holds no team entry is a 404 that says which.
+
+    "Not found" about a namespace the operator can see listed is the same lie
+    this epic removes from the invalid case, so the two 404s carry different
+    messages.
+    """
+    resp = client.post("/teams/", json={"catalog_namespace": "teamless"})
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert "has no team entry" in detail
+    assert "teamless" in detail
+    assert detail != "Catalog namespace not found"
+
+
+def test_create_team_invalid_namespace_is_409_carrying_the_catalog_message(
+    client: TestClient,
+) -> None:
+    """A namespace that exists and fails validation is a 409 with the diagnosis.
+
+    The status alone is not the fix — the body text is. Asserting only the code
+    would stay green if the message were replaced by "Catalog namespace not
+    found" again.
+    """
+    resp = client.post("/teams/", json={"catalog_namespace": "broken-team"})
+    assert resp.status_code == 409
+    body = resp.json()
+    assert "ref marker" in body["detail"]
+    assert "'params'" in body["detail"]
+    assert isinstance(body["errors"], list)
+    assert body["errors"]
+    assert any("ref marker" in err for err in body["errors"])
+
+
+def test_create_team_409_body_matches_the_resolve_endpoint(client: TestClient) -> None:
+    """``POST /teams`` and ``/admin/catalog/team/{ns}/resolve`` answer identically.
+
+    Same catalog state, same diagnosis, same body — that equivalence is the
+    reason 409 was chosen over a fresh status, and nothing else pins it: the
+    moment the re-raise is "tidied" into a local ``HTTPException(409)``, the
+    ``errors`` list vanishes and only this assertion notices.
+    """
+    created = client.post("/teams/", json={"catalog_namespace": "broken-team"})
+    resolved = client.get("/admin/catalog/team/broken-team/resolve")
+
+    assert created.status_code == resolved.status_code == 409
+    assert created.json().keys() == resolved.json().keys()
+    assert created.json() == resolved.json()
+
+
+def test_create_team_valid_namespace_still_201(client: TestClient) -> None:
+    """The fourth outcome: a namespace that resolves is unchanged by the split."""
+    resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    assert resp.status_code == 201
 
 
 def test_list_teams_empty(client: TestClient) -> None:
@@ -86,6 +153,110 @@ def test_delete_team_not_found(client: TestClient) -> None:
     """DELETE /teams/{id} returns 404 for unknown team."""
     resp = client.delete(f"/teams/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+# --- Team-state errors are classified by type, not by message (Epic 59 Part B) ---
+
+
+def test_absent_team_is_404_on_every_previously_flattening_route(client: TestClient) -> None:
+    """The three routes that flattened every ValueError still answer 404 when absent.
+
+    The flattening was only ever right for this case; keeping it pinned is what
+    stops the fix from over-correcting into 409 for a genuinely missing team.
+    """
+    absent = uuid.uuid4()
+    assert client.delete(f"/teams/{absent}").status_code == 404
+    assert client.get(f"/teams/{absent}/events").status_code == 404
+    assert client.get(f"/teams/{absent}/agent-states").status_code == 404
+
+
+def test_acting_on_a_running_team_is_409_naming_the_condition(client: TestClient) -> None:
+    """A real, live team refuses an operation as a conflict — never as "not found".
+
+    Driven end to end against a team the app actually started: the response must
+    name the state that caused the refusal, because "Team not found" about a
+    running team sends the reader looking for the wrong problem entirely.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+
+    resp = client.post(f"/teams/{team_id}/restore")
+
+    assert resp.status_code == 409
+    assert "already running" in resp.json()["detail"]
+    assert client.get(f"/teams/{team_id}").status_code == 200  # still there, still visible
+
+
+def test_state_conflict_from_the_service_is_409_on_the_flattening_routes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conflict surfacing on those three routes answers 409, not 404.
+
+    The team, the app and the service are the real wired ones; only the single
+    call under test is forced to report a conflict. On the community tier no
+    conflict reaches these three routes today (``delete_team`` stops a running
+    team before deleting, and the two reads only ever fail as "not found"), so
+    without this the type-based mapping would ship unexercised and the next
+    condition to arrive would land back on 404.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    service = client.app.state.services.team_service
+
+    def _conflict(_team_id: uuid.UUID) -> None:
+        raise TeamStateConflictError(f"Team {_team_id} is currently running")
+
+    monkeypatch.setattr(service, "get_agent_states", _conflict)
+    monkeypatch.setattr(service, "delete_team", _conflict)
+
+    states = client.get(f"/teams/{team_id}/agent-states")
+    assert states.status_code == 409
+    assert "currently running" in states.json()["detail"]
+
+    deleted = client.delete(f"/teams/{team_id}")
+    assert deleted.status_code == 409
+    assert "currently running" in deleted.json()["detail"]
+
+
+def test_unclassified_value_error_keeps_its_404_on_the_flattening_routes(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare ValueError the service did not classify answers exactly as before.
+
+    Those arrive from the team package, whose conditions this layer cannot name.
+    Preserving 404 keeps the change additive — the fallback exists so an
+    unclassified error cannot become a 500.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    service = client.app.state.services.team_service
+
+    def _bare(_team_id: uuid.UUID) -> None:
+        msg = "something the service never classified"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(service, "get_agent_states", _bare)
+
+    resp = client.get(f"/teams/{team_id}/agent-states")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Team not found"
+
+
+def test_routes_using_the_message_matcher_keep_todays_statuses(client: TestClient) -> None:
+    """The routes left on ``_raise_action_error`` answer exactly as before.
+
+    The typed errors subclass ``ValueError`` and carry unchanged messages, so
+    the helper keeps producing today's answers — this pins that the migration of
+    the three routes changed nothing for the others.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    absent = uuid.uuid4()
+
+    assert client.post(f"/teams/{team_id}/restore").status_code == 409  # already running
+    assert client.post(f"/teams/{team_id}/stop").status_code == 204
+    assert client.post(f"/teams/{team_id}/stop").status_code == 409  # already stopped
+    assert client.post(f"/teams/{team_id}/message", json={"content": "hi"}).status_code == 409
+    assert client.post(f"/teams/{absent}/stop").status_code == 404
+    assert client.post(f"/teams/{absent}/restore").status_code == 404
 
 
 # --- RequestUser identity seam (ADR-023 Story 26.1) ---

@@ -12,10 +12,15 @@ from typing import get_type_hints
 from unittest.mock import MagicMock
 
 import pytest
-from akgentic.catalog.models.errors import EntryNotFoundError
+from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.team.models import Process, TeamStatus
 
-from akgentic.infra.server.services.team_service import MAX_PAGE_SIZE, TeamService
+from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
+from akgentic.infra.server.services.team_service import (
+    MAX_PAGE_SIZE,
+    CatalogTeamEntryMissingError,
+    TeamService,
+)
 
 
 def test_create_team_returns_process(team_service: TeamService) -> None:
@@ -31,6 +36,61 @@ def test_create_team_invalid_entry_raises(team_service: TeamService) -> None:
     """Creating a team with an invalid catalog namespace raises EntryNotFoundError."""
     with pytest.raises(EntryNotFoundError):
         team_service.create_team(catalog_namespace="nonexistent", user_id="anonymous")
+
+
+def test_create_team_present_but_invalid_namespace_propagates_the_catalog_message(
+    team_service: TeamService,
+) -> None:
+    """A namespace that exists and fails to resolve keeps the catalog's diagnosis.
+
+    The translation this replaces turned every ``CatalogValidationError`` into an
+    ``EntryNotFoundError``, which destroyed the only text saying what to repair —
+    one layer below the wire, where no client could recover it.
+    """
+    with pytest.raises(CatalogValidationError) as excinfo:
+        team_service.create_team(catalog_namespace="broken-team", user_id="anonymous")
+
+    assert "ref marker" in str(excinfo.value)
+    assert "'params'" in str(excinfo.value)
+    assert excinfo.value.errors
+    # An absent namespace is a different answer, so this must not be one.
+    assert not isinstance(excinfo.value, EntryNotFoundError)
+
+
+def test_create_team_namespace_without_team_entry_is_a_not_found(
+    team_service: TeamService,
+) -> None:
+    """A namespace that exists but holds no team entry is missing, not broken.
+
+    Nothing is invalid here — there is simply no team to create from — so this
+    stays in the ``EntryNotFoundError`` family, with a message that says which
+    of the two 404s it is.
+    """
+    with pytest.raises(CatalogTeamEntryMissingError) as excinfo:
+        team_service.create_team(catalog_namespace="teamless", user_id="anonymous")
+
+    assert isinstance(excinfo.value, EntryNotFoundError)
+    assert "has no team entry" in str(excinfo.value)
+
+
+def test_create_team_probes_the_namespace_only_on_the_failure_path(
+    team_service: TeamService,
+) -> None:
+    """A successful create never runs the existence probe.
+
+    The probe exists to classify a failure; running it before ``load_team``
+    would put a second catalog query on every create for a branch that almost
+    never fires.
+    """
+    spy = MagicMock(wraps=team_service._services.catalog)
+    team_service._services.catalog = spy  # type: ignore[assignment]
+
+    team_service.create_team(catalog_namespace="test-team", user_id="anonymous")
+    assert spy.list_by_namespace.call_count == 0
+
+    with pytest.raises(CatalogValidationError):
+        team_service.create_team(catalog_namespace="broken-team", user_id="anonymous")
+    spy.list_by_namespace.assert_called_once_with("broken-team")
 
 
 def test_create_team_propagates_catalog_namespace(team_service: TeamService) -> None:
@@ -285,6 +345,69 @@ def test_delete_team_not_found_raises(team_service: TeamService) -> None:
     """delete_team raises ValueError for a nonexistent team ID."""
     with pytest.raises(ValueError, match="not found"):
         team_service.delete_team(uuid.uuid4())
+
+
+# ---------------------------------------------------------------------------
+# Epic 59 Part B — the service names the condition; the routes map it by type.
+#
+# Driven through the wired service against real running teams: a mocked manager
+# raising ``ValueError("...")`` cannot tell a correct classification from the
+# flattening one, which is how the flattening survived this long.
+# ---------------------------------------------------------------------------
+
+
+def test_absent_team_raises_team_not_found_on_every_read_and_lifecycle_path(
+    team_service: TeamService,
+) -> None:
+    """An unknown team is classified as missing wherever it is looked up."""
+    absent = uuid.uuid4()
+    for operation in (
+        team_service.delete_team,
+        team_service.stop_team,
+        team_service.restore_team,
+        team_service.get_events,
+        team_service.get_agent_states,
+    ):
+        with pytest.raises(TeamNotFoundError, match="not found"):
+            operation(absent)  # type: ignore[operator]
+
+
+def test_running_team_restore_raises_state_conflict_not_not_found(
+    team_service: TeamService,
+) -> None:
+    """A real RUNNING team is a conflict, never a missing one.
+
+    This is the defect's shape at the service layer: the team exists, is alive,
+    and the operation is refused because of *that* — reporting it as absent
+    tells the caller the opposite of the truth.
+    """
+    process = team_service.create_team(catalog_namespace="test-team", user_id="anonymous")
+
+    with pytest.raises(TeamStateConflictError) as excinfo:
+        team_service.restore_team(process.team_id)
+
+    assert "already running" in str(excinfo.value)
+    assert not isinstance(excinfo.value, TeamNotFoundError)
+    # Still a ValueError, so every existing catch site keeps working unchanged.
+    assert isinstance(excinfo.value, ValueError)
+
+
+def test_stopped_team_stop_again_raises_state_conflict(team_service: TeamService) -> None:
+    """Stopping an already-stopped real team is a conflict, not a 404 condition."""
+    process = team_service.create_team(catalog_namespace="test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+
+    with pytest.raises(TeamStateConflictError, match="already stopped"):
+        team_service.stop_team(process.team_id)
+
+
+def test_message_to_a_stopped_team_raises_state_conflict(team_service: TeamService) -> None:
+    """A stopped team is present-but-unusable — the running-handle path says so."""
+    process = team_service.create_team(catalog_namespace="test-team", user_id="anonymous")
+    team_service.stop_team(process.team_id)
+
+    with pytest.raises(TeamStateConflictError, match="is not running"):
+        team_service.send_message(process.team_id, "hello")
 
 
 # ---------------------------------------------------------------------------

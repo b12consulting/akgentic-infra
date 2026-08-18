@@ -83,10 +83,20 @@ class InteractionChannelIngestion(Protocol):
 
     Error contract:
         - ``route_reply()`` raises ``ValueError`` if ``team_id`` does not
-          correspond to a running team.
-        - ``initiate_team()`` raises ``EntryNotFoundError`` (from
-          ``akgentic.catalog``) if ``catalog_entry_id`` is invalid.
-        Callers (webhook routes) should catch and map to HTTP 404.
+          correspond to a running team — ``TeamNotFoundError`` when the team is
+          unknown, ``TeamStateConflictError`` when it exists in a state the
+          operation forbids. Both are ``ValueError`` subclasses, so a caller
+          that does not need the distinction is unaffected; one that does maps
+          them to 404 and 409 respectively.
+        - ``initiate_team()`` raises, for a ``catalog_entry_id`` that does not
+          yield a team, either ``EntryNotFoundError`` (the namespace holds
+          nothing, or — as ``CatalogTeamEntryMissingError`` — holds no team
+          entry) → HTTP 404, or ``CatalogValidationError`` (the namespace is
+          present and its stored entries are invalid) → HTTP 409 carrying the
+          catalog's own message.
+        Callers that catch nothing get both mappings from the app-level
+        handlers, which is the intended path — a local catch that reports every
+        failure as 404 discards the diagnosis.
     """
 
     async def route_reply(

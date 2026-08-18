@@ -8,8 +8,12 @@ from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from akgentic.catalog.models.errors import EntryNotFoundError
-from akgentic.infra.errors import MetadataValidationError
+from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
+from akgentic.infra.errors import (
+    MetadataValidationError,
+    TeamNotFoundError,
+    TeamStateConflictError,
+)
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.models import (
     AgentStateListResponse,
@@ -28,7 +32,7 @@ from akgentic.infra.server.models import (
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
 from akgentic.infra.server.routes._team_access import get_team_service, require_team_access
 from akgentic.infra.server.services._metadata_payload import dump_metadata
-from akgentic.infra.server.services.team_service import TeamService
+from akgentic.infra.server.services.team_service import CatalogTeamEntryMissingError, TeamService
 from akgentic.infra.server.state_keys import CONNECTION_MANAGER
 from akgentic.team import EventNotFoundError
 from akgentic.team.models import Process, TeamStatus
@@ -68,6 +72,13 @@ def create_team(
 
     ``body.metadata`` is plain JSON validated server-side against the type the
     team's catalog entry declares; a rejected body is a 422 and creates nothing.
+
+    Four outcomes, and the point of the three failures is that they are told
+    apart: **404** when the namespace holds nothing, **404** naming the
+    condition when it exists but holds no team entry, **409** carrying the
+    catalog's own message when it exists and its stored entries are invalid, and
+    **201** otherwise. The 409 body is what
+    ``GET /admin/catalog/team/{namespace}/resolve`` returns for the same state.
     """
     logger.info("POST /teams — catalog_namespace=%s", body.catalog_namespace)
     try:
@@ -82,12 +93,32 @@ def create_team(
         # message to 404/409 and would report a validation failure as a conflict.
         logger.warning("Team creation rejected — invalid metadata: %s", exc.detail)
         raise HTTPException(status_code=422, detail=exc.detail) from None
+    except CatalogTeamEntryMissingError as exc:
+        # Ordered before EntryNotFoundError, its base: the namespace is there,
+        # it simply holds no team, and saying "not found" about a namespace the
+        # operator can see listed is the lie this story exists to remove.
+        logger.warning("Team creation failed: %s", exc)
+        raise HTTPException(status_code=404, detail=str(exc)) from None
     except EntryNotFoundError:
         logger.warning(
             "Team creation failed: catalog namespace %s not found",
             body.catalog_namespace,
         )
         raise HTTPException(status_code=404, detail="Catalog namespace not found") from None
+    except CatalogValidationError as exc:
+        # Deliberately not _raise_action_error: that helper string-matches the
+        # message to 404/409 and would classify a validation failure by accident.
+        # Deliberately not a fresh HTTPException either — the app-level catalog
+        # handler already answers 409 with {detail, errors}, byte-for-byte what
+        # GET /admin/catalog/team/{namespace}/resolve returns for this same
+        # condition. A local HTTPException would shadow it and drop the errors
+        # list, re-splitting the two surfaces this re-raise keeps unified.
+        logger.warning(
+            "Team creation rejected — catalog namespace %s is invalid: %s",
+            body.catalog_namespace,
+            exc,
+        )
+        raise
     return _process_to_response(process)
 
 
@@ -210,7 +241,14 @@ def delete_team(
     logger.info("DELETE /teams/%s", team_id)
     try:
         service.delete_team(team_id)
+    except TeamNotFoundError:
+        raise HTTPException(status_code=404, detail="Team not found") from None
+    except TeamStateConflictError as exc:
+        _raise_state_conflict(exc)
     except ValueError:
+        # Anything the service did not classify keeps today's answer rather
+        # than becoming a 500 — including a bare ValueError rising from the
+        # team package, whose conditions this layer cannot name.
         raise HTTPException(status_code=404, detail="Team not found") from None
 
 
@@ -423,6 +461,10 @@ def get_events(
     logger.debug("GET /teams/%s/events after_event_id=%s", team_id, after_event_id)
     try:
         events = service.get_events(team_id, after_event_id=after_event_id)
+    except TeamNotFoundError:
+        raise HTTPException(status_code=404, detail="Team not found") from None
+    except TeamStateConflictError as exc:
+        _raise_state_conflict(exc)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
     except EventNotFoundError:
@@ -457,6 +499,10 @@ def get_agent_states(
     logger.debug("GET /teams/%s/agent-states", team_id)
     try:
         snapshots = service.get_agent_states(team_id)
+    except TeamNotFoundError:
+        raise HTTPException(status_code=404, detail="Team not found") from None
+    except TeamStateConflictError as exc:
+        _raise_state_conflict(exc)
     except ValueError:
         raise HTTPException(status_code=404, detail="Team not found") from None
     return AgentStateListResponse(
@@ -470,6 +516,21 @@ def get_agent_states(
             for s in snapshots
         ]
     )
+
+
+def _raise_state_conflict(exc: TeamStateConflictError) -> NoReturn:
+    """Answer 409 with the service's own description of the conflicting state.
+
+    The counterpart to the ``TeamNotFoundError → 404`` branch beside every call
+    site: classification is by exception type, and the message only ever travels
+    into the body. That is the difference from ``_raise_action_error`` below,
+    which decides the status by looking for words in the message.
+
+    Raises:
+        HTTPException: 409 carrying ``str(exc)``.
+    """
+    logger.warning("Team state conflict: %s", exc)
+    raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 def _raise_action_error(exc: ValueError) -> NoReturn:

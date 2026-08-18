@@ -63,3 +63,22 @@ class MetadataValidationError(ServerError):
 
     status_code = 422
     code = "invalid_metadata"
+
+
+class TeamNotFoundError(ValueError):
+    """The team does not exist in the system of record.
+
+    A ``ValueError`` subclass on purpose: every existing ``except ValueError``
+    around the team service keeps catching it unchanged, so routes can
+    discriminate by type without any call site having to be migrated first.
+    """
+
+
+class TeamStateConflictError(ValueError):
+    """The team exists, but its current state forbids the requested operation.
+
+    Carries the service's own message ("is already stopped", "is not running",
+    …) so a route can answer 409 with the real condition rather than reporting a
+    live team as missing. Same ``ValueError`` base, same additive reasoning as
+    ``TeamNotFoundError``.
+    """
