@@ -197,7 +197,6 @@ def channel_ingestion(
 @pytest.fixture()
 def channel_app(
     integration_services: CommunityServices,
-    integration_team_service: TeamService,
     integration_settings: CommunitySettings,
     channel_parser_registry: ChannelParserRegistry,
     channel_registry_instance: YamlChannelRegistry,

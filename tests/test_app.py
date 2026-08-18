@@ -14,10 +14,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from akgentic.infra.server import app as app_module
-from akgentic.infra.server.app import create_app
-from akgentic.infra.server.assembly import AppModule
+from akgentic.infra.server.app import create_app, create_server_app
+from akgentic.infra.server.assembly import AppModule, build_manifest
 from akgentic.infra.server.deps import CommunityServices, TierServices
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
+from akgentic.infra.server.state_keys import SERVICES, SETTINGS
 
 
 def test_create_app_returns_fastapi(
@@ -64,6 +65,48 @@ def test_custom_cors_origins(
         },
     )
     assert resp.headers.get("access-control-allow-origin") == "http://example.com"
+
+
+# ---------------------------------------------------------------------------
+# create_server_app — the uniform tier-bootstrap factory (Story 57.5, AC 5)
+# ---------------------------------------------------------------------------
+
+
+def test_create_server_app_wires_services_and_delegates_to_create_app(
+    seeded_settings: CommunitySettings,
+    community_services: CommunityServices,
+) -> None:
+    """create_server_app wires its own CommunityServices, then delegates.
+
+    The composed app carries the passed settings and a freshly wired services
+    container, and is manifest-identical to the pre-wired-services entry
+    point's app — the assembly sequence exists once, in create_app.
+    """
+    app = create_server_app(seeded_settings)
+    services = SERVICES.require(app)
+    assert isinstance(services, CommunityServices)
+    try:
+        assert SETTINGS.require(app) is seeded_settings
+        assert services is not community_services  # wired by the factory, not reused
+        reference = create_app(community_services, seeded_settings)
+        assert build_manifest(app) == build_manifest(reference)
+    finally:
+        services.actor_system.shutdown()
+
+
+def test_create_server_app_constructs_default_settings_for_a_bare_factory_target(
+    seeded_settings: CommunitySettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A no-argument call builds CommunitySettings itself (the --factory contract)."""
+    monkeypatch.setattr(app_module, "CommunitySettings", lambda: seeded_settings)
+    app = create_server_app()
+    services = SERVICES.require(app)
+    assert isinstance(services, CommunityServices)
+    try:
+        assert SETTINGS.require(app) is seeded_settings
+    finally:
+        services.actor_system.shutdown()
 
 
 # ---------------------------------------------------------------------------
