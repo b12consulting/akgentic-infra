@@ -999,6 +999,9 @@ class TestManifestDeltaRoutes:
         delta = manifest_delta(_stock(), composed)
         assert delta.routes_removed == ["POST /teams"]
         assert delta.routes_added == []
+        assert delta.middleware_added == []
+        assert delta.middleware_removed == []
+        assert delta.stock_middleware_reordered is False
 
     def test_route_lists_are_sorted_even_from_unsorted_manifests(self) -> None:
         """A hand-built manifest need not be sorted; the delta always is."""
@@ -1065,6 +1068,10 @@ class TestManifestDeltaMiddleware:
         assert delta.middleware_added == ["ZebraMiddleware", "AcmeMiddleware"]
         # Stock order, NOT alphabetical.
         assert delta.middleware_removed == ["RequireAuthMiddleware", "MutationLogMiddleware"]
+        # An addition and a removal in the same diff, and still no reorder: the
+        # one surviving stock entry holds its relative position. Both filters
+        # have to fire for this — it is AC 6 and AC 9 in a single manifest.
+        assert delta.stock_middleware_reordered is False
 
 
 class TestManifestDeltaIsPure:
@@ -1090,13 +1097,32 @@ class TestManifestDeltaIsPure:
 
 
 class TestPublishedManifestDelta:
-    """AC 12: a client imports both names from the server package."""
+    """AC 1, 12: the shape a client compiles against, and where it imports it from."""
 
     def test_both_names_resolve_from_the_server_package_and_are_exported(self) -> None:
         assert akgentic.infra.server.ManifestDelta is ManifestDelta
         assert akgentic.infra.server.manifest_delta is manifest_delta
         assert "ManifestDelta" in akgentic.infra.server.__all__
         assert "manifest_delta" in akgentic.infra.server.__all__
+
+    def test_the_five_field_names_are_the_whole_contract(self) -> None:
+        """Client repos read these five names; nothing else may appear.
+
+        Every other case here reads the fields, so a rename breaks the suite —
+        but a *sixth* field, or one of the five gaining a default, would slip
+        through green. Both are breaking changes to a published model: a sixth
+        field a client is not asserting on hides a regression, and a default
+        makes a partial delta literal constructible by accident.
+        """
+        fields = ManifestDelta.model_fields
+        assert list(fields) == [
+            "routes_added",
+            "routes_removed",
+            "middleware_added",
+            "middleware_removed",
+            "stock_middleware_reordered",
+        ]
+        assert [name for name, field in fields.items() if not field.is_required()] == []
 
 
 class _AcmeReportsModule(BaseAppModule):

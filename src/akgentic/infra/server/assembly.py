@@ -819,7 +819,7 @@ def manifest_delta(stock: AppManifest, composed: AppManifest) -> ManifestDelta:
     return ManifestDelta(
         routes_added=sorted(set(composed.routes) - set(stock.routes)),
         routes_removed=sorted(set(stock.routes) - set(composed.routes)),
-        middleware_added=[n for n in composed.middleware if n not in stock_names],
-        middleware_removed=[n for n in stock.middleware if n not in composed_names],
+        middleware_added=[name for name in composed.middleware if name not in stock_names],
+        middleware_removed=[name for name in stock.middleware if name not in composed_names],
         stock_middleware_reordered=shared_in_composed != shared_in_stock,
     )
