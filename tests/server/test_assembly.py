@@ -26,11 +26,13 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 import akgentic.infra.server
+from akgentic.infra.server.app import create_app, server_modules
 from akgentic.infra.server.assembly import (
     IDENTITY,
     POLICY,
     TRANSPORT,
     AllowlistSpec,
+    AppManifest,
     AppModule,
     AssemblyError,
     BaseAppModule,
@@ -39,6 +41,7 @@ from akgentic.infra.server.assembly import (
     DuplicateStateProviderError,
     ExceptionHandlerRegistrar,
     ExceptionHandlerSpec,
+    ManifestDelta,
     MiddlewareSpec,
     MissingStateProviderError,
     RouteCollisionError,
@@ -47,11 +50,12 @@ from akgentic.infra.server.assembly import (
     UnpopulatedStateError,
     build_app,
     build_manifest,
+    manifest_delta,
 )
 from akgentic.infra.server.auth import RequestUser, get_request_user
-from akgentic.infra.server.deps import TierServices
+from akgentic.infra.server.deps import CommunityServices, TierServices
 from akgentic.infra.server.middleware.require_auth import RequireAuthMiddleware
-from akgentic.infra.server.settings import ServerSettings
+from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 from akgentic.infra.utils import StateKey
 
 _ORIGIN = "http://testclient.local"
@@ -946,3 +950,212 @@ class TestExceptionHandlerRegistrarForm:
             response = client.get("/boom")
             assert response.status_code == 418
             assert response.json() == {"handler": "first"}
+
+
+# --- Story 63.3: manifest_delta, the client's no-regression instrument --- #
+
+# A stand-in tier surface. The unit cases below diff hand-built manifest pairs
+# rather than composed apps: ``manifest_delta`` is a pure function of two
+# models, and routing a purity question through a FastAPI build would only make
+# the failures harder to read.
+_STOCK_ROUTES = ["GET /readiness", "GET /teams", "POST /teams"]
+_STOCK_STACK = ["CORSMiddleware", "RequireAuthMiddleware", "MutationLogMiddleware"]
+
+_ACME_ROUTE = "GET /acme/reports/{report_id}"
+# Layer 700 — innermost of the stock bands (APPLICATION is 600), where a client
+# module's middleware belongs. Story 63.4 gives this ordinal a name.
+_EXTENSION_LAYER = 700
+
+
+def _stock() -> AppManifest:
+    """A fresh manifest standing in for the tier as the framework ships it."""
+    return AppManifest(routes=list(_STOCK_ROUTES), middleware=list(_STOCK_STACK))
+
+
+class TestManifestDeltaRoutes:
+    """AC 3-5, 10: route membership, reported as sorted lists."""
+
+    def test_identical_manifests_report_no_change(self) -> None:
+        delta = manifest_delta(_stock(), _stock())
+        assert delta.routes_added == []
+        assert delta.routes_removed == []
+        assert delta.middleware_added == []
+        assert delta.middleware_removed == []
+        assert delta.stock_middleware_reordered is False
+
+    def test_client_route_is_the_only_addition(self) -> None:
+        composed = AppManifest(routes=[*_STOCK_ROUTES, _ACME_ROUTE], middleware=list(_STOCK_STACK))
+        delta = manifest_delta(_stock(), composed)
+        assert delta.routes_added == [_ACME_ROUTE]
+        assert delta.routes_removed == []
+        assert delta.middleware_added == []
+        assert delta.middleware_removed == []
+        assert delta.stock_middleware_reordered is False
+
+    def test_missing_stock_route_is_reported_as_removed(self) -> None:
+        composed = AppManifest(
+            routes=["GET /readiness", "GET /teams"], middleware=list(_STOCK_STACK)
+        )
+        delta = manifest_delta(_stock(), composed)
+        assert delta.routes_removed == ["POST /teams"]
+        assert delta.routes_added == []
+
+    def test_route_lists_are_sorted_even_from_unsorted_manifests(self) -> None:
+        """A hand-built manifest need not be sorted; the delta always is."""
+        stock = AppManifest(routes=["GET /zeta", "GET /alpha", "GET /mike"], middleware=[])
+        composed = AppManifest(routes=["GET /yankee", "GET /alpha", "GET /bravo"], middleware=[])
+        delta = manifest_delta(stock, composed)
+        assert delta.routes_added == ["GET /bravo", "GET /yankee"]
+        assert delta.routes_removed == ["GET /mike", "GET /zeta"]
+
+
+class TestManifestDeltaMiddleware:
+    """AC 6-9: what counts as a middleware change, and what counts as a reorder."""
+
+    def test_middleware_inserted_innermost_is_an_addition_not_a_reorder(self) -> None:
+        composed = AppManifest(
+            routes=list(_STOCK_ROUTES), middleware=[*_STOCK_STACK, "AcmeMiddleware"]
+        )
+        delta = manifest_delta(_stock(), composed)
+        assert delta.middleware_added == ["AcmeMiddleware"]
+        assert delta.middleware_removed == []
+        assert delta.stock_middleware_reordered is False
+
+    def test_middleware_inserted_outermost_is_an_addition_not_a_reorder(self) -> None:
+        """Where the client slots in is irrelevant — only stock's own order matters."""
+        composed = AppManifest(
+            routes=list(_STOCK_ROUTES), middleware=["AcmeMiddleware", *_STOCK_STACK]
+        )
+        delta = manifest_delta(_stock(), composed)
+        assert delta.middleware_added == ["AcmeMiddleware"]
+        assert delta.middleware_removed == []
+        assert delta.stock_middleware_reordered is False
+
+    def test_two_swapped_stock_entries_are_a_reorder(self) -> None:
+        outer, middle, inner = _STOCK_STACK
+        composed = AppManifest(routes=list(_STOCK_ROUTES), middleware=[middle, outer, inner])
+        delta = manifest_delta(_stock(), composed)
+        assert delta.stock_middleware_reordered is True
+        assert delta.middleware_added == []
+        assert delta.middleware_removed == []
+
+    def test_removed_stock_middleware_is_not_also_a_reorder(self) -> None:
+        """The trap case: a removal is reported once, by ``middleware_removed``.
+
+        Filtering only the composed list would leave the removed entry in the
+        stock sequence, so every removal would ALSO raise the flag — and a
+        client could no longer tell "the framework dropped a middleware" from
+        "the framework restacked them".
+        """
+        outer, _middle, inner = _STOCK_STACK
+        composed = AppManifest(routes=list(_STOCK_ROUTES), middleware=[outer, inner])
+        delta = manifest_delta(_stock(), composed)
+        assert delta.middleware_removed == ["RequireAuthMiddleware"]
+        assert delta.stock_middleware_reordered is False
+        assert delta.middleware_added == []
+
+    def test_added_and_removed_middleware_keep_manifest_order(self) -> None:
+        """Order is the whole content of a middleware name — never sorted away."""
+        composed = AppManifest(
+            routes=list(_STOCK_ROUTES),
+            middleware=["ZebraMiddleware", "CORSMiddleware", "AcmeMiddleware"],
+        )
+        delta = manifest_delta(_stock(), composed)
+        # Composed order (outermost first), NOT alphabetical.
+        assert delta.middleware_added == ["ZebraMiddleware", "AcmeMiddleware"]
+        # Stock order, NOT alphabetical.
+        assert delta.middleware_removed == ["RequireAuthMiddleware", "MutationLogMiddleware"]
+
+
+class TestManifestDeltaIsPure:
+    """AC 2: a pure function of its two arguments."""
+
+    def test_repeated_calls_agree_and_neither_argument_is_mutated(self) -> None:
+        stock = AppManifest(routes=["GET /b", "GET /a"], middleware=["Outer", "Inner"])
+        composed = AppManifest(routes=["GET /a", "GET /c"], middleware=["Inner", "Outer", "Extra"])
+        first = manifest_delta(stock, composed)
+        second = manifest_delta(stock, composed)
+        assert first == second
+        assert stock.routes == ["GET /b", "GET /a"]
+        assert stock.middleware == ["Outer", "Inner"]
+        assert composed.routes == ["GET /a", "GET /c"]
+        assert composed.middleware == ["Inner", "Outer", "Extra"]
+
+    def test_argument_order_decides_the_direction(self) -> None:
+        """``(stock, composed)`` is part of the contract — swapping inverts it."""
+        stock = _stock()
+        composed = AppManifest(routes=[*_STOCK_ROUTES, _ACME_ROUTE], middleware=list(_STOCK_STACK))
+        assert manifest_delta(stock, composed).routes_added == [_ACME_ROUTE]
+        assert manifest_delta(composed, stock).routes_removed == [_ACME_ROUTE]
+
+
+class TestPublishedManifestDelta:
+    """AC 12: a client imports both names from the server package."""
+
+    def test_both_names_resolve_from_the_server_package_and_are_exported(self) -> None:
+        assert akgentic.infra.server.ManifestDelta is ManifestDelta
+        assert akgentic.infra.server.manifest_delta is manifest_delta
+        assert "ManifestDelta" in akgentic.infra.server.__all__
+        assert "manifest_delta" in akgentic.infra.server.__all__
+
+
+class _AcmeReportsModule(BaseAppModule):
+    """A third-party module, standing in for one a client package would ship.
+
+    Subclasses ``BaseAppModule`` rather than structurally implementing
+    ``AppModule``: a structural implementer silently stops satisfying the
+    contract the day a seventh verb is added. The name is vendor-prefixed, so
+    it cannot collide with a stock module's.
+    """
+
+    name = "acme-reports"
+
+    def contribute_routes(self) -> list[RouteSpec]:
+        router = APIRouter(prefix="/acme/reports")
+
+        @router.get("/{report_id}")
+        def _report(report_id: str) -> dict[str, str]:
+            return {"report_id": report_id}
+
+        return [RouteSpec(router=router)]
+
+    def contribute_middleware(self, context: BuildContext) -> list[MiddlewareSpec]:
+        return [MiddlewareSpec(middleware_class=_NoopMiddleware, layer=_EXTENSION_LAYER)]
+
+
+class TestManifestDeltaOnRealComposition:
+    """AC 11: the three-line client assertion, against apps the framework builds.
+
+    Real apps are what make this case worth its cost: FastAPI's own built-ins
+    (``/openapi.json``, ``/docs``, ``/redoc``, ``/docs/oauth2-redirect``) appear
+    in BOTH manifests and therefore cancel out of the delta. That cancellation
+    is precisely why a client can assert ``routes_added == [<one entry>]`` at
+    all, and no hand-built pair would ever exercise it.
+    """
+
+    def test_client_module_adds_exactly_its_route_and_perturbs_nothing_stock(
+        self,
+        seeded_settings: CommunitySettings,
+        community_services: CommunityServices,
+    ) -> None:
+        tier_app = create_app(community_services, seeded_settings)
+        acme_app = create_app(
+            community_services,
+            seeded_settings,
+            modules=[
+                *server_modules(community_services, seeded_settings),
+                _AcmeReportsModule(),
+            ],
+        )
+        stock, composed = build_manifest(tier_app), build_manifest(acme_app)
+        # Derived, not guessed: build_manifest comma-joins a route's methods,
+        # so confirm the entry really has this shape before pinning it.
+        assert [entry for entry in composed.routes if "/acme/" in entry] == [_ACME_ROUTE]
+
+        delta = manifest_delta(stock, composed)
+        assert delta.routes_removed == [] and delta.middleware_removed == []
+        assert delta.stock_middleware_reordered is False
+        assert delta.routes_added == [_ACME_ROUTE]
+        # The stock stack is untouched and the client's middleware is innermost.
+        assert delta.middleware_added == ["_NoopMiddleware"]
+        assert composed.middleware == [*stock.middleware, "_NoopMiddleware"]

@@ -39,7 +39,11 @@ Key semantics, fixed here and nowhere else:
   ``AttributeError`` on the first unlucky request.
 
 ``build_manifest`` snapshots a composed app's route table and middleware order;
-migration stories pin it as a golden-manifest regression test.
+migration stories pin it as a golden-manifest regression test. ``manifest_delta``
+is its client-side counterpart, pointed the other way: it diffs two manifests so
+a client package splicing its own modules into a tier's composition can assert,
+from its own repo and in its own CI, that it added exactly what it meant to and
+disturbed nothing stock.
 """
 
 from __future__ import annotations
@@ -722,6 +726,46 @@ class AppManifest(BaseModel):
     )
 
 
+class ManifestDelta(BaseModel):
+    """What one composition adds to, removes from, and disturbs in another.
+
+    The client-side counterpart of :class:`AppManifest`: the framework pins a
+    manifest to prove a refactor changed nothing, a client diffs two manifests
+    to prove its own module added exactly what it meant to.
+
+    Membership only, per list. ``routes_added`` / ``routes_removed`` are sorted
+    so a client can assert plain list equality. ``middleware_added`` /
+    ``middleware_removed`` deliberately are NOT sorted: they keep manifest
+    order — composed order (outermost→innermost) for additions, stock order for
+    removals — because order is the only information a middleware name carries.
+
+    ``stock_middleware_reordered`` reports the **relative order of the stock
+    entries inside the composed list**, and is deliberately independent of both
+    additions and removals. A client module slotting in at any layer changes
+    absolute positions and must not raise the flag; a stock entry that
+    disappeared is reported by ``middleware_removed`` alone, never also as a
+    reorder.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    routes_added: list[str] = Field(
+        description="Sorted route entries in composed but not in stock",
+    )
+    routes_removed: list[str] = Field(
+        description="Sorted route entries in stock but not in composed",
+    )
+    middleware_added: list[str] = Field(
+        description="Middleware names new in composed, in composed (outermost-first) order",
+    )
+    middleware_removed: list[str] = Field(
+        description="Middleware names gone from composed, in stock order",
+    )
+    stock_middleware_reordered: bool = Field(
+        description="Whether the stock entries' relative order differs inside composed",
+    )
+
+
 def build_manifest(app: FastAPI) -> AppManifest:
     """Snapshot the route table and the outermost-to-innermost middleware order."""
     entries: list[str] = []
@@ -735,3 +779,47 @@ def build_manifest(app: FastAPI) -> AppManifest:
     # no static ``__name__``; every concrete middleware is a class and has one.
     middleware = [str(getattr(m.cls, "__name__", m.cls)) for m in app.user_middleware]
     return AppManifest(routes=sorted(entries), middleware=middleware)
+
+
+def manifest_delta(stock: AppManifest, composed: AppManifest) -> ManifestDelta:
+    """Diff a stock tier manifest against a composed one — the client's gate.
+
+    The argument order is part of the contract: ``stock`` first, so
+    ``manifest_delta(build_manifest(tier_app), build_manifest(client_app))``
+    reads the way a client means it. Swapping the two inverts every list
+    silently.
+
+    Both manifests are compared as **opaque entry strings** — no path parsing,
+    no method splitting. A stock ``"GET /x"`` that becomes ``"GET,POST /x"``
+    therefore reports as one removal plus one addition rather than as a single
+    addition; that is the honest reading of a manifest entry, and it fails in
+    the direction that makes a client look.
+
+    This function reports and never enforces: it does not raise, does not warn,
+    and has no strict mode. What counts as an acceptable delta is the client's
+    own assertion.
+
+    Args:
+        stock: Manifest of the tier app as the framework ships it.
+        composed: Manifest of that same app with the client's modules spliced
+            in.
+
+    Returns:
+        The route and middleware membership differences, plus whether the stock
+        middleware entries kept their relative order inside ``composed``.
+    """
+    stock_names = set(stock.middleware)
+    composed_names = set(composed.middleware)
+    # The filter is symmetric on purpose. Filtering only the composed side
+    # would leave a REMOVED stock entry in the stock sequence, so every removal
+    # would also raise the flag — and a client could no longer tell "the
+    # framework dropped a middleware" from "the framework restacked them".
+    shared_in_composed = [name for name in composed.middleware if name in stock_names]
+    shared_in_stock = [name for name in stock.middleware if name in composed_names]
+    return ManifestDelta(
+        routes_added=sorted(set(composed.routes) - set(stock.routes)),
+        routes_removed=sorted(set(stock.routes) - set(composed.routes)),
+        middleware_added=[n for n in composed.middleware if n not in stock_names],
+        middleware_removed=[n for n in stock.middleware if n not in composed_names],
+        stock_middleware_reordered=shared_in_composed != shared_in_stock,
+    )

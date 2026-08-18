@@ -26,6 +26,7 @@ from akgentic.infra.server.assembly import (
     DuplicateStateProviderError,
     ExceptionHandlerRegistrar,
     ExceptionHandlerSpec,
+    ManifestDelta,
     MiddlewareSpec,
     MissingStateProviderError,
     RouteCollisionError,
@@ -34,6 +35,7 @@ from akgentic.infra.server.assembly import (
     UnpopulatedStateError,
     build_app,
     build_manifest,
+    manifest_delta,
 )
 from akgentic.infra.server.deps import CommunityServices, TierServices
 from akgentic.infra.server.models import (
@@ -72,6 +74,7 @@ __all__ = [
     "ExceptionHandlerRegistrar",
     "ExceptionHandlerSpec",
     "HumanInputRequest",
+    "ManifestDelta",
     "MiddlewareSpec",
     "MissingStateProviderError",
     "RouteCollisionError",
@@ -89,5 +92,6 @@ __all__ = [
     "configure_process",
     "create_app",
     "create_server_app",
+    "manifest_delta",
     "server_modules",
 ]
