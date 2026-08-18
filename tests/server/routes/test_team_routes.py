@@ -186,6 +186,21 @@ def test_acting_on_a_running_team_is_409_naming_the_condition(client: TestClient
     assert client.get(f"/teams/{team_id}").status_code == 200  # still there, still visible
 
 
+def test_deleting_a_running_team_succeeds_rather_than_conflicting(client: TestClient) -> None:
+    """A RUNNING team deletes cleanly, because the service stops it first.
+
+    This is the reported defect's premise, pinned rather than reported: deleting
+    a live team was said to answer 404, and it does not — ``delete_team`` stops a
+    RUNNING team before handing off, so the team package's "currently running"
+    refusal is never reached from this route. Nothing else holds that ordering
+    in place; reorder the stop and the route silently answers 404 for a team
+    that exists and is running, which is exactly the lie this epic removes.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+
+    assert client.delete(f"/teams/{team_id}").status_code == 204
+
+
 def test_state_conflict_from_the_service_is_409_on_the_flattening_routes(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -202,11 +217,12 @@ def test_state_conflict_from_the_service_is_409_on_the_flattening_routes(
     team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
     service = client.app.state.services.team_service
 
-    def _conflict(_team_id: uuid.UUID) -> None:
+    def _conflict(_team_id: uuid.UUID, **_kwargs: object) -> None:
         raise TeamStateConflictError(f"Team {_team_id} is currently running")
 
     monkeypatch.setattr(service, "get_agent_states", _conflict)
     monkeypatch.setattr(service, "delete_team", _conflict)
+    monkeypatch.setattr(service, "get_events", _conflict)
 
     states = client.get(f"/teams/{team_id}/agent-states")
     assert states.status_code == 409
@@ -215,6 +231,10 @@ def test_state_conflict_from_the_service_is_409_on_the_flattening_routes(
     deleted = client.delete(f"/teams/{team_id}")
     assert deleted.status_code == 409
     assert "currently running" in deleted.json()["detail"]
+
+    events = client.get(f"/teams/{team_id}/events")
+    assert events.status_code == 409
+    assert "currently running" in events.json()["detail"]
 
 
 def test_unclassified_value_error_keeps_its_404_on_the_flattening_routes(

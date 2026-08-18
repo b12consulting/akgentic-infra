@@ -6,6 +6,7 @@ import uuid
 from unittest.mock import MagicMock
 
 import pytest
+from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 
 from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.protocols.channels import InteractionChannelIngestion
@@ -90,3 +91,39 @@ async def test_route_reply_propagates_value_error() -> None:
 
     with pytest.raises(ValueError, match="Team not found"):
         await ingestion.route_reply(team_id, "hello")
+
+
+async def test_initiate_team_lets_the_catalog_diagnosis_through(
+    team_service: TeamService,
+) -> None:
+    """An invalid stored namespace reaches the app-level handler, message intact.
+
+    ``initiate_team`` catches nothing and the webhook route catches nothing
+    either, so this path answers 409 with the catalog's own text where it used
+    to answer 404 — a free improvement from the create_team split, and one no
+    other test holds. Add a local ``except`` here and the diagnosis is destroyed
+    again on the channel surface only, silently.
+
+    Driven against the real wired service and the on-disk broken namespace: a
+    mocked ``create_team`` with a side effect would prove nothing about which
+    exception the catalog actually raises.
+    """
+    ingestion = LocalIngestion(team_service)
+
+    with pytest.raises(CatalogValidationError, match="ref marker"):
+        await ingestion.initiate_team("first message", "user-42", "broken-team")
+
+
+async def test_initiate_team_on_a_teamless_namespace_stays_a_not_found(
+    team_service: TeamService,
+) -> None:
+    """A namespace with no team entry stays in the 404 family on this path too.
+
+    ``CatalogTeamEntryMissingError`` subclasses ``EntryNotFoundError`` precisely
+    so the catalog's app-level 404 handler keeps serving it here unchanged; only
+    the message gets sharper.
+    """
+    ingestion = LocalIngestion(team_service)
+
+    with pytest.raises(EntryNotFoundError, match="has no team entry"):
+        await ingestion.initiate_team("first message", "user-42", "teamless")
