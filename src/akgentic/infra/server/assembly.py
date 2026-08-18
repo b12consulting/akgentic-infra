@@ -434,8 +434,12 @@ def build_app(
     """
     module_list = list(modules)
     contributions = [list(module.contribute_state()) for module in module_list]
-    contributed = _collect_routes(module_list)
     providers = _validate_composition(module_list, contributions)
+    # Routes are collected only once the composition is known-good: a module is
+    # entitled to side effects inside contribute_routes (CoreModule sets the
+    # process-global unified catalog there), and a composition rejected for a
+    # duplicate name or a duplicate state provider must not have run them.
+    contributed = _collect_routes(module_list)
     _validate_route_collisions(contributed)
     context = BuildContext(allowlist=_merge_allowlists(module_list))
     ordered = _collect_middleware(module_list, context)
@@ -653,11 +657,11 @@ def _validate_route_collisions(contributed: list[_ContributedRoute]) -> None:
                 winners[key] = entry
             elif key not in winner.spec.overrides:
                 raise RouteCollisionError(
-                f"route collision on '{key}': module '{entry.module_name}' shadows "
-                f"module '{winner.module_name}'; the earlier module "
-                f"'{winner.module_name}' wins at runtime and must declare it — "
-                f'add overrides=("{key}",) to its RouteSpec'
-            )
+                    f"route collision on '{key}': module '{entry.module_name}' shadows "
+                    f"module '{winner.module_name}'; the earlier module "
+                    f"'{winner.module_name}' wins at runtime and must declare it — "
+                    f'add overrides=("{key}",) to its RouteSpec'
+                )
 
 
 def _mount_routes(app: FastAPI, contributed: list[_ContributedRoute]) -> None:

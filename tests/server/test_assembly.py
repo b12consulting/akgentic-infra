@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket
 from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException
 from starlette.middleware.cors import CORSMiddleware
@@ -737,7 +737,7 @@ class _WsPathModule(BaseAppModule):
         router = APIRouter()
 
         @router.websocket("/ws-shared")
-        async def _ws(websocket: object) -> None: ...
+        async def _ws(websocket: WebSocket) -> None: ...
 
         return [RouteSpec(router=router, overrides=self._overrides)]
 
@@ -797,8 +797,8 @@ class TestUndeclaredRouteCollision:
         # the method, the path, and the literal line to paste. Asserted by
         # fragment so a wording improvement is not a test edit.
         for fragment in (
-            "teams-override",
-            "core",
+            "'teams-override'",
+            "'core'",
             "DELETE",
             "/teams/{team_id}",
             'overrides=("DELETE /teams/{team_id}",)',
@@ -905,6 +905,19 @@ class TestRoutesCollectedOnce:
         assert "GET /counted/ping" in build_manifest(app).routes
         with TestClient(app) as client:
             assert client.get("/counted/ping").json() == {"status": "ok"}
+
+    def test_a_rejected_composition_never_calls_contribute_routes(self) -> None:
+        """Collection happens only once the composition is known-good.
+
+        A module may take side effects inside ``contribute_routes`` — the
+        stock ``CoreModule`` sets the process-global unified catalog there —
+        so a composition rejected for a duplicate name or state provider must
+        not have run them.
+        """
+        first, second = _CountingRoutesModule(), _CountingRoutesModule()
+        with pytest.raises(DuplicateModuleNameError):
+            _build([first, second])
+        assert (first.calls, second.calls) == (0, 0)
 
 
 class TestExceptionHandlerRegistrarForm:
