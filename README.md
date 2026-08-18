@@ -496,7 +496,28 @@ The three rejections, each a `422` with the message in `detail`:
 | **Non-empty** metadata sent to a team whose card declares no `metadata_type` | `this team declares no metadata contract, so metadata cannot be supplied` |
 | Body fails the declared schema | `metadata field '<field>' is invalid: <reason>` |
 
-An unknown `catalog_namespace` is a `404` (`Catalog namespace not found`).
+**`POST /teams` failure modes.** The three ways a `catalog_namespace` can fail to yield a team are reported as three different answers, because they call for three different repairs:
+
+| Condition | Status | Body |
+|---|---|---|
+| The namespace holds nothing — it does not exist | `404` | `detail`: `Catalog namespace not found` |
+| The namespace exists but holds no `kind="team"` entry | `404` | `detail`: `Catalog namespace 'x' has no team entry` |
+| The namespace exists and its stored entries fail validation | `409` | `detail` + `errors`, carrying the catalog's own message — e.g. `ref marker to 'id_team_prompt' carries key 'params' — a ref marker is a pure pointer and takes no other keys.` |
+| The request body itself is rejected (the three metadata rules above) | `422` | `detail`: the reason |
+
+The `409` is deliberately the same status **and the same body** as `GET /admin/catalog/team/{namespace}/resolve` returns for that namespace: both surfaces report one catalog state, and an operator diagnosing a failed create reaches for `/resolve` next.
+
+> **Operator note.** A `409` here means the **stored catalog** is invalid — not your request. Run `GET /admin/catalog/team/{namespace}/resolve` for the same diagnosis, and re-import the namespace to repair it.
+
+**Team-lifecycle failure modes.** The per-team routes distinguish a team that is missing from one that exists in a state forbidding the operation:
+
+| Condition | Status | Body |
+|---|---|---|
+| Unknown team, or a team the caller may not see | `404` | `detail`: `Team not found` (404-over-403, no existence leak) |
+| The team exists but its state forbids the operation — restoring a running team, stopping a stopped one, messaging a team that is not running | `409` | `detail`: the condition, e.g. `Team <id> is already running` |
+| The team has been deleted | `404` | `detail`: the message naming the deletion |
+
+`DELETE /teams/{team_id}` stops a running team before deleting it, so a running team deletes cleanly (`204`) rather than conflicting.
 
 **Filter teams by metadata.** Repeated `?meta.<key>=<value>` parameters add equality filters, AND-combined across distinct keys, on top of the existing `status` and pagination parameters:
 

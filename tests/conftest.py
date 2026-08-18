@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -43,15 +44,37 @@ def _seed_catalog(catalog_root: Path) -> None:
     ``Catalog`` — the legacy v1 per-kind layout is no longer consumed.
     Namespace ``test-team`` matches what tests post via
     ``catalog_namespace="test-team"``.
+
+    Two more namespaces stand in for the failure modes ``POST /teams`` must tell
+    apart from an absent namespace, both seeded on disk exactly like the valid
+    one so the resolution they trigger is the real one:
+
+    * ``broken-team`` — holds a team entry that does not resolve.
+    * ``teamless`` — exists and holds an entry, but none of kind ``team``.
     """
     _seed_v2_namespace(catalog_root, namespace="test-team")
+    _seed_invalid_v2_namespace(catalog_root, namespace="broken-team")
+    _seed_teamless_v2_namespace(catalog_root, namespace="teamless")
 
 
 _TEAM_CARD_TYPE = "akgentic.team.models.TeamCard"
+_NAMESPACE_META_TYPE = "akgentic.catalog.models.namespace_meta.NamespaceMeta"
+
+BROKEN_REF_MARKER: dict[str, object] = {
+    "__ref__": "id_team_prompt",
+    "params": {"tone": "formal"},
+}
+"""A ref marker carrying a forbidden sibling key — the field regression case.
+
+``params`` sits next to ``__ref__``, which a marker may not carry: it is a pure
+pointer. The catalog rejects the bundle at resolution time with a message naming
+the marker and the offending key, and that message is what ``POST /teams`` must
+carry to the client instead of collapsing it into "not found".
+"""
 
 
-def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
-    """Write a minimal v2 team-namespace bundle into ``catalog_root``.
+def _team_payload() -> dict[str, Any]:
+    """Build the minimal resolvable ``TeamCard`` payload used by the seeders.
 
     The ``TeamCard`` payload shape is taken from
     ``akgentic.team.models.TeamCard``; every agent_class / model_type
@@ -64,7 +87,7 @@ def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
     Epic 19's v1 removal. Tests that only need the agents to *exist*
     and route messages by name work with the plain base class.
     """
-    team_payload = {
+    return {
         "name": "Test Team",
         "description": "v2 test team for infra tests",
         "entry_point": {
@@ -94,6 +117,10 @@ def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
         "message_types": [{"__type__": "akgentic.core.messages.UserMessage"}],
         "agent_profiles": [],
     }
+
+
+def _write_team_entry(catalog_root: Path, namespace: str, payload: dict[str, Any]) -> None:
+    """Write ``payload`` as the ``kind="team"`` entry of ``namespace``."""
     _write_yaml(
         catalog_root / namespace / "team" / "team.yaml",
         {
@@ -102,7 +129,60 @@ def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
             "namespace": namespace,
             "model_type": _TEAM_CARD_TYPE,
             "description": "v2 test team namespace bundle",
-            "payload": team_payload,
+            "payload": payload,
+        },
+    )
+
+
+def _seed_v2_namespace(catalog_root: Path, namespace: str) -> None:
+    """Write a minimal, resolvable v2 team-namespace bundle into ``catalog_root``."""
+    _write_team_entry(catalog_root, namespace, _team_payload())
+
+
+def _seed_invalid_v2_namespace(catalog_root: Path, namespace: str) -> None:
+    """Write a namespace that exists and holds a team entry that does not resolve.
+
+    The team entry is well-formed YAML and lists non-empty, so the namespace is
+    unmistakably present; resolution fails only when the catalog walks the
+    payload and finds the ref marker's forbidden sibling key. That ordering is
+    what makes this a regression fixture rather than a mock: nothing here raises
+    an exception on purpose.
+
+    The marker's target prompt is seeded alongside, as it was in the field: a
+    marker pointing at nothing fails earlier, with a different message, and
+    would never exercise the rule that actually bit.
+    """
+    payload = _team_payload()
+    payload["members"][0]["card"]["config"]["prompt"] = dict(BROKEN_REF_MARKER)
+    _write_team_entry(catalog_root, namespace, payload)
+    _write_yaml(
+        catalog_root / namespace / "prompt" / "id_team_prompt.yaml",
+        {
+            "id": "id_team_prompt",
+            "kind": "prompt",
+            "namespace": namespace,
+            "model_type": "akgentic.llm.PromptTemplate",
+            "description": "target of the malformed ref marker",
+            "payload": {"template": "hello {tone}", "params": {}},
+        },
+    )
+
+
+def _seed_teamless_v2_namespace(catalog_root: Path, namespace: str) -> None:
+    """Write a namespace holding a ``kind="meta"`` anchor and no team entry.
+
+    Present, listable, and nothing about it is broken — there is simply no team
+    to create from, which is a 404 that says so, not a 409.
+    """
+    _write_yaml(
+        catalog_root / namespace / "meta" / "_meta.yaml",
+        {
+            "id": "_meta",
+            "kind": "meta",
+            "namespace": namespace,
+            "model_type": _NAMESPACE_META_TYPE,
+            "description": "v2 namespace anchor with no team entry",
+            "payload": {"name": namespace, "description": "no team here"},
         },
     )
 

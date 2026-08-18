@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING, Any
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.core.utils.serializer import SerializableBaseModel
-from akgentic.infra.errors import PlacementConsistencyError
+from akgentic.infra.errors import (
+    PlacementConsistencyError,
+    TeamNotFoundError,
+    TeamStateConflictError,
+)
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
@@ -26,6 +30,26 @@ logger = logging.getLogger(__name__)
 
 # Maximum page size for GET /teams; the default is 250 (ADR-032 §Decision 1).
 MAX_PAGE_SIZE = 500
+
+
+class CatalogTeamEntryMissingError(EntryNotFoundError):
+    """A catalog namespace exists, but holds no ``kind="team"`` entry.
+
+    Distinct from a plain ``EntryNotFoundError`` (the namespace holds nothing at
+    all) so the two 404s can say different things: "the namespace is not there"
+    and "the namespace is there but has no team in it" call for different
+    repairs. ``Catalog.load_team`` reports both conditions — and the invalid one
+    — as ``CatalogValidationError``, so they are split by probing the namespace,
+    never by matching the message.
+
+    A subclass of ``EntryNotFoundError`` on purpose: every existing
+    ``except EntryNotFoundError``, including the catalog package's app-level 404
+    handler that serves the webhook ingestion path, keeps catching it, so the
+    split is additive. It lives here rather than in ``akgentic.infra.errors``
+    because that module imports nothing but ``__future__`` — a guard
+    ``tests/test_errors.py::TestModuleHygiene`` asserts exactly — and this type
+    extends the catalog's hierarchy, not the ``ServerError`` one.
+    """
 
 
 def _remove_workspace_dir(workspaces_root: Path, team_id: uuid.UUID) -> None:
@@ -108,11 +132,19 @@ class TeamService:
             The persisted ``Process`` for the newly created team.
 
         Raises:
-            EntryNotFoundError: If ``catalog_namespace`` has no team entry.
-                ``Catalog.load_team`` surfaces the condition as
-                ``CatalogValidationError``; this layer translates it so
-                the existing teams router's ``EntryNotFoundError → 404``
-                handler applies unchanged.
+            EntryNotFoundError: If ``catalog_namespace`` holds no entry at all
+                — the namespace does not exist.
+            CatalogTeamEntryMissingError: If the namespace exists but holds no
+                ``kind="team"`` entry. A subclass of ``EntryNotFoundError``, so
+                a caller that does not care about the distinction still catches
+                it; the router uses the distinction to say which of the two it
+                is.
+            CatalogValidationError: If the namespace exists and its stored
+                entries are invalid. Propagated verbatim, message and all: the
+                catalog's own diagnosis is the only thing that tells an operator
+                what to repair, and the app-level catalog handler answers 409
+                with it — the same body ``GET /admin/catalog/team/{ns}/resolve``
+                returns for the same condition.
             MetadataValidationError: If ``metadata`` carries a ``__model__`` key,
                 is supplied for a card declaring no contract, or fails the
                 declared schema. Raised before placement runs, so a rejected
@@ -122,10 +154,20 @@ class TeamService:
         try:
             team_card = self._services.catalog.load_team(catalog_namespace)
         except CatalogValidationError as exc:
-            # Translate v2's validation error into the existing 404-mapped
-            # exception so the teams router's error-handling stays a no-op
-            # for this story (Story 18.3 consolidates error handling).
-            raise EntryNotFoundError(catalog_namespace) from exc
+            # load_team reports an absent namespace, a namespace holding no team
+            # entry, and a namespace whose stored entries are invalid all three
+            # as CatalogValidationError, so the type alone cannot tell them
+            # apart. Probe to decide — inside the except block, so a successful
+            # create never pays for the extra query.
+            entries = self._services.catalog.list_by_namespace(catalog_namespace)
+            if not entries:
+                raise EntryNotFoundError(catalog_namespace) from exc
+            if not any(entry.kind == "team" for entry in entries):
+                msg = f"Catalog namespace '{catalog_namespace}' has no team entry"
+                raise CatalogTeamEntryMissingError(msg) from exc
+            # Nothing is missing — the stored catalog is broken. Re-raise the
+            # original so its message and traceback survive to the client.
+            raise
         # Before placement, never after: nothing is created when this rejects.
         validated_metadata = validate_metadata(team_card.metadata_type, metadata)
         handle = self._services.placement.create_team(
@@ -232,9 +274,8 @@ class TeamService:
             what was persisted, not what was sent.
 
         Raises:
-            ValueError: If the team is unknown or has been deleted. The message
-                carries ``not found`` for the unknown case, which the router's
-                ``_raise_action_error`` maps to 404.
+            TeamNotFoundError: If the team is unknown.
+            ValueError: Propagated from the write path for a deleted team.
             MetadataValidationError: If the body carries a ``__model__`` key at
                 any depth, if the team declares no metadata contract, or if the
                 body fails the declared schema. Raised before the write path is
@@ -243,7 +284,7 @@ class TeamService:
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
-            raise ValueError(msg)
+            raise TeamNotFoundError(msg)
         validated = validate_metadata(process.team_card.metadata_type, raw)
         updated = self._services.worker_handle.update_team_metadata(team_id, validated)
         logger.info("Team metadata updated: team_id=%s", team_id)
@@ -258,14 +299,14 @@ class TeamService:
         not prevent deletion from completing.
 
         Raises:
-            ValueError: If team not found or already deleted. Raised before
-                any filesystem work, so a missing team never triggers FS
-                cleanup.
+            TeamNotFoundError: If the team is unknown. Raised before any
+                filesystem work, so a missing team never triggers FS cleanup.
+            ValueError: Propagated from the worker for a team already deleted.
         """
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
-            raise ValueError(msg)
+            raise TeamNotFoundError(msg)
         if process.status == TeamStatus.RUNNING:
             self._services.worker_handle.stop_team(team_id)
         self._cache.remove(team_id)
@@ -289,7 +330,8 @@ class TeamService:
         and no outbound channel dispatch (ADR-22).
 
         Raises:
-            ValueError: If team not found or not running.
+            TeamNotFoundError: If the team is unknown.
+            TeamStateConflictError: If the team exists but is not running.
         """
         handle = self._get_running_handle(team_id)
         handle.emitMessage(message)
@@ -299,7 +341,8 @@ class TeamService:
         """Send a message to a running team.
 
         Raises:
-            ValueError: If team not found or not running.
+            TeamNotFoundError: If the team is unknown.
+            TeamStateConflictError: If the team exists but is not running.
         """
         handle = self._get_running_handle(team_id)
         handle.send(content)
@@ -309,7 +352,10 @@ class TeamService:
         """Send a message to a specific agent in a running team.
 
         Raises:
-            ValueError: If team not found, not running, or agent not found.
+            TeamNotFoundError: If the team is unknown.
+            TeamStateConflictError: If the team exists but is not running.
+            ValueError: If the agent is not found — raised inside the team
+                package, so it arrives unclassified.
         """
         handle = self._get_running_handle(team_id)
         handle.send_to(agent_name, content)
@@ -321,7 +367,10 @@ class TeamService:
         """Send a message from a specific agent to another agent in a running team.
 
         Raises:
-            ValueError: If team not found, not running, sender not found, or recipient not found.
+            TeamNotFoundError: If the team is unknown.
+            TeamStateConflictError: If the team exists but is not running.
+            ValueError: If the sender or the recipient is not found — raised
+                inside the team package, so it arrives unclassified.
         """
         handle = self._get_running_handle(team_id)
         handle.send_from_to(sender_name, recipient_name, content)
@@ -338,7 +387,8 @@ class TeamService:
         """Route human input to HumanProxy for a specific message.
 
         Raises:
-            ValueError: If team not found, not running, or message not found.
+            TeamNotFoundError: If the team, or the message, is unknown.
+            TeamStateConflictError: If the team exists but is not running.
         """
         handle = self._get_running_handle(team_id)
         # _find_message resolves by inner id and returns only SentMessage, so
@@ -351,15 +401,20 @@ class TeamService:
         """Stop a running team without deleting persisted data.
 
         Raises:
-            ValueError: If team not found or not in a stoppable state.
+            TeamNotFoundError: If the team is unknown.
+            TeamStateConflictError: If the team is already stopped.
+            ValueError: If the team has been deleted — deliberately left
+                unclassified so it keeps answering 404 rather than 409. Whether
+                a deleted team is "gone" or "in a conflicting state" is a
+                client-visible contract question beyond this fix.
         """
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
-            raise ValueError(msg)
+            raise TeamNotFoundError(msg)
         if process.status == TeamStatus.STOPPED:
             msg = f"Team {team_id} is already stopped"
-            raise ValueError(msg)
+            raise TeamStateConflictError(msg)
         if process.status == TeamStatus.DELETED:
             msg = f"Team {team_id} has been deleted"
             raise ValueError(msg)
@@ -375,15 +430,18 @@ class TeamService:
         """Restore a stopped team.
 
         Raises:
-            ValueError: If team not found or not in a restorable state.
+            TeamNotFoundError: If the team is unknown.
+            TeamStateConflictError: If the team is already running.
+            ValueError: If the team has been deleted — left unclassified for
+                the same reason as ``stop_team``.
         """
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
-            raise ValueError(msg)
+            raise TeamNotFoundError(msg)
         if process.status == TeamStatus.RUNNING:
             msg = f"Team {team_id} is already running"
-            raise ValueError(msg)
+            raise TeamStateConflictError(msg)
         if process.status == TeamStatus.DELETED:
             msg = f"Team {team_id} has been deleted"
             raise ValueError(msg)
@@ -407,14 +465,14 @@ class TeamService:
                 event — anchor excluded. If None, return the full log.
 
         Raises:
-            ValueError: If team not found.
+            TeamNotFoundError: If the team is unknown.
             EventNotFoundError: Propagated from the store when after_event_id
                 does not resolve to an event of this team.
         """
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
-            raise ValueError(msg)
+            raise TeamNotFoundError(msg)
         logger.debug("Loading events for team %s (after_event_id=%s)", team_id, after_event_id)
         return self._services.event_store.load_events(team_id, after_event_id=after_event_id)
 
@@ -428,12 +486,12 @@ class TeamService:
         genuinely unknown team.
 
         Raises:
-            ValueError: If team not found.
+            TeamNotFoundError: If the team is unknown.
         """
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
-            raise ValueError(msg)
+            raise TeamNotFoundError(msg)
         logger.debug("Loading agent states for team %s", team_id)
         return self._services.event_store.load_agent_states(team_id)
 
@@ -456,15 +514,19 @@ class TeamService:
         """Look up a cached handle, verifying the team is running.
 
         Raises:
-            ValueError: If team not found, not running, or handle not cached.
+            TeamNotFoundError: If the team is unknown.
+            TeamStateConflictError: If the team exists but is not running.
+            ValueError: If the team is running but no handle is cached — a
+                server-side inconsistency rather than a state the caller can
+                reason about, so it stays unclassified.
         """
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
-            raise ValueError(msg)
+            raise TeamNotFoundError(msg)
         if process.status != TeamStatus.RUNNING:
             msg = f"Team {team_id} is not running"
-            raise ValueError(msg)
+            raise TeamStateConflictError(msg)
         logger.debug("Resolving running handle for team %s", team_id)
         handle = self._cache.get(team_id)
         if handle is None:
@@ -481,12 +543,14 @@ class TeamService:
         (ADR-027 §Decision 1).
 
         Raises:
-            ValueError: If no matching SentMessage is found. The ``not found``
-                substring is load-bearing for the 404 mapping.
+            TeamNotFoundError: If no matching SentMessage is found. A missing
+                resource, so it maps to 404 like an unknown team; the type now
+                carries that, and the ``not found`` substring keeps the routes
+                still mapping by message on today's answer.
         """
         events = self._services.event_store.load_events(team_id)
         for ev in events:
             if isinstance(ev.event, SentMessage) and str(ev.event.message.id) == message_id:
                 return ev.event
         msg = f"Message {message_id} not found"
-        raise ValueError(msg)
+        raise TeamNotFoundError(msg)
