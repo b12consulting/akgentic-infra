@@ -357,7 +357,75 @@ The **Used in** column refers to the role in the distributed (department / enter
 
 ## Server Architecture
 
-The server is built around a tier-agnostic `TeamService` that delegates all infrastructure concerns to protocol implementations. The `create_app()` factory wires everything together.
+The server is built around a tier-agnostic `TeamService` that delegates all infrastructure concerns to protocol implementations. `wire_community()` builds the fully wired service container, and `create_app()` composes the app from an ordered list of modules over it — see [Assembling a server from modules](#assembling-a-server-from-modules).
+
+### Assembling a server from modules
+
+The app is an **explicit ordered list of `AppModule`s** composed by the `build_app` builder (`server/assembly.py`) — no module or tier ever touches the `FastAPI` object directly. Full mechanism semantics live in the architecture shard `_bmad-output/akgentic-infra/architecture/09-app-assembly.md`; this section carries the operational rules for authoring a module and declaring a tier.
+
+**The six contribution verbs** — the closed vocabulary a module alters the app through:
+
+- `contribute_routes()` — pre-built `APIRouter`s (with their router-level dependencies), mounted in module-list order; the earlier module wins a path collision.
+- `contribute_middleware(context)` — `MiddlewareSpec`s carrying a class, a layer ordinal, and config-only options; `context.allowlist` is the merged allowlist of all modules.
+- `contribute_allowlist()` — paths this module needs reachable without an authenticated principal.
+- `contribute_exception_handlers()` — `ExceptionHandlerSpec`s, or `ExceptionHandlerRegistrar`s wrapping a package's own registration helper.
+- `contribute_state()` — build-time `StateEntry` contributions (`KEY.entry(value)`), applied by the builder so they are readable without a lifespan.
+- `lifespan(app)` — the module's startup/shutdown context; startup runs in module-list order, shutdown in reverse.
+
+A module that needs anything else is a contract-change discussion, not a workaround. Subclass `BaseAppModule` and override only what you contribute.
+
+**The layer table.** Middleware position is a declared layer ordinal — lower is outermost — never a registration order:
+
+| Ordinal | Layer | Typical occupant |
+|---|---|---|
+| 50 | OBSERVABILITY | OTel instrumentation |
+| 100 | TRANSPORT | CORS |
+| 200 | PROXY | proxy-header rewriting |
+| 300 | SESSION | session decode |
+| 400 | IDENTITY | RequireAuth |
+| 500 | POLICY | PayloadLimit 510, SignatureVerification 520, CallerVerification 530, RateLimit 540, ContentSecurity 550, Idempotency 560, BackPressure 570 |
+| 600 | APPLICATION | admin-catalog mutation log |
+
+**Module authoring rules:**
+
+- Classes are named `<Thing>Module`, one concern per module; `name` is the kebab-case slug, unique per composition.
+- New module-owned `app.state` keys are named `<module>_<noun>` (the legacy community key names are grandfathered).
+- `MiddlewareSpec.options` is **config-only**: settings values and pure callables, never a live service.
+- A middleware's runtime collaborators travel via a `StateKey` slot: the producing module lists the key in `provides_state` (lifespan-populated) or contributes it via `contribute_state` (build-time), the middleware names it in `requires_state` and resolves it per request. One key, one producer — the builder rejects duplicates at build time and verifies population at the end of startup.
+
+**The tier-list pattern.** A tier is an explicit ordered module list — the order IS the composition — handed to `create_app(services, settings, modules=[…])`. The community server:
+
+```python
+from akgentic.infra.server.app import create_app
+from akgentic.infra.server.settings import CommunitySettings
+from akgentic.infra.wiring import wire_community
+
+settings = CommunitySettings()
+services = wire_community(settings)      # fully wired container — nothing left to bind
+app = create_app(services, settings)     # modules=None → [CoreModule(...)]
+```
+
+and the tier-shaped variant, extending the same base:
+
+```python
+from akgentic.infra.server.modules import CoreModule
+
+app = create_app(
+    services,
+    settings,
+    modules=[CoreModule(services=services, settings=settings), MyTierModule()],
+)
+```
+
+**Three patterns are forbidden** anywhere outside `build_app` — each bypasses the builder's ordering, validation, or single-writer guarantees, and each is a review flag:
+
+1. calling `app.add_middleware(...)`;
+2. calling `app.include_router(...)`;
+3. writing `app.state` outside builder-applied `contribute_state` entries and the module's own lifespan.
+
+**Migrating safely — the golden-manifest recipe.** `build_manifest(app)` snapshots the route table and the outermost-to-innermost middleware order. Capture it from the **pre-migration** app first, commit it as the test's expected value, then refactor until the manifest of the new composition is identical — sanctioned deltas pinned and documented one by one.
+
+**`build_app` is not a production entry.** It is the globals-free pure builder, for tests and embedded compositions. Production goes through `create_app` (or the tier's `create_server_app`), which hardwires the invariant process globals (logging, catalog prefix policy) before composing. A `build_app(` call in a tier's `server_app.py` is a review flag.
 
 ### REST API
 
@@ -640,7 +708,7 @@ Tier-agnostic adapters that work across community, department, and enterprise de
 
 ### Typed `app.state` access (`StateKey[T]`)
 
-`create_app()` stores its wired services on FastAPI's `app.state` so routes can reach them. `app.state` is a `starlette.datastructures.State` whose attribute reads are typed `Any`, so routes used to `cast(...)` every read. `StateKey[T]` (see ADR-030 — Typed `app.state` Access via a `StateKey[T]` Registry) replaces that with a typed, serialization-free handle to one slot. The API is three calls:
+The composed app carries the wired services on FastAPI's `app.state` so routes can reach them. `app.state` is a `starlette.datastructures.State` whose attribute reads are typed `Any`, so routes used to `cast(...)` every read. `StateKey[T]` (see ADR-030 — Typed `app.state` Access via a `StateKey[T]` Registry) replaces that with a typed, serialization-free handle to one slot. The API is three calls:
 
 - `KEY.set(source, value)` — the producer writes the slot.
 - `KEY.get(source) -> T | None` — soft read; returns the key's `default` when the slot is unset (or raises `LookupError` if the key is `required=True`).
@@ -648,12 +716,12 @@ Tier-agnostic adapters that work across community, department, and enterprise de
 
 `source` may be a `FastAPI`, `Request`, or `WebSocket`. A key is declared once as a module-level constant — that declaration *is* the registration; there is no central registry. `StateKey("name", *, default=..., required=...)` is the full constructor.
 
-**Producer / consumer.** `create_app()` (the producer) sets each slot through its key, and routes (the consumers) read the same key handle:
+**Producer / consumer.** The community slots are produced by `CoreModule.contribute_state()` (`server/modules/core.py`) as builder-applied `StateEntry` contributions, and routes (the consumers) read the same key handle:
 
 ```python
-# producer — server/app.py
-SERVICES.set(app, services)
-TEAM_SERVICE.set(app, team_service)
+# producer — server/modules/core.py (CoreModule.contribute_state)
+SERVICES.entry(self._services)
+TEAM_SERVICE.entry(self.team_service)
 
 # consumer — server/routes/teams.py
 team_service = TEAM_SERVICE.require(request)
