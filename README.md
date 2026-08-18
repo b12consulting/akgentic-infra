@@ -365,7 +365,7 @@ The app is an **explicit ordered list of `AppModule`s** composed by the `build_a
 
 **The six contribution verbs** — the closed vocabulary a module alters the app through:
 
-- `contribute_routes()` — pre-built `APIRouter`s (with their router-level dependencies), mounted in module-list order; the earlier module wins a path collision.
+- `contribute_routes()` — pre-built `APIRouter`s (with their router-level dependencies), mounted in module-list order; the earlier module wins a path collision. Shadowing must be declared by that winner: the earlier `RouteSpec` lists the shadowed `"METHOD /path"` in its `overrides` tuple, or the build raises `RouteCollisionError`.
 - `contribute_middleware(context)` — `MiddlewareSpec`s carrying a class, a layer ordinal, and config-only options; `context.allowlist` is the merged allowlist of all modules.
 - `contribute_allowlist()` — paths this module needs reachable without an authenticated principal.
 - `contribute_exception_handlers()` — `ExceptionHandlerSpec`s, or `ExceptionHandlerRegistrar`s wrapping a package's own registration helper.
@@ -385,6 +385,7 @@ A module that needs anything else is a contract-change discussion, not a workaro
 | 400 | IDENTITY | RequireAuth |
 | 500 | POLICY | PayloadLimit 510, SignatureVerification 520, CallerVerification 530, RateLimit 540, ContentSecurity 550, Idempotency 560, BackPressure 570 |
 | 600 | APPLICATION | admin-catalog mutation log |
+| 700 | EXTENSION | third-party client middleware — innermost |
 
 **Module authoring rules:**
 
@@ -396,26 +397,175 @@ A module that needs anything else is a contract-change discussion, not a workaro
 **The tier-list pattern.** A tier is an explicit ordered module list — the order IS the composition — handed to `create_app(services, settings, modules=[…])`. The community server:
 
 ```python
-from akgentic.infra.server.app import create_app
-from akgentic.infra.server.settings import CommunitySettings
-from akgentic.infra.wiring import wire_community
+from akgentic.infra import wire_community
+from akgentic.infra.server import CommunitySettings, create_app
 
 settings = CommunitySettings()
 services = wire_community(settings)      # fully wired container — nothing left to bind
-app = create_app(services, settings)     # modules=None → [CoreModule(...)]
+app = create_app(services, settings)     # modules=None → server_modules(services, settings)
 ```
 
-and the tier-shaped variant, extending the same base:
+`modules` is read for **truthiness**, not `is not None`: a falsy value — `None` *or* `[]` — selects the community composition, so `modules=[]` builds the community app rather than an empty one.
+
+And the tier-shaped variant, extending the same base — splice into the tier's own list rather than retyping it:
 
 ```python
-from akgentic.infra.server.modules import CoreModule
+from akgentic.infra.server import server_modules
 
 app = create_app(
     services,
     settings,
-    modules=[CoreModule(services=services, settings=settings), MyTierModule()],
+    modules=[*server_modules(services, settings), MyTierModule()],
 )
 ```
+
+#### Extending a tier from your own package
+
+`server_modules(services, settings) -> list[AppModule]` is public API: it returns **the tier's canonical composition in canonical order**, so a package in a repository the framework does not own adds its own modules without retyping or forking the tier. A retyped copy drifts silently at the next upgrade — nothing tells you the tier grew a sixth module — which is exactly what this replaces. Full mechanism and rationale: the architecture shard `_bmad-output/akgentic-infra/architecture/09-app-assembly.md` (*Extending the app from a client package*).
+
+**Import from two places only.** `akgentic.infra.server` is the module-authoring surface — the contract types, the spec models, the band anchors, `server_modules`, `build_manifest` / `manifest_delta`, the assembly errors, `get_request_user` / `RequestUser`. `akgentic.infra` carries the deployment entrypoints (`wire_community`, `create_app`, `create_server_app`, `configure_process`). Anything reachable only at a deeper path (`…server.assembly`, `…server.app`, `…server.modules`, `…server.auth`) is internal and may move without notice; note in particular that `server_modules` is **not** re-exported from the package root, so `from akgentic.infra import server_modules` is an `ImportError`.
+
+**The repo shape.** An ordinary package with the same bootstrap shape as every tier:
+
+```
+acme-akgentic-server/                 ← your repo, depends on akgentic-infra
+  src/acme_server/
+    modules/audit.py                  ← class AcmeAuditModule(BaseAppModule)
+    middleware.py                     ← class AcmeAuditMiddleware (plain ASGI)
+    settings.py                       ← AcmeSettings(BaseSettings), env_prefix="ACME_"
+    app.py                            ← create_server_app()   ← uvicorn --factory target
+```
+
+**Your settings — your own model, never fields on `ServerSettings`** (`settings.py`):
+
+```python
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class AcmeSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="ACME_")
+
+    audit_sink_url: str = "http://localhost:9000/audit"
+    audit_sample_rate: float = 1.0
+```
+
+**Your module — subclass `BaseAppModule`, never implement the Protocol structurally** (`modules/audit.py`). A subclass inherits a no-op default when the vocabulary gains a seventh verb and keeps composing; a structural implementer silently stops satisfying the contract at that upgrade.
+
+```python
+from fastapi import APIRouter, Request
+
+from akgentic.infra.server import (
+    EXTENSION,
+    BaseAppModule,
+    BuildContext,
+    MiddlewareSpec,
+    RequestUser,
+    RouteSpec,
+    get_request_user,
+)
+
+from acme_server.middleware import AcmeAuditMiddleware
+from acme_server.settings import AcmeSettings
+
+
+class AcmeAuditModule(BaseAppModule):
+    name = "acme-audit"
+
+    def __init__(self, settings: AcmeSettings) -> None:
+        self._settings = settings
+
+    def contribute_routes(self) -> list[RouteSpec]:
+        router = APIRouter(tags=["acme"])
+
+        @router.get("/reports/{report_id}")
+        async def read_report(report_id: str, request: Request) -> dict[str, str]:
+            user: RequestUser = get_request_user(request)
+            return {"report_id": report_id, "requested_by": user.user_id}
+
+        return [RouteSpec(router=router, prefix="/acme")]
+
+    def contribute_middleware(self, context: BuildContext) -> list[MiddlewareSpec]:
+        # options is CONFIG ONLY — settings values and pure callables, never a live service.
+        return [
+            MiddlewareSpec(
+                middleware_class=AcmeAuditMiddleware,
+                layer=EXTENSION,
+                options={
+                    "sink_url": self._settings.audit_sink_url,
+                    "sample_rate": self._settings.audit_sample_rate,
+                },
+            )
+        ]
+```
+
+`get_request_user(conn)` resolves the authenticated principal for a `Request` or a `WebSocket` and returns a `RequestUser` (`user_id`, `email`, `roles`, `scopes`) — never `None`, never raising; on a tier that mounts no identity middleware it falls back to the anonymous default.
+
+**Your bootstrap — splice, do not retype** (`app.py`):
+
+```python
+from fastapi import FastAPI
+
+from akgentic.infra import wire_community
+from akgentic.infra.server import CommunitySettings, create_app, server_modules
+
+from acme_server.modules.audit import AcmeAuditModule
+from acme_server.settings import AcmeSettings
+
+
+def create_server_app(settings: CommunitySettings | None = None) -> FastAPI:
+    settings = settings or CommunitySettings()
+    services = wire_community(settings)
+    acme = AcmeSettings()
+    return create_app(
+        services,
+        settings,
+        modules=[*server_modules(services, settings), AcmeAuditModule(acme)],
+    )
+```
+
+The example composes the **community** tier, which is the tier whose `server_modules` ships in this package. Per the decision record's migration plan every tier ends up exposing the same name with the same signature — `wire_department` / `wire_enterprise` and their own `server_modules` — so the bootstrap above is the shape everywhere, only the tier package changes.
+
+**Splicing rules:**
+
+- **Adding** → append. Later modules cannot shadow earlier routes, so appending is always safe.
+- **Overriding** a stock route → insert your module *before* the module that owns the route, and declare the override on your `RouteSpec`.
+- **Middleware placement is never a list position** — the layer ordinal decides. List position is only the tiebreak between equal layers. `EXTENSION` (700) is the documented default for a client module: inside identity, inside policy, inside the application band, so your middleware sees only requests that already passed the identity gate. Any integer is still legal — a signed-webhook verifier that must run *before* identity states its ordinal deliberately, where review can see it.
+
+**Route collisions are a build-time error unless declared.** `build_app` collects every `(method, path)` across the whole composition; where two specs mount the same one, the **earliest** spec — the one that wins at runtime — must list it in `overrides`, or the build raises `RouteCollisionError` naming both modules and the exact entry to add. Accidentally shadowing a framework route fails your build; a framework upgrade that would steal one of your routes fails your build *at upgrade*, instead of changing behaviour in production.
+
+Two entry formats exist and they are **not** the same string:
+
+| Where | Format | Example |
+|---|---|---|
+| `RouteSpec.overrides` | full mounted path (spec `prefix` included), **one entry per method**, `WS` for websockets | `"DELETE /teams/{team_id}"` — a router serving GET and POST on `/x` needs `"GET /x"` **and** `"POST /x"` |
+| `build_manifest` / `manifest_delta` | methods **comma-joined**, sorted | `"GET,POST /x"` |
+
+An `overrides` entry matching nothing is inert, not an error — over-declaring is safe, mis-spelling is silent.
+
+**Prove you disturbed nothing — the `manifest_delta` gate.** `manifest_delta(stock, composed)` diffs two manifests; the argument order is part of the contract (`stock` first — swapping them inverts every list silently):
+
+```python
+from akgentic.infra.server import build_manifest, manifest_delta
+
+delta = manifest_delta(build_manifest(tier_app), build_manifest(acme_app))
+assert delta.routes_removed == [] and delta.middleware_removed == []
+assert delta.stock_middleware_reordered is False
+assert delta.routes_added == ["GET /acme/reports/{report_id}"]
+```
+
+Run it in your own CI: a framework upgrade that reorders the stack then fails your build instead of your users. `stock_middleware_reordered` compares only the *relative* order of stock entries inside the composed list, so slotting your middleware in at any layer never raises it, and a stock middleware that disappeared is reported by `middleware_removed` alone.
+
+**Namespacing conventions** — the builder rejects duplicate module names, duplicate state producers and undeclared route collisions; these keep you from hitting any of them:
+
+- **`name`** — vendor-prefixed kebab-case: `acme-audit`, `contoso-sso`.
+- **State keys** — vendor-prefixed snake_case: `acme_audit_sink`. The framework will never introduce a key with a vendor prefix. A module that owns a collaborator can simply hold it as an instance attribute and let the router it builds in `contribute_routes` close over it — no state slot needed at all.
+- **Routes** — under a vendor prefix (`/acme/...`) unless deliberately overriding. The framework owns `/readiness`, `/teams`, `/workspace`, `/ws`, `/webhook`, `/admin` and `/auth`.
+- **Settings** — your own `BaseSettings` with your own `env_prefix`, constructed in your bootstrap and passed to the module's `__init__`. Never add client fields to `ServerSettings`.
+- **Services** — the module owns its collaborators. Subclassing `TierServices` is reserved for the case where your routes genuinely want them typed on the services slot; `create_app` accepts any `TierServices` subclass.
+
+**Module or channel?** Needs a URL, a header, or a policy decision → an `AppModule`. Only needs to talk to a team → a channel (`ChannelParser` / `InteractionChannelAdapter`, see [Protocols](#protocols)). A channel reaches none of the six verbs and only sees traffic that already passed identity, so it cannot carry an app extension. Most real platform integrations need one of each — a parser for the inbound messages, a module for the signature check that must run first — meeting at a registry a module publishes into state.
+
+#### Rules for every composition
 
 **Three patterns are forbidden** anywhere outside `build_app` — each bypasses the builder's ordering, validation, or single-writer guarantees, and each is a review flag:
 
