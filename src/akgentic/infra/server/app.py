@@ -11,10 +11,14 @@ Uniform tier bootstrap (ADR-039 §5): :func:`create_app` is the
 pre-wired-services entry point carrying the assembly sequence exactly once —
 the invariant process globals (logging, catalog prefix policy) hardwired
 first, then the additive ``configure_process`` tier hook, then ``build_app``
-over the ``modules`` argument (``None`` means the community composition:
-``CoreModule`` alone). A tier hands its module list and its process hook
-directly to ``create_app``; :func:`create_server_app` is the settings-only
-factory a bare ``uvicorn --factory`` target can call. ``CoreModule`` is
+over the ``modules`` argument (a falsy ``modules`` — ``None`` or empty —
+means the community composition, which :func:`server_modules` declares and
+this module declares nowhere else). A tier hands its module list and its
+process hook directly to ``create_app``; :func:`create_server_app` is the
+settings-only factory a bare ``uvicorn --factory`` target can call.
+:func:`server_modules` is public API (ADR-040 §2): a client package splices
+its own modules into the returned list instead of retyping or forking the
+tier's composition. ``CoreModule`` is
 self-contained: state, exception handlers, and the drain lifespan are its
 contributions, and nothing mutates the app after ``build_app`` returns.
 """

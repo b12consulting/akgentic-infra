@@ -182,12 +182,20 @@ class TestClientShapedComposition:
         )
         composed = build_manifest(app)
 
-        assert set(community.routes) <= set(composed.routes)
-        assert _ACME_ROUTE in composed.routes
-        assert _NoopMiddleware.__name__ in composed.middleware
+        # Exactly the community surface plus the one appended route. A subset
+        # check would stay green if the client module also shadowed a stock
+        # path or contributed a second route — the two ways an extension
+        # silently changes the tier's surface.
+        assert composed.routes == sorted([*community.routes, _ACME_ROUTE])
+        # Same strength for the stack: one layer added, nothing stock dropped,
+        # and — both specs sitting at APPLICATION — the list-position tiebreak
+        # puts the later module's middleware innermost.
+        assert composed.middleware == [*community.middleware, _NoopMiddleware.__name__]
         # The stock middleware, in the order they appear inside the composed
         # stack, are exactly the community stack — the client module added a
-        # layer without reordering anything it does not own.
+        # layer without reordering anything it does not own. Stated separately
+        # from the exact list above because this is the invariant that survives
+        # a client middleware landing anywhere else in the stack.
         stock_in_composed = [name for name in composed.middleware if name in community.middleware]
         assert stock_in_composed == community.middleware
 
