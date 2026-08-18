@@ -75,11 +75,17 @@ def create_app(
         Configured FastAPI application instance.
     """
     settings = settings or ServerSettings()
+
+    # configure_logging and set_allowed_prefixes are invariant, hardwired, and
+    # run first. A tier cannot forget or override them. configure_process is
+    # additive, invoked after the invariants, so a tier can add to the process
+    # configuration but cannot replace the invariants.
     configure_logging(settings.log_level)
     logger.info("Logging configured: level=%s", settings.log_level)
     set_allowed_prefixes(settings.catalog_model_type_prefixes)
     logger.info("Catalog model_type allowlist: %s", allowed_prefixes())
     configure_process(settings)
+
     return build_app(
         settings, services, modules or [CoreModule(services=services, settings=settings)]
     )
