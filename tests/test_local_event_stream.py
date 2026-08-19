@@ -359,6 +359,33 @@ def test_reader_drains_event_arriving_between_clear_and_wait() -> None:
     reader.close()
 
 
+def test_reader_drains_event_arriving_between_advance_and_closed_check() -> None:
+    """An event landing after the advance comes back empty is still drained.
+
+    The advance reports "caught up" while the stream is still open, so a write
+    can land before the closed flag is read. That is the window on_stop drives:
+    it appends the last events of teardown and then removes the stream.
+    """
+    stream = LocalEventStream()
+    reader = stream.subscribe(_TEAM_ID, cursor=0)
+    late = _make_event(1)
+    real_advance = reader._advance
+
+    def advance_then_write_and_remove() -> Message | None:
+        result = real_advance()
+        reader._advance = real_advance  # only interfere on the first pass
+        stream.append(_TEAM_ID, late)
+        stream.remove(_TEAM_ID)
+        return result
+
+    reader._advance = advance_then_write_and_remove
+
+    assert reader.read_next(timeout=0.1) is late
+    with pytest.raises(StreamClosed):
+        reader.read_next(timeout=0.1)
+    reader.close()
+
+
 def test_remove_leaves_events_intact() -> None:
     """remove() must not clear events -- readers drain from it after removal."""
     stream = LocalEventStream()

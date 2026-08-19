@@ -79,9 +79,15 @@ class LocalStreamReader:
         """Return the next event, or raise once there is none left to give.
 
         Drains before honouring the stream's closed flag: ``closed`` means no
-        more writes, not discard what was already written. ``append()`` refuses
-        a closed stream, so closed-and-caught-up is terminal by construction.
-        A reader that closed *itself* raises without draining.
+        more writes, not discard what was already written. A reader that closed
+        *itself* raises without draining.
+
+        The advance is repeated once after the flag reads ``True``: the stream
+        was still open when the first advance came back empty, so a write could
+        have landed between the two. ``append()`` refuses a closed stream, so
+        once the flag is observed set the event list is final and this second
+        advance is genuinely terminal. Collapsing the two back into one
+        reinstates the loss in a narrower window (see issue #412).
         """
         if self._closed:
             raise StreamClosed()
@@ -89,6 +95,9 @@ class LocalStreamReader:
         if event is not None:
             return event
         if self._team_stream.closed:
+            event = self._advance()
+            if event is not None:
+                return event
             raise StreamClosed()
         return None
 
