@@ -14,6 +14,9 @@ Threading model (CPython GIL assumption):
   behind the write frontier can safely index into ``events`` without
   holding any lock. The reader only blocks on its own ``threading.Event``
   when fully caught up.
+- The ``closed`` flag gates **writes and exhaustion**, never reads: it stops
+  ``append()`` and it makes a caught-up reader terminal, but it never hides
+  events that were already written. Readers drain first, then raise.
 - Safe for concurrent use from FastAPI thread-pool executors.
 """
 
@@ -72,13 +75,39 @@ class LocalStreamReader:
             return event
         return None
 
-    def _check_closed(self) -> None:
-        """Raise ``StreamClosed`` if the reader or stream has been closed."""
-        if self._closed or self._team_stream.closed:
+    def _drain_or_raise(self) -> Message | None:
+        """Return the next event, or raise once there is none left to give.
+
+        Drains before honouring the stream's closed flag: ``closed`` means no
+        more writes, not discard what was already written. A reader that closed
+        *itself* raises without draining.
+
+        The advance is repeated once after the flag reads ``True``: the stream
+        was still open when the first advance came back empty, so a write could
+        have landed between the two. ``append()`` refuses a closed stream, so
+        once the flag is observed set the event list is final and this second
+        advance is genuinely terminal. Collapsing the two back into one
+        reinstates the loss in a narrower window (see issue #412).
+        """
+        if self._closed:
             raise StreamClosed()
+        event = self._advance()
+        if event is not None:
+            return event
+        if self._team_stream.closed:
+            event = self._advance()
+            if event is not None:
+                return event
+            raise StreamClosed()
+        return None
 
     def read_next(self, timeout: float = 0.5) -> Message | None:
         """Read the next event from the cursor position.
+
+        Drains before closing: every event written to the stream before it was
+        removed is delivered, and ``StreamClosed`` is raised only once the
+        cursor has reached the end of ``events``. A reader that closed *itself*
+        raises immediately, without draining.
 
         Lock-free when replaying (``cursor < len(events)``). Blocks on
         the reader's own ``threading.Event`` when caught up.
@@ -90,12 +119,11 @@ class LocalStreamReader:
             The next event, or ``None`` on timeout.
 
         Raises:
-            StreamClosed: If the stream has been removed.
+            StreamClosed: If this reader was closed, or if the stream was
+                removed and the cursor has reached the end of ``events``.
         """
-        self._check_closed()
-
         # Lock-free replay path
-        event = self._advance()
+        event = self._drain_or_raise()
         if event is not None:
             return event
 
@@ -103,16 +131,13 @@ class LocalStreamReader:
         self._signal.clear()
 
         # Re-check after clear to avoid lost-wakeup race
-        self._check_closed()
-        event = self._advance()
+        event = self._drain_or_raise()
         if event is not None:
             return event
 
         self._signal.wait(timeout=timeout)
 
-        # Post-wait checks
-        self._check_closed()
-        return self._advance()
+        return self._drain_or_raise()
 
     def close(self) -> None:
         """Release resources held by this reader. Idempotent."""
@@ -168,6 +193,10 @@ class LocalEventStream:
     ) -> list[Message]:
         """Read all events from cursor position (non-blocking snapshot).
 
+        A closed stream still yields what was written to it: ``closed`` means
+        no more writes, not discard what is written. Only a team with no stream
+        entry at all genuinely has no events.
+
         Args:
             team_id: ID of the team.
             cursor: Starting position (0 = full history).
@@ -180,8 +209,6 @@ class LocalEventStream:
             if ts is None:
                 return []
 
-        if ts.closed:
-            return []
         return list(ts.events[cursor:])
 
     def subscribe(
@@ -214,8 +241,14 @@ class LocalEventStream:
     def remove(self, team_id: uuid.UUID) -> None:
         """Remove the stream for a team.
 
-        Sets the closed flag and signals all active readers, then
-        deletes the stream data from the backing store.
+        Pops the entry from the backing store, sets the closed flag and
+        signals all active readers. Readers drain whatever is still ahead of
+        their cursor and only then receive ``StreamClosed``.
+
+        ``events`` is deliberately left intact: a reader holds its
+        ``_TeamStream`` by direct reference, so the list stays readable for
+        draining after the entry is gone. A later cleanup that clears it
+        reinstates the loss this ordering exists to prevent (see issue #412).
 
         Args:
             team_id: ID of the team whose stream to remove.

@@ -231,6 +231,177 @@ def test_close_after_remove_does_not_raise() -> None:
     reader.close()  # should not raise
 
 
+# --- Drain before close (issue #412) ---
+
+
+def test_reader_drains_unconsumed_events_after_remove() -> None:
+    """A reader with an unconsumed event receives it even after remove()."""
+    stream = LocalEventStream()
+    ev1, ev2 = _make_event(1), _make_event(2)
+    stream.append(_TEAM_ID, ev1)
+    stream.append(_TEAM_ID, ev2)
+
+    reader = stream.subscribe(_TEAM_ID, cursor=0)
+    assert reader.read_next(timeout=0.1) is ev1
+
+    stream.remove(_TEAM_ID)
+
+    # The second event was written before the close and must still be delivered
+    assert reader.read_next(timeout=0.1) is ev2
+    with pytest.raises(StreamClosed):
+        reader.read_next(timeout=0.1)
+    reader.close()
+
+
+def test_reader_drains_all_unconsumed_events_after_remove() -> None:
+    """Draining is complete and ordered, not partial."""
+    stream = LocalEventStream()
+    events = [_make_event(i) for i in range(5)]
+    for ev in events:
+        stream.append(_TEAM_ID, ev)
+
+    reader = stream.subscribe(_TEAM_ID, cursor=0)
+    stream.remove(_TEAM_ID)
+
+    drained = [reader.read_next(timeout=0.1) for _ in range(5)]
+    assert drained == events
+    with pytest.raises(StreamClosed):
+        reader.read_next(timeout=0.1)
+    reader.close()
+
+
+def test_read_next_raises_stream_closed_after_drain_completes() -> None:
+    """Terminal behaviour is preserved: exhausted + closed keeps raising."""
+    stream = LocalEventStream()
+    stream.append(_TEAM_ID, _make_event(1))
+
+    reader = stream.subscribe(_TEAM_ID, cursor=0)
+    stream.remove(_TEAM_ID)
+
+    assert reader.read_next(timeout=0.1) is not None
+    with pytest.raises(StreamClosed):
+        reader.read_next(timeout=0.1)
+    # Not a one-shot signal -- a closed, drained stream stays closed
+    with pytest.raises(StreamClosed):
+        reader.read_next(timeout=0.1)
+    reader.close()
+
+
+def test_reader_that_closed_itself_raises_without_draining() -> None:
+    """A reader closing itself is a different condition from the stream closing."""
+    stream = LocalEventStream()
+    stream.append(_TEAM_ID, _make_event(1))
+    stream.append(_TEAM_ID, _make_event(2))
+
+    reader = stream.subscribe(_TEAM_ID, cursor=0)
+    reader.close()
+
+    with pytest.raises(StreamClosed):
+        reader.read_next(timeout=0.1)
+
+
+def test_reader_blocked_in_wait_drains_after_remove() -> None:
+    """A reader blocked inside _signal.wait() still receives a late write.
+
+    This is the path a live WebSocket pump sits in when on_stop removes the
+    stream, and the checkpoint a partial fix would miss.
+    """
+    stream = LocalEventStream()
+    reader = stream.subscribe(_TEAM_ID, cursor=0)
+    # Caught up, so the next read_next() blocks in wait()
+    assert reader.read_next(timeout=0.1) is None
+
+    late = _make_event(1)
+    received: list[Message | None] = []
+    errors: list[Exception] = []
+
+    def reader_thread() -> None:
+        try:
+            received.append(reader.read_next(timeout=5.0))
+        except StreamClosed as e:  # pragma: no cover - the defect's signature
+            errors.append(e)
+
+    t = threading.Thread(target=reader_thread)
+    t.start()
+
+    time.sleep(0.05)
+    stream.append(_TEAM_ID, late)
+    stream.remove(_TEAM_ID)
+    t.join(timeout=2.0)
+
+    assert errors == []
+    assert received == [late]
+    reader.close()
+
+
+def test_reader_drains_event_arriving_between_clear_and_wait() -> None:
+    """Checkpoint 2: an event landing in the lost-wakeup gap is still drained.
+
+    The write is driven from _signal.clear() so it lands deterministically
+    between the clear and the wait, where only the second checkpoint can see it.
+    """
+    stream = LocalEventStream()
+    reader = stream.subscribe(_TEAM_ID, cursor=0)
+    late = _make_event(1)
+    real_clear = reader._signal.clear
+
+    def clear_then_write_and_remove() -> None:
+        real_clear()
+        reader._signal.clear = real_clear  # only interfere on the first pass
+        stream.append(_TEAM_ID, late)
+        stream.remove(_TEAM_ID)
+
+    reader._signal.clear = clear_then_write_and_remove
+
+    assert reader.read_next(timeout=0.1) is late
+    with pytest.raises(StreamClosed):
+        reader.read_next(timeout=0.1)
+    reader.close()
+
+
+def test_reader_drains_event_arriving_between_advance_and_closed_check() -> None:
+    """An event landing after the advance comes back empty is still drained.
+
+    The advance reports "caught up" while the stream is still open, so a write
+    can land before the closed flag is read. That is the window on_stop drives:
+    it appends the last events of teardown and then removes the stream.
+    """
+    stream = LocalEventStream()
+    reader = stream.subscribe(_TEAM_ID, cursor=0)
+    late = _make_event(1)
+    real_advance = reader._advance
+
+    def advance_then_write_and_remove() -> Message | None:
+        result = real_advance()
+        reader._advance = real_advance  # only interfere on the first pass
+        stream.append(_TEAM_ID, late)
+        stream.remove(_TEAM_ID)
+        return result
+
+    reader._advance = advance_then_write_and_remove
+
+    assert reader.read_next(timeout=0.1) is late
+    with pytest.raises(StreamClosed):
+        reader.read_next(timeout=0.1)
+    reader.close()
+
+
+def test_remove_leaves_events_intact() -> None:
+    """remove() must not clear events -- readers drain from it after removal."""
+    stream = LocalEventStream()
+    events = [_make_event(i) for i in range(3)]
+    for ev in events:
+        stream.append(_TEAM_ID, ev)
+
+    with stream._lock:
+        ts = stream._streams[_TEAM_ID]
+
+    stream.remove(_TEAM_ID)
+
+    assert ts.closed is True
+    assert ts.events == events
+
+
 # --- Edge-case coverage ---
 
 
@@ -302,10 +473,15 @@ def test_subscribe_on_concurrently_closed_stream_raises() -> None:
         stream.subscribe(_TEAM_ID, cursor=0)
 
 
-def test_read_from_on_closed_stream_returns_empty() -> None:
-    """read_from() returns empty list when stream is closed but still in _streams."""
+def test_read_from_on_closed_stream_returns_events() -> None:
+    """read_from() still yields what was written when the stream is closed.
+
+    Replaces the former assertion that a closed stream reads as empty: closed
+    means no more writes, not discard what is written (see issue #412).
+    """
     stream = LocalEventStream()
-    stream.append(_TEAM_ID, _make_event(1))
+    event = _make_event(1)
+    stream.append(_TEAM_ID, event)
 
     # Close the stream without removing it from _streams
     with stream._lock:
@@ -313,4 +489,4 @@ def test_read_from_on_closed_stream_returns_empty() -> None:
     with ts.lock:
         ts.closed = True
 
-    assert stream.read_from(_TEAM_ID) == []
+    assert stream.read_from(_TEAM_ID) == [event]
