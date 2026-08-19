@@ -170,10 +170,15 @@ def test_event_appended_during_stream_removal_is_delivered(team_service: TeamSer
     sentinel = build_warning_message(content=marker)
     real_remove = stream.remove
     appended: list[int] = []
+    entry_live_at_removal: list[bool] = []
 
     def removing_after_a_final_write(tid: uuid.UUID) -> None:
         if not appended:  # one-shot: only the first removal, the canonical one
             appended.append(stream.append(tid, sentinel))
+        # Snapshot after the write, so the first reading cannot depend on the
+        # team having emitted anything: read_from() is empty only once the
+        # entry has been popped.
+        entry_live_at_removal.append(bool(stream.read_from(tid)))
         real_remove(tid)
 
     stream.remove = removing_after_a_final_write  # type: ignore[method-assign]
@@ -188,6 +193,13 @@ def test_event_appended_during_stream_removal_is_delivered(team_service: TeamSer
     # still open when it landed, which is what makes the delivery meaningful.
     assert appended, "the wrapped remove never ran, so nothing was written in the window"
     assert appended[0] > 0
+    # Pins WHICH removal carried the write rather than leaving it to prose: two
+    # calls, the first (EventStreamSubscriber.on_stop, fired inside
+    # worker_handle.stop_team) finding the entry live, the second
+    # (TeamService.stop_team's belt-and-suspenders) finding it already popped.
+    # Should the canonical removal ever stop firing, this drops to [True] and
+    # goes red instead of quietly re-aiming at the belt-and-suspenders.
+    assert entry_live_at_removal == [True, False]
     assert marker in [event.content for event in delivered if isinstance(event, WarningMessage)]
 
 
