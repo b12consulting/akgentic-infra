@@ -580,6 +580,26 @@ Run it in your own CI: a framework upgrade that reorders the stack then fails yo
 2. calling `app.include_router(...)`;
 3. writing `app.state` outside builder-applied `contribute_state` entries and the module's own lifespan.
 
+**Reach the platform through `TeamService`, never through a protocol beneath it.** This is the most common mistake in a client-authored module, and unlike the three above it fails silently — the code works, passes review, and degrades in production on the one tenant large enough to notice.
+
+`TierServices` exposes both the service and the protocol implementations it delegates to, so a module wanting a team listing can reach either:
+
+```python
+# WRONG — the layer underneath the seam
+rows = services.event_store.list_teams(user_id=user.user_id)
+
+# RIGHT — the seam the server is built around
+rows, total = services.team_service.list_teams(user_id=user.user_id, page=1, size=50)
+```
+
+They are not two spellings of one call. `EventStore.list_teams` is the storage protocol: it returns **every** matching row, in store order, with no bound. `TeamService.list_teams` is the application seam: it returns one page plus the filtered total, sorted `created_at DESC, team_id DESC`, with `size` capped at `MAX_PAGE_SIZE`. A route built on the first loads a caller's entire archive into memory on every request — fine against the fifty teams on a developer's laptop, and a memory incident against a tenant with fifty thousand.
+
+The portability cost is the other half. `TeamService` is tier-agnostic by construction: it delegates to whichever `EventStore`, `WorkerHandle` and `RuntimeCache` the tier wired, so a module written against it composes unchanged on community, department and enterprise. A module written against `EventStore` has bound itself to a protocol whose implementation the tier is free to swap.
+
+`team_service` is typed `TeamService | None` on the container because the container is built before the service is (`TeamService(services, ...)` needs the container). It is always populated by the time any module composes — but **resolve it per request rather than caching it in `__init__`**, and narrow it explicitly rather than with a bare `assert`, which `-O` strips.
+
+The same rule holds for every protocol on the container. `TeamService` is the entry point; `EventStore`, `WorkerHandle`, `RuntimeCache` and `EventStream` are what it delegates to, and a module reaching past it is taking on a contract the framework does not promise to keep stable.
+
 **Migrating safely — the golden-manifest recipe.** `build_manifest(app)` snapshots the route table and the outermost-to-innermost middleware order. Capture it from the **pre-migration** app first, commit it as the test's expected value, then refactor until the manifest of the new composition is identical — sanctioned deltas pinned and documented one by one.
 
 **`build_app` is not a production entry.** It is the globals-free pure builder, for tests and embedded compositions. Production goes through `create_app` (or the tier's `create_server_app`), which hardwires the invariant process globals (logging, catalog prefix policy) before composing. A `build_app(` call in a tier's `server_app.py` is a review flag.
