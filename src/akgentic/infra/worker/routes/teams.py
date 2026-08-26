@@ -93,6 +93,11 @@ def _process_to_response(process: Process) -> TeamResponse:
     producer that left the field at its default would report ``null`` for a team
     that carries metadata. The tag strip comes along for free, so the worker can
     never emit a ``__model__`` the server-side API would refuse back in.
+
+    ``catalog_namespace`` is filled here for the same reason, and it is the
+    field where the argument is easiest to forget: nothing on the server side
+    goes red when only the server producer is updated, because no server test
+    ever calls this function.
     """
     team_name = process.team_card.name or process.catalog_namespace or str(process.team_id)
     return TeamResponse(
@@ -103,6 +108,7 @@ def _process_to_response(process: Process) -> TeamResponse:
         created_at=process.created_at,
         updated_at=process.updated_at,
         metadata=dump_metadata(process.metadata),
+        catalog_namespace=process.catalog_namespace,
     )
 
 

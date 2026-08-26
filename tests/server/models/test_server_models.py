@@ -87,6 +87,63 @@ def test_team_response_metadata_round_trips() -> None:
     assert dumped["metadata"]["owner"]["email"] == "ops@contoso.example"
 
 
+def test_team_response_catalog_namespace_defaults_to_none() -> None:
+    """catalog_namespace is optional and additive, and null is a real answer.
+
+    A team not created from a catalog genuinely has none, so ``null`` is the
+    value — never the empty string, never an absent key.
+    """
+    now = datetime.now(tz=UTC)
+    resp = TeamResponse(
+        team_id=uuid.uuid4(),
+        name="Test",
+        status="running",
+        user_id="anonymous",
+        created_at=now,
+        updated_at=now,
+    )
+    assert resp.catalog_namespace is None
+    dumped = resp.model_dump(mode="json")
+    assert dumped["catalog_namespace"] is None
+    assert dumped["catalog_namespace"] != ""
+
+
+def test_team_response_catalog_namespace_round_trips() -> None:
+    """A populated namespace survives serialization unchanged."""
+    now = datetime.now(tz=UTC)
+    resp = TeamResponse(
+        team_id=uuid.uuid4(),
+        name="Test",
+        status="running",
+        user_id="anonymous",
+        created_at=now,
+        updated_at=now,
+        catalog_namespace="acme-cases",
+    )
+    assert resp.model_dump(mode="json")["catalog_namespace"] == "acme-cases"
+
+
+def test_team_response_field_order_appends_catalog_namespace_last() -> None:
+    """The wire shape is pinned: the new field is appended, and nothing is reordered.
+
+    The frontend reads this body by key and the team-list mapper must keep
+    working against a server predating the field, so a field added at the end is
+    additive while one inserted in the middle is a breaking change to anything
+    positional. Asserted as an ordered list rather than a set, because a set
+    cannot see a reorder at all.
+    """
+    assert list(TeamResponse.model_fields) == [
+        "team_id",
+        "name",
+        "status",
+        "user_id",
+        "created_at",
+        "updated_at",
+        "metadata",
+        "catalog_namespace",
+    ]
+
+
 def test_team_response_serialization() -> None:
     """TeamResponse serializes all fields correctly."""
     tid = uuid.uuid4()

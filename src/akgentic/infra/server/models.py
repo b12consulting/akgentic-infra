@@ -60,6 +60,17 @@ class TeamResponse(BaseModel):
             "concern, and this value is accepted verbatim back on create/update."
         ),
     )
+    # Appended last, never inserted: this is a pinned wire shape that clients
+    # read by key and that must keep working against a server predating the
+    # field. Additive at the end; a field in the middle is a breaking change.
+    catalog_namespace: str | None = Field(
+        default=None,
+        description=(
+            "The catalog namespace the team was created from, or null when it was "
+            "not catalog-sourced. Also accepted as a ?catalog_namespace= filter on "
+            "GET /teams, where it matches exactly."
+        ),
+    )
 
 
 class UpdateTeamMetadataRequest(BaseModel):
