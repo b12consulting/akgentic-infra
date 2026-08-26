@@ -59,6 +59,7 @@ def _process_to_response(process: Process) -> TeamResponse:
         created_at=process.created_at,
         updated_at=process.updated_at,
         metadata=dump_metadata(process.metadata),
+        catalog_namespace=process.catalog_namespace,
     )
 
 
@@ -123,29 +124,45 @@ def create_team(
 
 
 METADATA_FILTER_PREFIX = "meta."
-"""Query-parameter prefix that marks a business-metadata equality filter."""
+"""Query-parameter prefix that marks a business-metadata prefix filter."""
 
 
-def _parse_metadata_filter(request: Request) -> dict[str, str] | None:
-    """Collect repeated ``?meta.<key>=<value>`` parameters into a filter.
+def _parse_metadata_filter(request: Request) -> dict[str, list[str]] | None:
+    """Collect repeated ``?meta.<key>=<term>`` parameters into a filter.
 
-    Read from the raw multi-item query string rather than declared as a route
-    parameter because the key set is open: it is whatever the team's metadata
-    model declares, which the HTTP layer neither knows nor needs to know.
+    Read from ``multi_items()`` rather than declared as a route parameter for
+    two reasons: the key set is open — it is whatever the team's metadata model
+    declares, which the HTTP layer neither knows nor needs to know — and only
+    the multi-item view sees a key given more than once. ``request.query_params``
+    keeps one value per key, so reading it the convenient way would silently
+    implement last-wins, which is indistinguishable from correct in every
+    single-term test.
+
+    Matching is an anchored, case-insensitive **prefix**, and the store combines
+    the result: terms within ONE key OR-combine, DISTINCT keys AND-combine.
+    Ordinary faceted search — two prefixes on one key could not usefully AND,
+    since either one prefixes the other or the pair is unsatisfiable.
+
+    A blank term contributes nothing, and a key whose terms are all blank
+    contributes no entry at all: ``"k|"`` would prefix-match every entry under
+    that key, which under a disjunction *widens* the answer to everything rather
+    than merely failing to narrow it. Dropping blanks here duplicates a rule
+    ``akgentic-team`` also applies, which is safe precisely because dropping a
+    blank twice is dropping it once — idempotent, unlike escaping.
 
     Returns:
-        The ``key -> value`` filter, or ``None`` when no ``meta.`` parameter was
-        given. ``None`` rather than ``{}``: an empty dict is an empty
-        conjunction that some backends would still translate into a query, and
-        "no filter" is not a filter that matches everything by coincidence.
+        The ``key -> [term, ...]`` filter in arrival order, or ``None`` when no
+        ``meta.`` parameter survived. ``None`` rather than ``{}``: an empty dict
+        is an empty conjunction that some backends would still translate into a
+        query, and "no filter" is not a filter that matches everything by
+        coincidence.
 
     Raises:
-        HTTPException: 422 naming the offending parameter, when a key is empty
-            or repeated. Two values for one key can never both hold under
-            equality matching, so first-wins or last-wins would answer a
-            question the client did not ask, silently.
+        HTTPException: 422 naming the offending parameter, when a key is empty.
+            ``?meta.=x`` names no field and so asks a question that cannot be
+            answered, however the terms combine.
     """
-    filters: dict[str, str] = {}
+    filters: dict[str, list[str]] = {}
     for name, value in request.query_params.multi_items():
         if not name.startswith(METADATA_FILTER_PREFIX):
             continue
@@ -155,15 +172,12 @@ def _parse_metadata_filter(request: Request) -> dict[str, str] | None:
                 status_code=422,
                 detail=f"query parameter '{name}' names no metadata key",
             )
-        if key in filters:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"query parameter '{name}' is repeated; metadata filtering is "
-                    "equality-only, so one key cannot carry two values"
-                ),
-            )
-        filters[key] = value
+        if not value:
+            continue
+        # Verbatim, always: only the store knows whether this term lands in a
+        # regex or a LIKE pattern, so the store does all dialect escaping. A
+        # pre-escape here would compose with it and match the wrong rows.
+        filters.setdefault(key, []).append(value)
     return filters or None
 
 
@@ -173,6 +187,7 @@ def list_teams(
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
     status: TeamStatus | None = None,
+    catalog_namespace: str | None = None,
     page: int = 1,
     size: int = 250,
 ) -> TeamListResponse:
@@ -182,11 +197,18 @@ def list_teams(
     is a 422 raised by the framework, not handled here. Omitting it returns
     every status, ``DELETED`` included.
 
-    Repeated ``?meta.<key>=<value>`` parameters add an equality filter on the
-    team's business metadata; distinct keys AND-combine. Values travel to the
-    store verbatim — deriving the index entry and escaping the ``|`` separator
-    happen exactly once, inside ``akgentic-team``, and duplicating either here
-    would double-escape and match nothing.
+    Repeated ``?meta.<key>=<term>`` parameters add a prefix filter on the team's
+    business metadata: terms within one key OR-combine, distinct keys
+    AND-combine, and matching is an anchored, case-insensitive prefix rather
+    than equality. Terms travel to the store verbatim — deriving the index
+    entry and escaping it for the store's own dialect happen exactly once,
+    inside ``akgentic-team``, and duplicating either here would escape twice and
+    match nothing.
+
+    ``catalog_namespace`` narrows to the teams created from that namespace, by
+    exact match; a blank value means no filter. Unlike the other two it is
+    applied in the service rather than pushed into the store, which has no such
+    parameter — see ``TeamService.list_teams``.
 
     No filter widens the set beyond the caller's own teams: ``user_id`` comes
     from the request identity seam and is always pushed down alongside, so a
@@ -196,14 +218,20 @@ def list_teams(
     """
     metadata = _parse_metadata_filter(request)
     logger.debug(
-        "GET /teams — status=%s meta_keys=%s page=%s size=%s",
+        "GET /teams — status=%s meta_keys=%s catalog_namespace=%s page=%s size=%s",
         status,
         sorted(metadata) if metadata else None,
+        catalog_namespace,
         page,
         size,
     )
     page_slice, total = service.list_teams(
-        user_id=user.user_id, status=status, metadata=metadata, page=page, size=size
+        user_id=user.user_id,
+        status=status,
+        metadata=metadata,
+        catalog_namespace=catalog_namespace,
+        page=page,
+        size=size,
     )
     return TeamListResponse(
         teams=[_process_to_response(p) for p in page_slice],

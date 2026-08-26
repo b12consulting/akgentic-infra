@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
 from unittest.mock import MagicMock
 
 import pytest
@@ -117,13 +118,20 @@ def _filtering_store(*seeded: Process) -> MagicMock:
     argument it cannot take. Matching on it is deliberately NOT implemented —
     index derivation belongs to akgentic-team and must not be copied here — so
     the unsupported axis fails loudly rather than being quietly ignored.
+
+    The axis is ``Mapping[str, list[str]]``, matching the widened Protocol. It
+    is the drift the docstring above predicts: the annotation sat at
+    ``dict[str, str]`` after akgentic-team widened the port, and nothing here
+    could notice, because the assertion below never reads the value. Only
+    ``FakeEventStore`` in ``tests/test_deps.py`` is held against the live
+    Protocol; this stub is not.
     """
     rows = list(seeded)
 
     def list_teams(
         user_id: str | None = None,
         status: TeamStatus | None = None,
-        metadata: dict[str, str] | None = None,
+        metadata: Mapping[str, list[str]] | None = None,
     ) -> list[Process]:
         assert metadata is None, "the warm read must not push a metadata filter"
         matched = rows if user_id is None else [p for p in rows if p.user_id == user_id]

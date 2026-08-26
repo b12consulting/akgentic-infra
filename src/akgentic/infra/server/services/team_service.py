@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -198,7 +199,8 @@ class TeamService:
         *,
         user_id: str,
         status: TeamStatus | None = None,
-        metadata: dict[str, str] | None = None,
+        metadata: Mapping[str, list[str]] | None = None,
+        catalog_namespace: str | None = None,
         page: int = 1,
         size: int = 250,
     ) -> tuple[list[Process], int]:
@@ -206,33 +208,49 @@ class TeamService:
 
         Phase 1: the store returns the matching set, sorted ``created_at DESC,
         team_id DESC`` and sliced here (ADR-032 §Decision 2). Stateless — a pure
-        function of ``user_id`` + ``status`` + ``metadata`` + ``page`` + ``size``
-        + store contents. An out-of-range page yields an empty list with the
-        correct total.
+        function of ``user_id`` + ``status`` + ``metadata`` + ``catalog_namespace``
+        + ``page`` + ``size`` + store contents. An out-of-range page yields an
+        empty list with the correct total.
 
-        Every filter pushes into the EventStore rather than loading the user's
-        teams into Python and filtering here, so per-request cost scales with
-        the answer rather than with the archive — and so the total, counted from
-        what the store returned, is the FILTERED count on every page rather than
-        a count of the set the filter was drawn from. Nothing filters after the
-        slice; that ordering is what keeps pages contiguous.
+        ``user_id``, ``status`` and ``metadata`` push into the EventStore rather
+        than loading the user's teams into Python and filtering here, so
+        per-request cost scales with the answer rather than with the archive.
+        ``catalog_namespace`` is the one exception, and deliberately so:
+        ``EventStore.list_teams`` has no such parameter, and adding one is an
+        ``akgentic-team`` Protocol change. It is applied here instead — **before
+        the sort and the slice**, so the total is still the FILTERED count on
+        every page and pages stay contiguous. The cost is honest: on that path
+        the store returns the ``status``+``metadata``-narrowed set and the
+        namespace narrows it in Python. That is a performance property, not a
+        correctness one. Nothing filters after the slice.
 
-        ``status=None`` and ``metadata=None`` each mean *no such filter*, so a
-        caller passing neither gets exactly the result set it got before. Both
-        are forwarded unconditionally: a branch that omits a kwarg when it is
-        ``None`` is how a filter later gets silently dropped. ``metadata``
-        values travel verbatim — index derivation and ``|`` escaping happen once,
-        inside ``akgentic-team`` (ADR-24 §D4).
+        ``status=None``, ``metadata=None`` and ``catalog_namespace=None`` each
+        mean *no such filter*, so a caller passing none of them gets exactly the
+        result set it got before. The three the store understands are forwarded
+        unconditionally: a branch that omits a kwarg when it is ``None`` is how a
+        filter later gets silently dropped.
 
-        Neither filter replaces the owner filter: they only narrow *within* the
-        user's teams. Metadata is caller-supplied and non-secret, so allowing it
-        to widen the set — or the count — would make this a cross-tenant
-        enumeration primitive. See team-package ADR-16 (owner), ADR-23
-        (lifecycle state) and ADR-24 (metadata) for the Protocol changes.
+        ``metadata`` maps an indexed field name to a list of **prefix terms** —
+        terms within one key OR-combine, distinct keys AND-combine, and matching
+        is an anchored, case-insensitive prefix rather than equality (ADR-28).
+        The terms travel verbatim: index derivation, and escaping for whichever
+        dialect the store speaks, happen once inside ``akgentic-team`` (ADR-24
+        §D4). Escaping here would compose with that and match nothing.
+
+        No filter replaces the owner filter: they only narrow *within* the
+        user's teams, ``catalog_namespace`` included. Metadata is caller-supplied
+        and non-secret, so allowing it to widen the set — or the count — would
+        make this a cross-tenant enumeration primitive. See team-package ADR-16
+        (owner), ADR-23 (lifecycle state) and ADR-24 (metadata) for the Protocol
+        changes.
         """
         rows = self._services.event_store.list_teams(
             user_id=user_id, status=status, metadata=metadata
         )
+        # Truthiness, not ``is not None``: a blank ?catalog_namespace= is an
+        # empty form field, not a request to filter on the literal empty string.
+        if catalog_namespace:
+            rows = [row for row in rows if row.catalog_namespace == catalog_namespace]
         rows.sort(key=lambda p: (p.created_at, p.team_id), reverse=True)
         total = len(rows)
         size = max(1, min(size, MAX_PAGE_SIZE))

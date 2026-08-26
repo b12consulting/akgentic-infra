@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import get_type_hints
 from unittest.mock import MagicMock
 
@@ -56,7 +56,7 @@ class FakeEventStore:
         self,
         user_id: str | None = None,
         status: TeamStatus | None = None,
-        metadata: dict[str, str] | None = None,
+        metadata: Mapping[str, list[str]] | None = None,
     ) -> list[Process]:
         """Return empty list."""
         return []
@@ -129,7 +129,12 @@ class TestFakeEventStoreProtocolShape:
     """
 
     def test_list_teams_accepts_every_protocol_call_shape(self) -> None:
-        """Every way the protocol allows ``list_teams`` to be called works on the fake."""
+        """Every way the protocol allows ``list_teams`` to be called works on the fake.
+
+        The metadata shapes are term LISTS. The bare-``str`` calls these used to
+        make were green only because the fake returns ``[]`` without consulting
+        the value — a call shape the real contract now rejects with ``TypeError``.
+        """
         store = FakeEventStore()
 
         assert store.list_teams() == []
@@ -137,8 +142,8 @@ class TestFakeEventStoreProtocolShape:
         assert store.list_teams(user_id="u1") == []
         assert store.list_teams(status=TeamStatus.RUNNING) == []
         assert store.list_teams(user_id="u1", status=TeamStatus.RUNNING) == []
-        assert store.list_teams(metadata={"tenant": "acme"}) == []
-        assert store.list_teams(user_id="u1", metadata={"tenant": "acme"}) == []
+        assert store.list_teams(metadata={"tenant": ["acme"]}) == []
+        assert store.list_teams(user_id="u1", metadata={"tenant": ["acme", "contoso"]}) == []
 
     @pytest.mark.parametrize("method_name", _PROTOCOL_METHODS)
     def test_method_signature_matches_the_protocol(self, method_name: str) -> None:

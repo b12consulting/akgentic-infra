@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Generator
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -12,6 +14,8 @@ from fastapi.testclient import TestClient
 from akgentic.infra.errors import TeamStateConflictError
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.auth import RequestUser, get_request_user
+from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.routes._team_access import get_team_service
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 
@@ -571,25 +575,19 @@ def test_list_teams_status_does_not_reach_across_users(app: FastAPI) -> None:
     assert body["total_count"] == 1
 
 
-# --- Repeated ?meta.<key>=<value> filter — parsing and no-filter behaviour (Epic 53) ---
+# --- Repeated ?meta.<key>=<term> filter — parsing and no-filter behaviour (Epics 53, 65) ---
 #
 # The teams seeded here carry no metadata (the ``test-team`` card declares no
-# metadata_type), so this file covers the halves that need none: rejection of a
-# malformed parameter, and the guarantee that a request without any ``meta.``
-# parameter is unchanged. The filtering behaviour itself lives beside the
-# metadata-carrying catalog fixture, in test_team_metadata_routes.py.
-
-
-def test_list_teams_repeated_same_meta_key_is_422_naming_it(client: TestClient) -> None:
-    """Two values for one key is a 422, not a silently resolved first/last win.
-
-    Matching is equality-only, so ``tenant == acme AND tenant == contoso`` can
-    never hold. Keeping one of the two would answer a question the client did
-    not ask, with no signal that it happened.
-    """
-    resp = client.get("/teams", params=[("meta.tenant", "acme"), ("meta.tenant", "contoso")])
-    assert resp.status_code == 422
-    assert "meta.tenant" in resp.json()["detail"]
+# metadata_type), so this file covers the halves that need none: how the query
+# string is parsed into the filter delegated downstream, rejection of the one
+# parameter that is still malformed, and the guarantee that a request without
+# any ``meta.`` parameter is unchanged. The matching behaviour itself lives
+# beside the metadata-carrying catalog fixture, in test_team_metadata_routes.py.
+#
+# A repeated key is no longer a 422 — it is the ordered term list this surface
+# exists to carry (Epic 65). The spec that pinned that rejection, and its
+# "equality-only" message, is deleted rather than weakened: the behaviour it
+# guarded is now a feature.
 
 
 def test_list_teams_empty_meta_key_is_422(client: TestClient) -> None:
@@ -622,8 +620,22 @@ def test_list_teams_without_meta_params_is_unchanged_field_by_field(client: Test
     assert entry["user_id"] == "anonymous"
     assert entry["created_at"] == created_body["created_at"]
     assert entry["updated_at"] == created_body["updated_at"]
-    # The one additive change, null for a team that carries no metadata.
+    # The one additive change of Story 53.1, null for a team carrying no metadata.
     assert entry["metadata"] is None
+    # ...and the one additive change of Story 65.1. The key set is asserted as a
+    # whole so "the body is what it was plus one key" is pinned in both
+    # directions: a field quietly dropped fails here too.
+    assert entry["catalog_namespace"] == "test-team"
+    assert set(entry) == {
+        "team_id",
+        "name",
+        "status",
+        "user_id",
+        "created_at",
+        "updated_at",
+        "metadata",
+        "catalog_namespace",
+    }
 
 
 def test_list_teams_unknown_non_meta_params_are_still_ignored(client: TestClient) -> None:
@@ -634,3 +646,276 @@ def test_list_teams_unknown_non_meta_params_are_still_ignored(client: TestClient
     body = resp.json()
     assert body["total_count"] == 3
     assert len(body["teams"]) == 1  # second page of a 3-team set at size 2
+
+
+# --- What GET /teams delegates downstream (Epic 65) ---
+#
+# Two seams, deliberately probed separately.
+#
+# ``_delegated_to_service`` spies on the boundary the route owns: how a query
+# string becomes the ``metadata`` mapping and the ``catalog_namespace`` term.
+# ``_delegated_to_store`` goes one layer further and records what reaches
+# ``EventStore.list_teams``, which is where the verbatim guarantee has to hold —
+# a term is escaped for a dialect only *after* this point, inside akgentic-team,
+# so a term pre-escaped anywhere above the store is escaped twice and matches
+# nothing. That defect is invisible to a result-level assertion in this
+# repository: the community store matches literally in Python, while the
+# escaping it would compose with lives in the Mongo and Postgres dialects this
+# suite never exercises.
+
+
+def _delegated_to_service(
+    app: FastAPI,
+    community_services: CommunityServices,
+    params: Any,
+) -> dict[str, Any]:
+    """Return the kwargs ``GET /teams`` delegated to ``TeamService.list_teams``.
+
+    The spy *wraps* the wired service rather than replacing it, so the request
+    is served for real and the recorded call is the one that actually ran.
+    """
+    spy = MagicMock(wraps=community_services.team_service)
+    app.dependency_overrides[get_team_service] = lambda: spy
+    try:
+        resp = TestClient(app).get("/teams", params=params)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert spy.list_teams.call_count == 1
+    assert spy.list_teams.call_args.args == ()
+    return dict(spy.list_teams.call_args.kwargs)
+
+
+def _delegated_to_store(
+    client: TestClient,
+    community_services: CommunityServices,
+    params: Any,
+) -> dict[str, Any]:
+    """Return the kwargs that reached ``EventStore.list_teams`` for a ``GET /teams``.
+
+    Asserts the delegated kwarg SET on every call, so no filter the store does
+    not declare can appear on any path: ``catalog_namespace`` is applied in the
+    service, and pushing it down would be an akgentic-team Protocol change.
+    """
+    mock_store = MagicMock()
+    mock_store.list_teams.return_value = []
+    community_services.event_store = mock_store  # type: ignore[assignment]
+
+    resp = client.get("/teams", params=params)
+
+    assert resp.status_code == 200
+    assert mock_store.list_teams.call_count == 1
+    assert mock_store.list_teams.call_args.args == ()
+    kwargs = dict(mock_store.list_teams.call_args.kwargs)
+    assert set(kwargs) == {"user_id", "status", "metadata"}
+    return kwargs
+
+
+def test_repeated_meta_key_delegates_an_ordered_term_list(
+    app: FastAPI, community_services: CommunityServices
+) -> None:
+    """A repeated key is a term list, in arrival order — not a resolved single value.
+
+    The request MUST use a genuinely repeated query key rather than a dict, or
+    it cannot tell correct behaviour from last-wins: reading
+    ``request.query_params`` instead of ``multi_items()`` would deliver
+    ``{"tenant": ["me"]}`` and look right in every single-term test.
+    """
+    kwargs = _delegated_to_service(
+        app, community_services, [("meta.tenant", "ac"), ("meta.tenant", "me")]
+    )
+    assert kwargs["metadata"] == {"tenant": ["ac", "me"]}
+
+
+def test_repeated_meta_key_is_no_longer_rejected(client: TestClient) -> None:
+    """The repeated-key 422 is gone: two terms on one key is what this surface carries.
+
+    They OR-combine in the store — ordinary faceted search — so the pair that
+    could never both hold under equality matching is now the ordinary request.
+    """
+    resp = client.get("/teams", params=[("meta.tenant", "acme"), ("meta.tenant", "contoso")])
+    assert resp.status_code == 200
+
+
+def test_distinct_meta_keys_each_carry_their_own_list(
+    app: FastAPI, community_services: CommunityServices
+) -> None:
+    """Two different keys are two entries, each a one-term list."""
+    kwargs = _delegated_to_service(
+        app, community_services, {"meta.tenant": "acme", "meta.case": "C-1"}
+    )
+    assert kwargs["metadata"] == {"tenant": ["acme"], "case": ["C-1"]}
+
+
+def test_a_single_blank_term_delegates_no_filter_at_all(
+    app: FastAPI, community_services: CommunityServices
+) -> None:
+    """``?meta.tenant=`` reduces to nothing, and nothing is ``None`` — never ``{}``.
+
+    Neither ``{}`` nor ``{"tenant": [""]}``: an empty conjunction is a query
+    some backends still translate, and an empty term would prefix-match every
+    entry under its key, which under a disjunction *widens* the answer to
+    everything rather than failing to narrow it.
+    """
+    kwargs = _delegated_to_service(app, community_services, {"meta.tenant": ""})
+    assert kwargs["metadata"] is None
+
+
+def test_a_blank_meta_term_answers_exactly_what_no_filter_answers(client: TestClient) -> None:
+    """AC 6, behaviourally: a filter that reduces to nothing changes no answer."""
+    assert client.post("/teams/", json={"catalog_namespace": "test-team"}).status_code == 201
+
+    unfiltered = client.get("/teams")
+    blank = client.get("/teams", params={"meta.tenant": ""})
+    assert unfiltered.status_code == blank.status_code == 200
+    assert blank.json() == unfiltered.json()
+
+
+def test_an_all_blank_key_is_dropped_while_its_siblings_survive(
+    app: FastAPI, community_services: CommunityServices
+) -> None:
+    """A key whose terms are all blank contributes no entry; the other key stands.
+
+    Asserted as an exact mapping rather than by membership: a surviving
+    ``"tenant": []`` entry is precisely the empty disjunction the store's
+    contract forbids, and ``"tenant" in kwargs["metadata"]`` is how it would
+    slip through.
+    """
+    kwargs = _delegated_to_service(
+        app, community_services, [("meta.tenant", ""), ("meta.case", "C-1")]
+    )
+    assert kwargs["metadata"] == {"case": ["C-1"]}
+
+
+def test_a_key_keeps_the_terms_that_are_not_blank(
+    app: FastAPI, community_services: CommunityServices
+) -> None:
+    """A blank term among real ones is dropped without taking its key with it."""
+    kwargs = _delegated_to_service(
+        app,
+        community_services,
+        [("meta.tenant", "acme"), ("meta.tenant", ""), ("meta.tenant", "contoso")],
+    )
+    assert kwargs["metadata"] == {"tenant": ["acme", "contoso"]}
+
+
+_METACHARACTER_TERMS = ["a.b", "50%", "a_b", "a*b", "ac|me", "back\\slash"]
+"""Terms carrying regex, ``LIKE`` and index-separator metacharacters.
+
+``.`` and ``*`` are regex (Mongo), ``%`` and ``_`` are ``LIKE`` wildcards
+(Postgres), ``|`` separates key from value inside an index entry, and ``\\`` is
+the escape character of all three. Each store escapes for its own dialect, once,
+after this point.
+"""
+
+
+def test_metacharacter_terms_reach_the_store_byte_identical(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """Terms travel verbatim: nothing here escapes, renders, trims or case-folds.
+
+    This is the load-bearing assertion of the whole seam, and it has to be on
+    the delegated call rather than on the rows that come back. A pre-escape
+    looks *correct* in this repository's suite — the term was escaped, as
+    intended — and correct in akgentic-team's, where a mangled term arrived and
+    was faithfully escaped again. It is wrong only in composition, which neither
+    suite exercises.
+    """
+    params = [("meta.tenant", term) for term in _METACHARACTER_TERMS]
+
+    kwargs = _delegated_to_store(client, community_services, params)
+
+    assert kwargs["metadata"] == {"tenant": _METACHARACTER_TERMS}
+
+
+def test_mixed_case_terms_are_not_folded_at_this_seam(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """Case-insensitivity is the store's, from casefolding the index on both sides.
+
+    Folding here would be invisible end to end — the answers match — while
+    quietly making this layer a second place that decides matching semantics.
+    """
+    kwargs = _delegated_to_store(client, community_services, {"meta.tenant": "AcMe"})
+    assert kwargs["metadata"] == {"tenant": ["AcMe"]}
+
+
+# --- ?catalog_namespace= : the filter the store does not carry (Epic 65) ---
+
+
+def test_catalog_namespace_is_never_passed_to_the_store(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """``EventStore.list_teams`` has no such parameter, so nothing may push it down.
+
+    Adding one would be an akgentic-team Protocol change. The delegated kwargs
+    stay exactly ``{user_id, status, metadata}`` — and ``user_id`` stays on the
+    call, so the namespace path cannot reach past the caller's own teams.
+    """
+    kwargs = _delegated_to_store(
+        client, community_services, {"catalog_namespace": "test-team", "meta.tenant": "acme"}
+    )
+    assert kwargs["user_id"] == "anonymous"
+    assert kwargs["metadata"] == {"tenant": ["acme"]}
+
+
+def test_catalog_namespace_is_forwarded_to_the_service(
+    app: FastAPI, community_services: CommunityServices
+) -> None:
+    """The route hands the raw term to the service, which is where it is applied."""
+    kwargs = _delegated_to_service(app, community_services, {"catalog_namespace": "test-team"})
+    assert kwargs["catalog_namespace"] == "test-team"
+
+
+def test_catalog_namespace_narrows_the_page_and_the_count(client: TestClient) -> None:
+    """Only teams created from the namespace are returned, and counted."""
+    created = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    assert created.status_code == 201
+
+    resp = client.get("/teams", params={"catalog_namespace": "test-team"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [created.json()["team_id"]]
+    assert body["total_count"] == 1
+
+    missing = client.get("/teams", params={"catalog_namespace": "no-such-namespace"})
+    assert missing.status_code == 200
+    assert missing.json()["teams"] == []
+    assert missing.json()["total_count"] == 0
+
+
+def test_blank_catalog_namespace_answers_exactly_what_omitting_it_answers(
+    client: TestClient,
+) -> None:
+    """A blank is an empty form field, not a filter on the literal empty string.
+
+    Every seeded team here has a namespace, so a filter on ``""`` would answer
+    an empty page — which is how the difference shows.
+    """
+    assert client.post("/teams/", json={"catalog_namespace": "test-team"}).status_code == 201
+
+    omitted = client.get("/teams")
+    blank = client.get("/teams", params={"catalog_namespace": ""})
+    assert omitted.status_code == blank.status_code == 200
+    assert blank.json() == omitted.json()
+    assert blank.json()["total_count"] == 1
+
+
+# --- catalog_namespace on the wire, from the server's producer (Epic 65) ---
+
+
+def test_catalog_namespace_is_reported_by_every_server_route(client: TestClient) -> None:
+    """Create, get and list all report the namespace the team was created from."""
+    created = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    assert created.status_code == 201
+    assert created.json()["catalog_namespace"] == "test-team"
+
+    team_id = created.json()["team_id"]
+    fetched = client.get(f"/teams/{team_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["catalog_namespace"] == "test-team"
+
+    listed = client.get("/teams")
+    assert listed.status_code == 200
+    assert [t["catalog_namespace"] for t in listed.json()["teams"]] == ["test-team"]

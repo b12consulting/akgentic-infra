@@ -36,6 +36,7 @@ from akgentic.infra.worker.routes.teams import (
     create_team,
     delete_team,
     emit_notification,
+    resume_team,
     router,
     send_message,
     stop_team,
@@ -114,8 +115,18 @@ def _build_team_card(*, metadata_type: type[SerializableBaseModel] | None = None
     return TeamCard.model_validate(payload)
 
 
-def _build_process(team_id: uuid.UUID, team_card: TeamCard) -> Process:
-    """Build the persisted Process metadata the worker handle returns."""
+def _build_process(
+    team_id: uuid.UUID,
+    team_card: TeamCard,
+    *,
+    catalog_namespace: str | None = None,
+) -> Process:
+    """Build the persisted Process metadata the worker handle returns.
+
+    ``catalog_namespace`` defaults to ``None`` — a team not created from a
+    catalog genuinely has none — so every pre-existing caller keeps producing
+    exactly the process it produced before.
+    """
     now = datetime.now(UTC)
     return Process(
         team_id=team_id,
@@ -124,6 +135,7 @@ def _build_process(team_id: uuid.UUID, team_card: TeamCard) -> Process:
         user_id="user-1",
         created_at=now,
         updated_at=now,
+        catalog_namespace=catalog_namespace,
     )
 
 
@@ -182,6 +194,65 @@ def test_create_team_stores_handle_in_cache() -> None:
     # A team carrying no metadata reports None, never {} — asserted here since
     # the worker has no read route to assert it on.
     assert response.metadata is None
+
+
+def test_worker_create_response_carries_the_catalog_namespace() -> None:
+    """The WORKER producer fills ``catalog_namespace`` too, not only the server one.
+
+    ``TeamResponse`` has two ``_process_to_response`` functions — this one and
+    the server router's — that share a name and a job and import nothing from
+    each other, each hand-enumerating the constructor. A field added to the model
+    and populated in only one of them compiles, type-checks and passes every
+    server-side test while the worker silently reports ``null`` for a team that
+    genuinely has a value. Nothing else in this suite notices; this spec is the
+    only thing standing between that defect and a green run.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    runtime = _FakeRuntime(team_id)
+    process = _build_process(team_id, team_card, catalog_namespace="acme-cases")
+    services = _build_services(runtime, process, LocalRuntimeCache())
+
+    response = create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
+
+    assert response.catalog_namespace == "acme-cases"
+
+
+def test_worker_resume_response_carries_the_catalog_namespace() -> None:
+    """The worker's other ``TeamResponse`` route reports it as well.
+
+    ``POST /teams/{id}/resume`` shares the producer with ``POST /teams``, so this
+    pins the shared conversion point from its second caller rather than trusting
+    that it stays shared.
+    """
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    runtime = _FakeRuntime(team_id)
+    process = _build_process(team_id, team_card, catalog_namespace="acme-cases")
+    cache = LocalRuntimeCache()
+    services = SimpleNamespace(
+        worker_handle=SimpleNamespace(
+            resume_team=lambda _tid: LocalTeamHandle(runtime),
+            get_team=lambda _tid: process,
+        ),
+        runtime_cache=cache,
+    )
+
+    response = resume_team(team_id, services)  # type: ignore[arg-type]
+
+    assert response.catalog_namespace == "acme-cases"
+
+
+def test_worker_response_reports_null_for_a_team_without_a_namespace() -> None:
+    """A team not created from a catalog reports ``null``, not the empty string."""
+    team_id = uuid.uuid4()
+    team_card = _build_team_card()
+    process = _build_process(team_id, team_card)
+    services = _build_services(_FakeRuntime(team_id), process, LocalRuntimeCache())
+
+    response = create_team(_make_create_body(team_id, team_card), services)  # type: ignore[arg-type]
+
+    assert response.catalog_namespace is None
 
 
 def test_create_then_message_hits_cache_and_returns_204() -> None:

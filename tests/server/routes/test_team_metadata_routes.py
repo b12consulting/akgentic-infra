@@ -1,15 +1,18 @@
-"""Route-level tests for the team-metadata HTTP surface — Stories 53.1 and 53.2.
+"""Route-level tests for the team-metadata HTTP surface — Stories 53.1, 53.2 and 65.1.
 
-Two catalog namespaces are seeded: ``acme-cases`` whose card declares a
-``metadata_type``, and ``acme-plain`` whose card declares none. Everything here
-goes through the real HTTP surface and the real community wiring, so a value
-asserted on a response has genuinely travelled catalog → validation → placement
-→ event store → conversion point — and, for the ``?meta.`` filter, back out
-through the store's own index matching rather than a mock's recorded call.
+Three catalog namespaces are seeded: ``acme-cases`` whose card declares a
+``metadata_type``, ``acme-plain`` whose card declares none, and ``acme-archive``
+which declares the same type as the first so the ``?catalog_namespace=`` filter
+has something to exclude. Everything here goes through the real HTTP surface and
+the real community wiring, so a value asserted on a response has genuinely
+travelled catalog → validation → placement → event store → conversion point —
+and, for the ``?meta.`` filter, back out through the store's own index matching
+rather than a mock's recorded call.
 
-The ``?meta.`` cases that need no metadata at all — the 422s and the
-no-filter backward-compatibility check — live in test_team_routes.py beside the
-plain catalog fixture.
+The ``?meta.`` cases that need no metadata at all — the 422, the no-filter
+backward-compatibility check, and the parse and verbatim-travel guards that
+assert on the delegated call rather than on rows — live in test_team_routes.py
+beside the plain catalog fixture.
 """
 
 from __future__ import annotations
@@ -39,6 +42,15 @@ TYPED_NS = "acme-cases"
 UNTYPED_NS = "acme-plain"
 """Namespace whose TeamCard declares no metadata contract."""
 
+ARCHIVE_NS = "acme-archive"
+"""A SECOND namespace declaring the same metadata_type, for the namespace filter.
+
+Story 65.1's ``?catalog_namespace=`` cases need a team that satisfies every
+*other* filter and differs only in its namespace; with one typed namespace the
+namespace term would narrow nothing and the composition specs would pass
+whether or not it was applied at all.
+"""
+
 # A real, importable, harmless class. A nonexistent path would let the rejection
 # tests pass on an ImportError even if the server had honoured the tag — the
 # false green that would hide exactly the vulnerability this rule exists for.
@@ -55,6 +67,7 @@ def metadata_settings(tmp_path: Path) -> CommunitySettings:
     )
     seed_metadata_namespace(settings.catalog_path, TYPED_NS, with_type=True)
     seed_metadata_namespace(settings.catalog_path, UNTYPED_NS, with_type=False)
+    seed_metadata_namespace(settings.catalog_path, ARCHIVE_NS, with_type=True)
     return settings
 
 
@@ -173,9 +186,7 @@ def test_valid_metadata_is_returned_in_the_create_response(
 ) -> None:
     """AC #12: the 201 body carries the metadata, not just the store."""
     body = make_metadata_body(note="escalated")
-    resp = metadata_client.post(
-        "/teams/", json={"catalog_namespace": TYPED_NS, "metadata": body}
-    )
+    resp = metadata_client.post("/teams/", json={"catalog_namespace": TYPED_NS, "metadata": body})
     assert resp.status_code == 201
     returned = resp.json()["metadata"]
     assert returned["tenant"] == "acme"
@@ -468,11 +479,15 @@ def test_a_second_replica_reads_the_same_metadata(
 # ---------------------------------------------------------------------------
 
 
-def _create_team_with(client: TestClient, **fields: Any) -> str:
-    """Create a typed-namespace team carrying ``fields`` and return its id."""
+def _create_team_with(client: TestClient, *, namespace: str = TYPED_NS, **fields: Any) -> str:
+    """Create a typed-namespace team carrying ``fields`` and return its id.
+
+    ``namespace`` defaults to ``TYPED_NS``, so every caller predating the
+    ``?catalog_namespace=`` filter creates exactly the team it created before.
+    """
     resp = client.post(
         "/teams/",
-        json={"catalog_namespace": TYPED_NS, "metadata": make_metadata_body(**fields)},
+        json={"catalog_namespace": namespace, "metadata": make_metadata_body(**fields)},
     )
     assert resp.status_code == 201
     return str(resp.json()["team_id"])
@@ -682,3 +697,176 @@ def test_filtered_pages_are_consistent_across_independent_replicas(
 
     assert page1.isdisjoint(page2)
     assert len(page1 | page2) == 4
+
+
+# ---------------------------------------------------------------------------
+# Story 65.1 — repeated ?meta.<key> terms, and ?catalog_namespace=
+#
+# The parse itself, and the verbatim-travel guard that is the load-bearing half
+# of the escaping boundary, live in test_team_routes.py against the delegated
+# call. What runs here is the other half: the same requests carried all the way
+# through the real store, which is the only place the combination rule and the
+# prefix matching are actually observable.
+# ---------------------------------------------------------------------------
+
+
+def test_two_terms_on_one_key_return_the_union_of_both_prefixes(
+    metadata_client: TestClient,
+) -> None:
+    """AC #3: terms within ONE key OR-combine, and each is an anchored prefix.
+
+    Both properties in one request, because neither is safe alone: a filter that
+    kept only the last term would return one team and still look plausible, and
+    one that matched on equality would return none while the OR was implemented
+    perfectly.
+    """
+    acme_id = _create_team_with(metadata_client, tenant="acme-eu", case="C-1")
+    contoso_id = _create_team_with(metadata_client, tenant="contoso-eu", case="C-2")
+    _create_team_with(metadata_client, tenant="other-eu", case="C-3")
+
+    resp = metadata_client.get("/teams", params=[("meta.tenant", "ac"), ("meta.tenant", "con")])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {t["team_id"] for t in body["teams"]} == {acme_id, contoso_id}
+    assert body["total_count"] == 2
+
+
+def test_two_terms_on_one_key_and_a_second_key_still_and_combine(
+    metadata_client: TestClient,
+) -> None:
+    """AC #3: the OR inside a key composes with the AND between keys.
+
+    ``(tenant=ac OR tenant=con) AND case=C-1`` — the shape faceted search
+    produces everywhere. A filter that ANDed the two tenant terms would answer
+    nothing at all, since neither prefixes the other.
+    """
+    both_id = _create_team_with(metadata_client, tenant="acme-eu", case="C-1")
+    _create_team_with(metadata_client, tenant="contoso-eu", case="C-2")
+    _create_team_with(metadata_client, tenant="other-eu", case="C-1")
+
+    resp = metadata_client.get(
+        "/teams",
+        params=[("meta.tenant", "ac"), ("meta.tenant", "con"), ("meta.case", "C-1")],
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [both_id]
+    assert body["total_count"] == 1
+
+
+def test_a_metacharacter_term_matches_its_literal_value_and_nothing_else(
+    metadata_client: TestClient,
+) -> None:
+    """AC #8, end to end: a regex-flavoured term is a literal, not a pattern.
+
+    Corroboration for the delegated-kwargs guard, not a replacement for it: this
+    catches a term that was merely normalised or trimmed, and would keep passing
+    through a pre-escape, because the community store matches literally in
+    Python. The ``axb`` team is seeded so ``a.b`` has to fail to match something
+    a regex-interpreted term would have caught.
+    """
+    literal_id = _create_team_with(metadata_client, tenant="a.b", case="C-1")
+    _create_team_with(metadata_client, tenant="axb", case="C-2")
+
+    resp = metadata_client.get("/teams", params={"meta.tenant": "a.b"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [literal_id]
+    assert body["total_count"] == 1
+
+
+def test_catalog_namespace_narrows_the_page_and_the_count_across_pages(
+    metadata_client: TestClient,
+) -> None:
+    """AC #11: only that namespace's teams are returned, and the total is theirs.
+
+    Three teams match and four do not. The total is asserted on every page of
+    the walk because a total carried over from the unfiltered set would promise
+    a paginating client two more pages than the filter can produce — the failure
+    mode of narrowing the slice instead of the set it is cut from.
+    """
+    matching = {_create_team_with(metadata_client, case=f"C-{i}") for i in range(3)}
+    for i in range(4):
+        _create_team_with(metadata_client, namespace=ARCHIVE_NS, case=f"A-{i}")
+
+    params = {"catalog_namespace": TYPED_NS, "size": 2}
+    page1 = metadata_client.get("/teams", params={**params, "page": 1})
+    page2 = metadata_client.get("/teams", params={**params, "page": 2})
+    page3 = metadata_client.get("/teams", params={**params, "page": 3})
+    assert page1.status_code == page2.status_code == page3.status_code == 200
+
+    totals = [page1.json()["total_count"], page2.json()["total_count"], page3.json()["total_count"]]
+    assert totals == [3, 3, 3]
+    assert 7 not in totals  # the unfiltered count never surfaces in a filtered answer
+
+    walked = [t["team_id"] for t in page1.json()["teams"] + page2.json()["teams"]]
+    assert page3.json()["teams"] == []
+    assert len(walked) == len(set(walked))  # contiguous, no overlap across the boundary
+    assert set(walked) == matching
+    assert all(t["catalog_namespace"] == TYPED_NS for t in page1.json()["teams"])
+
+
+def test_catalog_namespace_is_an_exact_match_not_a_prefix(metadata_client: TestClient) -> None:
+    """AC #13: ``?catalog_namespace=acme`` reaches no team in ``acme-cases``.
+
+    All three seeded namespaces share the ``acme`` stem, so a filter that had
+    copied the metadata terms' prefix semantics would return every team in the
+    store rather than none.
+    """
+    _create_team_with(metadata_client, case="C-1")
+    _create_team_with(metadata_client, namespace=ARCHIVE_NS, case="A-1")
+
+    resp = metadata_client.get("/teams", params={"catalog_namespace": "acme"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["teams"] == []
+    assert body["total_count"] == 0
+
+
+def test_catalog_namespace_does_not_reach_across_users(metadata_app: FastAPI) -> None:
+    """AC #14: another user's team in the same namespace is neither returned NOR counted.
+
+    A namespace is not a secret and not an ownership boundary — it is catalog
+    metadata every operator can read — so a filter evaluated without the owner
+    scope would turn this route into a cross-tenant enumeration primitive. The
+    count is asserted for exactly that reason: a leak through it alone is a leak.
+    """
+    metadata_app.dependency_overrides[get_request_user] = lambda: RequestUser(
+        user_id="alice", email="alice@example.com"
+    )
+    _create_team_with(TestClient(metadata_app), case="C-1")
+    metadata_app.dependency_overrides.clear()
+
+    default_client = TestClient(metadata_app)
+    own_id = _create_team_with(default_client, case="C-2")
+
+    resp = default_client.get("/teams", params={"catalog_namespace": TYPED_NS})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [own_id]
+    assert body["total_count"] == 1
+
+
+def test_catalog_namespace_composes_with_status_and_metadata(
+    metadata_client: TestClient,
+) -> None:
+    """AC #15: the three narrow together, and the total follows the intersection.
+
+    Each of the three decoys is excluded by exactly one filter, so dropping any
+    one of them turns this red — including the namespace term, which the archive
+    decoy exists to make load-bearing.
+    """
+    wanted = _create_team_with(metadata_client, tenant="acme", case="C-1")
+    stopped = _create_team_with(metadata_client, tenant="acme", case="C-2")
+    _create_team_with(metadata_client, tenant="contoso", case="C-3")
+    _create_team_with(metadata_client, namespace=ARCHIVE_NS, tenant="acme", case="A-1")
+    assert metadata_client.post(f"/teams/{stopped}/stop").status_code == 204
+
+    resp = metadata_client.get(
+        "/teams",
+        params={"catalog_namespace": TYPED_NS, "meta.tenant": "acme", "status": "running"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [t["team_id"] for t in body["teams"]] == [wanted]
+    assert body["total_count"] == 1

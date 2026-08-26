@@ -171,9 +171,7 @@ def test_list_teams_delegates_to_event_store_with_user_id(team_service: TeamServ
     # Phase-2 (store-side offset pushdown) is out of scope: NO page/size here.
     # ``metadata=None`` is unconditional: a branch that omits the kwarg when no
     # filter was given is how a filter later gets silently dropped.
-    mock_event_store.list_teams.assert_called_once_with(
-        user_id="alice", status=None, metadata=None
-    )
+    mock_event_store.list_teams.assert_called_once_with(user_id="alice", status=None, metadata=None)
     # The call must NOT be a no-arg call followed by an in-Python filter.
     assert mock_event_store.list_teams.call_args.args == ()
     assert mock_event_store.list_teams.call_args.kwargs == {
@@ -226,18 +224,23 @@ def test_list_teams_forwards_the_metadata_filter_verbatim(team_service: TeamServ
     """The metadata filter reaches the store raw — no escaping, no normalising.
 
     ``|`` is the index separator and is escaped inside akgentic-team, exactly
-    once; a value carrying one that arrived pre-escaped would be escaped twice
+    once; a term carrying one that arrived pre-escaped would be escaped twice
     and match nothing. Asserted on the delegated kwargs rather than on the
     returned rows because a stub store returns the same rows either way.
+
+    The terms are lists, not bare strings. A bare ``str`` is itself a
+    ``Sequence[str]``, so the store now rejects one with ``TypeError`` rather
+    than filtering on one term per character — and this spec used to pass a bare
+    ``str`` and stay green only because its store is a ``MagicMock``.
     """
     mock_event_store = MagicMock()
     mock_event_store.list_teams.return_value = []
     team_service._services.event_store = mock_event_store  # type: ignore[assignment]
 
-    team_service.list_teams(user_id="alice", metadata={"tenant": "ac|me", "case": "C-1234"})
+    team_service.list_teams(user_id="alice", metadata={"tenant": ["ac|me"], "case": ["C-1234"]})
 
     mock_event_store.list_teams.assert_called_once_with(
-        user_id="alice", status=None, metadata={"tenant": "ac|me", "case": "C-1234"}
+        user_id="alice", status=None, metadata={"tenant": ["ac|me"], "case": ["C-1234"]}
     )
     assert mock_event_store.list_teams.call_args.args == ()
 
@@ -250,7 +253,7 @@ def test_list_teams_metadata_filter_narrows_within_user(team_service: TeamServic
     """
     team_service.create_team("test-team", user_id="alice")
     unmatched, unmatched_total = team_service.list_teams(
-        user_id="alice", metadata={"tenant": "acme"}
+        user_id="alice", metadata={"tenant": ["acme"]}
     )
     assert unmatched == []
     # The total follows the filter, not the owned set the filter was drawn from.
@@ -258,6 +261,98 @@ def test_list_teams_metadata_filter_narrows_within_user(team_service: TeamServic
 
     _, owned_total = team_service.list_teams(user_id="alice")
     assert owned_total == 1
+
+
+def _namespaced_rows(seed: Process, namespaces: list[str | None]) -> list[Process]:
+    """Derive one Process per entry of ``namespaces``, copied from a real one.
+
+    ``model_copy(update=...)`` rather than a hand-enumerated constructor: a
+    rebuild naming every field that exists today would silently drop the next
+    one added to ``Process``, and these rows stand in for persisted state.
+    """
+    base = seed.created_at
+    return [
+        seed.model_copy(
+            update={
+                "team_id": uuid.uuid4(),
+                "catalog_namespace": namespace,
+                "created_at": base + timedelta(seconds=index),
+            }
+        )
+        for index, namespace in enumerate(namespaces)
+    ]
+
+
+def test_list_teams_does_not_push_catalog_namespace_to_the_store(
+    team_service: TeamService,
+) -> None:
+    """``EventStore.list_teams`` has no such parameter, so nothing may push it down.
+
+    Adding one is an akgentic-team Protocol change, outside this submodule. The
+    delegated call stays exactly one call carrying exactly the three terms the
+    store declares — and ``user_id`` is one of them on this path as on every
+    other, which is what keeps the namespace filter from reaching past the
+    caller's own teams.
+    """
+    mock_event_store = MagicMock()
+    mock_event_store.list_teams.return_value = []
+    team_service._services.event_store = mock_event_store  # type: ignore[assignment]
+
+    team_service.list_teams(user_id="alice", catalog_namespace="acme-cases")
+
+    mock_event_store.list_teams.assert_called_once_with(user_id="alice", status=None, metadata=None)
+    assert mock_event_store.list_teams.call_args.args == ()
+    assert set(mock_event_store.list_teams.call_args.kwargs) == {"user_id", "status", "metadata"}
+
+
+def test_list_teams_namespace_filter_runs_before_the_sort_and_the_slice(
+    team_service: TeamService,
+) -> None:
+    """The namespace narrows the SET the page is cut from, not the page.
+
+    Three of five rows match, at size 2. Filtering after the slice would give a
+    total of 5 and short pages — pages the client cannot tell from the end of
+    the results — while filtering before it gives a filtered total and a
+    contiguous walk.
+    """
+    seed = team_service.create_team("test-team", user_id="alice")
+    rows = _namespaced_rows(seed, ["wanted", "other", "wanted", "other", "wanted"])
+    mock_event_store = MagicMock()
+    mock_event_store.list_teams.return_value = rows
+    team_service._services.event_store = mock_event_store  # type: ignore[assignment]
+
+    page1, total1 = team_service.list_teams(
+        user_id="alice", catalog_namespace="wanted", page=1, size=2
+    )
+    page2, total2 = team_service.list_teams(
+        user_id="alice", catalog_namespace="wanted", page=2, size=2
+    )
+
+    assert (total1, total2) == (3, 3)
+    assert len(page1) == 2
+    assert len(page2) == 1
+    walked = [p.team_id for p in page1 + page2]
+    assert len(walked) == len(set(walked))
+    assert all(p.catalog_namespace == "wanted" for p in page1 + page2)
+
+
+def test_list_teams_blank_catalog_namespace_is_not_a_filter(team_service: TeamService) -> None:
+    """A blank is an empty form field, not a filter on the literal empty string.
+
+    The ``None``-namespace row is the one that tells the two readings apart: a
+    filter on ``""`` would drop every row here, including the teams that carry
+    no namespace at all.
+    """
+    seed = team_service.create_team("test-team", user_id="alice")
+    rows = _namespaced_rows(seed, ["wanted", None, "other"])
+    mock_event_store = MagicMock()
+    mock_event_store.list_teams.return_value = rows
+    team_service._services.event_store = mock_event_store  # type: ignore[assignment]
+
+    page, total = team_service.list_teams(user_id="alice", catalog_namespace="")
+
+    assert total == 3
+    assert len(page) == 3
 
 
 def test_list_teams_status_narrows_within_user(team_service: TeamService) -> None:
