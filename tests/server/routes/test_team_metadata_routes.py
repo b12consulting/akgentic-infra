@@ -1,15 +1,18 @@
-"""Route-level tests for the team-metadata HTTP surface — Stories 53.1 and 53.2.
+"""Route-level tests for the team-metadata HTTP surface — Stories 53.1, 53.2 and 65.1.
 
-Two catalog namespaces are seeded: ``acme-cases`` whose card declares a
-``metadata_type``, and ``acme-plain`` whose card declares none. Everything here
-goes through the real HTTP surface and the real community wiring, so a value
-asserted on a response has genuinely travelled catalog → validation → placement
-→ event store → conversion point — and, for the ``?meta.`` filter, back out
-through the store's own index matching rather than a mock's recorded call.
+Three catalog namespaces are seeded: ``acme-cases`` whose card declares a
+``metadata_type``, ``acme-plain`` whose card declares none, and ``acme-archive``
+which declares the same type as the first so the ``?catalog_namespace=`` filter
+has something to exclude. Everything here goes through the real HTTP surface and
+the real community wiring, so a value asserted on a response has genuinely
+travelled catalog → validation → placement → event store → conversion point —
+and, for the ``?meta.`` filter, back out through the store's own index matching
+rather than a mock's recorded call.
 
-The ``?meta.`` cases that need no metadata at all — the 422s and the
-no-filter backward-compatibility check — live in test_team_routes.py beside the
-plain catalog fixture.
+The ``?meta.`` cases that need no metadata at all — the 422, the no-filter
+backward-compatibility check, and the parse and verbatim-travel guards that
+assert on the delegated call rather than on rows — live in test_team_routes.py
+beside the plain catalog fixture.
 """
 
 from __future__ import annotations
