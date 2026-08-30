@@ -10,7 +10,9 @@ import inspect
 import uuid
 from unittest.mock import MagicMock
 
+from akgentic.core.agent_state import BaseState
 from akgentic.core.messages import Message
+from akgentic.core.messages.orchestrator import StateChangedMessage
 from akgentic.core.orchestrator import EventSubscriber
 
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
@@ -23,6 +25,11 @@ _TEAM_ID = uuid.uuid4()
 def _make_message(team_id: uuid.UUID | None = None) -> Message:
     """Create a Message with the given team_id."""
     return Message(team_id=team_id)
+
+
+def _make_state_changed(team_id: uuid.UUID | None = None) -> StateChangedMessage:
+    """Create a StateChangedMessage with the given team_id."""
+    return StateChangedMessage(team_id=team_id, state=BaseState())
 
 
 class TestEventStreamSubscriberProtocolCompliance:
@@ -158,6 +165,54 @@ class TestOnMessage:
         assert len(events) == 2
         assert events[0].id == msg1.id
         assert events[1].id == msg2.id
+
+
+class TestStateChangedIsNotStreamed:
+    """Story 66.1 (issue #431): agent state changes never reach the event stream.
+
+    A ``StateChangedMessage`` is a snapshot, not an event — only its latest value
+    per agent is meaningful and its payload is a full serialized copy of the
+    agent's state. Appending each one grows the stream without bound.
+    """
+
+    def test_state_changed_is_not_appended(self) -> None:
+        """A StateChangedMessage with a valid team_id must not reach ``append``."""
+        mock_stream = MagicMock(spec=EventStream)
+        subscriber = EventStreamSubscriber(event_stream=mock_stream)
+
+        subscriber.on_message(_make_state_changed(team_id=_TEAM_ID))
+
+        mock_stream.append.assert_not_called()
+
+    def test_state_changed_suppressed_among_ordinary_messages(self) -> None:
+        """Interleaved traffic: only the non-state messages land, in order.
+
+        Guards the suppression against being written as an early ``return`` that
+        also swallows what follows it, and against a filter keyed on anything
+        other than the message type.
+        """
+        stream = LocalEventStream()
+        subscriber = EventStreamSubscriber(event_stream=stream)
+        first = _make_message(team_id=_TEAM_ID)
+        second = _make_message(team_id=_TEAM_ID)
+
+        subscriber.on_message(first)
+        subscriber.on_message(_make_state_changed(team_id=_TEAM_ID))
+        subscriber.on_message(_make_state_changed(team_id=_TEAM_ID))
+        subscriber.on_message(second)
+
+        events = stream.read_from(_TEAM_ID)
+        assert [e.id for e in events] == [first.id, second.id]
+
+    def test_ordinary_message_still_appended(self) -> None:
+        """The suppression is type-scoped: a plain Message is unaffected."""
+        mock_stream = MagicMock(spec=EventStream)
+        subscriber = EventStreamSubscriber(event_stream=mock_stream)
+        msg = _make_message(team_id=_TEAM_ID)
+
+        subscriber.on_message(msg)
+
+        mock_stream.append.assert_called_once_with(_TEAM_ID, msg)
 
 
 class TestOnStop:
