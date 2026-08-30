@@ -11,6 +11,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from akgentic.core.messages.orchestrator import StateChangedMessage
 from akgentic.core.orchestrator import EventSubscriber
 
 if TYPE_CHECKING:
@@ -23,7 +24,8 @@ logger = logging.getLogger(__name__)
 class EventStreamSubscriber(EventSubscriber):
     """Routes orchestrator events into the shared EventStream.
 
-    Forwards each ``Message`` directly to the injected ``EventStream``.
+    Forwards each ``Message`` to the injected ``EventStream``, except
+    ``StateChangedMessage`` — see :meth:`on_message`.
 
     On ``on_stop(team_id)``, removes the per-team stream for that team only —
     the canonical community-tier per-team cleanup hook, mirroring
@@ -52,9 +54,25 @@ class EventStreamSubscriber(EventSubscriber):
         """
 
     def on_message(self, msg: Message) -> None:
-        """Forward message directly to the event stream.
+        """Forward message to the event stream, except agent state changes.
 
         Messages with ``team_id=None`` are silently skipped (logged at DEBUG).
+
+        ``StateChangedMessage`` is skipped too. It is a snapshot, not an event:
+        only the latest value per agent is ever meaningful (the durable log
+        agrees — ``PersistenceSubscriber`` upserts it as a latest-per-agent
+        ``AgentStateSnapshot`` rather than appending a ``PersistedEvent``), and
+        its payload is a full serialized copy of the agent's state, unbounded in
+        size. An agent holding a knowledge graph re-serializes the whole graph on
+        every mutation, so appending each one grows the stream quadratically
+        until the backing store runs out of memory (issue #431).
+
+        This suppression is deliberately blanket and deliberately temporary. It
+        also blanks the frontend's per-agent backstory head-block for a *running*
+        team, which reads the same message off the live stream — an accepted
+        regression, recorded on Epic 66. The type test here is what the companion
+        core decision replaces with a typed ``on_state_changed`` hook, so that a
+        subscriber declares its intent instead of testing for it.
 
         Args:
             msg: Orchestrator message.
@@ -62,6 +80,13 @@ class EventStreamSubscriber(EventSubscriber):
         team_id = msg.team_id
         if team_id is None:
             logger.debug("EventStreamSubscriber: skipping message with team_id=None")
+            return
+
+        if isinstance(msg, StateChangedMessage):
+            logger.debug(
+                "EventStreamSubscriber: skipping StateChangedMessage for team_id=%s",
+                team_id,
+            )
             return
 
         self._event_stream.append(team_id, msg)
