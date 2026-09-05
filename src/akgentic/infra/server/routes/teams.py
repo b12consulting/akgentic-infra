@@ -50,7 +50,7 @@ def _process_to_response(process: Process) -> TeamResponse:
     value carries the tag for the store's benefit, the wire never does, and one
     site means no route can forget.
     """
-    team_name = process.team_card.name or process.catalog_namespace or str(process.team_id)
+    team_name = process.team_name or process.catalog_namespace or str(process.team_id)
     return TeamResponse(
         team_id=process.team_id,
         name=team_name,

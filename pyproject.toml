@@ -20,7 +20,7 @@ authors = [
 keywords = ["agents", "ai", "akgentic", "infrastructure"]
 
 dependencies = [
-    "akgentic-core>=1.5.7",
+    "akgentic-core>=1.5.13",
     "akgentic-team>=1.6.1",
     "akgentic-catalog>=2.2.3",
     "akgentic-agent>=1.6.5",

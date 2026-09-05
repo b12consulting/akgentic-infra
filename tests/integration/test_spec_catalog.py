@@ -28,7 +28,6 @@ _CRUD_TEAM_ENTRY = {
                 "skills": [],
                 "agent_class": "akgentic.core.agent.Akgent",
                 "config": {"name": "@Human", "role": "Human"},
-                "routes_to": [],
             },
             "headcount": 1,
             "members": [],

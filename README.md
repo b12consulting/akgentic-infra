@@ -771,13 +771,13 @@ The worker's team routes (`worker/routes/teams.py`):
 
 That is the rule, and it is what the table above is shaped by. Stopping, resuming, messaging, routing human input and replacing metadata are real work only the owning worker can do — it holds the live orchestrator. A read is a lookup, and the event store already answers it, so all three tiers read `EventStore.load_team()` directly.
 
-The worked example: the worker **used to** expose a `GET /teams/{team_id}`. No tier ever called it, and it was deleted. Two reasons it could not be used, and both generalize to any read route proposed here — it returned a flat `TeamResponse` with no `team_card`, so it could not satisfy `WorkerHandle.get_team(...) -> Process | None`, which needs the card for resume; and routing a read through a worker lets a momentarily-unreachable worker turn a transient network fault into a spurious `404` for a team that plainly exists. Adding a read route back "for symmetry" reintroduces both.
+The worked example: the worker **used to** expose a `GET /teams/{team_id}`. No tier ever called it, and it was deleted. Two reasons it could not be used, and both generalize to any read route proposed here — it returned a `TeamResponse`, which carries none of the `Process` projection's structural fields (`entry_point`, `supervisors`, `agent_cards`, `message_types`), so it could not satisfy `WorkerHandle.get_team(...) -> Process | None`, which needs them for resume; and routing a read through a worker lets a momentarily-unreachable worker turn a transient network fault into a spurious `404` for a team that plainly exists. Adding a read route back "for symmetry" reintroduces both.
 
 **The worker revalidates metadata. It does not trust the server's word.**
 
 Both metadata-carrying worker routes run the *same* validation the server just ran. This is not belt-and-braces, and the reason is reachability rather than redundancy: **a worker is reachable by anything holding its address.** The server-side check protects the server's callers and says nothing about who else can reach this route. "The server already checked" is a *deployment assumption* — workers are internal-only — and a deployment assumption is not a security property; it holds until a network policy changes.
 
-It costs nothing to hold: the worker already has the resolved `team_card`, so it knows `metadata_type` without a catalog lookup. And it is the **same shared helper** (`server/services/_metadata_payload.py`), called from both surfaces — not a second copy. Do not "deduplicate" one call site away: two validators drift, and this one is a security control.
+It costs nothing to hold: the worker already knows `metadata_type` without a catalog lookup — off the create body's `team_card` on the way in, off the persisted `Process` thereafter. And it is the **same shared helper** (`server/services/_metadata_payload.py`), called from both surfaces — not a second copy. Do not "deduplicate" one call site away: two validators drift, and this one is a security control.
 
 **Create.** `WorkerCreateTeamRequest` carries `metadata` as a top-level field of plain JSON, exactly as the server's `CreateTeamRequest` does:
 
@@ -795,7 +795,7 @@ Content-Type: application/json
 
 The `201` body is a `TeamResponse` whose `metadata` is plain JSON with the `__model__` tag stripped. Validation runs **before** anything is created, so a rejected body creates nothing — no team, no cached handle.
 
-**Replace metadata.** `PATCH` takes the same `{"metadata": {...}}` envelope as the server's, validated against the `metadata_type` the **persisted** card declares (never a fresh catalog lookup — the type cannot change for a live team, and re-resolving would let a catalog edit silently change what an existing team accepts). It replaces outright and does not merge.
+**Replace metadata.** `PATCH` takes the same `{"metadata": {...}}` envelope as the server's, validated against the `metadata_type` the **persisted** `Process` declares (never a fresh catalog lookup — the type cannot change for a live team, and re-resolving would let a catalog edit silently change what an existing team accepts). It replaces outright and does not merge.
 
 ```http
 PATCH /teams/6f1e8c4a-.../metadata
@@ -810,7 +810,10 @@ Content-Type: application/json
 {
   "__model__": "akgentic.team.models.Process",
   "team_id": "6f1e8c4a-...",
-  "team_card": {"...": "the persisted card"},
+  "team_name": "case-triage",
+  "entry_point": {"...": "the projected entry-point ref"},
+  "supervisors": ["...the projected first-layer refs"],
+  "agent_cards": ["...one ref per reachable role"],
   "status": "running",
   "user_id": "u-42",
   "metadata": {"__model__": "acme.models.CaseMetadata",
@@ -821,7 +824,7 @@ Content-Type: application/json
 
 **Read the stored value off that response; do not echo what you sent.** The write path re-derives `metadata_indexes` from the new document, and this response is the *only* place that re-derivation becomes observable to the caller. A caller that echoes its own request body reports an index that may not exist.
 
-Note what the response is **not**: not a `TeamResponse` (flat, no `team_card`, no `metadata_indexes`) and not the server's `TeamMetadataResponse`. It is the full persisted `Process`, and its `__model__` tags are **left intact** — the one place in this surface where they are. That is deliberate and structural: this is a worker→server internal hop, not a client response, and the tag is precisely what lets a tier adapter reconstruct a typed `Process` — including a `metadata` value of the team's concrete declared class — to satisfy `WorkerHandle.update_team_metadata(...) -> Process`. Strip it for consistency and the caller has nothing to reconstruct from.
+Note what the response is **not**: not a `TeamResponse` (which carries neither the projection's structural fields nor `metadata_indexes`) and not the server's `TeamMetadataResponse`. It is the full persisted `Process`, and its `__model__` tags are **left intact** — the one place in this surface where they are. That is deliberate and structural: this is a worker→server internal hop, not a client response, and the tag is precisely what lets a tier adapter reconstruct a typed `Process` — including a `metadata` value of the team's concrete declared class — to satisfy `WorkerHandle.update_team_metadata(...) -> Process`. Strip it for consistency and the caller has nothing to reconstruct from.
 
 A **failed** best-effort push to the live orchestrator still returns `200`. The database is the system of record and the actor re-reads on its next resume, so reporting an error would misdescribe a write that stands.
 

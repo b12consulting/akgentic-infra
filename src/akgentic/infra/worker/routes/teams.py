@@ -99,7 +99,7 @@ def _process_to_response(process: Process) -> TeamResponse:
     goes red when only the server producer is updated, because no server test
     ever calls this function.
     """
-    team_name = process.team_card.name or process.catalog_namespace or str(process.team_id)
+    team_name = process.team_name or process.catalog_namespace or str(process.team_id)
     return TeamResponse(
         team_id=process.team_id,
         name=team_name,
@@ -324,9 +324,9 @@ def update_team_metadata(
     gone from the stored value and from the derived filter index alike.
 
     ``body.metadata`` is revalidated against the ``metadata_type`` the
-    **persisted** card declares, never a fresh catalog lookup — the type cannot
-    change for a live team (ADR-24 §D7), and re-resolving would let a catalog
-    edit silently change what an existing team accepts.
+    **persisted** ``Process`` declares, never a fresh catalog lookup — the type
+    cannot change for a live team (ADR-24 §D7), and re-resolving would let a
+    catalog edit silently change what an existing team accepts.
 
     The response is the persisted ``Process`` **unmodified**, with its
     ``__model__`` tag intact. That is the exception in this module, and the
@@ -356,7 +356,7 @@ def update_team_metadata(
         raise HTTPException(status_code=404, detail="Team not found")
 
     try:
-        metadata = validate_metadata(process.team_card.metadata_type, body.metadata)
+        metadata = validate_metadata(process.metadata_type, body.metadata)
     except MetadataValidationError as exc:
         # Deliberately not _raise_action_error: that helper string-matches the
         # message to 404/409 and would report a validation failure as a conflict.

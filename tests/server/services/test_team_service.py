@@ -29,7 +29,7 @@ def test_create_team_returns_process(team_service: TeamService) -> None:
     assert process.team_id is not None
     assert process.status == TeamStatus.RUNNING
     assert process.user_id == "anonymous"
-    assert process.team_card.name == "Test Team"
+    assert process.team_name == "Test Team"
 
 
 def test_create_team_invalid_entry_raises(team_service: TeamService) -> None:
@@ -726,8 +726,9 @@ class TestDeleteTeamWorkspaceCleanup:
 #
 # These tests use a MagicMock event store returning hand-built Process
 # snapshots so created_at / team_id are deterministic (the real fixture
-# stamps near-identical timestamps). team_card is a MagicMock per the
-# established `Process.model_construct` pattern.
+# stamps near-identical timestamps). `Process.model_construct` skips validation,
+# so the projection fields these tests never read are left off entirely rather
+# than stubbed.
 # ---------------------------------------------------------------------------
 
 _BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
@@ -737,7 +738,6 @@ def _make_process(created_at: datetime, team_id: uuid.UUID) -> Process:
     """Build a Process snapshot with explicit sort-key columns."""
     return Process.model_construct(
         team_id=team_id,
-        team_card=MagicMock(),
         status=TeamStatus.RUNNING,
         user_id="alice",
         user_email="",
