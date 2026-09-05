@@ -335,7 +335,8 @@ def update_team_metadata(
     ``Process`` — including a ``metadata`` value of the team's concrete declared
     class — to satisfy the ``WorkerHandle`` protocol's ``-> Process``. So it is
     neither passed through ``dump_metadata`` nor through ``_process_to_response``
-    (which is flat, carries no ``team_card`` and no ``metadata_indexes``).
+    (which is flat, and carries neither the projection's structural fields nor
+    ``metadata_indexes``).
     Returning it is not a courtesy either: the write path re-derives
     ``metadata_indexes``, and this response is the only place that re-derivation
     becomes observable to the caller.
