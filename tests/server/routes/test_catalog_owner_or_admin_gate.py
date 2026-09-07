@@ -331,7 +331,6 @@ def test_create_entry_not_gated(gated_client: TestClient) -> None:
                     "skills": [],
                     "agent_class": "akgentic.core.agent.Akgent",
                     "config": {"name": "@Human", "role": "Human"},
-                    "routes_to": [],
                 },
                 "headcount": 1,
                 "members": [],

@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 from akgentic.core.messages.message import UserMessage
 from akgentic.core.utils.serializer import SerializableBaseModel
-from akgentic.team import derive_metadata_indexes, make_index_entry
+from akgentic.team import derive_metadata_indexes, derive_team_projection, make_index_entry
 from akgentic.team.models import Process, TeamCard, TeamStatus
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -58,7 +58,6 @@ _TEAM_CARD_PAYLOAD = {
             "skills": [],
             "agent_class": "akgentic.core.agent.Akgent",
             "config": {"name": "@Human", "role": "Human"},
-            "routes_to": ["@Manager"],
         },
         "headcount": 1,
         "members": [],
@@ -71,7 +70,6 @@ _TEAM_CARD_PAYLOAD = {
                 "skills": ["coordination"],
                 "agent_class": "akgentic.core.agent.Akgent",
                 "config": {"name": "@Manager", "role": "Manager"},
-                "routes_to": [],
             },
             "headcount": 1,
             "members": [],
@@ -123,19 +121,31 @@ def _build_process(
 ) -> Process:
     """Build the persisted Process metadata the worker handle returns.
 
+    The card is projected through ``derive_team_projection`` — the same single
+    derivation ``TeamManager.create_team`` uses — rather than by copying a name
+    and a metadata type across by hand. A fixture that walked the card itself
+    could disagree with the write path and still look green.
+
     ``catalog_namespace`` defaults to ``None`` — a team not created from a
     catalog genuinely has none — so every pre-existing caller keeps producing
     exactly the process it produced before.
     """
     now = datetime.now(UTC)
+    projection = derive_team_projection(team_card)
     return Process(
         team_id=team_id,
-        team_card=team_card,
         status=TeamStatus.RUNNING,
         user_id="user-1",
         created_at=now,
         updated_at=now,
         catalog_namespace=catalog_namespace,
+        team_name=projection.team_name,
+        team_description=projection.team_description,
+        entry_point=projection.entry_point,
+        supervisors=projection.supervisors,
+        agent_cards=projection.agent_cards,
+        message_types=projection.message_types,
+        metadata_type=projection.metadata_type,
     )
 
 
@@ -1008,11 +1018,12 @@ def test_worker_metadata_update_round_trips_the_typed_value_through_json() -> No
     assert response.status_code == 200
     payload = response.json()
     # Not a TeamResponse and not dump_metadata's output: both would have dropped
-    # the tag, and TeamResponse carries no team_card and no metadata_indexes.
+    # the tag, and TeamResponse carries neither the projection's structural
+    # fields nor metadata_indexes.
     assert payload["metadata"]["__model__"] == ACME_METADATA_TYPE
     restored = Process.model_validate(payload)
     assert restored.team_id == team_id
-    assert restored.team_card.metadata_type is AcmeCaseMetadata
+    assert restored.metadata_type is AcmeCaseMetadata
     assert isinstance(restored.metadata, AcmeCaseMetadata)
     assert restored.metadata.tenant == "acme"
     assert restored.metadata.case == "C-1234"
@@ -1308,8 +1319,9 @@ def test_worker_metadata_update_for_a_deleted_team_is_404() -> None:
 # Verbs on the live actor go to the worker; reads of persisted state go to the
 # event store. The worker once exposed a ``GET /teams/{team_id}`` that no tier
 # called and that could not satisfy ``WorkerHandle.get_team() -> Process | None``
-# (a flat DTO carries no ``team_card``), and routing a read through a worker
-# would let a momentarily-unreachable worker 404 a team that plainly exists.
+# (a flat DTO carries none of the projection's structural fields), and routing a
+# read through a worker would let a momentarily-unreachable worker 404 a team
+# that plainly exists.
 # Deleting it left the rule stated only in prose, which nothing enforces. This
 # is the executable half: re-add a read route here and it goes red.
 # ---------------------------------------------------------------------------

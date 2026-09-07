@@ -93,7 +93,6 @@ def _make_process(
 
     return Process.model_construct(
         team_id=team_id,
-        team_card=MagicMock(),
         status=status,
         user_id="u1",
         user_email="",

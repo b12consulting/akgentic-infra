@@ -219,7 +219,6 @@ def _seed_minimal_catalog(catalog_root: Path) -> None:
                 "skills": [],
                 "agent_class": "akgentic.agent.HumanProxy",
                 "config": {"name": "@Human", "role": "Human"},
-                "routes_to": ["@Manager"],
             },
         },
     )
@@ -234,7 +233,6 @@ def _seed_minimal_catalog(catalog_root: Path) -> None:
                 "skills": ["coordination"],
                 "agent_class": "akgentic.agent.BaseAgent",
                 "config": {"name": "@Manager", "role": "Manager"},
-                "routes_to": [],
             },
         },
     )

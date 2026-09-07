@@ -303,7 +303,7 @@ class TeamService:
         if process is None:
             msg = f"Team {team_id} not found"
             raise TeamNotFoundError(msg)
-        validated = validate_metadata(process.team_card.metadata_type, raw)
+        validated = validate_metadata(process.metadata_type, raw)
         updated = self._services.worker_handle.update_team_metadata(team_id, validated)
         logger.info("Team metadata updated: team_id=%s", team_id)
         return updated.metadata
