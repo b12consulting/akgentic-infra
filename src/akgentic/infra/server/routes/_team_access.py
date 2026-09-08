@@ -41,7 +41,9 @@ from akgentic.infra.protocols.authz import TeamAccessContext, TeamAccessPolicy
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.routes._workspace_resolution import (
     declared_workspace_paths,
+    stash_team_process,
     stash_workspace_paths,
+    stashed_team_process,
     validate_workspace_id,
 )
 from akgentic.infra.server.services.team_service import TeamService
@@ -81,6 +83,7 @@ def get_team_access_policy(request: Request) -> TeamAccessPolicy:
 
 
 async def require_team_access(
+    request: Request,
     team_id: uuid.UUID,
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
@@ -88,7 +91,14 @@ async def require_team_access(
 ) -> RequestUser:
     """Authorize a per-team route: the caller must satisfy the wired policy.
 
+    The authorized ``Process`` is recorded on the request, because the workspace
+    gate and the route that opens the directory both need the same team and
+    ``get_team`` is a database read on the department and enterprise tiers.
+    Nothing downstream re-authorizes from it — it is the team this gate already
+    said yes to, kept so one request is one team read.
+
     Args:
+        request: The live request, carrying the slot the team lands in.
         team_id: The target team, bound from the route path.
         user: The authenticated principal (always populated by the seam).
         service: The team-access seam resolving the ``Process`` by ``team_id``.
@@ -112,6 +122,7 @@ async def require_team_access(
             extra={"team_id": str(team_id), "user_id": user.user_id, "owner": process.user_id},
         )
         raise HTTPException(status_code=404, detail="Team not found")
+    stash_team_process(request, process)
     return user
 
 
@@ -123,11 +134,18 @@ async def _deny_foreign_named_team(
 ) -> None:
     """Raise 404 when ``workspace_id`` names an existing team the policy denies.
 
-    Kept from the original gate and still first: a caller must not reach a
-    foreign team's tree by passing that team's id, and this branch is the one
-    that says so with the owner in the log record. A value that is not a team
-    id, or names no team, falls through to the declared-workspace check — it is
-    no longer a pass-through.
+    Kept from the original gate and still first, but **no longer the branch
+    isolation rests on.** It was written when the served directory was the
+    ``workspace_id`` itself, so naming a foreign team's id reached that team's
+    tree. Under the two-segment layout it cannot: the id is a *leaf*, resolved
+    under the authorized team's own owner scope, and the declared-workspace
+    check below refuses it in any case. What survives is the sharper answer —
+    a 404 carrying the foreign owner in the log record — for the one team that
+    really declares another team's id as a ``workspace_id``, which would
+    otherwise be served its own directory of that name.
+
+    A value that is not a team id, or names no team, falls through to the
+    declared-workspace check — it is no longer a pass-through.
     """
     try:
         named_team_id = uuid.UUID(workspace_id)
@@ -235,7 +253,7 @@ async def require_workspace_access(
         return user
     validate_workspace_id(workspace_id)
     await _deny_foreign_named_team(workspace_id, user, service, policy)
-    process = service.get_team(team_id)
+    process = stashed_team_process(request) or service.get_team(team_id)
     if process is None:
         raise HTTPException(status_code=404, detail="Team not found")
     declared = _resolve_declared(team_id, process, store)

@@ -52,7 +52,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "declared_workspace_paths",
+    "stash_team_process",
     "stash_workspace_paths",
+    "stashed_team_process",
     "stashed_workspace_paths",
     "validate_workspace_id",
 ]
@@ -68,6 +70,14 @@ _WORKSPACE_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 # of resolving the team's cards a second time. Named once, here, because both
 # sides of the seam address it.
 _DECLARED_PATHS_SLOT = "akgentic_declared_workspace_paths"
+
+# Per-request slot holding the ``Process`` the team-access gate already loaded.
+# ``get_team`` is ``EventStore.load_team`` on the department and enterprise
+# tiers — a database read, not an in-process lookup — so the gate, the workspace
+# gate and the route reading the same team three times is three queries where
+# the request only ever concerns one team. Same reason the declared map is
+# stashed above: resolve once, read back.
+_TEAM_PROCESS_SLOT = "akgentic_authorized_team_process"
 
 
 def validate_workspace_id(workspace_id: str) -> str:
@@ -206,5 +216,29 @@ def stashed_workspace_paths(conn: HTTPConnection) -> dict[str, PurePosixPath] | 
     """
     stashed = getattr(conn.state, _DECLARED_PATHS_SLOT, None)
     if isinstance(stashed, dict):
+        return stashed
+    return None
+
+
+def stash_team_process(conn: HTTPConnection, process: Process) -> None:
+    """Record the team ``require_team_access`` authorized, for the rest of the request.
+
+    Only that gate writes this slot, and it writes the team named in the route
+    path — never the foreign team ``_deny_foreign_named_team`` looks up, which
+    is a different team and must not be mistaken for the authorized one.
+    """
+    setattr(conn.state, _TEAM_PROCESS_SLOT, process)
+
+
+def stashed_team_process(conn: HTTPConnection) -> Process | None:
+    """The authorized team the gate loaded, or ``None`` if it never ran.
+
+    ``None`` is safe to fall back on here, unlike
+    :func:`stashed_workspace_paths`: re-reading the team is a redundant query,
+    not a skipped authorization. The gate answered that question already, and
+    the value it stashed is the same team the fallback would fetch.
+    """
+    stashed = getattr(conn.state, _TEAM_PROCESS_SLOT, None)
+    if isinstance(stashed, Process):
         return stashed
     return None

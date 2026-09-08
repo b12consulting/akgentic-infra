@@ -61,6 +61,7 @@ from akgentic.infra.server.routes._team_access import (
     require_workspace_access,
 )
 from akgentic.infra.server.routes._workspace_resolution import (
+    stashed_team_process,
     stashed_workspace_paths,
     validate_workspace_id,
 )
@@ -76,7 +77,7 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 _MAX_FILE_SIZE = 10_485_760  # 10 MB
 
 
-def _team_own_path(team_id: uuid.UUID, service: TeamService) -> PurePosixPath:
+def _team_own_path(team_id: uuid.UUID, service: TeamService, request: Request) -> PurePosixPath:
     """The team's own tree, scoped to its **owner**, through the one resolver.
 
     Reached only when ``workspace_id`` was omitted, which
@@ -85,12 +86,17 @@ def _team_own_path(team_id: uuid.UUID, service: TeamService) -> PurePosixPath:
     is threaded in even though the default layout never consults it, so this
     call site stays the same call the card makes at bind time.
 
+    The team is read back from the request rather than fetched again — the gate
+    that authorized it put it there, and ``get_team`` is a database read on the
+    department and enterprise tiers. The fallback exists for a caller outside a
+    route; unlike the declared map, re-reading the team skips no authorization.
+
     The scope is ``process.user_id``, not the calling principal's: the agent
     writes under the owner, so scoping on the caller would send an authorized
     admin to a different, empty directory and let them conclude the agent wrote
     nothing.
     """
-    process = service.get_team(team_id)
+    process = stashed_team_process(request) or service.get_team(team_id)
     if process is None:  # pragma: no cover — require_team_access 404s first
         raise HTTPException(status_code=404, detail="Team not found")
     try:
@@ -132,7 +138,8 @@ def _get_workspace(
     ``Process.user_id``. An omitted ``workspace_id`` resolves the team's own tree
     through the resolver; a present one is looked up in the map
     ``require_workspace_access`` already resolved and authorized for this
-    request, so the card store is read once per request rather than twice.
+    request, so the card store is read once per request rather than twice — and
+    so is the team, which the access gate stashed alongside it.
 
     A present ``workspace_id`` with no such map is **404**, never a fallback: a
     request that reached the directory without the gate having authorized the id
@@ -148,7 +155,7 @@ def _get_workspace(
     # *empty* one ("" → 400): only None falls back; any present value,
     # including "", goes through the guard.
     if workspace_id is None:
-        path = _team_own_path(team_id, service)
+        path = _team_own_path(team_id, service, request)
     else:
         validate_workspace_id(workspace_id)
         declared = stashed_workspace_paths(request)

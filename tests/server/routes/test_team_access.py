@@ -89,13 +89,18 @@ class _RaisingPolicy:
 
 
 async def _call(
-    user: RequestUser, owner: str | None, policy: TeamAccessPolicy | None = None
+    user: RequestUser,
+    owner: str | None,
+    policy: TeamAccessPolicy | None = None,
+    *,
+    request: _FakeRequest | None = None,
 ) -> RequestUser:
     """Invoke require_team_access with a stubbed seam; returns the user on allow."""
     process = None if owner is None else _FakeProcess(owner)
     service = _FakeTeamService(process)
     resolved = OwnerOrAdminPolicy() if policy is None else policy
     return await require_team_access(
+        request=request or _FakeRequest(),  # type: ignore[arg-type]
         team_id=uuid.uuid4(),
         user=user,
         service=service,  # type: ignore[arg-type]

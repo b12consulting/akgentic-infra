@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from akgentic.team.models import AgentCardRef
+from akgentic.team.models import AgentCardRef, Process
 from akgentic.team.ports import EventStore
 from akgentic.tool.sandbox import ExecTool
 from akgentic.tool.workspace import WorkspaceTool
@@ -718,6 +718,40 @@ def test_card_store_is_read_once_per_request(
     assert resp.status_code == 200
     assert len(calls) == 1
     assert len(calls[0]) >= 3
+
+
+def test_team_is_read_once_per_request(
+    client: TestClient,
+    team_with_workspace: uuid.UUID,
+    team_service: TeamService,
+    community_services: CommunityServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One ``get_team`` per request, on both the omitted and the named path.
+
+    ``get_team`` is ``EventStore.load_team`` on the department and enterprise
+    tiers — a database read. The access gate, the workspace gate and the route
+    all want the same team, and a request only ever concerns one, so the gate
+    stashes what it authorized. A re-read returns the identical ``Process``,
+    which is why only a call-count assertion catches one coming back.
+    """
+    _declare(community_services, team_with_workspace, WorkspaceTool(workspace_id="notes"))
+    calls: list[uuid.UUID] = []
+    original = team_service.get_team
+
+    def _counting(team_id: uuid.UUID) -> Process | None:
+        calls.append(team_id)
+        return original(team_id)
+
+    monkeypatch.setattr(team_service, "get_team", _counting)
+
+    assert client.get(f"/workspace/{team_with_workspace}/tree").status_code == 200
+    assert calls == [team_with_workspace]
+
+    calls.clear()
+    named = client.get(f"/workspace/{team_with_workspace}/tree", params={"workspace_id": "notes"})
+    assert named.status_code == 200
+    assert calls == [team_with_workspace]
 
 
 def test_unusable_owner_id_on_the_read_path_is_500(
