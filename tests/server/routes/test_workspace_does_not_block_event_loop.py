@@ -27,11 +27,14 @@ import uuid
 from collections.abc import Callable
 
 import pytest
-from akgentic.tool.workspace import Filesystem
+from akgentic.tool.workspace import Filesystem, WorkspaceTool
 from fastapi.testclient import TestClient
 
+from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import ServerSettings
+
+from ._workspace_cards import declare_workspaces
 
 
 @pytest.fixture()
@@ -40,12 +43,14 @@ def team_for_upload(client: TestClient, seeded_settings: ServerSettings) -> uuid
 
     Mirrors the local fixture in ``test_workspace_routes.py``; duplicated
     here so this module is self-contained and does not depend on import
-    order.
+    order. The directory is the two-segment ``<owner>/<team_id>`` of ADR-048,
+    ``anonymous`` being the principal the unauthenticated community client
+    creates the team under.
     """
     resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
     assert resp.status_code == 201
     team_id = uuid.UUID(resp.json()["team_id"])
-    ws_root = seeded_settings.workspaces_root / str(team_id)
+    ws_root = seeded_settings.workspaces_root / "anonymous" / str(team_id)
     ws_root.mkdir(parents=True, exist_ok=True)
     return team_id
 
@@ -154,6 +159,7 @@ def test_upload_does_not_block_event_loop(
 def test_upload_with_workspace_id_does_not_block_event_loop(
     client: TestClient,
     team_for_upload: uuid.UUID,
+    community_services: CommunityServices,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A selector-bearing upload (Story 33.1) keeps the same offload guarantee.
@@ -163,7 +169,14 @@ def test_upload_with_workspace_id_does_not_block_event_loop(
     ``upload_workspace_file`` are unchanged. While a deliberately slow
     ``Filesystem.write`` is in flight, a concurrent ``/readiness`` probe must
     still return in under 100 ms, and the upload must still return 201.
+
+    The selector must be a workspace the team declares, or ADR-048's gate
+    refuses it with 404 before any offload happens.
     """
+    store = community_services.event_store
+    process = store.load_team(team_for_upload)
+    assert process is not None
+    declare_workspaces(store, process, WorkspaceTool(workspace_id="alt-ws"))
     _patch_slow_filesystem_write(monkeypatch)
 
     payload = b"slow alt data"

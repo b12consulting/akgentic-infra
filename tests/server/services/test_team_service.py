@@ -626,16 +626,28 @@ class TestTeamServiceLogging:
 # ---------------------------------------------------------------------------
 
 
-def _stub_team_service(workspaces_root: Path, *, team_exists: bool) -> TeamService:
+_OWNER = "alice"
+"""The owning principal on the stubbed ``Process`` — the workspace's ``<scope>``."""
+
+
+def _stub_team_service(
+    workspaces_root: Path, *, team_exists: bool, owner: str = _OWNER
+) -> TeamService:
     """Build a TeamService with mocked tier services for FS-cleanup tests.
 
     When ``team_exists`` is False, ``worker_handle.get_team`` returns None so
     ``delete_team`` raises ``ValueError`` before any FS work.
+
+    ``process.user_id`` is set explicitly: it is the ``<scope>`` segment of the
+    workspace path since ADR-048, so leaving it as a bare ``MagicMock``
+    attribute would make every one of these tests exercise the unusable-owner
+    arm instead of the path under test.
     """
     services = MagicMock()
     if team_exists:
         process = MagicMock(spec=Process)
         process.status = TeamStatus.STOPPED
+        process.user_id = owner
         services.worker_handle.get_team.return_value = process
     else:
         services.worker_handle.get_team.return_value = None
@@ -643,12 +655,19 @@ def _stub_team_service(workspaces_root: Path, *, team_exists: bool) -> TeamServi
 
 
 class TestDeleteTeamWorkspaceCleanup:
-    """Story 24.1: delete_team removes the team's workspace directory."""
+    """Story 24.1 / 67.1: delete_team removes the team's **scoped** workspace dir."""
 
-    def test_happy_path_removes_workspace_dir(self, tmp_path: Path) -> None:
-        """AC #1: an existing workspace dir and its contents are removed."""
+    def test_happy_path_removes_scoped_workspace_dir(self, tmp_path: Path) -> None:
+        """AC #5: the dir at ``<root>/<owner>/<team_id>`` and its contents are removed.
+
+        **This is the guard Story 67.1 mutation-tests.** Reverting
+        ``_remove_workspace_dir``'s target to the unscoped
+        ``workspaces_root / str(team_id)`` makes it no-op on a tree that is not
+        there, and this assertion goes red — the only signal that exists, since
+        missing the site raises nothing and logs nothing.
+        """
         team_id = uuid.uuid4()
-        team_dir = tmp_path / str(team_id)
+        team_dir = tmp_path / _OWNER / str(team_id)
         team_dir.mkdir(parents=True)
         (team_dir / "file.txt").write_text("content")
 
@@ -657,6 +676,65 @@ class TestDeleteTeamWorkspaceCleanup:
 
         assert not team_dir.exists()
 
+    def test_unscoped_sibling_tree_is_left_alone(self, tmp_path: Path) -> None:
+        """The pre-ADR-048 flat directory is not this team's and is not touched.
+
+        Migrating what is on disk belongs to the tool-side migration story, so a
+        leftover flat tree must survive a delete rather than be swept by a path
+        this code no longer owns.
+        """
+        team_id = uuid.uuid4()
+        scoped = tmp_path / _OWNER / str(team_id)
+        scoped.mkdir(parents=True)
+        legacy = tmp_path / str(team_id)
+        legacy.mkdir(parents=True)
+        (legacy / "old.txt").write_text("pre-migration")
+
+        service = _stub_team_service(tmp_path, team_exists=True)
+        service.delete_team(team_id)
+
+        assert not scoped.exists()
+        assert (legacy / "old.txt").read_text() == "pre-migration"
+
+    def test_scope_is_the_owner_not_the_caller(self, tmp_path: Path) -> None:
+        """The scope comes from the deleted team's own ``Process.user_id``."""
+        team_id = uuid.uuid4()
+        owner_dir = tmp_path / "owner-principal" / str(team_id)
+        owner_dir.mkdir(parents=True)
+        other_dir = tmp_path / "some-other-principal" / str(team_id)
+        other_dir.mkdir(parents=True)
+
+        service = _stub_team_service(tmp_path, team_exists=True, owner="owner-principal")
+        service.delete_team(team_id)
+
+        assert not owner_dir.exists()
+        assert other_dir.exists()
+
+    def test_unusable_owner_id_is_warned_and_deletion_completes(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """ADR-048 Decision 4, delete-path row: a bad owner id must not stick a delete.
+
+        Letting the ``ValueError`` propagate would make a team whose stored
+        ``user_id`` cannot be a directory name **undeletable** — trading an
+        orphaned directory for a stuck record.
+        """
+        team_id = uuid.uuid4()
+        service = _stub_team_service(tmp_path, team_exists=True, owner="")
+
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)  # must NOT raise
+
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and str(team_id) in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        service._services.worker_handle.delete_team.assert_called_once_with(team_id)
+
     def test_missing_dir_is_silent_no_op(
         self,
         tmp_path: Path,
@@ -664,7 +742,7 @@ class TestDeleteTeamWorkspaceCleanup:
     ) -> None:
         """AC #2: a missing workspace dir produces no WARNING log and no error."""
         team_id = uuid.uuid4()
-        # workspaces_root exists, but the {team_id} subdir does NOT.
+        # workspaces_root exists, but the scoped subdir does NOT.
         service = _stub_team_service(tmp_path, team_exists=True)
 
         with caplog.at_level(logging.WARNING):
@@ -681,7 +759,7 @@ class TestDeleteTeamWorkspaceCleanup:
     ) -> None:
         """AC #3: an rmtree failure is logged at WARNING and suppressed."""
         team_id = uuid.uuid4()
-        team_dir = tmp_path / str(team_id)
+        team_dir = tmp_path / _OWNER / str(team_id)
         team_dir.mkdir(parents=True)
         (team_dir / "file.txt").write_text("content")
 
