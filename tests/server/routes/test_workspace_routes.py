@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import cast
 
+import httpx
 import pytest
 from akgentic.team.models import AgentCardRef, Process
 from akgentic.team.ports import EventStore
@@ -806,5 +807,274 @@ def test_get_workspace_fails_closed_without_the_gates_map() -> None:
             request=_Conn(),  # type: ignore[arg-type]
             service=cast(TeamService, None),
             workspace_id="notes",
+        )
+    assert excinfo.value.status_code == 404
+
+
+# --- the metadata leaf is the team's own metadata, encoded (Story 67.2) ---
+#
+# A ``?workspace_id=`` naming a metadata workspace is served only when it is the
+# leaf the authorized team's own ``process.metadata`` produces through the card's
+# declared keys, in declaration order. Nothing parses the leaf or compares pairs:
+# it is *derived* from the metadata, so another case's values, another key set,
+# or the same keys in another order are absent from the declared map and refused
+# with the 404 a missing team gets. Every negative below sits in the same fixture
+# as a positive the same gate admits, and the positive is asserted first — a
+# foreign leaf is also absent from an *empty* map, so an unpaired 404 is true of
+# a gate that was deleted or a metadata card that was skipped.
+
+_META_KEYS = ["customer_id", "case_id"]
+_ACME_LEAF = "customer_id-ACME__case_id-42"
+_CONTOSO_LEAF = "customer_id-CONTOSO__case_id-42"
+# The three leaves ACME/42's metadata cannot produce through ``_META_KEYS``.
+_FOREIGN_LEAVES = [
+    _CONTOSO_LEAF,  # another customer, the same key set
+    "customer_id-ACME",  # a key set the card does not declare
+    "case_id-42__customer_id-ACME",  # the same keys, the other order
+]
+_TEAM_NOT_FOUND = "Team not found"
+"""The gate's body: identical for a denied leaf and a missing team (404-over-403)."""
+
+
+def _case_card() -> WorkspaceTool:
+    """The one metadata card every team in this section declares."""
+    return WorkspaceTool(workspace_metadata_keys=list(_META_KEYS))
+
+
+def _seed_meta_tree(root: Path, leaf: str) -> str:
+    """Seed ``<root>/_meta/<leaf>/`` with one file named after the leaf; return the name.
+
+    The foreign trees exist on disk so that a 404 on ``/tree`` can only be the
+    gate's: ``Filesystem.__init__`` creates its root and ``list`` never 404s.
+    """
+    tree = root / "_meta" / leaf
+    tree.mkdir(parents=True, exist_ok=True)
+    name = f"{leaf}.txt"
+    (tree / name).write_text(f"seeded in {leaf}")
+    return name
+
+
+def _meta_listing(root: Path) -> dict[str, set[str]]:
+    """Every ``_meta/<leaf>`` directory and the names inside it."""
+    meta = root / "_meta"
+    if not meta.exists():
+        return {}
+    return {d.name: {p.name for p in d.iterdir()} for d in meta.iterdir()}
+
+
+def _directories(root: Path) -> set[Path]:
+    return {p for p in root.rglob("*") if p.is_dir()}
+
+
+def _tree(client: TestClient, team_id: uuid.UUID, leaf: str) -> httpx.Response:
+    return client.get(f"/workspace/{team_id}/tree", params={"workspace_id": leaf})
+
+
+def _case_team(
+    client: TestClient,
+    community_services: CommunityServices,
+    seeded_settings: ServerSettings,
+    *,
+    customer_id: str,
+    leaf: str,
+) -> uuid.UUID:
+    """A team created by ``client`` on case ``<customer_id>/42``, its ``_meta/`` tree seeded."""
+    resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    assert resp.status_code == 201
+    team_id = uuid.UUID(resp.json()["team_id"])
+    _declare(
+        community_services,
+        team_id,
+        _case_card(),
+        metadata=CaseMetadata(customer_id=customer_id, case_id="42"),
+    )
+    _seed_meta_tree(seeded_settings.workspaces_root, leaf)
+    return team_id
+
+
+@pytest.fixture()
+def acme_case_team(
+    team_with_workspace: uuid.UUID,
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+) -> uuid.UUID:
+    """``team_with_workspace`` on case ACME/42, with all four ``_meta/`` trees seeded first.
+
+    Every value is encoding-free (``ACME``, ``CONTOSO``, ``42``), so no leaf
+    carries a ``%`` and the segment guard's 400 cannot stand in for the gate's
+    404. No named card is declared, so no leaf collapses onto a named one.
+    """
+    _declare(
+        community_services,
+        team_with_workspace,
+        _case_card(),
+        metadata=CaseMetadata(customer_id="ACME", case_id="42"),
+    )
+    for leaf in (_ACME_LEAF, *_FOREIGN_LEAVES):
+        _seed_meta_tree(seeded_settings.workspaces_root, leaf)
+    return team_with_workspace
+
+
+def test_one_team_reaches_its_own_leaf_and_is_refused_the_three_foreign_ones(
+    client: TestClient,
+    acme_case_team: uuid.UUID,
+    seeded_settings: ServerSettings,
+) -> None:
+    """AC #1: the served leaf is the team's own metadata, encoded — refused otherwise.
+
+    The positive comes first, and it is what makes the refusals mean anything:
+    it proves the map is non-empty and consulted, so the three 404s below are
+    membership decisions rather than the answer an empty map gives.
+
+    Each refusal is asserted ``== 404`` with the gate's body, never ``!= 200``:
+    a 400 would be the segment guard and a 500 the resolver, and neither is a
+    refusal. The reversed-order leaf is a real refusal of a *different*
+    workspace — declaration order is part of the declaration — not a leftover
+    of the correction that moved the tool to declaration order.
+    """
+    root = seeded_settings.workspaces_root
+    before = _meta_listing(root)
+
+    own = _tree(client, acme_case_team, _ACME_LEAF)
+    assert own.status_code == 200
+    assert [e["name"] for e in own.json()["entries"]] == [f"{_ACME_LEAF}.txt"]
+
+    for leaf in _FOREIGN_LEAVES:
+        resp = _tree(client, acme_case_team, leaf)
+        assert resp.status_code == 404, leaf
+        assert resp.status_code not in (400, 403)
+        assert resp.json()["detail"] == _TEAM_NOT_FOUND
+
+    # The disk is exactly as seeded: nothing created, nothing moved, and no
+    # tree of any of the four names under the caller's own principal.
+    assert _meta_listing(root) == before
+    for leaf in (_ACME_LEAF, *_FOREIGN_LEAVES):
+        assert not (root / ANONYMOUS / leaf).exists()
+
+
+def test_two_teams_on_two_cases_each_reach_their_own_leaf_and_not_the_others(
+    client: TestClient,
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+) -> None:
+    """AC #2: the same card on two teams yields two different admitted leaves.
+
+    One caller, on purpose: the owner gate is pinned by story 67.1, and the
+    variable under test here is the team's metadata. The leaf is a function of
+    ``process.metadata``, not of the card — which is the sentence the decision
+    maker asked for, as a test.
+    """
+    acme = _case_team(
+        client, community_services, seeded_settings, customer_id="ACME", leaf=_ACME_LEAF
+    )
+    contoso = _case_team(
+        client, community_services, seeded_settings, customer_id="CONTOSO", leaf=_CONTOSO_LEAF
+    )
+
+    acme_own = _tree(client, acme, _ACME_LEAF)
+    assert acme_own.status_code == 200
+    assert [e["name"] for e in acme_own.json()["entries"]] == [f"{_ACME_LEAF}.txt"]
+
+    contoso_own = _tree(client, contoso, _CONTOSO_LEAF)
+    assert contoso_own.status_code == 200
+    assert [e["name"] for e in contoso_own.json()["entries"]] == [f"{_CONTOSO_LEAF}.txt"]
+
+    acme_foreign = _tree(client, acme, _CONTOSO_LEAF)
+    assert acme_foreign.status_code == 404
+    assert acme_foreign.json()["detail"] == _TEAM_NOT_FOUND
+
+    contoso_foreign = _tree(client, contoso, _ACME_LEAF)
+    assert contoso_foreign.status_code == 404
+    assert contoso_foreign.json()["detail"] == _TEAM_NOT_FOUND
+
+
+def test_the_write_path_admits_the_own_leaf_and_refuses_the_foreign_one_writing_nothing(
+    client: TestClient,
+    acme_case_team: uuid.UUID,
+    seeded_settings: ServerSettings,
+) -> None:
+    """AC #3: ``POST .../file`` refuses the foreign leaf the same way, and writes nothing.
+
+    The positive first: the team's own leaf takes the upload, and it lands under
+    ``_meta/<own leaf>/`` and nowhere else — in particular not under the caller's
+    principal, which is where a fallback to the per-user layout would put it.
+    Then the foreign leaf: 404 with the gate's body, and the foreign tree
+    byte-identical to its seed.
+    """
+    root = seeded_settings.workspaces_root
+    contoso_tree = root / "_meta" / _CONTOSO_LEAF
+    contoso_before = {p.name: p.read_bytes() for p in contoso_tree.iterdir()}
+    anonymous_before = set((root / ANONYMOUS).rglob("*"))
+
+    own = client.post(
+        f"/workspace/{acme_case_team}/file",
+        params={"workspace_id": _ACME_LEAF},
+        data={"path": "uploaded.txt"},
+        files={"file": ("uploaded.txt", b"by the team", "text/plain")},
+    )
+    assert own.status_code == 201
+    landed = root / "_meta" / _ACME_LEAF / "uploaded.txt"
+    assert landed.read_bytes() == b"by the team"
+    assert list(root.rglob("uploaded.txt")) == [landed]
+
+    foreign = client.post(
+        f"/workspace/{acme_case_team}/file",
+        params={"workspace_id": _CONTOSO_LEAF},
+        data={"path": "intruded.txt"},
+        files={"file": ("intruded.txt", b"from another case", "text/plain")},
+    )
+    assert foreign.status_code == 404
+    assert foreign.json()["detail"] == _TEAM_NOT_FOUND
+    assert {p.name: p.read_bytes() for p in contoso_tree.iterdir()} == contoso_before
+    assert list(root.rglob("intruded.txt")) == []
+    # The caller's own scope gained nothing on either request.
+    assert set((root / ANONYMOUS).rglob("*")) == anonymous_before
+
+
+def test_the_resolved_meta_path_is_400_even_for_the_team_that_owns_the_tree(
+    client: TestClient,
+    acme_case_team: uuid.UUID,
+    seeded_settings: ServerSettings,
+) -> None:
+    """AC #5: ``workspace_id=_meta/<own leaf>`` is 400 for the very team whose tree it is.
+
+    This is the exact ``workspace_path`` string a ``ResourceAttached`` event
+    carries, sent back inbound. Only the leaf is ever on the wire; the scope is
+    the server's to recompute from the matching card, never the client's to
+    name. It is deliberately **not** a row in ``_REJECTED_WORKSPACE_IDS``: those
+    parametrised specs run against a team that declares nothing, so they cannot
+    show that the refusal beats a legitimate declaration. Here the team *does*
+    own the tree — the positive proves it — and the path form is refused anyway.
+    """
+    root = seeded_settings.workspaces_root
+    before = _directories(root)
+
+    assert _tree(client, acme_case_team, _ACME_LEAF).status_code == 200
+
+    resp = _tree(client, acme_case_team, f"_meta/{_ACME_LEAF}")
+    assert resp.status_code == 400
+    assert _directories(root) == before
+
+
+def test_get_workspace_fails_closed_for_a_metadata_leaf_without_the_gates_map() -> None:
+    """AC #6: the fail-closed arm holds for a leaf that *parses* as a metadata leaf.
+
+    Beside ``test_get_workspace_fails_closed_without_the_gates_map`` on purpose:
+    "if the map is missing and the leaf looks like metadata, build
+    ``_meta/<leaf>``" is the arm a decoupling refactor would most plausibly
+    reach for, and this is the spec that goes red under it.
+    """
+
+    class _Conn:
+        def __init__(self) -> None:
+            self.state = State()
+
+    with pytest.raises(HTTPException) as excinfo:
+        _get_workspace(
+            uuid.uuid4(),
+            CommunitySettings(),
+            request=_Conn(),  # type: ignore[arg-type]
+            service=cast(TeamService, None),
+            workspace_id=_ACME_LEAF,
         )
     assert excinfo.value.status_code == 404
