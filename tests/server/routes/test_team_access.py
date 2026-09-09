@@ -308,7 +308,7 @@ async def test_declared_metadata_workspace_resolves_under_meta() -> None:
         metadata=CaseMetadata(),
     )
     request = _FakeRequest()
-    leaf = "case_id-42__customer_id-ACME"
+    leaf = "customer_id-ACME__case_id-42"
 
     await _call_workspace(
         user, workspace_id=leaf, owner=None, process=process, store=store, request=request

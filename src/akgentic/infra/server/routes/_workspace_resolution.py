@@ -20,7 +20,7 @@ Card                                         Path
 ===========================================  ===================================
 ``WorkspaceTool()``                          ``<user_id>/<team_id>``
 ``WorkspaceTool(workspace_id="notes")``      ``<user_id>/notes``
-``WorkspaceTool(workspace_metadata_keys=…)``  ``_meta/case_id-42__customer_id-ACME``
+``WorkspaceTool(workspace_metadata_keys=…)``  ``_meta/customer_id-ACME__case_id-42``
 ===========================================  ===================================
 
 Only the ``<leaf>`` is ever on the wire (ADR-048 Decision 8): the scope is not

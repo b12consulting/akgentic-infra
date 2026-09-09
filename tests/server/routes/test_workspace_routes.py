@@ -568,7 +568,7 @@ def test_metadata_card_resolves_under_meta_scope(
         WorkspaceTool(workspace_metadata_keys=["customer_id", "case_id"]),
         metadata=CaseMetadata(),
     )
-    leaf = "case_id-42__customer_id-ACME"
+    leaf = "customer_id-ACME__case_id-42"
     meta_root = seeded_settings.workspaces_root / "_meta" / leaf
     meta_root.mkdir(parents=True, exist_ok=True)
     (meta_root / "case.txt").write_text("shared by declaration")

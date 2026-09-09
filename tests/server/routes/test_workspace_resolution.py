@@ -94,7 +94,7 @@ def test_metadata_card_resolves_under_the_reserved_meta_scope() -> None:
 
     paths = declared_workspace_paths(process=process, store=store)
 
-    leaf = "case_id-42__customer_id-ACME"
+    leaf = "customer_id-ACME__case_id-42"
     assert {k: str(v) for k, v in paths.items()} == {leaf: f"_meta/{leaf}"}
 
 
