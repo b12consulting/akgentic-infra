@@ -870,6 +870,15 @@ def _tree(client: TestClient, team_id: uuid.UUID, leaf: str) -> httpx.Response:
     return client.get(f"/workspace/{team_id}/tree", params={"workspace_id": leaf})
 
 
+_GATE_LOGGER = "akgentic.infra.server.routes._team_access"
+_GATE_DENIED = "workspace-access gate denied"
+
+
+def _denials(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The gate's denial records — the audit line only ``require_workspace_access`` writes."""
+    return [r for r in caplog.records if r.name == _GATE_LOGGER and r.getMessage() == _GATE_DENIED]
+
+
 def _case_team(
     client: TestClient,
     community_services: CommunityServices,
@@ -950,6 +959,36 @@ def test_one_team_reaches_its_own_leaf_and_is_refused_the_three_foreign_ones(
     assert _meta_listing(root) == before
     for leaf in (_ACME_LEAF, *_FOREIGN_LEAVES):
         assert not (root / ANONYMOUS / leaf).exists()
+
+
+def test_a_foreign_leaf_is_refused_by_the_gate_not_only_by_the_routes_backstop(
+    client: TestClient,
+    acme_case_team: uuid.UUID,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The refusal is the gate's, and it leaves the gate's audit record.
+
+    ``_get_workspace`` answers the same 404 on its own when a leaf is absent
+    from the stashed map — the fail-closed backstop — so with the gate's
+    declared check deleted, every other route-level refusal in this section
+    stays green for the wrong reason. The one observable that tells the two
+    apart is the denial record the gate writes, naming the leaf, the caller and
+    the team's owner. Positive first: the team's own leaf leaves no such record,
+    so the single record below is the foreign request's and not an accumulation.
+    """
+    with caplog.at_level(logging.INFO, logger=_GATE_LOGGER):
+        own = _tree(client, acme_case_team, _ACME_LEAF)
+        assert own.status_code == 200
+        assert _denials(caplog) == []
+
+        foreign = _tree(client, acme_case_team, _CONTOSO_LEAF)
+
+    assert foreign.status_code == 404
+    assert foreign.json()["detail"] == _TEAM_NOT_FOUND
+    [denied] = _denials(caplog)
+    assert denied.workspace_id == _CONTOSO_LEAF
+    assert denied.user_id == ANONYMOUS
+    assert denied.owner == ANONYMOUS
 
 
 def test_two_teams_on_two_cases_each_reach_their_own_leaf_and_not_the_others(
