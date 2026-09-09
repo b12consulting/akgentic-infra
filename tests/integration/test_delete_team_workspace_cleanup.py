@@ -1,9 +1,9 @@
 """Integration test — DELETE /teams/{id} removes the team's workspace dir.
 
-Story 24.1: ``TeamService.delete_team`` performs a best-effort recursive
-removal of ``{workspaces_root}/{team_id}/`` as its final step. This test
-exercises the full HTTP round-trip via ``TestClient`` against the smoke
-(TestModel) app — no ``OPENAI_API_KEY`` required.
+Story 24.1 / 67.1: ``TeamService.delete_team`` performs a best-effort recursive
+removal of ``{workspaces_root}/{owner user_id}/{team_id}/`` as its final step.
+This test exercises the full HTTP round-trip via ``TestClient`` against the
+smoke (TestModel) app — no ``OPENAI_API_KEY`` required.
 """
 
 from __future__ import annotations
@@ -36,8 +36,10 @@ def test_delete_team_removes_workspace_directory(
     team_id = _create_team(smoke_client)
 
     # Populate the team's workspace directory on disk, mirroring what the
-    # Filesystem tool does when an agent writes a workspace file.
-    team_dir = workspaces_root / team_id
+    # Filesystem tool does when an agent writes a workspace file. The layout is
+    # the two-segment <owner>/<team_id> of ADR-048; the smoke app mounts no auth
+    # middleware, so the creating principal is the anonymous default.
+    team_dir = workspaces_root / "anonymous" / team_id
     team_dir.mkdir(parents=True, exist_ok=True)
     (team_dir / "file.txt").write_text("workspace content")
     assert team_dir.exists()

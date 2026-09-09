@@ -22,6 +22,7 @@ from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.services._metadata_payload import validate_metadata
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
+from akgentic.tool.workspace import user_segment
 
 if TYPE_CHECKING:
     from akgentic.core.messages.message import Message
@@ -53,21 +54,46 @@ class CatalogTeamEntryMissingError(EntryNotFoundError):
     """
 
 
-def _remove_workspace_dir(workspaces_root: Path, team_id: uuid.UUID) -> None:
-    """Best-effort removal of a team's workspace directory.
+def _remove_workspace_dir(workspaces_root: Path, team_id: uuid.UUID, owner_user_id: str) -> None:
+    """Best-effort removal of a team's **scoped** workspace directory.
 
-    Removes ``{workspaces_root}/{team_id}`` recursively. A missing directory
-    is a silent no-op (ephemeral teams that never invoked a ``Filesystem``
-    write have no directory to clean). Any ``shutil.rmtree`` failure is logged
-    at WARNING and suppressed so team deletion still completes in the system
-    of record — a later janitor pass can sweep orphans.
+    Removes ``{workspaces_root}/{user_segment(owner_user_id)}/{team_id}``
+    recursively — the two-segment layout of ADR-048 Decision 1. The scope is the
+    **deleted team's own** ``Process.user_id``, never the request caller's:
+    confusing the two would delete under the wrong principal and say nothing,
+    since a missing directory is a silent no-op here.
+
+    Getting this wrong is the quiet failure ADR-048 §The rule is written nine
+    times calls out as the most dangerous of its ten sites: leaving the target
+    unscoped after the layout moved raises nothing, fails no test and logs
+    nothing — deletion simply stops removing anything, and orphaned trees
+    accumulate under every principal for ever.
+
+    A missing directory is a silent no-op (ephemeral teams that never invoked a
+    ``Filesystem`` write have no directory to clean). Any ``shutil.rmtree``
+    failure is logged at WARNING and suppressed so team deletion still completes
+    in the system of record — a later janitor pass can sweep orphans. **A
+    ``ValueError`` out of ``user_segment`` joins that arm** (ADR-048 Decision 4's
+    delete-path row): letting it propagate would make a team whose stored
+    ``user_id`` cannot be a directory name undeletable, trading an orphaned
+    directory for a stuck record.
 
     Generalized from akgentic-infra-enterprise's
     ``routes/enterprise_server_teams.py`` per Epic 24 (Tier-Alignment Fixes
     from Department + Enterprise); see ADR-022 §D7 for the original
     best-effort, log-not-raise rationale.
     """
-    target = workspaces_root / str(team_id)
+    try:
+        scope = user_segment(owner_user_id)
+    except ValueError as exc:
+        logger.warning(
+            "Workspace cleanup skipped — team_id=%s owner=%r error=%s",
+            team_id,
+            owner_user_id,
+            exc,
+        )
+        return
+    target = workspaces_root / scope / str(team_id)
     if not target.exists():
         return
     try:
@@ -95,7 +121,8 @@ class TeamService:
         Args:
             services: Pre-wired tier services container.
             workspaces_root: Server-side root directory under which each
-                team's workspace lives at ``{workspaces_root}/{team_id}/``.
+                team's workspace lives at
+                ``{workspaces_root}/{owner user_id}/{team_id}/`` (ADR-048).
                 Used by ``delete_team`` for best-effort FS cleanup.
         """
         self._services = services
@@ -311,10 +338,12 @@ class TeamService:
     def delete_team(self, team_id: uuid.UUID) -> None:
         """Stop (if running) and delete a team.
 
-        After the team is removed from the system of record, the team's
-        workspace directory (``{workspaces_root}/{team_id}/``) is removed on a
-        best-effort basis — a missing directory or an ``rmtree`` failure does
-        not prevent deletion from completing.
+        After the team is removed from the system of record, the team's scoped
+        workspace directory (``{workspaces_root}/{owner user_id}/{team_id}/``,
+        ADR-048 Decision 1) is removed on a best-effort basis — a missing
+        directory, an unusable owner id, or an ``rmtree`` failure does not
+        prevent deletion from completing. The scope comes from the deleted
+        team's own ``Process.user_id``, not from the request caller.
 
         Raises:
             TeamNotFoundError: If the team is unknown. Raised before any
@@ -336,7 +365,7 @@ class TeamService:
         self._services.worker_handle.delete_team(team_id)
         # FS cleanup runs LAST — after the worker-side delete — so a worker
         # delete failure does not leave behind a removed workspace dir.
-        _remove_workspace_dir(self._workspaces_root, team_id)
+        _remove_workspace_dir(self._workspaces_root, team_id, process.user_id)
         logger.info("Team deleted: team_id=%s", team_id)
 
     def emit_message(self, team_id: uuid.UUID, message: Message) -> None:
