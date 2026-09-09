@@ -35,7 +35,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import pytest
-from akgentic.core import ActorAddress, ActorSystem, Akgent, BaseConfig, BaseState, ResourceHost
+from akgentic.core import (
+    ActorAddress,
+    ActorSystem,
+    Akgent,
+    BaseConfig,
+    BaseState,
+    ResourceHost,
+    ResourceStore,
+)
 
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.server.deps import CommunityServices, TierServices
@@ -43,14 +51,20 @@ from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 
 if TYPE_CHECKING:
-    from akgentic.core.resource_host import StateDelta
+    from akgentic.core import StateDelta
+    from akgentic.team.repositories.yaml import YamlEventStore
+
+    from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 
 TIMEOUT = 10.0
 
-# How long a host may take to leave the process registry after shutdown. Waiting cannot
-# mask a real leak: a leaked host belongs to an ActorSystem nobody stopped and never dies,
-# so the assertion still fails — it only absorbs the hand-off between the stop request and
-# pykka deregistering the ref.
+# How long a host may take to leave the process registry after shutdown. This absorbs only
+# the hand-off between the stop request and pykka deregistering the ref. It is NOT a leak
+# guard and cannot be one: ``ActorSystem.shutdown`` ends in ``pykka.ActorRegistry.stop_all()``,
+# which is process-global, so any shutdown stops every host in the process — including one
+# leaked by an earlier test — before this wait begins. What the wait-then-assert proves is
+# that a stop actually deregisters the host; what would catch a leak is an assertion made
+# BEFORE any shutdown runs, which is why every spec here asserts the empty registry first.
 TEARDOWN_GRACE = 5.0
 
 
@@ -227,7 +241,9 @@ class TestHostExistsBeforeTeamsResume:
         observed: list[int] = []
         original = LocalRuntimeCache.warm
 
-        def _recording_warm(cache: LocalRuntimeCache, worker_handle: Any, event_store: Any) -> None:
+        def _recording_warm(
+            cache: LocalRuntimeCache, worker_handle: LocalWorkerHandle, event_store: YamlEventStore
+        ) -> None:
             observed.append(len(_hosts()))
             original(cache, worker_handle, event_store)
 
@@ -255,15 +271,16 @@ class TestProcessIsCold:
         list alone is vacuous on a cold host, since with nothing stored there is nothing
         that *could* arrive. Together they fail whenever a store appears.
         """
-        registered: list[Any] = []
+        registered: list[ResourceStore] = []
         original = ResourceHost.register_store
 
-        def _recording_register(host: ResourceHost, store: Any) -> None:
+        def _recording_register(host: ResourceHost, store: ResourceStore) -> None:
             registered.append(store)
             original(host, store)
 
         monkeypatch.setattr(ResourceHost, "register_store", _recording_register)
 
+        assert _hosts() == [], "a host leaked into this process before wiring ran"
         services = wire_community(_settings(tmp_path))
         try:
             assert registered == []
@@ -289,6 +306,7 @@ class TestProcessIsCold:
         The store is registered **here, by the test**. No ``src/`` file registers one, and
         this changes nothing about the tier: the community process still runs cold.
         """
+        assert _hosts() == [], "a host leaked into this process before wiring ran"
         services = wire_community(_settings(tmp_path))
         try:
             host = _hosts()[0]
