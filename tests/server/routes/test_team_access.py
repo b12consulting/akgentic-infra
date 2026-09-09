@@ -15,7 +15,6 @@ from typing import Any
 import pytest
 from akgentic.core.agent_card import AgentCard
 from akgentic.team.models import Process
-from akgentic.tool.sandbox import ExecTool
 from akgentic.tool.workspace import WorkspaceTool
 from fastapi import HTTPException
 from starlette.datastructures import State
@@ -32,6 +31,7 @@ from akgentic.infra.server.routes._workspace_resolution import stashed_workspace
 from ._workspace_cards import (
     CaseMetadata,
     RecordingCardStore,
+    exec_only_workspace,
     process_with_cards,
     tool_card,
 )
@@ -140,7 +140,7 @@ async def _call_workspace(
 
 
 def _declaring_team(
-    *tools: WorkspaceTool | ExecTool,
+    *tools: WorkspaceTool,
     owner: str = "alice",
     metadata: CaseMetadata | None = None,
 ) -> tuple[Process, RecordingCardStore]:
@@ -290,10 +290,10 @@ async def test_declared_workspace_passes_and_stashes_its_path() -> None:
     assert str(stashed["notes"]) == "alice/notes"
 
 
-async def test_declared_exec_tool_workspace_passes() -> None:
-    """An ``ExecTool``-declared id is in the allowed set — it is a real card."""
+async def test_declared_exec_only_workspace_passes() -> None:
+    """A shell-only card's id is in the allowed set — it is a real declaration."""
     user = RequestUser(user_id="alice")
-    process, store = _declaring_team(ExecTool(workspace_id="shell"))
+    process, store = _declaring_team(exec_only_workspace("shell"))
     assert (
         await _call_workspace(user, workspace_id="shell", owner=None, process=process, store=store)
         is user
@@ -323,7 +323,7 @@ async def test_card_set_is_read_once_per_request() -> None:
     """AC #8: the gate makes exactly one ``load_agent_cards`` call."""
     user = RequestUser(user_id="alice")
     process, store = _declaring_team(
-        WorkspaceTool(workspace_id="notes"), ExecTool(workspace_id="shell")
+        WorkspaceTool(workspace_id="notes"), exec_only_workspace("shell")
     )
     await _call_workspace(user, workspace_id="notes", owner=None, process=process, store=store)
     assert len(store.calls) == 1

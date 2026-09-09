@@ -3,7 +3,7 @@
 The seeded catalog team carries plain ``BaseConfig`` members, so it declares no
 workspace at all — which is now the correct answer to every ``?workspace_id=``.
 Exercising the declared path needs cards whose ``AgentConfig`` really carries a
-``WorkspaceTool`` / ``ExecTool``, and these build them.
+``WorkspaceTool`` — file-capable or shell-only — and these build them.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from akgentic.team.models import AgentCardRef, AgentRef, Process, TeamStatus
 from akgentic.team.ports import EventStore
 from akgentic.team.projection import hash_agent_card
 from akgentic.tool import ToolCard
-from akgentic.tool.sandbox import ExecTool
 from akgentic.tool.workspace import WorkspaceTool
 
 __all__ = [
@@ -27,9 +26,40 @@ __all__ = [
     "RecordingCardStore",
     "bare_card",
     "declare_workspaces",
+    "exec_only_workspace",
     "process_with_cards",
     "tool_card",
 ]
+
+
+def exec_only_workspace(
+    workspace_id: str | None = None, *, workspace_metadata_keys: list[str] | None = None
+) -> WorkspaceTool:
+    """A ``WorkspaceTool`` granting sandboxed execution and nothing else.
+
+    The migration shape of the retired standalone exec card: ``workspace_exec``
+    on, every file capability explicitly off. It still declares a workspace
+    through the same two layout fields as any other card, which is what the
+    resolution seam must keep honouring — a shell-only agent writes into a real
+    directory.
+    """
+    return WorkspaceTool(
+        workspace_id=workspace_id,
+        workspace_metadata_keys=workspace_metadata_keys or [],
+        workspace_exec=True,
+        workspace_read=False,
+        workspace_view=False,
+        workspace_list=False,
+        workspace_glob=False,
+        workspace_grep=False,
+        expand_media_refs=False,
+        workspace_write=False,
+        workspace_delete=False,
+        workspace_edit=False,
+        workspace_multi_edit=False,
+        workspace_patch=False,
+        workspace_mkdir=False,
+    )
 
 
 class CaseMetadata(SerializableBaseModel):
@@ -101,7 +131,7 @@ def process_with_cards(
 def declare_workspaces(
     store: EventStore,
     process: Process,
-    *tools: WorkspaceTool | ExecTool,
+    *tools: WorkspaceTool,
     role: str = "WorkspaceHolder",
     metadata: SerializableBaseModel | None = None,
 ) -> Process:

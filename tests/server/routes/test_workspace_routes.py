@@ -23,7 +23,6 @@ from typing import cast
 import pytest
 from akgentic.team.models import AgentCardRef, Process
 from akgentic.team.ports import EventStore
-from akgentic.tool.sandbox import ExecTool
 from akgentic.tool.workspace import WorkspaceTool
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -35,7 +34,7 @@ from akgentic.infra.server.routes.workspace import _get_workspace
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
-from ._workspace_cards import CaseMetadata, declare_workspaces
+from ._workspace_cards import CaseMetadata, declare_workspaces, exec_only_workspace
 
 ANONYMOUS = "anonymous"
 """The principal the community client carries — and so its workspace scope."""
@@ -44,7 +43,7 @@ ANONYMOUS = "anonymous"
 def _declare(
     services: CommunityServices,
     team_id: uuid.UUID,
-    *tools: WorkspaceTool | ExecTool,
+    *tools: WorkspaceTool,
     role: str = "WorkspaceHolder",
     metadata: CaseMetadata | None = None,
 ) -> None:
@@ -526,21 +525,22 @@ def test_workspace_id_own_team_is_allowed_when_declared(
     assert "output.txt" in names
 
 
-def test_exec_tool_declared_workspace_is_not_404(
+def test_exec_only_declared_workspace_is_not_404(
     client: TestClient,
     team_with_workspace: uuid.UUID,
     seeded_settings: ServerSettings,
     community_services: CommunityServices,
 ) -> None:
-    """An ``ExecTool``-only team must not 404 on the id it is configured with.
+    """A shell-only card must not 404 on the id it is configured with.
 
-    ``ExecTool`` carries no ``workspace_metadata_keys``, so this is also the
-    route-level exercise of the missing attribute alongside a ``WorkspaceTool``.
+    Sandboxed execution is a ``WorkspaceTool`` capability, so a shell-only
+    agent declares its directory through the same fields as a file agent and
+    the route serves both side by side.
     """
     _declare(
         community_services,
         team_with_workspace,
-        ExecTool(workspace_id="shell"),
+        exec_only_workspace("shell"),
         WorkspaceTool(workspace_id="notes"),
     )
     shell_root = seeded_settings.workspaces_root / ANONYMOUS / "shell"
