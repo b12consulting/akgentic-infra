@@ -225,6 +225,16 @@ async def require_workspace_access(
     ``process.user_id``, so what the caller reaches is the tree the team's own
     agents write to.
 
+    **A metadata leaf is admitted iff it is byte-equal to the leaf the team's
+    own ``process.metadata`` produces through the card's declared keys, in
+    declaration order.** The gate never parses a leaf and never compares
+    key-value pairs: the leaf is *derived* from the metadata rather than
+    matched against it, so another case's values, another key set, or the
+    same keys in another order are simply absent from the map and answered
+    with the same 404 a missing team gets. The paired specs pinning this live
+    in ``tests/server/routes/test_workspace_routes.py`` and
+    ``tests/server/routes/test_team_access.py``.
+
     An omitted ``workspace_id`` is still a pass-through: it selects the team's
     own tree, which ``require_team_access`` has already authorized.
 

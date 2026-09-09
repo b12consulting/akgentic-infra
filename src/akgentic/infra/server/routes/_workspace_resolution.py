@@ -140,6 +140,16 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
     Reaching Alice's tree needs a team Alice owns, which ``require_team_access``
     refuses him.
 
+    A metadata card is the same rule with no second clause: its key is the leaf
+    ``process.metadata`` produces through the declared keys, in declaration
+    order, so a ``?workspace_id=`` naming a metadata workspace is admitted iff
+    it is byte-equal to that leaf. Nothing here parses a leaf or compares
+    key-value pairs — the leaf is derived from the metadata, not matched
+    against it — which is why another case's values, another key set, or the
+    reversed order are absent from the map rather than present and refused.
+    Pinned in pairs by ``tests/server/routes/test_workspace_routes.py`` and
+    ``tests/server/routes/test_team_access.py``.
+
     The cards are resolved through ``akgentic.team.resolve_agent_cards`` — the
     one place a hash becomes a card — which makes a **single** batch
     ``load_agent_cards`` call whatever the number of roles. A per-hash loop
