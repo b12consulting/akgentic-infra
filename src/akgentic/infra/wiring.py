@@ -84,7 +84,9 @@ def wire_community(
     runtime_cache.warm(worker_handle, event_store)
 
     resolved_team_access_policy = (
-        team_access_policy if team_access_policy is not None else OwnerOrAdminPolicy()
+        team_access_policy
+        if team_access_policy is not None
+        else OwnerOrAdminPolicy(admin_list_all_teams=settings.admin_list_all_teams)
     )
     services = CommunityServices(
         # Server services
