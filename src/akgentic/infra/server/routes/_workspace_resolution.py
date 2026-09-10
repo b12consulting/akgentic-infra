@@ -40,12 +40,11 @@ from pathlib import PurePosixPath
 from fastapi import HTTPException
 from starlette.requests import HTTPConnection
 
-from akgentic.agent.config import AgentConfig
+from akgentic.infra.server.services._workspace_paths import declared_layouts
 from akgentic.team import resolve_agent_cards
 from akgentic.team.models import Process
 from akgentic.team.ports import EventStore
-from akgentic.tool import ToolCard
-from akgentic.tool.workspace import WorkspaceTool, resolve_workspace_path
+from akgentic.tool.workspace import resolve_workspace_path
 
 logger = logging.getLogger(__name__)
 
@@ -95,23 +94,6 @@ def validate_workspace_id(workspace_id: str) -> str:
     if workspace_id in ("", ".", "..") or not _WORKSPACE_ID_RE.fullmatch(workspace_id):
         raise HTTPException(status_code=400, detail="Invalid workspace_id")
     return workspace_id
-
-
-def _declared_layout(tool: ToolCard) -> tuple[str | None, list[str]] | None:
-    """The ``(workspace_id, workspace_metadata_keys)`` a card declares, or ``None``.
-
-    ``WorkspaceTool`` is the **only** card that declares a workspace. Sandboxed
-    execution is one of its capabilities (``workspace_exec=...``), not a card of
-    its own: a shell-only agent is a ``WorkspaceTool`` with every file
-    capability off and ``workspace_exec`` on, and it declares its directory
-    through the same two fields as any other. There is no second shape to read,
-    and a blanket ``getattr(tool, "workspace_metadata_keys", [])`` would only
-    swallow a ``WorkspaceTool`` that lost the field — so the type is checked and
-    the fields are read directly.
-    """
-    if isinstance(tool, WorkspaceTool):
-        return tool.workspace_id, tool.workspace_metadata_keys
-    return None
 
 
 def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str, PurePosixPath]:
@@ -183,17 +165,9 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
     """
     paths: dict[str, PurePosixPath] = {}
     for card in resolve_agent_cards(process.agent_cards, store):
-        config = card.config
-        # ``AgentCard.config`` is typed ``BaseConfig`` in core and ``tools``
-        # lives on ``AgentConfig``; a card carrying the bare base declares no
-        # tools and therefore no workspace.
-        if not isinstance(config, AgentConfig):
-            continue
-        for tool in config.tools:
-            layout = _declared_layout(tool)
-            if layout is None:
-                continue
-            workspace_id, metadata_keys = layout
+        # The card-shape read is shared with the pre-dispatch resolver — one
+        # generator, so which tools declare a workspace is decided once.
+        for workspace_id, metadata_keys in declared_layouts(card):
             path = resolve_workspace_path(
                 workspace_id=workspace_id,
                 workspace_metadata_keys=metadata_keys,

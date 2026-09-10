@@ -21,6 +21,7 @@ from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.services._metadata_payload import validate_metadata
+from akgentic.infra.server.services._workspace_paths import declared_workspaces
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
 from akgentic.tool.workspace import user_segment
 
@@ -177,6 +178,13 @@ class TeamService:
                 is supplied for a card declaring no contract, or fails the
                 declared schema. Raised before placement runs, so a rejected
                 body never leaves a half-created team behind.
+            WorkspaceDeclarationError: If a workspace the card declares cannot
+                be resolved from this request — a metadata-keyed card the
+                (validated) metadata cannot satisfy, an unusable owner id, an
+                unsafe leaf. Raised before placement runs too, so nothing is
+                created; today's alternative is a 503 from inside team
+                building, after actors have started, inviting a retry that
+                cannot succeed.
         """
         logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
         try:
@@ -198,6 +206,15 @@ class TeamService:
             raise
         # Before placement, never after: nothing is created when this rejects.
         validated_metadata = validate_metadata(team_card.metadata_type, metadata)
+        # Also before placement: a multi-worker tier pins the team to a worker
+        # by the tree this resolves, so it has to exist before any worker is
+        # contacted — and a card the request cannot satisfy is refused here,
+        # where nothing has been created, rather than inside team building.
+        workspaces = declared_workspaces(
+            team_card, user_id=user_id, team_id=team_id, metadata=validated_metadata
+        )
+        # ``workspaces`` is forwarded unconditionally, like ``metadata``: a kwarg
+        # omitted when it is empty is how a value later gets silently dropped.
         handle = self._services.placement.create_team(
             team_card,
             user_id,
@@ -205,6 +222,7 @@ class TeamService:
             team_id=team_id,
             catalog_namespace=catalog_namespace,
             metadata=validated_metadata,
+            workspaces=workspaces,
         )
         self._cache.store(handle.team_id, handle)
         # Consistency invariant: create_team() writes to event store, so

@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import inspect
 import uuid
+from pathlib import PurePosixPath
 from unittest.mock import MagicMock
 
 import pytest
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.protocols.placement import (
+    DeclaredWorkspaces,
     PlacementError,
     PlacementStrategy,
 )
+from akgentic.tool.workspace import METADATA_SCOPE
 
 from tests.fixtures.team_metadata import AcmeCaseMetadata
 
@@ -49,6 +52,23 @@ class TestLocalPlacementProtocolCompliance:
         # Optional and defaulting to None, so pre-metadata callers are unaffected.
         assert "metadata" in sig.parameters
         assert sig.parameters["metadata"].default is None
+        # Story 68.2: the resolved workspaces, last, optional, defaulting to None.
+        assert "workspaces" in sig.parameters
+        assert sig.parameters["workspaces"].default is None
+        assert list(sig.parameters)[-1] == "workspaces"
+
+    def test_workspaces_parameter_matches_the_protocol(self) -> None:
+        """AC #8: the protocol declares the same parameter with the same default.
+
+        ``runtime_checkable`` checks that ``create_team`` exists and nothing
+        about its shape, so the two signatures are held together by hand.
+        """
+        protocol = inspect.signature(PlacementStrategy.create_team).parameters
+        adapter = inspect.signature(LocalPlacement.create_team).parameters
+        assert "workspaces" in protocol
+        assert protocol["workspaces"].default is None
+        assert list(protocol)[-1] == "workspaces"
+        assert list(protocol) == list(adapter)
 
 
 class TestLocalPlacementBehavior:
@@ -137,6 +157,81 @@ class TestLocalPlacementBehavior:
         a = _make_adapter()
         b = _make_adapter()
         assert a.instance_id != b.instance_id
+
+
+_TWO_META = DeclaredWorkspaces(
+    shared={
+        PurePosixPath(METADATA_SCOPE) / "customer_id-ACME",
+        PurePosixPath(METADATA_SCOPE) / "case_id-42",
+    }
+)
+"""The one shape a tier that routes must refuse — rule 3's unsatisfiable case."""
+
+
+class TestLocalPlacementIgnoresWorkspaces:
+    """Story 68.2, AC #6: one process is one worker, so the community tier refuses nothing.
+
+    Every spec here proves the adapter forwards the same call to ``TeamManager``
+    whatever the value carries, never consults the routing rule, and creates a
+    team a multi-worker tier would refuse. None proves affinity: one worker,
+    so this proves the community tier does not route or refuse, not that two
+    teams land together.
+    """
+
+    def test_two_metadata_trees_are_delegated_with_todays_exact_call_shape(self) -> None:
+        """The positive beside the negatives: the manager call is byte-identical.
+
+        The ``assert_called_once_with`` is the same one the pre-metadata specs
+        use, and it is the proof that nothing new is forwarded — a
+        ``TeamManager.create_team`` has no ``workspaces`` parameter to receive.
+        """
+        team_manager = MagicMock()
+        adapter = LocalPlacement(team_manager, MagicMock())
+        team_card = MagicMock()
+
+        result = adapter.create_team(team_card, "user-1", workspaces=_TWO_META)
+
+        assert isinstance(result, LocalTeamHandle)
+        team_manager.create_team.assert_called_once_with(
+            team_card, "user-1", user_email="", team_id=None, catalog_namespace=None, metadata=None
+        )
+        assert "workspaces" not in team_manager.create_team.call_args.kwargs
+
+    def test_the_routing_rule_is_never_consulted(self) -> None:
+        """One worker; there is nothing to honour, so ``routing_key()`` is never called.
+
+        A subclass records every call. Passing the two-``_meta/`` value makes
+        the negative bite: a call would not merely be recorded, it would raise,
+        so an adapter that consulted the rule could not also have delegated.
+        """
+        calls: list[str] = []
+
+        class _Recording(DeclaredWorkspaces):
+            def routing_key(self) -> PurePosixPath | None:
+                calls.append("routing_key")
+                return super().routing_key()
+
+        team_manager = MagicMock()
+        adapter = LocalPlacement(team_manager, MagicMock())
+        value = _Recording(shared=_TWO_META.shared)
+
+        result = adapter.create_team(MagicMock(), "user-1", workspaces=value)
+
+        assert isinstance(result, LocalTeamHandle)
+        assert calls == []
+        team_manager.create_team.assert_called_once()
+
+    def test_omitting_the_value_is_the_same_call(self) -> None:
+        """``None`` and a value produce one manager call shape — the seam stops here."""
+        team_manager = MagicMock()
+        adapter = LocalPlacement(team_manager, MagicMock())
+        team_card = MagicMock()
+
+        adapter.create_team(team_card, "user-1")
+        adapter.create_team(team_card, "user-1", workspaces=DeclaredWorkspaces())
+
+        first, second = team_manager.create_team.call_args_list
+        assert first == second
 
 
 class TestLocalPlacementCreateFailure:
