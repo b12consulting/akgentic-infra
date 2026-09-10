@@ -65,6 +65,28 @@ class MetadataValidationError(ServerError):
     code = "invalid_metadata"
 
 
+class WorkspaceDeclarationError(ServerError):
+    """A team's declared workspace cannot be resolved from the request, before anything is created.
+
+    The pre-dispatch wrap of the tool-side resolver's ``ValueError``: a metadata
+    card on a request carrying no metadata, an unknown key, a blank value, an
+    over-long leaf, an unusable owner id or an unsafe leaf. One status for all
+    six on purpose — splitting them would mean matching the resolver's message
+    text, the anti-pattern this package removed from ``_raise_action_error`` —
+    and the resolver's own message travels verbatim in ``detail`` so the admin
+    is told which key and which model. 422, beside ``MetadataValidationError``:
+    the request as sent cannot describe a placeable team, and nothing has been
+    created when it is raised.
+
+    Raised by ``server/services/_workspace_paths.declared_workspaces`` only.
+    The route-side resolver keeps raising the bare ``ValueError``; its contract
+    is unchanged.
+    """
+
+    status_code = 422
+    code = "workspace_unresolvable"
+
+
 class TeamNotFoundError(ValueError):
     """The team does not exist in the system of record.
 

@@ -13,6 +13,7 @@ from akgentic.team.ports import ServiceRegistry
 
 if TYPE_CHECKING:
     from akgentic.core.utils.serializer import SerializableBaseModel
+    from akgentic.infra.protocols.placement import DeclaredWorkspaces
     from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import TeamCard
 
@@ -26,6 +27,12 @@ class LocalPlacement:
     Satisfies the PlacementStrategy protocol via structural subtyping.
     Delegates team creation to ``TeamManager`` and wraps the result
     in a ``LocalTeamHandle``.
+
+    One process is one worker, so the affinity the protocol's ``workspaces``
+    value exists for holds by construction here: the value is accepted for
+    signature parity and consulted for nothing, ``routing_key()`` is never
+    called, and the community tier refuses nothing — a team a multi-worker
+    tier would refuse for declaring two ``_meta/`` trees is simply created.
     """
 
     def __init__(
@@ -50,6 +57,7 @@ class LocalPlacement:
         team_id: uuid.UUID | None = None,
         catalog_namespace: str | None = None,
         metadata: SerializableBaseModel | None = None,
+        workspaces: DeclaredWorkspaces | None = None,
     ) -> TeamHandle:
         """Create a team in the local process and return a handle.
 
@@ -66,15 +74,22 @@ class LocalPlacement:
             metadata: Pre-validated business metadata, forwarded verbatim to
                 ``TeamManager.create_team`` so it lands on the persisted
                 ``Process.metadata`` alongside its derived index.
+            workspaces: The team's resolved workspace trees. Accepted so this
+                adapter's signature is the protocol's, and **not forwarded**:
+                ``TeamManager.create_team`` has no such parameter, and with one
+                worker there is nothing to honour. Logged at DEBUG only — the
+                paths carry user ids.
 
         Returns:
             A LocalTeamHandle for interacting with the newly created team.
         """
         logger.debug(
-            "LocalPlacement creating team: user_id=%s, catalog_namespace=%s, team_id=%s",
+            "LocalPlacement creating team: user_id=%s, catalog_namespace=%s, team_id=%s, "
+            "workspaces=%s",
             user_id,
             catalog_namespace,
             team_id,
+            workspaces,
         )
         try:
             runtime = self._team_manager.create_team(

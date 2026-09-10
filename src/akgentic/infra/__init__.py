@@ -27,6 +27,7 @@ from akgentic.infra.protocols import (
     ChannelMessage,
     ChannelParser,
     ChannelRegistry,
+    DeclaredWorkspaces,
     EventStream,
     HealthMonitor,
     InteractionChannelAdapter,
@@ -41,6 +42,7 @@ from akgentic.infra.protocols import (
     StreamClosed,
     StreamReader,
     TeamHandle,
+    UnroutableWorkspacesError,
     WorkerHandle,
     WorkerRejectedError,
 )
@@ -70,6 +72,7 @@ __all__ = [
     "ChannelMessage",
     "ChannelParser",
     "ChannelRegistry",
+    "DeclaredWorkspaces",
     "EventStream",
     "HealthMonitor",
     "InteractionChannelAdapter",
@@ -86,6 +89,7 @@ __all__ = [
     "StreamClosed",
     "StreamReader",
     "TeamHandle",
+    "UnroutableWorkspacesError",
     "WorkerHandle",
     "WorkerRejectedError",
     # Adapters

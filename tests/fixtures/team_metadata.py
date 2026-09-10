@@ -11,12 +11,16 @@ Field names and values use ``acme`` / ``contoso`` placeholders (Golden Rule #9).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import yaml
+from akgentic.agent.config import AgentConfig
+from akgentic.core.agent_card import AgentCard
 from akgentic.core.utils.serializer import SerializableBaseModel
 from akgentic.team.metadata import TeamMetadata
+from akgentic.tool import ToolCard
 from pydantic import Field
 
 ACME_METADATA_TYPE = "tests.fixtures.team_metadata.AcmeCaseMetadata"
@@ -87,12 +91,48 @@ def _strip_tags(value: Any) -> Any:
     return value
 
 
-def seed_metadata_namespace(catalog_root: Path, namespace: str, *, with_type: bool) -> None:
+def _manager_card_payload(tools: Sequence[ToolCard]) -> dict[str, Any]:
+    """The Manager member's card, carrying *tools* when any are given.
+
+    A member carrying tools needs ``BaseAgent`` — the class whose config
+    annotation is ``AgentConfig``, so ``tools`` hydrates — and each tool entry
+    needs its polymorphic ``__model__`` tag. Both come from dumping a real
+    ``AgentCard`` rather than typing the YAML (the fixture-factory rule). With
+    no tools the plain ``Akgent`` member the file always seeded is returned
+    unchanged, so the pre-existing namespaces are byte-identical.
+    """
+    if not tools:
+        return {
+            "role": "Manager",
+            "description": "Test manager agent",
+            "skills": ["coordination"],
+            "agent_class": "akgentic.core.agent.Akgent",
+            "config": {"name": "@Manager", "role": "Manager"},
+        }
+    card = AgentCard(
+        description="Test manager agent",
+        skills=["coordination"],
+        agent_class="akgentic.agent.agent.BaseAgent",
+        config=AgentConfig(name="@Manager", role="Manager", tools=list(tools)),
+    )
+    return card.model_dump(mode="json")
+
+
+def seed_metadata_namespace(
+    catalog_root: Path,
+    namespace: str,
+    *,
+    with_type: bool,
+    tools: Sequence[ToolCard] = (),
+) -> None:
     """Seed a v2 team namespace whose card declares (or omits) a metadata_type.
 
     Mirrors ``tests/conftest.py:_seed_v2_namespace`` and adds the one field this
     epic cares about. ``with_type=False`` produces the "team declares no metadata
-    contract" card that AC #3 and AC #8 need.
+    contract" card that AC #3 and AC #8 need. ``tools`` puts tool cards on the
+    Manager member (Story 68.2), which is how a seeded team comes to declare a
+    workspace; with placement mocked no actor starts, so the ``BaseAgent`` member
+    is hydrated and never run.
     """
     team_payload: dict[str, Any] = {
         "name": "Acme Case Team",
@@ -110,13 +150,7 @@ def seed_metadata_namespace(catalog_root: Path, namespace: str, *, with_type: bo
         },
         "members": [
             {
-                "card": {
-                    "role": "Manager",
-                    "description": "Test manager agent",
-                    "skills": ["coordination"],
-                    "agent_class": "akgentic.core.agent.Akgent",
-                    "config": {"name": "@Manager", "role": "Manager"},
-                },
+                "card": _manager_card_payload(tools),
                 "headcount": 1,
                 "members": [],
             },

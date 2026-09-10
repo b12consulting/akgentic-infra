@@ -14,10 +14,12 @@ from akgentic.infra.protocols.channels import (
 from akgentic.infra.protocols.event_stream import EventStream, StreamClosed, StreamReader
 from akgentic.infra.protocols.health import HealthMonitor
 from akgentic.infra.protocols.placement import (
+    DeclaredWorkspaces,
     NoCapacityError,
     NoSandboxCapacityError,
     PlacementError,
     PlacementStrategy,
+    UnroutableWorkspacesError,
     WorkerRejectedError,
 )
 from akgentic.infra.protocols.recovery import RecoveryPolicy
@@ -30,6 +32,7 @@ __all__ = [
     "ChannelMessage",
     "ChannelParser",
     "ChannelRegistry",
+    "DeclaredWorkspaces",
     "EventStream",
     "HealthMonitor",
     "InteractionChannelAdapter",
@@ -45,5 +48,6 @@ __all__ = [
     "StreamClosed",
     "StreamReader",
     "TeamHandle",
+    "UnroutableWorkspacesError",
     "WorkerHandle",
 ]

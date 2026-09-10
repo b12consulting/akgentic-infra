@@ -16,6 +16,7 @@ from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFound
 from akgentic.team.models import Process, TeamStatus
 
 from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
+from akgentic.infra.protocols.placement import DeclaredWorkspaces
 from akgentic.infra.server.services.team_service import (
     MAX_PAGE_SIZE,
     CatalogTeamEntryMissingError,
@@ -129,6 +130,10 @@ def test_create_team_forwards_user_email_and_team_id(team_service: TeamService) 
         "catalog_namespace": "test-team",
         # Always forwarded, None when the caller supplied no metadata.
         "metadata": None,
+        # Always forwarded, never None. The seeded team declares no workspace,
+        # so ``shared`` is empty and ``own`` is None because there is no default
+        # card — not because there is no id (one was supplied above).
+        "workspaces": DeclaredWorkspaces(),
     }
 
 
