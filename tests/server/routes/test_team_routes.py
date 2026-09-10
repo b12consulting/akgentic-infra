@@ -669,7 +669,7 @@ def _delegated_to_service(
     community_services: CommunityServices,
     params: Any,
 ) -> dict[str, Any]:
-    """Return the kwargs ``GET /teams`` delegated to ``TeamService.list_teams``.
+    """Return kwargs delegated to ``TeamService.list_teams_for_policy``.
 
     The spy *wraps* the wired service rather than replacing it, so the request
     is served for real and the recorded call is the one that actually ran.
@@ -682,9 +682,9 @@ def _delegated_to_service(
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
-    assert spy.list_teams.call_count == 1
-    assert spy.list_teams.call_args.args == ()
-    return dict(spy.list_teams.call_args.kwargs)
+    assert spy.list_teams_for_policy.call_count == 1
+    assert spy.list_teams_for_policy.call_args.args == ()
+    return dict(spy.list_teams_for_policy.call_args.kwargs)
 
 
 def _delegated_to_store(

@@ -22,14 +22,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from akgentic.team.metadata import make_index_entry
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from akgentic.infra.protocols.authz import TeamAccessContext, TeamListFilter
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from tests.fixtures.team_metadata import (
     AcmeCaseMetadata,
     make_metadata_body,
@@ -55,6 +57,50 @@ whether or not it was applied at all.
 # tests pass on an ImportError even if the server had honoured the tag — the
 # false green that would hide exactly the vulnerability this rule exists for.
 REAL_IMPORTABLE_CLASS = "akgentic.infra.server.models.TeamResponse"
+
+
+class _CreationPolicy:
+    def __init__(self, allowed: bool) -> None:
+        self._allowed = allowed
+        self.creation_indexes: list[list[str]] = []
+
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        return [TeamListFilter(user_id=user.user_id)]
+
+    async def can_create(
+        self,
+        *,
+        metadata_indexes: list[str],
+        user: RequestUser,
+    ) -> bool:
+        self.creation_indexes.append(metadata_indexes)
+        return self._allowed
+
+    async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        return True
+
+
+class _OwnerOrEntitlementPolicy:
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        filters = [TeamListFilter(user_id=user.user_id)]
+        if user.entitlements:
+            filters.append(TeamListFilter(metadata=user.entitlements))
+        return filters
+
+    async def can_create(
+        self,
+        *,
+        metadata_indexes: list[str],
+        user: RequestUser,
+    ) -> bool:
+        return True
+
+    async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        return ctx.owner_user_id == user.user_id or any(
+            make_index_entry(key, value) in ctx.metadata_indexes
+            for key, values in user.entitlements.items()
+            for value in values
+        )
 
 
 @pytest.fixture()
@@ -117,6 +163,44 @@ def _assert_nothing_created(
     """AC #5: a rejected body leaves neither a Process nor a cached handle behind."""
     assert _team_count(client) == before_teams
     assert _cached_handle_count(services) == before_handles
+
+
+def test_create_policy_sees_validated_indexes_before_any_team_is_created(
+    metadata_app: FastAPI,
+    metadata_services: CommunityServices,
+) -> None:
+    client = TestClient(metadata_app)
+    policy = _CreationPolicy(False)
+    metadata_app.state.services.team_access_policy = policy
+    before_teams = _team_count(client)
+    before_handles = _cached_handle_count(metadata_services)
+
+    response = client.post(
+        "/teams/",
+        json={
+            "catalog_namespace": TYPED_NS,
+            "metadata": {"tenant": "Acme", "case": "C-1234"},
+        },
+    )
+
+    assert response.status_code == 403
+    assert policy.creation_indexes == [["tenant|acme", "case|c-1234"]]
+    _assert_nothing_created(client, metadata_services, before_teams, before_handles)
+
+
+def test_invalid_metadata_is_rejected_before_creation_policy(
+    metadata_app: FastAPI,
+) -> None:
+    policy = _CreationPolicy(False)
+    metadata_app.state.services.team_access_policy = policy
+
+    response = TestClient(metadata_app).post(
+        "/teams/",
+        json={"catalog_namespace": TYPED_NS, "metadata": {"tenant": "acme"}},
+    )
+
+    assert response.status_code == 422
+    assert policy.creation_indexes == []
 
 
 # --- AC #1 / #12: omitting metadata is unchanged behaviour, plus one new key ---
@@ -493,6 +577,19 @@ def _create_team_with(client: TestClient, *, namespace: str = TYPED_NS, **fields
     return str(resp.json()["team_id"])
 
 
+def _create_team_as(
+    app: FastAPI,
+    client: TestClient,
+    user_id: str,
+    **fields: Any,
+) -> str:
+    app.dependency_overrides[get_request_user] = lambda: RequestUser(user_id=user_id)
+    try:
+        return _create_team_with(client, **fields)
+    finally:
+        app.dependency_overrides.clear()
+
+
 def _has_model_tag(value: Any) -> bool:
     """Report whether ``__model__`` appears anywhere in *value*.
 
@@ -517,6 +614,60 @@ def test_single_meta_filter_narrows_the_page(metadata_client: TestClient) -> Non
     body = resp.json()
     assert [t["team_id"] for t in body["teams"]] == [acme_id]
     assert body["total_count"] == 1
+
+
+def test_policy_lists_owner_or_exact_entitled_customer_without_duplicates(
+    metadata_app: FastAPI,
+    metadata_client: TestClient,
+) -> None:
+    owner_only = _create_team_as(
+        metadata_app, metadata_client, "alice", tenant="contoso", case="OWNER"
+    )
+    overlap = _create_team_as(
+        metadata_app, metadata_client, "alice", tenant="acme", case="OVERLAP"
+    )
+    entitled = _create_team_as(
+        metadata_app, metadata_client, "bob", tenant="acme", case="ENTITLED"
+    )
+    _create_team_as(
+        metadata_app, metadata_client, "bob", tenant="acme-plus", case="PREFIX"
+    )
+    _create_team_as(
+        metadata_app, metadata_client, "bob", tenant="contoso", case="DENIED"
+    )
+    metadata_app.state.services.team_access_policy = _OwnerOrEntitlementPolicy()
+    metadata_app.dependency_overrides[get_request_user] = lambda: RequestUser(
+        user_id="alice",
+        entitlements={"tenant": ["acme"]},
+    )
+
+    response = metadata_client.get("/teams")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {team["team_id"] for team in body["teams"]} == {
+        owner_only,
+        overlap,
+        entitled,
+    }
+    assert body["total_count"] == 3
+
+
+def test_caller_metadata_narrows_policy_on_the_same_key(
+    metadata_app: FastAPI,
+    metadata_client: TestClient,
+) -> None:
+    _create_team_as(metadata_app, metadata_client, "bob", tenant="acme", case="C-1")
+    metadata_app.state.services.team_access_policy = _OwnerOrEntitlementPolicy()
+    metadata_app.dependency_overrides[get_request_user] = lambda: RequestUser(
+        user_id="alice",
+        entitlements={"tenant": ["acme"]},
+    )
+
+    response = metadata_client.get("/teams", params={"meta.tenant": "contoso"})
+
+    assert response.status_code == 200
+    assert response.json() == {"teams": [], "total_count": 0}
 
 
 def test_distinct_meta_keys_and_combine(metadata_client: TestClient) -> None:

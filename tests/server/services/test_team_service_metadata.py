@@ -12,12 +12,12 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
 from akgentic.infra.errors import MetadataValidationError, PlacementConsistencyError
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
-
 from tests.fixtures.team_metadata import AcmeCaseMetadata, seed_metadata_namespace
 
 TYPED_NS = "acme-cases"
@@ -70,6 +70,21 @@ def test_validated_model_is_forwarded_to_placement(metadata_service: TeamService
     assert isinstance(forwarded, AcmeCaseMetadata)
     assert forwarded.tenant == "acme"
     assert forwarded.case == "C-1234"
+
+
+def test_resolve_team_creation_validates_without_reaching_placement(
+    metadata_service: TeamService,
+) -> None:
+    placement = _mock_placement(metadata_service)
+
+    resolved = metadata_service.resolve_team_creation(
+        TYPED_NS,
+        {"tenant": "Acme", "case": "C-1234"},
+    )
+
+    assert isinstance(resolved.metadata, AcmeCaseMetadata)
+    assert resolved.metadata_indexes == ["tenant|acme", "case|c-1234"]
+    placement.create_team.assert_not_called()
 
 
 def test_placement_is_never_reached_when_validation_fails(
