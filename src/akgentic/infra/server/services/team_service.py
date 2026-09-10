@@ -6,6 +6,7 @@ import logging
 import shutil
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,11 +18,17 @@ from akgentic.infra.errors import (
     TeamNotFoundError,
     TeamStateConflictError,
 )
+from akgentic.infra.protocols.authz import TeamListFilter
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.server.services._metadata_payload import validate_metadata
-from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
+from akgentic.team.metadata import (
+    derive_metadata_indexes,
+    make_index_entry,
+    make_index_prefix_groups,
+)
+from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamCard, TeamStatus
 from akgentic.tool.workspace import user_segment
 
 if TYPE_CHECKING:
@@ -32,6 +39,39 @@ logger = logging.getLogger(__name__)
 
 # Maximum page size for GET /teams; the default is 250 (ADR-032 §Decision 1).
 MAX_PAGE_SIZE = 500
+
+
+@dataclass(frozen=True)
+class ResolvedTeamCreation:
+    """Resolved catalog team and validated metadata, ready for authorization."""
+
+    catalog_namespace: str
+    team_card: TeamCard
+    metadata: SerializableBaseModel | None
+    metadata_indexes: list[str]
+
+
+def _matches_policy_filter(process: Process, clause: TeamListFilter) -> bool:
+    """Apply one policy clause exactly after its prefix-based store pushdown."""
+    if clause.user_id is not None and process.user_id != clause.user_id:
+        return False
+    if clause.metadata is None:
+        return True
+    return all(
+        any(make_index_entry(key, value) in process.metadata_indexes for value in values)
+        for key, values in clause.metadata.items()
+    )
+
+
+def _matches_caller_metadata(
+    process: Process,
+    metadata: Mapping[str, list[str]] | None,
+) -> bool:
+    """Apply caller-controlled prefix search as a narrowing-only predicate."""
+    return all(
+        any(entry.startswith(prefix) for prefix in group for entry in process.metadata_indexes)
+        for group in make_index_prefix_groups(metadata)
+    )
 
 
 class CatalogTeamEntryMissingError(EntryNotFoundError):
@@ -179,6 +219,21 @@ class TeamService:
                 body never leaves a half-created team behind.
         """
         logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
+        resolved = self.resolve_team_creation(catalog_namespace, metadata)
+        return self.create_resolved_team(
+            resolved,
+            user_id=user_id,
+            user_email=user_email,
+            team_id=team_id,
+        )
+
+    def resolve_team_creation(
+        self,
+        catalog_namespace: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> ResolvedTeamCreation:
+        """Resolve the catalog team and validate metadata without creating it."""
+        logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
         try:
             team_card = self._services.catalog.load_team(catalog_namespace)
         except CatalogValidationError as exc:
@@ -196,15 +251,30 @@ class TeamService:
             # Nothing is missing — the stored catalog is broken. Re-raise the
             # original so its message and traceback survive to the client.
             raise
-        # Before placement, never after: nothing is created when this rejects.
         validated_metadata = validate_metadata(team_card.metadata_type, metadata)
+        return ResolvedTeamCreation(
+            catalog_namespace=catalog_namespace,
+            team_card=team_card,
+            metadata=validated_metadata,
+            metadata_indexes=derive_metadata_indexes(validated_metadata),
+        )
+
+    def create_resolved_team(
+        self,
+        resolved: ResolvedTeamCreation,
+        *,
+        user_id: str,
+        user_email: str = "",
+        team_id: uuid.UUID | None = None,
+    ) -> Process:
+        """Create a team from catalog and metadata already resolved and validated."""
         handle = self._services.placement.create_team(
-            team_card,
+            resolved.team_card,
             user_id,
             user_email=user_email,
             team_id=team_id,
-            catalog_namespace=catalog_namespace,
-            metadata=validated_metadata,
+            catalog_namespace=resolved.catalog_namespace,
+            metadata=resolved.metadata,
         )
         self._cache.store(handle.team_id, handle)
         # Consistency invariant: create_team() writes to event store, so
@@ -217,7 +287,7 @@ class TeamService:
         logger.info(
             "Team created: team_id=%s, catalog_namespace=%s",
             process.team_id,
-            catalog_namespace,
+            resolved.catalog_namespace,
         )
         return process
 
@@ -279,6 +349,39 @@ class TeamService:
         if catalog_namespace:
             rows = [row for row in rows if row.catalog_namespace == catalog_namespace]
         rows.sort(key=lambda p: (p.created_at, p.team_id), reverse=True)
+        total = len(rows)
+        size = max(1, min(size, MAX_PAGE_SIZE))
+        page = max(1, page)
+        start = (page - 1) * size
+        return rows[start : start + size], total
+
+    def list_teams_for_policy(
+        self,
+        *,
+        filters: list[TeamListFilter],
+        status: TeamStatus | None = None,
+        metadata: Mapping[str, list[str]] | None = None,
+        catalog_namespace: str | None = None,
+        page: int = 1,
+        size: int = 250,
+    ) -> tuple[list[Process], int]:
+        """Union policy clauses, then narrow by caller search before pagination."""
+        candidates: dict[uuid.UUID, Process] = {}
+        for clause in filters:
+            pushed_metadata = metadata if clause.metadata is None else clause.metadata
+            rows = self._services.event_store.list_teams(
+                user_id=clause.user_id,
+                status=status,
+                metadata=pushed_metadata,
+            )
+            for row in rows:
+                if _matches_policy_filter(row, clause):
+                    candidates[row.team_id] = row
+
+        rows = [row for row in candidates.values() if _matches_caller_metadata(row, metadata)]
+        if catalog_namespace:
+            rows = [row for row in rows if row.catalog_namespace == catalog_namespace]
+        rows.sort(key=lambda process: (process.created_at, process.team_id), reverse=True)
         total = len(rows)
         size = max(1, min(size, MAX_PAGE_SIZE))
         page = max(1, page)
