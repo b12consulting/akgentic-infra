@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from akgentic.catalog import Catalog
-from akgentic.core import ActorAddress, ActorSystem
+from akgentic.core import ActorSystem
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.protocols.auth import AuthStrategy
@@ -74,17 +74,6 @@ class CommunityServices(TierServices):
         description="Service discovery registry (community-specific, used by wiring)"
     )
     actor_system: ActorSystem = Field(description="Actor system for managing agent lifecycle")
-    resource_host: ActorAddress = Field(
-        description=(
-            "The process's one WorkspaceHost, created by wire_community right after the "
-            "ActorSystem. A convenience for wiring and tests, never the lookup: consumers "
-            "find the host with ActorSystem.find_by_class(WorkspaceHost) and must not cache "
-            "this address. "
-            "Community-tier only — in the multi-worker tiers the host lives in the worker "
-            "process and a server replica never holds one, which is why this is not on "
-            "TierServices"
-        )
-    )
     team_manager: TeamManager = Field(description="Team lifecycle manager (embedded, in-process)")
     channel_parser_registry: ChannelParserRegistry = Field(
         description="Registry of channel message parsers"

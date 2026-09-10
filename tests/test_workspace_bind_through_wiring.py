@@ -1,19 +1,22 @@
 """A real workspace bind, through ``wire_community``, observed on the team's stream.
 
-The first specs in this package that bind a ``WorkspaceTool`` card on a live team. The
-team comes from the catalog through the wired ``TeamService.create_team``, so the bind
-runs the production path end to end: ``LocalPlacement``, ``TeamManager``,
-``TeamFactory``, a real ``BaseAgent.on_start``, the card, the orchestrator's forward and
-the ``WorkspaceHost`` wiring created. No model is called: ``on_start`` constructs the
-model client and never uses it, and the suite's autouse dummy key lets it construct.
+The team comes from the catalog through the wired ``TeamService.create_team``, so the
+bind runs the production path end to end: ``LocalPlacement``, ``TeamManager``,
+``TeamFactory``, a real ``BaseAgent.on_start``, the card and the orchestrator's forward.
+No model is called: ``on_start`` constructs the model client and never uses it, and the
+suite's autouse dummy key lets it construct.
 
-**What a failed bind looks like from here, which is why these specs read the stream.**
-The forward refuses with a ``RuntimeError`` when no host of the exact class is running.
-That error is raised inside the member's ``on_start``; pykka catches it and core turns it
-into an ``ErrorMessage`` on the team's stream. The member keeps running, ``create_team``
-raises nothing and the ``Process`` is ``RUNNING`` — a team whose only workspace card
-failed to bind is indistinguishable from a healthy one by status. So the guard is the
-stream: one ``WorkspaceAttached`` and no ``ErrorMessage``, beside the hosted actor itself.
+**There is no resource host in this process, and that is the point.** The workspace is a
+tree on disk, not an actor, so nothing in wiring creates a host and nothing here looks one
+up. What replaced the old registry probe is the disk: the card writes, and the write is
+either there or it is not.
+
+**What a failed bind looks like from here, which is why these specs read the stream.** A
+card that raises does so inside the member's ``on_start``; pykka catches it and core turns
+it into an ``ErrorMessage`` on the team's stream. The member keeps running,
+``create_team`` raises nothing and the ``Process`` is ``RUNNING`` — a team whose only
+workspace card failed to bind is indistinguishable from a healthy one by status. So the
+guard is the stream: exactly one ``WorkspaceAttached`` and no ``ErrorMessage``.
 
 **The flush is load-bearing.** ``TeamFactory.build`` returns once the members are
 *started*, not once their ``on_start`` finished. pykka runs ``on_start`` before the
@@ -27,8 +30,8 @@ of the suite staying green by luck.
 tool reads ``AKGENTIC_WORKSPACES_ROOT`` itself, separately from
 ``CommunitySettings.workspaces_root``, and nothing in wiring passes the setting on. The
 fixture sets the variable before wiring and the first spec asserts the tree landed under
-the test's root; without the variable the actors would write ``./workspaces`` relative
-to the working directory.
+the test's root; without the variable the card would write ``./workspaces`` relative to
+the working directory.
 
 What is out of reach here: a second replica, and two workers over one tree. These specs
 hold one process and say nothing about another.
@@ -43,35 +46,19 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
-from akgentic.core import (
-    ActorAddress,
-    ActorRegistry,
-    ActorSystem,
-    Akgent,
-    Orchestrator,
-    ResourceHost,
-)
+from akgentic.core import ActorAddress, ActorRegistry, ActorSystem, Akgent, Orchestrator
 from akgentic.core.messages import ErrorMessage, EventMessage, StartMessage
 from akgentic.core.messages.message import Message
 from akgentic.team.models import Process, TeamStatus
 from akgentic.tool import ActorToolObserver
-from akgentic.tool.workspace import (
-    WORKSPACE_ACTOR_ROLE,
-    WorkspaceActor,
-    WorkspaceAttached,
-    WorkspaceConfig,
-    WorkspaceHost,
-    WorkspaceTool,
-    workspace_actor_name,
-)
+from akgentic.tool.workspace import Resource, WorkspaceAttached, WorkspaceTool
 
-from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.deps import CommunityServices, TierServices
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 from tests.fixtures.team_metadata import seed_metadata_namespace
 
 TIMEOUT = 10.0
-TEARDOWN_GRACE = 5.0
 LATE_BIND_S = 0.5
 """How long the late-bind spec holds the card's bind back.
 
@@ -89,6 +76,16 @@ USER_ID = "alice"
 WORKSPACE_PATH = "alice/notes"
 """Where ``WorkspaceTool(workspace_id="notes")`` resolves for ``alice``."""
 
+SEEDED_FILE = "seeded.md"
+SEEDED_TEXT = "# acme notes\n"
+"""A file the card writes into its tree at bind time, through the card's own write path.
+
+``WorkspaceTool.resources`` is a declared field of the card, so this needs no harness:
+binding the card is what writes the file. It is the disk-side proof that the card works
+with no actor to count — a tree that exists but is empty says only that something called
+``mkdir``.
+"""
+
 
 class _Team(NamedTuple):
     """A created team and the addresses a spec reads it through."""
@@ -102,13 +99,6 @@ class _Team(NamedTuple):
 ##
 ## Helpers
 ##
-def _assert_registry_empty() -> None:
-    """No host of either class and no hosted workspace is live in the process."""
-    assert ActorSystem.find_by_class(WorkspaceHost) == []
-    assert ActorSystem.find_by_class(ResourceHost) == []
-    assert ActorSystem.find_by_class(WorkspaceActor) == []
-
-
 def _orchestrator_of(services: CommunityServices, team_id: uuid.UUID) -> ActorAddress:
     """The team's orchestrator, by exact-type lookup, confirmed by its ``team_id``."""
     matches = [
@@ -179,17 +169,6 @@ def _started_by(stream: list[Message], member: ActorAddress) -> list[StartMessag
     ]
 
 
-def _wait_for_no_host() -> None:
-    """Allow the hosts the hand-off between stop and deregistration, then assert none."""
-    deadline = time.monotonic() + TEARDOWN_GRACE
-    while (
-        ActorSystem.find_by_class(WorkspaceHost) or ActorSystem.find_by_class(ResourceHost)
-    ) and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert ActorSystem.find_by_class(WorkspaceHost) == []
-    assert ActorSystem.find_by_class(ResourceHost) == []
-
-
 ##
 ## Fixture
 ##
@@ -200,13 +179,9 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Communit
     The environment variable is set **before** wiring: the tool reads it, not the
     settings.
 
-    Teardown asserts what system shutdown alone does. ``ActorSystem.shutdown`` stops the
-    orchestrators and ends with a sweep of the process registry, and that sweep is what
-    reaches the host and the hosted workspace, since neither is any team's child. The
-    hosted count is taken right after ``shutdown``, so a shutdown that stopped reaching
-    hosted actors goes red here instead of hanging the interpreter at exit.
-    ``ActorRegistry.stop_all`` then runs whatever happened. It is a safety net, not the
-    mechanism: a failed teardown must still let the workspace's executor drain.
+    ``ActorRegistry.stop_all`` after ``shutdown`` is a safety net, not the mechanism:
+    a failed teardown must still let the process reach the next test with an empty
+    registry.
     """
     workspaces_root = tmp_path / "workspaces"
     monkeypatch.setenv("AKGENTIC_WORKSPACES_ROOT", str(workspaces_root))
@@ -219,64 +194,54 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Communit
         settings.catalog_path,
         NOTES_NS,
         with_type=False,
-        tools=[WorkspaceTool(workspace_id="notes")],
+        tools=[
+            WorkspaceTool(
+                workspace_id="notes",
+                resources=[Resource(file_name=SEEDED_FILE, content=SEEDED_TEXT)],
+            )
+        ],
     )
     seed_metadata_namespace(settings.catalog_path, BARE_NS, with_type=False)
 
-    _assert_registry_empty()
     services = wire_community(settings)
     try:
         yield services
     finally:
         try:
             services.actor_system.shutdown()
-            hosted_after_shutdown = ActorSystem.find_by_class(WorkspaceActor)
         finally:
             ActorRegistry.stop_all()
-    assert hosted_after_shutdown == [], "ActorSystem.shutdown left a hosted workspace running"
-    _wait_for_no_host()
 
 
 ##
 ## Specs
 ##
-class TestTheBindRunsThroughTheWiredHost:
+class TestTheBindRunsWithNoHostInTheProcess:
     """A team whose card declares a workspace binds it, and the stream says so."""
 
-    def test_a_declared_workspace_binds_through_the_wired_host(
+    def test_a_declared_workspace_lands_on_disk_under_the_tests_root(
         self, wired: CommunityServices, tmp_path: Path
     ) -> None:
-        """One hosted workspace, in the wired host's own registry, under the test's root."""
+        """The card creates its tree and writes into it, with no host anywhere."""
         team = _create(wired, NOTES_NS)
         # Holds under a failed bind too: create_team raises nothing when a member's
         # on_start does. The lines below are the guard; this one is context.
         assert team.process.status is TeamStatus.RUNNING
 
-        workspaces = ActorSystem.find_by_class(WorkspaceActor)
-        assert len(workspaces) == 1, (
-            f"expected one hosted workspace, found {len(workspaces)}; the team's stream "
+        tree = tmp_path / "workspaces" / "alice" / "notes"
+        assert tree.is_dir(), (
+            f"the card created no tree; the team's stream carries:\n"
+            f"{_render(_errors(_stream(team)))}"
+        )
+
+        # The mutation, not merely the mkdir: a tree that exists but is empty says only
+        # that something called mkdir. This file is on disk because the card wrote it.
+        seeded = tree / SEEDED_FILE
+        assert seeded.is_file(), (
+            f"the card created its tree but wrote nothing into it; the team's stream "
             f"carries:\n{_render(_errors(_stream(team)))}"
         )
-        [workspace] = workspaces
-        assert workspace.name == workspace_actor_name(WORKSPACE_PATH)
-        assert (tmp_path / "workspaces" / "alice" / "notes").is_dir()
-
-        # The registry probe. Had the card bound through any other host, this ask is a
-        # miss: it answers a second actor and the count below becomes two.
-        [host] = ActorSystem.find_by_class(WorkspaceHost)
-        again = wired.actor_system.proxy_ask(
-            host, WorkspaceHost, timeout=TIMEOUT
-        ).getResourceOrCreate(
-            WorkspaceActor,
-            WorkspaceConfig(
-                name=workspace_actor_name(WORKSPACE_PATH),
-                role=WORKSPACE_ACTOR_ROLE,
-                workspace_path=WORKSPACE_PATH,
-            ),
-        )
-        assert again.agent_id == workspace.agent_id
-        assert len(ActorSystem.find_by_class(WorkspaceActor)) == 1
-        assert ActorSystem.find_by_class(ResourceHost) == []
+        assert seeded.read_text() == SEEDED_TEXT
 
     def test_the_streams_one_attached_event_names_the_manager_and_no_error(
         self, wired: CommunityServices
@@ -288,8 +253,7 @@ class TestTheBindRunsThroughTheWiredHost:
         errors = _errors(stream)
         assert errors == [], (
             f"the team's stream carries errors (process {team.process.status.value}, "
-            f"{len(_attached(stream))} WorkspaceAttached, "
-            f"{len(ActorSystem.find_by_class(WorkspaceActor))} WorkspaceActor):\n"
+            f"{len(_attached(stream))} WorkspaceAttached):\n"
             f"{_render(errors)}"
         )
         assert _started_by(stream, team.manager), "no StartMessage from the Manager"
@@ -341,7 +305,6 @@ class TestTheBindRunsThroughTheWiredHost:
 
         errors = _errors(stream)
         assert errors == [], f"the team's stream carries errors:\n{_render(errors)}"
-        assert len(ActorSystem.find_by_class(WorkspaceActor)) == 1, "read before the bind"
         attached = _attached(stream)
         assert len(attached) == 1, "read before the bind"
         assert attached[0].event == WorkspaceAttached(
@@ -349,13 +312,27 @@ class TestTheBindRunsThroughTheWiredHost:
         )
 
     def test_a_team_declaring_no_workspace_binds_nothing(self, wired: CommunityServices) -> None:
-        """The negative beside the positive: no card, no actor, no event, no error."""
+        """The negative beside the positive: no card, no tree, no event, no error."""
         team = _create(wired, BARE_NS)
         stream = _stream(team)
 
         assert team.process.status is TeamStatus.RUNNING
         assert _started_by(stream, team.manager), "no StartMessage from the Manager"
-        assert ActorSystem.find_by_class(WorkspaceActor) == []
         assert _attached(stream) == []
         errors = _errors(stream)
         assert errors == [], f"the team's stream carries errors:\n{_render(errors)}"
+
+
+class TestTheContainerCarriesNoHost:
+    """The retired ``resource_host`` slot is on neither container."""
+
+    def test_resource_host_is_on_neither_services_container(self) -> None:
+        """Successor to the two field assertions the retired host suite carried.
+
+        ``CommunityServices`` inherits ``TierServices``, so a reintroduction on the base
+        would satisfy a positive assertion on the subclass. Both are named here for that
+        reason: the slot is gone from the tier this story changed *and* from the one it
+        never had it on.
+        """
+        assert "resource_host" not in CommunityServices.model_fields
+        assert "resource_host" not in TierServices.model_fields

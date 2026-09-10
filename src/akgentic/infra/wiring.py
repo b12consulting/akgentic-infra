@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from akgentic.catalog import Catalog, YamlEntryRepository
-from akgentic.core import ActorSystem, BaseConfig, EventSubscriber
+from akgentic.core import ActorSystem, EventSubscriber
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
@@ -22,7 +22,6 @@ from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import NullServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
-from akgentic.tool.workspace import WorkspaceHost
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +59,6 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     # Worker runtime — the in-process actor layer that runs the teams.
     actor_system = ActorSystem()
 
-    # Exactly one WorkspaceHost per process, created here and never lazily. Everything
-    # downstream *finds* it (ActorSystem.find_by_class) rather than creating one, so a
-    # process that reached this line has the only host it will ever have, and one that
-    # somehow did not fails its first bind loudly instead of quietly growing a second.
-    # Two hosts means two registries, which means two actors on one resource.
-    resource_host = actor_system.createActor(
-        WorkspaceHost, config=BaseConfig(name="#WorkspaceHost", role="ResourceHost")
-    )
-
     shared_subscribers: list[EventSubscriber] = [
         TelemetrySubscriber(),
         EventStreamSubscriber(event_stream=event_stream),
@@ -84,14 +74,13 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     placement = LocalPlacement(team_manager, service_registry)
     worker_handle = LocalWorkerHandle(team_manager, service_registry, actor_system)
     runtime_cache = LocalRuntimeCache()
-    # ORDERING RULE for any tier copying this shape: a store must be registered on the
-    # host ABOVE this line. `warm` lists every RUNNING team and resumes it here, inside
-    # wire_community — not at ASGI lifespan startup, and not on the first request. So the
-    # usual reassurance ("no team can start before the server accepts requests") is false
-    # in this tier, and a store registered after this call would miss the restore of every
-    # workspace those resumed teams touch, silently, once per process restart.
-    # This tier registers no store, so it cannot get the order wrong; -department and
-    # -enterprise do register one and can.
+    # ORDERING RULE for any tier copying this shape: whatever a resumed team depends on
+    # must be in place ABOVE this line. `warm` lists every RUNNING team and resumes it
+    # here, inside wire_community — not at ASGI lifespan startup, and not on the first
+    # request. So the usual reassurance ("no team can start before the server accepts
+    # requests") is false in this tier, silently, once per process restart. -department
+    # and -enterprise copy this shape and do register a store, so theirs must go above
+    # this call.
     runtime_cache.warm(worker_handle, event_store)
 
     services = CommunityServices(
@@ -107,7 +96,6 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
         event_stream=event_stream,
         # Worker runtime and local handles
         actor_system=actor_system,
-        resource_host=resource_host,
         team_manager=team_manager,
         placement=placement,
         worker_handle=worker_handle,
