@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from akgentic.catalog import Catalog, YamlEntryRepository
-from akgentic.core import ActorSystem, BaseConfig, EventSubscriber, ResourceHost
+from akgentic.core import ActorSystem, BaseConfig, EventSubscriber
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
@@ -22,6 +22,7 @@ from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import NullServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
+from akgentic.tool.workspace import WorkspaceHost
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +60,13 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     # Worker runtime — the in-process actor layer that runs the teams.
     actor_system = ActorSystem()
 
-    # Exactly one resource host per process, created here and never lazily. Everything
+    # Exactly one WorkspaceHost per process, created here and never lazily. Everything
     # downstream *finds* it (ActorSystem.find_by_class) rather than creating one, so a
     # process that reached this line has the only host it will ever have, and one that
     # somehow did not fails its first bind loudly instead of quietly growing a second.
     # Two hosts means two registries, which means two actors on one resource.
     resource_host = actor_system.createActor(
-        ResourceHost, config=BaseConfig(name="#ResourceHost", role="ResourceHost")
+        WorkspaceHost, config=BaseConfig(name="#WorkspaceHost", role="ResourceHost")
     )
 
     shared_subscribers: list[EventSubscriber] = [

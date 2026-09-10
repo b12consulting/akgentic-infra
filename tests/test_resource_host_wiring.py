@@ -1,12 +1,21 @@
 """Specs for the one resource host ``wire_community`` creates, and for it running cold.
 
+The host is the tool package's ``WorkspaceHost``, a bare subclass of core's generic
+``ResourceHost``. The orchestrator's forward looks a host up by its **exact** class, so
+the workspace card finds only a ``WorkspaceHost``; a process wired with the base class
+fails every workspace bind. ``ActorSystem.find_by_class`` is exact-type too, which is
+why every count here asks for each class separately: one ``WorkspaceHost`` is also what a
+wiring that creates *both* hosts would show, and only the zero on the base class tells
+the two apart.
+
 Four properties are under test here and each has a named falsifying case, because a
 wiring spec's characteristic failure is passing whether or not the wiring happened:
 
 - **exactly one host, and it answers.** A count of one is also what a process that leaked
   a host from an earlier test would show, and also what a wedged host would show. So the
   count is bracketed: an empty-registry assertion *before* wiring makes the count mean
-  "this wiring made it", and a round trip *after* makes it mean "and it works".
+  "this wiring made it", a zero base ``ResourceHost`` *after* makes it mean "and nothing
+  beside it", and a round trip makes it mean "and it works".
 - **the host exists before the first team of the process resumes.** ``warm`` resumes
   RUNNING teams inside ``wire_community``, so this is a statement-order constraint within
   one function. It is proved by observation — a wrapper on ``LocalRuntimeCache.warm``
@@ -44,6 +53,7 @@ from akgentic.core import (
     ResourceHost,
     ResourceStore,
 )
+from akgentic.tool.workspace import WorkspaceHost
 
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.server.deps import CommunityServices, TierServices
@@ -133,15 +143,38 @@ def _settings(tmp_path: Path) -> CommunitySettings:
 
 
 def _hosts() -> list[ActorAddress]:
-    """Every live ``ResourceHost`` in the process, by class lookup rather than by field."""
+    """Every live ``WorkspaceHost`` in the process, by class lookup rather than by field."""
+    return ActorSystem.find_by_class(WorkspaceHost)
+
+
+def _base_hosts() -> list[ActorAddress]:
+    """Every live base ``ResourceHost``: exact-type, so a ``WorkspaceHost`` is not one.
+
+    Wiring must leave this empty. A base host beside the ``WorkspaceHost`` serves no bind
+    and breaks none, so nothing but this lookup can see it.
+    """
     return ActorSystem.find_by_class(ResourceHost)
+
+
+def _assert_registry_empty() -> None:
+    """Neither host class is live: the pre-condition that makes a later count mean anything."""
+    assert _hosts() == [], "a WorkspaceHost leaked into this process before wiring ran"
+    assert _base_hosts() == [], "a base ResourceHost leaked into this process before wiring ran"
+
+
+def _assert_one_workspace_host() -> list[ActorAddress]:
+    """Exactly one ``WorkspaceHost`` and no base ``ResourceHost``; returns the hosts."""
+    hosts = _hosts()
+    assert len(hosts) == 1
+    assert _base_hosts() == [], "wiring created a base ResourceHost beside the WorkspaceHost"
+    return hosts
 
 
 def _hosted(services: CommunityServices, host: ActorAddress, name: str) -> ActorAddress:
     """Ask *host* directly for the probe named *name*, the way a card's bind will."""
-    return services.actor_system.proxy_ask(host, ResourceHost, timeout=TIMEOUT).getResourceOrCreate(
-        _ProbeActor, BaseConfig(name=name, role="probe")
-    )
+    return services.actor_system.proxy_ask(
+        host, WorkspaceHost, timeout=TIMEOUT
+    ).getResourceOrCreate(_ProbeActor, BaseConfig(name=name, role="probe"))
 
 
 def _flush(services: CommunityServices, address: ActorAddress) -> None:
@@ -157,11 +190,12 @@ def _flush(services: CommunityServices, address: ActorAddress) -> None:
 
 
 def _assert_no_host_within_grace() -> None:
-    """Assert the process registry holds no host, allowing for deregistration lag."""
+    """Assert the process registry holds no host of either class, allowing for lag."""
     deadline = time.monotonic() + TEARDOWN_GRACE
-    while _hosts() and time.monotonic() < deadline:
+    while (_hosts() or _base_hosts()) and time.monotonic() < deadline:
         time.sleep(0.01)
     assert _hosts() == []
+    assert _base_hosts() == []
 
 
 @pytest.fixture(autouse=True)
@@ -183,12 +217,11 @@ class TestOneHostPerProcess:
         The pre-condition is not ceremony. Without it the count below is satisfied by a
         process that leaked a host from an earlier test and created none here.
         """
-        assert _hosts() == [], "a host leaked into this process before wiring ran"
+        _assert_registry_empty()
 
         services = wire_community(_settings(tmp_path))
         try:
-            hosts = _hosts()
-            assert len(hosts) == 1
+            hosts = _assert_one_workspace_host()
             assert hosts[0].is_alive()
 
             # A count of one is also what a wedged host that answers nothing would give.
@@ -202,12 +235,11 @@ class TestOneHostPerProcess:
 
     def test_container_holds_the_same_host_the_lookup_finds(self, tmp_path: Path) -> None:
         """``services.resource_host`` is *the* host, not a second one."""
-        assert _hosts() == []
+        _assert_registry_empty()
 
         services = wire_community(_settings(tmp_path))
         try:
-            hosts = _hosts()
-            assert len(hosts) == 1
+            hosts = _assert_one_workspace_host()
             assert services.resource_host.agent_id == hosts[0].agent_id
         finally:
             services.actor_system.shutdown()
@@ -249,12 +281,13 @@ class TestHostExistsBeforeTeamsResume:
 
         monkeypatch.setattr(LocalRuntimeCache, "warm", _recording_warm)
 
-        assert _hosts() == []
+        _assert_registry_empty()
         services = wire_community(_settings(tmp_path))
         try:
             assert observed == [1], (
                 "warm must be entered exactly once, with the host already created"
             )
+            _assert_one_workspace_host()
         finally:
             services.actor_system.shutdown()
 
@@ -278,14 +311,17 @@ class TestProcessIsCold:
             registered.append(store)
             original(host, store)
 
+        # Patched on the class that DEFINES the method, not on WorkspaceHost: the subclass
+        # overrides nothing, so this intercepts a registration on the WorkspaceHost and on
+        # any base host alike — the wider net, which is what a "no store" claim wants.
         monkeypatch.setattr(ResourceHost, "register_store", _recording_register)
 
-        assert _hosts() == [], "a host leaked into this process before wiring ran"
+        _assert_registry_empty()
         services = wire_community(_settings(tmp_path))
         try:
             assert registered == []
 
-            hosted = _hosted(services, _hosts()[0], "#Probe-cold")
+            hosted = _hosted(services, _assert_one_workspace_host()[0], "#Probe-cold")
             _flush(services, hosted)
             assert _ProbeActor.restorations == []
             # Deliberately NOT asserted here: that the probe's state is the class
@@ -306,11 +342,11 @@ class TestProcessIsCold:
         The store is registered **here, by the test**. No ``src/`` file registers one, and
         this changes nothing about the tier: the community process still runs cold.
         """
-        assert _hosts() == [], "a host leaked into this process before wiring ran"
+        _assert_registry_empty()
         services = wire_community(_settings(tmp_path))
         try:
-            host = _hosts()[0]
-            services.actor_system.proxy_ask(host, ResourceHost, timeout=TIMEOUT).register_store(
+            host = _assert_one_workspace_host()[0]
+            services.actor_system.proxy_ask(host, WorkspaceHost, timeout=TIMEOUT).register_store(
                 _PopulatingStore()
             )
 
@@ -330,16 +366,17 @@ class TestTeardownAndRepeatability:
         A host that survived its own teardown would make the second wiring produce two,
         and two hosts is the defect the whole design exists to remove.
         """
-        assert _hosts() == []
+        _assert_registry_empty()
 
         first = wire_community(_settings(tmp_path / "one"))
-        assert len(_hosts()) == 1
+        _assert_one_workspace_host()
         first.actor_system.shutdown()
         _assert_no_host_within_grace()
 
         second = wire_community(_settings(tmp_path / "two"))
         try:
             assert len(_hosts()) == 1, "the first host outlived its own actor system"
+            assert _base_hosts() == []
         finally:
             second.actor_system.shutdown()
         _assert_no_host_within_grace()

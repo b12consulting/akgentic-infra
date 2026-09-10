@@ -76,9 +76,10 @@ class CommunityServices(TierServices):
     actor_system: ActorSystem = Field(description="Actor system for managing agent lifecycle")
     resource_host: ActorAddress = Field(
         description=(
-            "The process's one resource host, created by wire_community right after the "
+            "The process's one WorkspaceHost, created by wire_community right after the "
             "ActorSystem. A convenience for wiring and tests, never the lookup: consumers "
-            "find the host with ActorSystem.find_by_class and must not cache this address. "
+            "find the host with ActorSystem.find_by_class(WorkspaceHost) and must not cache "
+            "this address. "
             "Community-tier only — in the multi-worker tiers the host lives in the worker "
             "process and a server replica never holds one, which is why this is not on "
             "TierServices"
