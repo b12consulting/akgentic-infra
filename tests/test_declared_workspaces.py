@@ -109,11 +109,10 @@ def test_two_metadata_trees_raise_the_typed_refusal_naming_both() -> None:
     err = excinfo.value
     assert err.status_code == 409
     assert err.code == "workspace_affinity_unsatisfiable"
+    # Refusal, not retry: no header invites the client back.
     assert err.headers is None
     assert str(_META_CASE) in err.detail
     assert str(_META_OTHER) in err.detail
-    # Refusal, not retry: nothing in the message invites the client back.
-    assert "Retry-After" not in (err.headers or {})
 
 
 def test_the_refusal_is_a_placement_error_and_a_server_error() -> None:
@@ -151,3 +150,28 @@ def test_the_fields_are_paths_not_strings() -> None:
     value = DeclaredWorkspaces(shared={_NOTES}, own=_OWN)
     assert all(isinstance(path, PurePosixPath) for path in value.shared)
     assert isinstance(value.own, PurePosixPath)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        PurePosixPath(""),
+        PurePosixPath("notes"),
+        PurePosixPath("/") / METADATA_SCOPE / "case_id-42",
+        PurePosixPath("alice/notes/drafts"),
+    ],
+    ids=["no-parts", "one-segment", "absolute", "three-segments"],
+)
+def test_a_path_that_is_not_a_two_segment_tree_is_refused_at_construction(
+    path: PurePosixPath,
+) -> None:
+    """Only the resolver's shape crosses the seam, in either field.
+
+    ``routing_key()`` classifies by ``parts[0]``: a partless path would raise a
+    bare ``IndexError`` there, and an absolute ``/_meta/…`` would be classed
+    user-named and routed on. Refused at construction, with the path named.
+    """
+    with pytest.raises(ValidationError, match="relative <scope>/<leaf> path"):
+        DeclaredWorkspaces(shared={_NOTES, path})
+    with pytest.raises(ValidationError, match="relative <scope>/<leaf> path"):
+        DeclaredWorkspaces(own=path)

@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import uuid
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Annotated, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict
 
 from akgentic.infra.errors import ServerError
 from akgentic.tool.workspace import METADATA_SCOPE
@@ -29,6 +29,24 @@ if TYPE_CHECKING:
     from akgentic.core.utils.serializer import SerializableBaseModel
     from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import TeamCard
+
+
+def _resolved_tree(path: PurePosixPath) -> PurePosixPath:
+    """Admit only the resolver's shape: a relative ``<scope>/<leaf>`` path.
+
+    ``routing_key()`` classifies a tree by ``parts[0]``, so a path with no
+    parts would raise a bare ``IndexError`` there and an absolute one would be
+    classed user-named and routed on. The tool resolver never produces either;
+    a value built by hand in a sibling tier is refused at construction instead
+    of misrouted later.
+    """
+    if path.is_absolute() or len(path.parts) != 2:
+        msg = f"a workspace tree is a relative <scope>/<leaf> path, not {str(path)!r}"
+        raise ValueError(msg)
+    return path
+
+
+_Tree = Annotated[PurePosixPath, AfterValidator(_resolved_tree)]
 
 
 class PlacementError(ServerError, RuntimeError):
@@ -109,13 +127,15 @@ class DeclaredWorkspaces(BaseModel):
     same value for the same team with no shared memory, no sticky session and
     nothing in ``app.state``. Frozen, so a tier cannot edit it on its way
     through; a ``frozenset`` rather than a leaf-keyed map, so two cards resolving
-    to one leaf on two scopes cannot collapse into one entry.
+    to one leaf on two scopes cannot collapse into one entry; every path checked
+    at construction to be a relative two-segment tree, the only shape the
+    resolver produces and the only one ``routing_key()`` can classify.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    shared: frozenset[PurePosixPath] = frozenset()
-    own: PurePosixPath | None = None
+    shared: frozenset[_Tree] = frozenset()
+    own: _Tree | None = None
 
     def routing_key(self) -> PurePosixPath | None:
         """The tree a multi-worker router pins this team to, or ``None`` to place freely.
