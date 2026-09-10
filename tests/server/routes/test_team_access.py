@@ -21,7 +21,7 @@ from fastapi import HTTPException
 from starlette.datastructures import State
 
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
-from akgentic.infra.protocols.authz import TeamAccessContext, TeamAccessPolicy
+from akgentic.infra.protocols.authz import TeamAccessContext, TeamAccessPolicy, TeamListFilter
 from akgentic.infra.server.auth import RequestUser
 from akgentic.infra.server.routes._team_access import (
     require_team_access,
@@ -50,6 +50,7 @@ class _FakeProcess:
         self.team_id = uuid.uuid4()
         self.agent_cards: list[Any] = []
         self.metadata = None
+        self.metadata_indexes = ["customer_id|1234"]
 
 
 class _FakeTeamService:
@@ -76,6 +77,14 @@ class _FixedPolicy:
         self._verdict = verdict
         self.calls: list[TeamAccessContext] = []
 
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        return []
+
+    async def can_create(
+        self, *, metadata_indexes: list[str], user: RequestUser
+    ) -> bool:
+        return self._verdict
+
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         self.calls.append(ctx)
         return self._verdict
@@ -83,6 +92,14 @@ class _FixedPolicy:
 
 class _RaisingPolicy:
     """Fake policy that fails the test if consulted (missing-team assertion)."""
+
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        raise AssertionError("policy must not be consulted on the pass-through path")
+
+    async def can_create(
+        self, *, metadata_indexes: list[str], user: RequestUser
+    ) -> bool:
+        raise AssertionError("policy must not be consulted on the pass-through path")
 
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         raise AssertionError("policy must not be consulted on the pass-through path")
@@ -198,6 +215,7 @@ async def test_injected_true_policy_lets_non_owner_through() -> None:
     policy = _FixedPolicy(True)
     assert await _call(user, owner="alice", policy=policy) is user
     assert len(policy.calls) == 1
+    assert policy.calls[0].metadata_indexes == ["customer_id|1234"]
 
 
 async def test_injected_false_policy_gives_owner_404() -> None:
@@ -417,6 +435,7 @@ async def test_workspace_foreign_team_denied_is_404() -> None:
         await _call_workspace(user, workspace_id=str(uuid.uuid4()), owner="alice", policy=policy)
     assert excinfo.value.status_code == 404
     assert len(policy.calls) == 1
+    assert policy.calls[0].metadata_indexes == ["customer_id|1234"]
 
 
 async def test_workspace_foreign_team_allowed_still_meets_the_declared_check() -> None:

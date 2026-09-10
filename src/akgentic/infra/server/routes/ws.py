@@ -195,7 +195,11 @@ async def websocket_events(websocket: WebSocket, team_id: uuid.UUID) -> None:
 
     user = get_request_user(websocket)
     policy = SERVICES.require(websocket).team_access_policy
-    ctx = TeamAccessContext(team_id=team_id, owner_user_id=process.user_id)
+    ctx = TeamAccessContext(
+        team_id=team_id,
+        owner_user_id=process.user_id,
+        metadata_indexes=process.metadata_indexes,
+    )
     if not await policy.is_allowed(ctx=ctx, user=user):
         logger.info("WebSocket rejected: team_id=%s (forbidden, user_id=%s)", team_id, user.user_id)
         await websocket.close(code=1008, reason="Forbidden")

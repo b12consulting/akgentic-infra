@@ -9,7 +9,7 @@ mirroring the ``AuthStrategy`` protocol / ``NoAuth`` community-default split.
 
 from __future__ import annotations
 
-from akgentic.infra.protocols.authz import TeamAccessContext
+from akgentic.infra.protocols.authz import TeamAccessContext, TeamListFilter
 from akgentic.infra.server.auth import RequestUser
 
 _ADMIN_ROLE = "admin"
@@ -23,6 +23,24 @@ class OwnerOrAdminPolicy:
     with no arguments so it can serve as ``TierServices.team_access_policy``'s
     ``default_factory``.
     """
+
+    def __init__(self, *, admin_list_all_teams: bool = False) -> None:
+        self._admin_list_all_teams = admin_list_all_teams
+
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        """List the caller's teams, or every team for configured administrators."""
+        if self._admin_list_all_teams and _ADMIN_ROLE in user.roles:
+            return [TeamListFilter()]
+        return [TeamListFilter(user_id=user.user_id)]
+
+    async def can_create(
+        self,
+        *,
+        metadata_indexes: list[str],
+        user: RequestUser,
+    ) -> bool:
+        """Preserve the historical behavior: every authenticated caller may create."""
+        return True
 
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         """Allow iff the caller owns the team or holds the ``admin`` role."""
