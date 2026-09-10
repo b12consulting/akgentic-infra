@@ -6,6 +6,7 @@ import inspect
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from starlette.requests import HTTPConnection, Request
 from starlette.routing import BaseRoute
 
@@ -98,11 +99,12 @@ class TestCommunityIdentitySeam:
         assert user.user_id == "anonymous"
 
     def test_get_request_user_default_has_empty_roles_and_scopes(self) -> None:
-        """The anonymous fallback resolves with empty roles AND scopes, never raises."""
+        """The anonymous fallback resolves with empty authorization axes."""
         request = Request({"type": "http", "path": "/", "headers": []})
         user = get_request_user(request)
         assert user.roles == []
         assert user.scopes == []
+        assert user.entitlements == {}
 
     def test_get_request_user_reads_the_stash(self) -> None:
         """When the middleware has stashed a principal, the seam returns it."""
@@ -164,3 +166,34 @@ class TestRequestUserScopes:
         restored = RequestUser.model_validate_json(user.model_dump_json())
         assert restored.scopes == ["teams:read"]
         assert restored == user
+
+
+class TestRequestUserEntitlements:
+    """The typed, default-empty resource grants on RequestUser."""
+
+    def test_defaults_are_independent(self) -> None:
+        first = RequestUser(user_id="a")
+        second = RequestUser(user_id="b")
+
+        first.entitlements["customer_id"] = ["1234"]
+
+        assert first.entitlements == {"customer_id": ["1234"]}
+        assert second.entitlements == {}
+        assert first.entitlements is not second.entitlements
+
+    def test_non_empty_entitlements_survive_json_round_trip(self) -> None:
+        user = RequestUser(
+            user_id="x",
+            entitlements={"customer_id": ["1234", "5678"]},
+        )
+
+        restored = RequestUser.model_validate_json(user.model_dump_json())
+
+        assert restored == user
+        assert restored.entitlements == {"customer_id": ["1234", "5678"]}
+
+    def test_entitlement_values_must_be_string_lists(self) -> None:
+        with pytest.raises(ValidationError):
+            RequestUser.model_validate(
+                {"user_id": "x", "entitlements": {"customer_id": [1234]}}
+            )
