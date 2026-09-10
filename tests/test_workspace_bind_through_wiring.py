@@ -18,7 +18,10 @@ stream: one ``WorkspaceAttached`` and no ``ErrorMessage``, beside the hosted act
 **The flush is load-bearing.** ``TeamFactory.build`` returns once the members are
 *started*, not once their ``on_start`` finished. pykka runs ``on_start`` before the
 actor's mailbox, so a proxy read on the member resolves only after its bind completed.
-Without that read, every "exactly one" and every "zero" below races the bind.
+Without that read, every "exactly one" and every "zero" below races the bind — a race the
+bind usually wins, because the test thread still has work to do after ``create_team``.
+So one spec delays the bind on purpose: with the flush gone, that spec goes red instead
+of the suite staying green by luck.
 
 **The workspaces root is set as an environment variable, and that is deliberate.** The
 tool reads ``AKGENTIC_WORKSPACES_ROOT`` itself, separately from
@@ -51,6 +54,7 @@ from akgentic.core import (
 from akgentic.core.messages import ErrorMessage, EventMessage, StartMessage
 from akgentic.core.messages.message import Message
 from akgentic.team.models import Process, TeamStatus
+from akgentic.tool import ActorToolObserver
 from akgentic.tool.workspace import (
     WORKSPACE_ACTOR_ROLE,
     WorkspaceActor,
@@ -68,6 +72,13 @@ from tests.fixtures.team_metadata import seed_metadata_namespace
 
 TIMEOUT = 10.0
 TEARDOWN_GRACE = 5.0
+LATE_BIND_S = 0.5
+"""How long the late-bind spec holds the card's bind back.
+
+Far longer than the test thread's own work between ``create_team`` and the stream read,
+so without the flush that read lands first. It only widens a window: a flushed read
+waits for the bind however long it takes, so the delay can never turn the spec red.
+"""
 
 NOTES_NS = "acme-notes"
 """A team whose Manager declares one named workspace."""
@@ -187,9 +198,15 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Communit
     """A wired community whose catalog holds a workspace team and a bare one.
 
     The environment variable is set **before** wiring: the tool reads it, not the
-    settings. Teardown is the registry's, not the host's — ``shutdown`` stops the
-    orchestrators, then ``ActorRegistry.stop_all`` reaches the host and the hosted
-    workspace, gracefully, so its executor drains and the interpreter can exit.
+    settings.
+
+    Teardown asserts what system shutdown alone does. ``ActorSystem.shutdown`` stops the
+    orchestrators and ends with a sweep of the process registry, and that sweep is what
+    reaches the host and the hosted workspace, since neither is any team's child. The
+    hosted count is taken right after ``shutdown``, so a shutdown that stopped reaching
+    hosted actors goes red here instead of hanging the interpreter at exit.
+    ``ActorRegistry.stop_all`` then runs whatever happened. It is a safety net, not the
+    mechanism: a failed teardown must still let the workspace's executor drain.
     """
     workspaces_root = tmp_path / "workspaces"
     monkeypatch.setenv("AKGENTIC_WORKSPACES_ROOT", str(workspaces_root))
@@ -211,9 +228,12 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Communit
     try:
         yield services
     finally:
-        services.actor_system.shutdown()
-        ActorRegistry.stop_all()
-    assert ActorSystem.find_by_class(WorkspaceActor) == []
+        try:
+            services.actor_system.shutdown()
+            hosted_after_shutdown = ActorSystem.find_by_class(WorkspaceActor)
+        finally:
+            ActorRegistry.stop_all()
+    assert hosted_after_shutdown == [], "ActorSystem.shutdown left a hosted workspace running"
     _wait_for_no_host()
 
 
@@ -297,6 +317,36 @@ class TestTheBindRunsThroughTheWiredHost:
         # ``__model__`` tag, so a Python reader of the persisted log gets the typed payload.
         assert isinstance(persisted[0].event.event, WorkspaceAttached)
         assert persisted[0].event.event == envelope.event
+
+    def test_the_reads_wait_for_a_bind_that_lands_late(
+        self, wired: CommunityServices, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bind slower than the test thread is still read after it lands.
+
+        The other specs pass with the flush deleted, because the Manager's bind normally
+        finishes before the test thread reads the stream. Holding the card's ``observer``
+        back, which is where the bind runs, reverses that race. So this spec is red
+        without the flush and green with it, and the flush is shown to be the ordering.
+        """
+        original = WorkspaceTool.observer
+
+        def _late(self: WorkspaceTool, observer: ActorToolObserver) -> WorkspaceTool:
+            time.sleep(LATE_BIND_S)
+            return original(self, observer)
+
+        monkeypatch.setattr(WorkspaceTool, "observer", _late)
+
+        team = _create(wired, NOTES_NS)
+        stream = _stream(team)
+
+        errors = _errors(stream)
+        assert errors == [], f"the team's stream carries errors:\n{_render(errors)}"
+        assert len(ActorSystem.find_by_class(WorkspaceActor)) == 1, "read before the bind"
+        attached = _attached(stream)
+        assert len(attached) == 1, "read before the bind"
+        assert attached[0].event == WorkspaceAttached(
+            agent_id=team.manager.agent_id, workspace_path=WORKSPACE_PATH
+        )
 
     def test_a_team_declaring_no_workspace_binds_nothing(self, wired: CommunityServices) -> None:
         """The negative beside the positive: no card, no actor, no event, no error."""
