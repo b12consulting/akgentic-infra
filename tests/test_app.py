@@ -13,6 +13,7 @@ from akgentic.catalog import allowed_prefixes
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.server import app as app_module
 from akgentic.infra.server.app import create_app, create_server_app
 from akgentic.infra.server.assembly import AppModule, build_manifest
@@ -105,6 +106,18 @@ def test_create_server_app_constructs_default_settings_for_a_bare_factory_target
     assert isinstance(services, CommunityServices)
     try:
         assert SETTINGS.require(app) is seeded_settings
+    finally:
+        services.actor_system.shutdown()
+
+
+def test_create_server_app_wires_the_supplied_team_access_policy(
+    seeded_settings: CommunitySettings,
+) -> None:
+    policy = OwnerOrAdminPolicy()
+    app = create_server_app(seeded_settings, team_access_policy=policy)
+    services = SERVICES.require(app)
+    try:
+        assert services.team_access_policy is policy
     finally:
         services.actor_system.shutdown()
 

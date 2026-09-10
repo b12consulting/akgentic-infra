@@ -31,6 +31,7 @@ from collections.abc import Callable, Sequence
 from fastapi import FastAPI
 
 from akgentic.catalog import allowed_prefixes, set_allowed_prefixes
+from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.server.assembly import AppModule, build_app
 from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.logging_config import configure_logging
@@ -132,7 +133,11 @@ def create_app(
     return build_app(settings, services, modules or server_modules(services, settings))
 
 
-def create_server_app(settings: CommunitySettings | None = None) -> FastAPI:
+def create_server_app(
+    settings: CommunitySettings | None = None,
+    *,
+    team_access_policy: TeamAccessPolicy | None = None,
+) -> FastAPI:
     """Settings-only community factory: default settings, wire, compose.
 
     The uniform tier-bootstrap entry point (department and enterprise expose
@@ -145,5 +150,5 @@ def create_server_app(settings: CommunitySettings | None = None) -> FastAPI:
     from akgentic.infra.wiring import wire_community
 
     settings = settings or CommunitySettings()
-    services = wire_community(settings)
+    services = wire_community(settings, team_access_policy=team_access_policy)
     return create_app(services, settings)

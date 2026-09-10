@@ -14,7 +14,9 @@ from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHan
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
+from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
+from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.server.auth_loader import load_auth_strategy
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
@@ -26,7 +28,11 @@ from akgentic.team.repositories.yaml import YamlEventStore
 logger = logging.getLogger(__name__)
 
 
-def wire_community(settings: CommunitySettings) -> CommunityServices:
+def wire_community(
+    settings: CommunitySettings,
+    *,
+    team_access_policy: TeamAccessPolicy | None = None,
+) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
 
     The container is returned fully wired: ``TeamService`` is constructed here
@@ -36,6 +42,8 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
 
     Args:
         settings: Community-tier configuration
+        team_access_policy: Per-team authorization rule. Defaults to the
+            shared owner-or-admin policy.
 
     Returns:
         Fully wired CommunityServices container
@@ -75,9 +83,13 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     runtime_cache = LocalRuntimeCache()
     runtime_cache.warm(worker_handle, event_store)
 
+    resolved_team_access_policy = (
+        team_access_policy if team_access_policy is not None else OwnerOrAdminPolicy()
+    )
     services = CommunityServices(
         # Server services
         auth=auth,
+        team_access_policy=resolved_team_access_policy,
         ingestion=ingestion,
         channel_registry=channel_registry,
         channel_parser_registry=channel_parser_registry,
