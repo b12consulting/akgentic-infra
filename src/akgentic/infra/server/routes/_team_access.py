@@ -351,7 +351,8 @@ async def require_workspace_access(
         The authenticated ``RequestUser`` on success.
 
     Raises:
-        HTTPException: **400** when the value is not a single safe path segment;
+        HTTPException: **400** when the tool's ``leaf_segment`` refuses the
+            value as a leaf, a kind name or a sidecar suffix included;
             **404** when it names an existing team the wired policy denies, when
             no card of the authorized team declares it, or when the policy
             denies the caller the selected path's user scope (all 404-over-403,

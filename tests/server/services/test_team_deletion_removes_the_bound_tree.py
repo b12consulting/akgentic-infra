@@ -89,10 +89,13 @@ def bound_services(
 
 
 def _orchestrator_of(services: CommunityServices, team_id: uuid.UUID) -> Orchestrator:
-    """The team's orchestrator, found by exact type and confirmed by its ``team_id``.
+    """The team's orchestrator, found in the actor registry and confirmed by its ``team_id``.
 
     The candidates come from core's public registry export, wrapped as
-    addresses, so the spec runs on the core that ships.
+    addresses, so the spec runs on the core that ships. ``get_by_class`` also
+    returns subclasses, unlike the exact-class lookup this replaced; the
+    ``team_id`` filter and the single-match assertion are what make the answer
+    unambiguous.
     """
     candidates = [
         ActorAddressImpl(ref) for ref in ActorRegistry.get_by_class(Orchestrator) if ref.is_alive()
