@@ -78,7 +78,8 @@ def wire_community(settings: CommunitySettings) -> CommunityServices:
     # must be in place ABOVE this line. `warm` lists every RUNNING team and resumes it
     # here, inside wire_community — not at ASGI lifespan startup, and not on the first
     # request. So the usual reassurance ("no team can start before the server accepts
-    # requests") is false in this tier, silently, once per process restart. -department
+    # requests") is false in this tier. Anything a resumed team needs that is registered
+    # after this call is simply missed, silently, once per process restart. -department
     # and -enterprise copy this shape and do register a store, so theirs must go above
     # this call.
     runtime_cache.warm(worker_handle, event_store)

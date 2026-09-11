@@ -321,7 +321,9 @@ class TestTheBindRunsWithNoHostInTheProcess:
             agent_id=team.manager.agent_id, workspace_path=WORKSPACE_PATH
         )
 
-    def test_a_team_declaring_no_workspace_binds_nothing(self, wired: CommunityServices) -> None:
+    def test_a_team_declaring_no_workspace_binds_nothing(
+        self, wired: CommunityServices, tmp_path: Path
+    ) -> None:
         """The negative beside the positive: no card, no tree, no event, no error."""
         team = _create(wired, BARE_NS)
         stream = _stream(team)
@@ -329,6 +331,12 @@ class TestTheBindRunsWithNoHostInTheProcess:
         assert team.process.status is TeamStatus.RUNNING
         assert _started_by(stream, team.manager), "no StartMessage from the Manager"
         assert _attached(stream) == []
+        # The disk half of the negative, mirroring the positive spec's tree assertion.
+        # Without it this spec reads only the stream, and a card that wrote a tree while
+        # emitting nothing would pass — the same blind spot the retired actor-count left.
+        assert not (tmp_path / "workspaces" / USER_ID).exists(), (
+            "a team declaring no workspace still created a tree under the test's root"
+        )
         errors = _errors(stream)
         assert errors == [], f"the team's stream carries errors:\n{_render(errors)}"
 
