@@ -114,6 +114,7 @@ class ChatSession:
             self.renderer.render_border()
 
             self._receive_task = asyncio.create_task(self._receive_loop())
+            await asyncio.sleep(0)
             try:
                 await self._input_loop()
             except KeyboardInterrupt:

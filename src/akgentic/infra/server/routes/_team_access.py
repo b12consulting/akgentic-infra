@@ -115,7 +115,11 @@ async def require_team_access(
     process = service.get_team(team_id)
     if process is None:
         raise HTTPException(status_code=404, detail="Team not found")
-    ctx = TeamAccessContext(team_id=team_id, owner_user_id=process.user_id)
+    ctx = TeamAccessContext(
+        team_id=team_id,
+        owner_user_id=process.user_id,
+        metadata_indexes=process.metadata_indexes,
+    )
     if not await policy.is_allowed(ctx=ctx, user=user):
         logger.info(
             "team-access gate denied",
@@ -154,7 +158,11 @@ async def _deny_foreign_named_team(
     process = service.get_team(named_team_id)
     if process is None:
         return
-    ctx = TeamAccessContext(team_id=named_team_id, owner_user_id=process.user_id)
+    ctx = TeamAccessContext(
+        team_id=named_team_id,
+        owner_user_id=process.user_id,
+        metadata_indexes=process.metadata_indexes,
+    )
     if not await policy.is_allowed(ctx=ctx, user=user):
         logger.info(
             "workspace-access gate denied",

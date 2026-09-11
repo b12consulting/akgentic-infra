@@ -10,13 +10,21 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from akgentic.infra.protocols.authz import TeamAccessContext
+from akgentic.infra.protocols.authz import TeamAccessContext, TeamListFilter
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.routes.ws import ConnectionManager
 
 
 class _DenyAllPolicy:
     """Fake ``TeamAccessPolicy`` that denies every caller (wired onto app.state)."""
+
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        return []
+
+    async def can_create(
+        self, *, metadata_indexes: list[str], user: RequestUser
+    ) -> bool:
+        return False
 
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         return False
@@ -25,7 +33,19 @@ class _DenyAllPolicy:
 class _AllowAllPolicy:
     """Fake ``TeamAccessPolicy`` that allows every caller (wired onto app.state)."""
 
+    def __init__(self) -> None:
+        self.contexts: list[TeamAccessContext] = []
+
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        return [TeamListFilter()]
+
+    async def can_create(
+        self, *, metadata_indexes: list[str], user: RequestUser
+    ) -> bool:
+        return True
+
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        self.contexts.append(ctx)
         return True
 
 
@@ -475,7 +495,12 @@ class TestWebSocketAuthorization:
         team_id = client.post(
             "/teams/", json={"catalog_namespace": "test-team"}
         ).json()["team_id"]
-        app.state.services.team_access_policy = _AllowAllPolicy()
+        process = app.state.services.event_store.load_team(uuid.UUID(team_id))
+        assert process is not None
+        process.metadata_indexes = ["customer_id|1234"]
+        app.state.services.event_store.save_team(process)
+        policy = _AllowAllPolicy()
+        app.state.services.team_access_policy = policy
         monkeypatch.setattr(
             "akgentic.infra.server.routes.ws.get_request_user",
             lambda conn: RequestUser(user_id="mallory"),
@@ -484,6 +509,7 @@ class TestWebSocketAuthorization:
             _trigger_subscriber_event(client, team_id)
             data = ws.receive_json(mode="text")
             assert "__model__" in data
+        assert policy.contexts[0].metadata_indexes == ["customer_id|1234"]
 
 
 def _trigger_subscriber_event(client: TestClient, team_id: str) -> None:

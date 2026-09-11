@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import NoReturn
@@ -14,6 +15,7 @@ from akgentic.infra.errors import (
     TeamNotFoundError,
     TeamStateConflictError,
 )
+from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.models import (
     AgentStateListResponse,
@@ -30,7 +32,11 @@ from akgentic.infra.server.models import (
     UpdateTeamMetadataRequest,
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
-from akgentic.infra.server.routes._team_access import get_team_service, require_team_access
+from akgentic.infra.server.routes._team_access import (
+    get_team_access_policy,
+    get_team_service,
+    require_team_access,
+)
 from akgentic.infra.server.services._metadata_payload import dump_metadata
 from akgentic.infra.server.services.team_service import CatalogTeamEntryMissingError, TeamService
 from akgentic.infra.server.state_keys import CONNECTION_MANAGER
@@ -64,10 +70,11 @@ def _process_to_response(process: Process) -> TeamResponse:
 
 
 @router.post("", status_code=201, response_model=TeamResponse)
-def create_team(
+async def create_team(
     body: CreateTeamRequest,
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
+    policy: TeamAccessPolicy = Depends(get_team_access_policy),
 ) -> TeamResponse:
     """Create a new team from a catalog namespace, optionally with metadata.
 
@@ -83,11 +90,21 @@ def create_team(
     """
     logger.info("POST /teams — catalog_namespace=%s", body.catalog_namespace)
     try:
-        process = service.create_team(
-            catalog_namespace=body.catalog_namespace,
+        resolved = await asyncio.to_thread(
+            service.resolve_team_creation,
+            body.catalog_namespace,
+            body.metadata,
+        )
+        if not await policy.can_create(
+            metadata_indexes=resolved.metadata_indexes,
+            user=user,
+        ):
+            raise HTTPException(status_code=403, detail="Team creation not allowed")
+        process = await asyncio.to_thread(
+            service.create_resolved_team,
+            resolved,
             user_id=user.user_id,
             user_email=user.email,
-            metadata=body.metadata,
         )
     except MetadataValidationError as exc:
         # Deliberately not _raise_action_error: that helper string-matches the
@@ -182,10 +199,11 @@ def _parse_metadata_filter(request: Request) -> dict[str, list[str]] | None:
 
 
 @router.get("", response_model=TeamListResponse)
-def list_teams(
+async def list_teams(
     request: Request,
     user: RequestUser = Depends(get_request_user),
     service: TeamService = Depends(get_team_service),
+    policy: TeamAccessPolicy = Depends(get_team_access_policy),
     status: TeamStatus | None = None,
     catalog_namespace: str | None = None,
     page: int = 1,
@@ -225,8 +243,10 @@ def list_teams(
         page,
         size,
     )
-    page_slice, total = service.list_teams(
-        user_id=user.user_id,
+    filters = await policy.list_filters(user=user)
+    page_slice, total = await asyncio.to_thread(
+        service.list_teams_for_policy,
+        filters=filters,
         status=status,
         metadata=metadata,
         catalog_namespace=catalog_namespace,

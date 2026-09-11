@@ -17,6 +17,7 @@ from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHan
 from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
+from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
@@ -65,6 +66,19 @@ class TestWireCommunity:
     def test_returns_community_services(self, services: CommunityServices) -> None:
         """wire_community returns a CommunityServices instance."""
         assert isinstance(services, CommunityServices)
+
+    def test_uses_the_supplied_team_access_policy(self, tmp_path: Path) -> None:
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
+        policy = OwnerOrAdminPolicy()
+        services = wire_community(settings, team_access_policy=policy)
+        try:
+            assert services.team_access_policy is policy
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
 
     def test_placement_is_local(self, services: CommunityServices) -> None:
         """Placement strategy is a LocalPlacement."""
