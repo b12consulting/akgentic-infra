@@ -29,7 +29,12 @@ Card                                            Path
 Per-principal is the default for every kind, metadata included; a card's
 ``workspace_sharable`` swaps the principal for the reserved shared scope and
 changes nothing else. This module reads that field off the card and hands it to
-the resolver — it never supplies the answer itself.
+the resolver. It supplies the answer itself in one case only: a team with no
+default-layout card, where no card exists to answer (see
+:func:`default_workspace_path`).
+
+Nothing here authorizes. The access gate selects one path from here, reads its
+``<scope>`` and decides from that alone.
 
 Only the ``<leaf>`` is ever on the wire (ADR-048 Decision 8): the scope and the
 kind are not the client's to choose, and the server recomputes both from the
@@ -60,10 +65,11 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "declared_workspace_paths",
+    "default_workspace_path",
     "stash_team_process",
-    "stash_workspace_paths",
+    "stash_workspace_path",
     "stashed_team_process",
-    "stashed_workspace_paths",
+    "stashed_workspace_path",
     "validate_workspace_id",
 ]
 
@@ -73,17 +79,17 @@ __all__ = [
 # check — the allow/deny answer is the declared-workspace check below.
 _WORKSPACE_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 
-# Per-request slot holding the leaf -> resolved-path map the access gate built,
-# so the route that opens the directory reads what the gate authorized instead
-# of resolving the team's cards a second time. Named once, here, because both
-# sides of the seam address it.
-_DECLARED_PATHS_SLOT = "akgentic_declared_workspace_paths"
+# Per-request slot holding the ONE resolved path the access gate authorized, on
+# either branch. The route that opens the directory opens this path and nothing
+# else, so a path the gate's scope check never saw cannot be opened. Named once,
+# here, because both sides of the seam address it.
+_AUTHORIZED_PATH_SLOT = "akgentic_authorized_workspace_path"
 
 # Per-request slot holding the ``Process`` the team-access gate already loaded.
 # ``get_team`` is ``EventStore.load_team`` on the department and enterprise
 # tiers — a database read, not an in-process lookup — so the gate, the workspace
 # gate and the route reading the same team three times is three queries where
-# the request only ever concerns one team. Same reason the declared map is
+# the request only ever concerns one team. Same idea as the authorized path
 # stashed above: resolve once, read back.
 _TEAM_PROCESS_SLOT = "akgentic_authorized_team_process"
 
@@ -129,6 +135,27 @@ def _declared_layout(tool: ToolCard) -> tuple[str | None, list[str], bool] | Non
     return None
 
 
+def _team_layouts(process: Process, store: EventStore) -> list[tuple[str | None, list[str], bool]]:
+    """Every workspace layout the team's cards declare, from one card-store read.
+
+    Both public readers below are built on this, and a request calls exactly one
+    of them, so a request reads the card store once on either branch.
+    """
+    layouts: list[tuple[str | None, list[str], bool]] = []
+    for card in resolve_agent_cards(process.agent_cards, store):
+        config = card.config
+        # ``AgentCard.config`` is typed ``BaseConfig`` in core and ``tools``
+        # lives on ``AgentConfig``; a card carrying the bare base declares no
+        # tools and therefore no workspace.
+        if not isinstance(config, AgentConfig):
+            continue
+        for tool in config.tools:
+            layout = _declared_layout(tool)
+            if layout is not None:
+                layouts.append(layout)
+    return layouts
+
+
 def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str, PurePosixPath]:
     """Every workspace the team declares, keyed by the leaf a client may name.
 
@@ -155,8 +182,11 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
     his own team, because his team resolves under *his* ``process.user_id``.
     Reaching Alice's tree needs a team Alice owns, which ``require_team_access``
     refuses him. That argument holds for a per-principal tree only. A
-    ``_shared`` tree has no owner, so this map admits it for every team that
-    declares the same kind and leaf, and nothing here refuses it.
+    ``_shared`` tree has no owner, so this map holds it for every team that
+    declares the same kind and leaf. **This map is not the authorization.** The
+    gate reads the scope segment of the one path it selects from here and
+    refuses a ``_shared`` path outright (``check_workspace_scope`` in
+    ``_team_access``).
 
     A metadata card is the same rule with no second clause: its key is the leaf
     ``process.metadata`` produces through the declared keys, in declaration
@@ -201,44 +231,87 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
             metadata cannot satisfy.
     """
     paths: dict[str, PurePosixPath] = {}
-    for card in resolve_agent_cards(process.agent_cards, store):
-        config = card.config
-        # ``AgentCard.config`` is typed ``BaseConfig`` in core and ``tools``
-        # lives on ``AgentConfig``; a card carrying the bare base declares no
-        # tools and therefore no workspace.
-        if not isinstance(config, AgentConfig):
-            continue
-        for tool in config.tools:
-            layout = _declared_layout(tool)
-            if layout is None:
-                continue
-            workspace_id, metadata_keys, sharable = layout
-            path = resolve_workspace_path(
-                workspace_id=workspace_id,
-                workspace_metadata_keys=metadata_keys,
-                team_id=str(process.team_id),
-                user_id=process.user_id,
-                metadata=process.metadata,
-                workspace_sharable=sharable,
-            )
-            paths[path.name] = path
+    for workspace_id, metadata_keys, sharable in _team_layouts(process, store):
+        path = resolve_workspace_path(
+            workspace_id=workspace_id,
+            workspace_metadata_keys=metadata_keys,
+            team_id=str(process.team_id),
+            user_id=process.user_id,
+            metadata=process.metadata,
+            workspace_sharable=sharable,
+        )
+        paths[path.name] = path
     return paths
 
 
-def stash_workspace_paths(conn: HTTPConnection, paths: dict[str, PurePosixPath]) -> None:
-    """Record the gate's resolved map for the route that opens the directory."""
-    setattr(conn.state, _DECLARED_PATHS_SLOT, paths)
+def default_workspace_path(*, process: Process, store: EventStore) -> PurePosixPath:
+    """The tree an omitted ``?workspace_id=`` serves: the one the team's default card binds to.
 
+    A default-layout card is a ``WorkspaceTool`` that names no workspace and
+    declares no metadata keys, so its agents write to the ``_team`` kind with
+    the team id as the leaf. Which **scope** that tree sits under is the card's
+    ``workspace_sharable``, so this reads it off the card exactly as the agent
+    side does at bind. Serving the owner's tree while the agents write to the
+    shared one would answer 200 over an empty directory.
 
-def stashed_workspace_paths(conn: HTTPConnection) -> dict[str, PurePosixPath] | None:
-    """The map the gate recorded for this request, or ``None`` if it never ran.
+    Args:
+        process: The **authorized** team.
+        store: The card store to resolve the team's ``agent_cards`` against.
 
-    ``None`` is not a licence to resolve the id some other way: the route
-    answers 404, because a request that reached the directory without the gate
-    having authorized the id is exactly the fail-open this story removes.
+    Returns:
+        The team's own three-segment path, ``<owner>/_team/<team_id>`` or
+        ``_shared/_team/<team_id>``.
+
+    Raises:
+        AgentCardNotFoundError: If a ``card_hash`` does not resolve. Without
+            every card the scope cannot be known, so this fails rather than
+            guess.
+        ValueError: If the team's default-layout cards disagree on
+            ``workspace_sharable``. That is a configuration defect with no
+            right answer, and picking one would depend on the order the store
+            returns cards. Also propagated from the resolver for an owner id
+            that cannot be a directory name.
     """
-    stashed = getattr(conn.state, _DECLARED_PATHS_SLOT, None)
-    if isinstance(stashed, dict):
+    sharable = {
+        card_sharable
+        for workspace_id, metadata_keys, card_sharable in _team_layouts(process, store)
+        if workspace_id is None and not metadata_keys
+    }
+    if len(sharable) > 1:
+        raise ValueError(
+            "the team's default-layout workspace cards disagree on workspace_sharable, "
+            "so no single tree is the team's own"
+        )
+    return resolve_workspace_path(
+        workspace_id=None,
+        workspace_metadata_keys=[],
+        team_id=str(process.team_id),
+        user_id=process.user_id,
+        metadata=process.metadata,
+        # With no default-layout card, nothing declares this tree. It is the
+        # team's per-principal default, which is what these routes have always
+        # served for a team without one (the seeded catalog team is such a
+        # team). ``False`` is honest only on that branch, because no card
+        # exists to say otherwise. With a card, the card's own value is used.
+        workspace_sharable=sharable.pop() if sharable else False,
+    )
+
+
+def stash_workspace_path(conn: HTTPConnection, path: PurePosixPath) -> None:
+    """Record the one path the gate authorized, for the route that opens it."""
+    setattr(conn.state, _AUTHORIZED_PATH_SLOT, path)
+
+
+def stashed_workspace_path(conn: HTTPConnection) -> PurePosixPath | None:
+    """The path the gate authorized for this request, or ``None`` if it never ran.
+
+    ``None`` is not a licence to resolve the path some other way, on either
+    branch: the route answers 404. A request that reaches the directory without
+    the gate having resolved and checked the path is the hole the single
+    convergence point closes.
+    """
+    stashed = getattr(conn.state, _AUTHORIZED_PATH_SLOT, None)
+    if isinstance(stashed, PurePosixPath):
         return stashed
     return None
 
@@ -257,7 +330,7 @@ def stashed_team_process(conn: HTTPConnection) -> Process | None:
     """The authorized team the gate loaded, or ``None`` if it never ran.
 
     ``None`` is safe to fall back on here, unlike
-    :func:`stashed_workspace_paths`: re-reading the team is a redundant query,
+    :func:`stashed_workspace_path`: re-reading the team is a redundant query,
     not a skipped authorization. The gate answered that question already, and
     the value it stashed is the same team the fallback would fetch.
     """
