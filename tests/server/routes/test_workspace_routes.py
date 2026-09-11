@@ -1180,6 +1180,9 @@ _ROUTES = [
 """Every route on ``workspace.router``. The completeness spec keeps this honest."""
 
 _SHARED_REFUSED = "shared_workspace_entitlement_undecided"
+# ``_shared`` spelled with U+017F, the long s: unchanged by ``.lower()``,
+# ``_shared`` under ``.casefold()`` and on a case-insensitive filesystem.
+_LONG_S_SHARED = "_ſhared"
 _SCOPE_DENIED = "workspace-scope gate denied"
 _TEAM_GATE_DENIED = "team-access gate denied"
 _PROBE = "probe.txt"
@@ -1443,6 +1446,40 @@ def test_a_shared_tree_named_after_the_caller_is_still_refused(
     assert _disk(root) == before
 
 
+@pytest.mark.parametrize("named", [False, True], ids=["omitted", "named"])
+def test_a_principal_whose_id_folds_to_shared_is_refused(
+    as_user: Callable[[RequestUser], TestClient],
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+    named: bool,
+) -> None:
+    """A user scope spelled ``_ſhared`` (long s) is refused as the shared scope.
+
+    The tool's reserved-scope rule lowercases, and ``"_ſhared".lower()`` is
+    unchanged, so the tool accepts it as a principal's scope. A case-insensitive
+    filesystem (APFS, NTFS) folds it and opens ``_shared/``. Without the
+    case-fold, the owner of such a team passes the user-scope arm as herself
+    and reads and writes the shared tree every sharable ``notes`` card binds
+    to. The shared tree is seeded, so that outcome would answer 200. The
+    refusal is asserted on the code only the scope check produces, and the
+    disk is compared over every path.
+    """
+    root = seeded_settings.workspaces_root
+    folded = as_user(RequestUser(user_id=_LONG_S_SHARED))
+    resp = folded.post("/teams/", json={"catalog_namespace": "test-team"})
+    assert resp.status_code == 201
+    team_id = uuid.UUID(resp.json()["team_id"])
+    _declare(community_services, team_id, WorkspaceTool(workspace_id="notes"))
+    _seed_probe(root / SHARED_SCOPE / "_id" / "notes")
+    before = _disk(root)
+
+    refused = _hit(folded, "GET", "/workspace/{team_id}/tree", team_id, "notes" if named else None)
+
+    assert refused.status_code == 403
+    assert refused.json()["code"] == _SHARED_REFUSED
+    assert _disk(root) == before
+
+
 def test_a_refused_shared_upload_creates_nothing_anywhere(
     as_user: Callable[[RequestUser], TestClient],
     seeded_settings: ServerSettings,
@@ -1542,23 +1579,37 @@ def test_default_cards_that_disagree_on_sharing_are_500_with_an_error_naming_the
 def test_an_unresolvable_card_fails_the_omitted_branch_too(
     client: TestClient,
     team_with_workspace: uuid.UUID,
+    seeded_settings: ServerSettings,
     community_services: CommunityServices,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """AC #5: the omitted branch reads the cards now, so it fails closed on one it cannot read.
 
     Without every card the default card's scope cannot be known. Serving the
     per-principal tree anyway would be a guess, and the wrong guess serves an
     empty directory while the agents write to the shared one.
+
+    This is the one outcome the story moved from 200 to 500, so the operator
+    must be able to tell why from the log alone: the ERROR names the team, the
+    role and the hash that did not resolve, as the named branch's twin does.
     """
     store: EventStore = community_services.event_store
     process = store.load_team(team_with_workspace)
     assert process is not None
     dangling = AgentCardRef(role="Ghost", card_hash="0" * 64)
     store.save_team(process.model_copy(update={"agent_cards": [*process.agent_cards, dangling]}))
+    before = _disk(seeded_settings.workspaces_root)
 
-    resp = client.get(f"/workspace/{team_with_workspace}/tree")
+    with caplog.at_level(logging.ERROR):
+        resp = client.get(f"/workspace/{team_with_workspace}/tree")
 
     assert resp.status_code == 500
+    assert resp.json()["detail"] == "Workspace cards could not be read"
+    logged = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+    assert str(team_with_workspace) in logged
+    assert "Ghost" in logged
+    assert "0" * 64 in logged
+    assert _disk(seeded_settings.workspaces_root) == before
 
 
 class _BareConn:
@@ -1568,21 +1619,33 @@ class _BareConn:
         self.state = State()
 
 
-def test_get_workspace_fails_closed_on_the_omitted_branch_even_with_the_team_at_hand() -> None:
+def test_get_workspace_fails_closed_on_the_omitted_branch_even_with_the_team_at_hand(
+    tmp_path: Path,
+) -> None:
     """AC #4: no stashed path is 404 for an omitted selector, as for a named one.
 
     The authorized team *is* stashed, so the fallback this story deleted, which
     resolved the team's own tree from it, would have everything it needs. Only
     the stashed path may be opened.
+
+    The root is a temporary directory and must stay empty: ``Filesystem``
+    creates its root eagerly, so a fallback that opened a tree before refusing
+    leaves it behind, and with the settings' relative default it would leave
+    it in whatever directory the suite happens to run from.
     """
     process = process_with_cards([tool_card("Writer", WorkspaceTool())])
     conn = _BareConn()
     stash_team_process(conn, process)  # type: ignore[arg-type]
 
     with pytest.raises(HTTPException) as excinfo:
-        _get_workspace(process.team_id, CommunitySettings(), request=conn)  # type: ignore[arg-type]
+        _get_workspace(
+            process.team_id,
+            CommunitySettings(workspaces_root=tmp_path),
+            request=conn,  # type: ignore[arg-type]
+        )
 
     assert excinfo.value.status_code == 404
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("workspace_id", [None, "drafts"], ids=["omitted", "named"])
