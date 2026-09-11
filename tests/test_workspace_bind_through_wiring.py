@@ -266,8 +266,18 @@ class TestTheBindRunsWithNoHostInTheProcess:
         )
         assert isinstance(envelope.event.agent_id, uuid.UUID)
         assert envelope.sender is not None
-        assert envelope.sender.agent_id == team.orchestrator.agent_id
-        assert envelope.sender.agent_id != team.manager.agent_id
+        # The sender is the BINDING MEMBER, not the orchestrator. Tool story 52-5 moved the
+        # emission off the orchestrator's getResourceOrCreate onto the card's own
+        # observer.notify_event, which emits from self; the payload did not move.
+        #
+        # That asymmetry is why this line is worth pinning rather than dropping. The
+        # frontend's two consumers key off the payload's agent_id and never off the
+        # envelope sender (workspace-registry.selector.ts:70,
+        # workspace-invalidation.selector.ts:283-294), so they survived the move untouched.
+        # Demanding sender == orchestrator here would pin the one thing they deliberately
+        # refuse to depend on. Resolved b12consulting/akgentic-infra#453.
+        assert envelope.sender.agent_id == team.manager.agent_id
+        assert envelope.sender.agent_id != team.orchestrator.agent_id
         assert envelope.team_id == team.process.team_id
 
         persisted = [
