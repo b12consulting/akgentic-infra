@@ -41,7 +41,7 @@ from collections.abc import Generator
 from pathlib import Path
 
 import pytest
-from akgentic.core import ActorSystem, Akgent, Orchestrator
+from akgentic.core import ActorAddressImpl, ActorRegistry, Akgent, Orchestrator
 from akgentic.team.models import Process
 from akgentic.tool.workspace import WorkspaceTool
 
@@ -89,12 +89,19 @@ def bound_services(
 
 
 def _orchestrator_of(services: CommunityServices, team_id: uuid.UUID) -> Orchestrator:
-    """The team's orchestrator, found by exact type and confirmed by its ``team_id``."""
+    """The team's orchestrator, found by exact type and confirmed by its ``team_id``.
+
+    The candidates come from core's public registry export, wrapped as
+    addresses, so the spec runs on the core that ships.
+    """
+    candidates = [
+        ActorAddressImpl(ref) for ref in ActorRegistry.get_by_class(Orchestrator) if ref.is_alive()
+    ]
     matches = [
         proxy
         for proxy in (
             services.actor_system.proxy_ask(address, Orchestrator, timeout=TIMEOUT)
-            for address in ActorSystem.find_by_class(Orchestrator)
+            for address in candidates
         )
         if proxy.team_id == team_id
     ]
