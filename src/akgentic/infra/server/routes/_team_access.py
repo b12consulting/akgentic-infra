@@ -161,9 +161,11 @@ async def check_workspace_scope(
       the scope, because a case-insensitive filesystem opens one directory for
       every spelling that folds to ``_shared``. ``_SHARED/`` is one, and so is
       ``_ſhared/`` (a long s), which ``str.lower()`` leaves unchanged and
-      APFS still resolves to ``_shared/``. That is stricter than the tool's
-      reserved-scope rule, which lowercases, so a principal whose id folds to
-      ``_shared`` is refused here even though the tool accepted the id.
+      APFS still resolves to ``_shared/``. The tool's reserved-scope rule
+      case-folds too, so the resolver already refuses an owner whose id folds
+      to ``_shared``, and the read path answers 500 for that unusable owner.
+      This check is defence in depth, for a path that did not come through
+      the resolver.
     - **Anything else is a user scope.** The wired policy is asked whether the
       caller may act for that principal, with the scope segment as
       ``owner_user_id``. It is a policy call and not a string comparison, so
