@@ -19,8 +19,8 @@ Decision 1, ADR-048 Decision 5) — this module composes none of it:
   one under ``<owner>/_meta/``, or under ``_shared/`` in place of the owner when
   the card declares ``workspace_sharable``.
 
-**The ``<scope>`` is always the team owner's ``Process.user_id``, never the
-calling principal's.** The caller's identity governs authorization — that is
+**A principal ``<scope>`` is always the team owner's ``Process.user_id``, never
+the calling principal's.** The caller's identity governs authorization — that is
 what ``require_team_access`` and the workspace gate are for — and the owner
 governs path resolution, because the owner is who the team's agents write
 under (ADR-048 Decision 6). Resolving the caller's scope instead would send an
@@ -28,10 +28,13 @@ admin who has already *passed* authorization to a different, empty directory,
 which is worse than a refusal: nothing signals it, and the caller concludes the
 agent wrote nothing.
 
-That needs no extra check to be safe. Bob cannot reach ``<alice>/_id/notes`` by
-declaring ``workspace_id="notes"`` on a team of his own, because his team
-resolves under *his* ``process.user_id``; reaching Alice's tree requires a team
-Alice owns, which ``require_team_access`` refuses him.
+For a per-principal tree that needs no extra check to be safe. Bob cannot reach
+``<alice>/_id/notes`` by declaring ``workspace_id="notes"`` on a team of his
+own, because his team resolves under *his* ``process.user_id``; reaching
+Alice's tree requires a team Alice owns, which ``require_team_access`` refuses
+him. A ``_shared`` tree is the exception: it has no owner, so every principal
+whose team declares the same kind and leaf resolves to it. Ownership is the
+wrong question there, and these routes do not yet refuse it.
 
 The segment guard remains a route-boundary traversal/correctness invariant, not
 an access policy — it proves the value is a safe segment. **Ownership

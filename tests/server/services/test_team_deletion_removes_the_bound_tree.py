@@ -22,7 +22,7 @@ directory, and the precondition below goes red.
 
 **Stop, then delete.** ``delete_team`` stops a RUNNING team itself, but the stop
 path's subscribers can still be flushing event-store writes while the team's
-records are removed; three specs elsewhere in this suite are skipped for that
+records are removed; four specs elsewhere in this suite are skipped for that
 race. This spec stops the team first and deletes a STOPPED one.
 
 **Flushing the bind.** ``create_team`` returns once the members are *started*,

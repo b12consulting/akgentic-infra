@@ -961,6 +961,7 @@ def test_one_team_reaches_its_own_leaf_and_is_refused_the_three_foreign_ones(
     """
     root = seeded_settings.workspaces_root
     before = _meta_listing(root)
+    directories_before = _directories(root)
 
     own = _tree(client, acme_case_team, _ACME_LEAF)
     assert own.status_code == 200
@@ -972,11 +973,12 @@ def test_one_team_reaches_its_own_leaf_and_is_refused_the_three_foreign_ones(
         assert resp.status_code not in (400, 403)
         assert resp.json()["detail"] == _TEAM_NOT_FOUND
 
-    # The disk is exactly as seeded: nothing created, nothing moved, and no
-    # tree of any of the four names under the caller's named-workspace kind.
+    # The disk is exactly as seeded: nothing created, nothing moved. Compared
+    # over every directory under the root, not at the one kind a fallback is
+    # likeliest to pick: the caller's principal now holds three kinds, and a
+    # sharable fallback would land under ``_shared/`` outside it altogether.
     assert _meta_listing(root) == before
-    for leaf in (_ACME_LEAF, *_FOREIGN_LEAVES):
-        assert not (root / ANONYMOUS / "_id" / leaf).exists()
+    assert _directories(root) == directories_before
 
 
 def test_a_foreign_leaf_is_refused_by_the_gate_not_only_by_the_routes_backstop(
