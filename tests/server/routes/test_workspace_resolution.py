@@ -24,8 +24,9 @@ from starlette.datastructures import State
 import akgentic.infra
 from akgentic.infra.server.routes._workspace_resolution import (
     declared_workspace_paths,
-    stash_workspace_paths,
-    stashed_workspace_paths,
+    default_workspace_path,
+    stash_workspace_path,
+    stashed_workspace_path,
     validate_workspace_id,
 )
 
@@ -389,16 +390,78 @@ def test_a_declared_tool_that_is_not_a_workspace_card_is_skipped() -> None:
     assert declared_workspace_paths(process=process, store=store) == {}
 
 
-def test_stashed_paths_is_none_before_the_gate_runs() -> None:
-    """No stash means the gate never authorized an id — never a licence to resolve."""
+def test_stashed_path_is_none_before_the_gate_runs() -> None:
+    """No stash means the gate never authorized a path — never a licence to resolve."""
 
     class _Conn:
         def __init__(self) -> None:
             self.state = State()
 
     conn = _Conn()
-    assert stashed_workspace_paths(conn) is None  # type: ignore[arg-type]
-    stash_workspace_paths(conn, {"notes": PurePosixPath("bob/_id/notes")})  # type: ignore[arg-type]
-    stashed = stashed_workspace_paths(conn)  # type: ignore[arg-type]
-    assert stashed is not None
-    assert str(stashed["notes"]) == "bob/_id/notes"
+    assert stashed_workspace_path(conn) is None  # type: ignore[arg-type]
+    stash_workspace_path(conn, PurePosixPath("bob/_id/notes"))  # type: ignore[arg-type]
+    assert str(stashed_workspace_path(conn)) == "bob/_id/notes"  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# default_workspace_path — the tree an omitted selector serves (Story 70.2)
+# ---------------------------------------------------------------------------
+
+
+def _default_of(*tools: WorkspaceTool, owner: str = "alice") -> tuple[str, RecordingCardStore]:
+    """Resolve the default path of a team whose single card declares *tools*."""
+    card = tool_card("Writer", *tools)
+    process = process_with_cards([card], user_id=owner)
+    store = RecordingCardStore([card])
+    path = default_workspace_path(process=process, store=store)  # type: ignore[arg-type]
+    assert path.name == str(process.team_id)
+    return str(path.parent), store
+
+
+def test_no_default_card_is_the_per_principal_default() -> None:
+    """A team with no default-layout card gets ``<owner>/_team``, as it always has.
+
+    A sharable *named* card and a sharable *metadata* card are not default-layout
+    cards, so neither moves it.
+    """
+    parent, store = _default_of(
+        WorkspaceTool(workspace_id="notes", workspace_sharable=True),
+        WorkspaceTool(workspace_metadata_keys=["case_id"], workspace_sharable=True),
+    )
+    assert parent == "alice/_team"
+    assert len(store.calls) == 1
+
+
+def test_a_non_sharable_default_card_is_per_principal() -> None:
+    parent, _ = _default_of(WorkspaceTool())
+    assert parent == "alice/_team"
+
+
+def test_a_sharable_default_card_is_under_the_shared_scope() -> None:
+    """The card's own flag picks the scope, as it does for the agent at bind."""
+    parent, _ = _default_of(WorkspaceTool(workspace_sharable=True))
+    assert parent == "_shared/_team"
+
+
+def test_default_cards_that_agree_are_one_tree() -> None:
+    """Two default cards with the same flag name the same tree: nothing to refuse."""
+    assert _default_of(WorkspaceTool(), exec_only_workspace())[0] == "alice/_team"
+    shared = _default_of(
+        WorkspaceTool(workspace_sharable=True), WorkspaceTool(workspace_sharable=True)
+    )
+    assert shared[0] == "_shared/_team"
+
+
+def test_default_cards_that_disagree_raise_value_error() -> None:
+    """A ``ValueError``, so the gate's resolution arm turns it into a logged 500."""
+    with pytest.raises(ValueError, match="disagree on workspace_sharable"):
+        _default_of(WorkspaceTool(), WorkspaceTool(workspace_sharable=True))
+
+
+def test_default_path_on_an_unresolvable_hash_is_a_lookup_error() -> None:
+    """The omitted branch cannot know the scope without every card, so it raises."""
+    card = tool_card("Writer", WorkspaceTool())
+    process = process_with_cards([card])
+    store = RecordingCardStore([card], missing=True)
+    with pytest.raises(AgentCardNotFoundError):
+        default_workspace_path(process=process, store=store)  # type: ignore[arg-type]

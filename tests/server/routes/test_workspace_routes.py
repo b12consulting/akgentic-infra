@@ -20,25 +20,37 @@ from __future__ import annotations
 
 import logging
 import uuid
-from pathlib import Path
-from typing import cast
+from collections.abc import Callable, Iterator
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 import httpx
 import pytest
 from akgentic.team.models import AgentCardRef, Process
 from akgentic.team.ports import EventStore
-from akgentic.tool.workspace import WorkspaceTool
+from akgentic.tool.workspace import SHARED_SCOPE, WorkspaceTool
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.datastructures import State
 
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.deps import CommunityServices
-from akgentic.infra.server.routes.workspace import _get_workspace
+from akgentic.infra.server.routes import _workspace_resolution
+from akgentic.infra.server.routes._workspace_resolution import (
+    stash_team_process,
+    stash_workspace_path,
+)
+from akgentic.infra.server.routes.workspace import _get_workspace, router
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
-from ._workspace_cards import CaseMetadata, declare_workspaces, exec_only_workspace
+from ._workspace_cards import (
+    CaseMetadata,
+    declare_workspaces,
+    exec_only_workspace,
+    process_with_cards,
+    tool_card,
+)
 
 ANONYMOUS = "anonymous"
 """The principal the community client carries — and so its workspace scope."""
@@ -735,6 +747,15 @@ def test_card_store_is_read_once_per_request(
     assert len(calls) == 1
     assert len(calls[0]) >= 3
 
+    # The omitted branch reads the cards too (Story 70.2): it resolves the tree
+    # the team's default-layout card binds to. Once, in one batch, like the
+    # named branch.
+    calls.clear()
+    omitted = client.get(f"/workspace/{team_with_workspace}/tree")
+    assert omitted.status_code == 200
+    assert len(calls) == 1
+    assert len(calls[0]) >= 3
+
 
 def test_team_is_read_once_per_request(
     client: TestClient,
@@ -804,7 +825,7 @@ def test_unusable_owner_id_on_the_read_path_is_500(
 
 
 def test_get_workspace_fails_closed_without_the_gates_map() -> None:
-    """A present workspace_id with no authorized map is 404, never an unscoped path.
+    """A present workspace_id with no authorized path is 404, never an unscoped path.
 
     Calling ``_get_workspace`` directly is the only way to reach this arm — the
     routes always run the gate first — and it is worth reaching, because falling
@@ -820,7 +841,6 @@ def test_get_workspace_fails_closed_without_the_gates_map() -> None:
             uuid.uuid4(),
             CommunitySettings(),
             request=_Conn(),  # type: ignore[arg-type]
-            service=cast(TeamService, None),
             workspace_id="notes",
         )
     assert excinfo.value.status_code == 404
@@ -1134,7 +1154,476 @@ def test_get_workspace_fails_closed_for_a_metadata_leaf_without_the_gates_map() 
             uuid.uuid4(),
             CommunitySettings(),
             request=_Conn(),  # type: ignore[arg-type]
-            service=cast(TeamService, None),
             workspace_id=_ACME_LEAF,
         )
     assert excinfo.value.status_code == 404
+
+
+# --- the check reads the scope segment (Story 70.2) ---
+#
+# Every workspace route converges on one gate. On both branches it selects the
+# single path the route will open and decides who may reach it from that path's
+# scope segment alone. A user scope goes to the wired policy with the scope as
+# the owner; ``_shared`` is refused with 403 for every caller. The route opens
+# only the path the gate stashed.
+#
+# Two rules keep these specs from passing for the wrong reason. Each refusal is
+# asserted on something only the scope check produces: its ``code`` for
+# ``_shared``, and its own denial record for a foreign scope. And the disk is
+# compared over every path under the root, not at one folder.
+
+_ROUTES = [
+    ("GET", "/workspace/{team_id}/tree"),
+    ("GET", "/workspace/{team_id}/file"),
+    ("POST", "/workspace/{team_id}/file"),
+]
+"""Every route on ``workspace.router``. The completeness spec keeps this honest."""
+
+_SHARED_REFUSED = "shared_workspace_entitlement_undecided"
+_SCOPE_DENIED = "workspace-scope gate denied"
+_TEAM_GATE_DENIED = "team-access gate denied"
+_PROBE = "probe.txt"
+_ALICE = RequestUser(user_id="alice")
+_ADMIN = RequestUser(user_id="root", roles=["admin"])
+
+
+def _served(method: str) -> int:
+    return 201 if method == "POST" else 200
+
+
+def _hit(
+    client: TestClient,
+    method: str,
+    route: str,
+    team_id: uuid.UUID,
+    workspace_id: str | None = None,
+) -> httpx.Response:
+    """One request to *route*, naming *workspace_id* or, when ``None``, the team's own tree."""
+    params = {} if workspace_id is None else {"workspace_id": workspace_id}
+    url = route.format(team_id=team_id)
+    if method == "POST":
+        return client.post(
+            url,
+            params=params,
+            data={"path": _PROBE},
+            files={"file": (_PROBE, b"uploaded", "text/plain")},
+        )
+    if url.endswith("/file"):
+        params["path"] = _PROBE
+    return client.get(url, params=params)
+
+
+def _seed_probe(tree: Path) -> Path:
+    """Seed *tree* with ``probe.txt``, so a route that opened it would serve it."""
+    tree.mkdir(parents=True, exist_ok=True)
+    (tree / _PROBE).write_text(f"seeded in {tree.name}")
+    return tree
+
+
+def _disk(root: Path) -> dict[Path, bytes | None]:
+    """Every path under *root*: a file maps to its bytes, a directory to ``None``."""
+    return {p: (p.read_bytes() if p.is_file() else None) for p in root.rglob("*")}
+
+
+def _scope_denials(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The denial records only ``check_workspace_scope`` writes."""
+    return [r for r in caplog.records if r.name == _GATE_LOGGER and r.getMessage() == _SCOPE_DENIED]
+
+
+def _other_denials(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """Denial records the scope check did not write: the team gate's and the declared set's."""
+    return [
+        r
+        for r in caplog.records
+        if r.name == _GATE_LOGGER and r.getMessage() in (_TEAM_GATE_DENIED, _GATE_DENIED)
+    ]
+
+
+@pytest.fixture()
+def as_user(app: FastAPI) -> Iterator[Callable[[RequestUser], TestClient]]:
+    """``_identity``, with the override cleared even when the spec fails."""
+    yield lambda user: _identity(app, user)
+    app.dependency_overrides.clear()
+
+
+def _lie_about_the_scope(monkeypatch: pytest.MonkeyPatch, scope: str) -> None:
+    """Make the gate's resolver put every tree under *scope*, with kind and leaf unchanged.
+
+    The resolver scopes a principal tree on ``process.user_id``, so on a real
+    request the path and the team gate always agree. Lying to the resolver is
+    the one route-level way to hand the gate a path under another principal.
+    """
+    real = _workspace_resolution.resolve_workspace_path
+
+    # ``**kwargs: Any``: a pass-through wrapper whose callers use the resolver's
+    # own keyword set, forwarded unchanged.
+    def _lying(**kwargs: Any) -> PurePosixPath:
+        resolved = real(**kwargs)
+        return PurePosixPath(scope, *resolved.parts[1:])
+
+    monkeypatch.setattr(_workspace_resolution, "resolve_workspace_path", _lying)
+
+
+def test_the_route_parametrization_is_every_route_on_the_router() -> None:
+    """AC #4: a fourth workspace route turns this red until the specs below cover it.
+
+    Every route counts, whatever its kind. A route with no HTTP methods (a
+    websocket) is recorded under its class name rather than skipped.
+    """
+    on_router = {
+        (method, getattr(route, "path", repr(route)))
+        for route in router.routes
+        for method in (getattr(route, "methods", None) or {type(route).__name__})
+    }
+    assert on_router == set(_ROUTES)
+
+
+@pytest.mark.parametrize(("method", "route"), _ROUTES)
+@pytest.mark.parametrize("named", [False, True], ids=["omitted", "named"])
+def test_a_callers_own_scope_is_served_on_every_route(
+    as_user: Callable[[RequestUser], TestClient],
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+    method: str,
+    route: str,
+    named: bool,
+) -> None:
+    """AC #2: the principal the path is scoped on is served, on both branches."""
+    root = seeded_settings.workspaces_root
+    alice = as_user(_ALICE)
+    team_id = _owned_team_with_file(alice, root, "alice")
+    if named:
+        _declare(community_services, team_id, WorkspaceTool(workspace_id="notes"))
+        tree = _seed_probe(root / "alice" / "_id" / "notes")
+    else:
+        tree = _seed_probe(root / "alice" / "_team" / str(team_id))
+
+    resp = _hit(alice, method, route, team_id, "notes" if named else None)
+
+    assert resp.status_code == _served(method)
+    if method == "POST":
+        assert (tree / _PROBE).read_bytes() == b"uploaded"
+
+
+@pytest.mark.parametrize(("method", "route"), _ROUTES)
+@pytest.mark.parametrize("named", [False, True], ids=["omitted", "named"])
+def test_a_path_under_another_principals_scope_is_refused_on_every_route(
+    as_user: Callable[[RequestUser], TestClient],
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    method: str,
+    route: str,
+    named: bool,
+) -> None:
+    """AC #2: the team's own owner is refused a path scoped on another principal.
+
+    Alice owns the team and is not an admin, so ``require_team_access`` lets her
+    through. Under the real ``OwnerOrAdminPolicy`` the only thing left that can
+    refuse her is the scope check, reading ``mallory`` off the path.
+
+    Positive first, on the same lying resolver: an admin is served, from
+    mallory's tree. That proves the lie reaches the path the route opens, and
+    that the check asks the policy rather than comparing the scope with the
+    caller's id, which would refuse the admin too. The refusal is then pinned to
+    the scope check by its own denial record, with neither of the other two
+    denial records written.
+    """
+    root = seeded_settings.workspaces_root
+    team_id = _owned_team_with_file(as_user(_ALICE), root, "alice")
+    selector: str | None = None
+    kind, leaf = "_team", str(team_id)
+    if named:
+        _declare(community_services, team_id, WorkspaceTool(workspace_id="notes"))
+        selector, kind, leaf = "notes", "_id", "notes"
+    foreign = _seed_probe(root / "mallory" / kind / leaf)
+    _lie_about_the_scope(monkeypatch, "mallory")
+
+    admin = _hit(as_user(_ADMIN), method, route, team_id, selector)
+    assert admin.status_code == _served(method)
+    if route.endswith("/tree"):
+        assert [e["name"] for e in admin.json()["entries"]] == [_PROBE]
+    elif method == "GET":
+        assert admin.content == f"seeded in {leaf}".encode()
+    else:
+        assert (foreign / _PROBE).read_bytes() == b"uploaded"
+
+    before = _disk(root)
+    alice = as_user(_ALICE)
+    with caplog.at_level(logging.INFO, logger=_GATE_LOGGER):
+        refused = _hit(alice, method, route, team_id, selector)
+
+    assert refused.status_code == 404
+    assert refused.json()["detail"] == _TEAM_NOT_FOUND
+    [denied] = _scope_denials(caplog)
+    assert (denied.user_id, denied.owner) == ("alice", "mallory")
+    assert _other_denials(caplog) == []
+    assert _disk(root) == before
+
+
+@pytest.mark.parametrize(("method", "route"), _ROUTES)
+@pytest.mark.parametrize("caller", [_ALICE, _ADMIN], ids=["owner", "admin"])
+@pytest.mark.parametrize("named", [False, True], ids=["omitted", "named"])
+def test_a_shared_path_is_refused_with_its_code_for_the_owner_and_for_an_admin(
+    as_user: Callable[[RequestUser], TestClient],
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+    method: str,
+    route: str,
+    caller: RequestUser,
+    named: bool,
+) -> None:
+    """AC #3: a ``_shared`` path is 403 with the entitlement code, whoever asks.
+
+    Named branch: a card ``WorkspaceTool(workspace_id="notes",
+    workspace_sharable=True)``. Omitted branch: the team's default-layout card
+    is ``WorkspaceTool(workspace_sharable=True)``, so its own tree is
+    ``_shared/_team/<team_id>``.
+
+    The ``_shared`` tree is seeded on disk, and so is the owner's
+    ``alice/_team/<team_id>``, so a route whose check was deleted, or that
+    resolved the omitted branch without the card's flag, would answer 200 rather
+    than an incidental 404. Positive first: the same caller is served the same
+    team's non-sharable twin, so the map is live. The refusal is asserted on
+    its ``code``, which nothing but the scope check produces, and the disk is
+    compared over every path.
+    """
+    root = seeded_settings.workspaces_root
+    team_id = _owned_team_with_file(as_user(_ALICE), root, "alice")
+    shared_card = (
+        WorkspaceTool(workspace_id="notes", workspace_sharable=True)
+        if named
+        else WorkspaceTool(workspace_sharable=True)
+    )
+    _declare(community_services, team_id, shared_card, WorkspaceTool(workspace_id="drafts"))
+    _seed_probe(root / "alice" / "_id" / "drafts")
+    _seed_probe(root / SHARED_SCOPE / "_id" / "notes")
+    _seed_probe(root / SHARED_SCOPE / "_team" / str(team_id))
+    client = as_user(caller)
+
+    assert _hit(client, method, route, team_id, "drafts").status_code == _served(method)
+
+    before = _disk(root)
+    refused = _hit(client, method, route, team_id, "notes" if named else None)
+
+    assert refused.status_code == 403
+    assert refused.json()["code"] == _SHARED_REFUSED
+    assert _disk(root) == before
+
+
+def test_a_shared_tree_named_after_the_caller_is_still_refused(
+    as_user: Callable[[RequestUser], TestClient],
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+) -> None:
+    """AC #3: the scope segment is the whole input, and the leaf is never parsed.
+
+    ``_shared/_id/alice`` carries the caller's own id as its leaf. A check that
+    read the leaf to recover whose tree it is would serve it. The scope says
+    ``_shared``, so it is refused.
+    """
+    root = seeded_settings.workspaces_root
+    alice = as_user(_ALICE)
+    team_id = _owned_team_with_file(alice, root, "alice")
+    _declare(
+        community_services,
+        team_id,
+        WorkspaceTool(workspace_id="alice", workspace_sharable=True),
+        WorkspaceTool(workspace_id="drafts"),
+    )
+    _seed_probe(root / SHARED_SCOPE / "_id" / "alice")
+
+    assert _tree(alice, team_id, "drafts").status_code == 200
+    before = _disk(root)
+    resp = _tree(alice, team_id, "alice")
+
+    assert resp.status_code == 403
+    assert resp.json()["code"] == _SHARED_REFUSED
+    assert _disk(root) == before
+
+
+def test_a_refused_shared_upload_creates_nothing_anywhere(
+    as_user: Callable[[RequestUser], TestClient],
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+) -> None:
+    """AC #3: the refusal comes before any ``Filesystem``, so not even a directory appears.
+
+    Nothing is seeded under ``_shared`` here: ``Filesystem.__init__`` creates its
+    root eagerly, so a refusal that came after it would leave the directory
+    behind even though the write never ran.
+    """
+    root = seeded_settings.workspaces_root
+    alice = as_user(_ALICE)
+    team_id = _owned_team_with_file(alice, root, "alice")
+    _declare(community_services, team_id, WorkspaceTool(workspace_sharable=True))
+    before = _disk(root)
+
+    resp = _hit(alice, "POST", "/workspace/{team_id}/file", team_id)
+
+    assert resp.status_code == 403
+    assert resp.json()["code"] == _SHARED_REFUSED
+    assert _disk(root) == before
+    assert not (root / SHARED_SCOPE).exists()
+
+
+def test_a_non_sharable_default_card_serves_the_owners_team_tree(
+    client: TestClient,
+    team_with_workspace: uuid.UUID,
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+) -> None:
+    """AC #5: an omitted selector serves the tree the default card binds to, per-principal here."""
+    _declare(community_services, team_with_workspace, WorkspaceTool())
+
+    resp = client.get(f"/workspace/{team_with_workspace}/tree")
+
+    assert resp.status_code == 200
+    assert "output.txt" in [e["name"] for e in resp.json()["entries"]]
+    assert not (seeded_settings.workspaces_root / SHARED_SCOPE).exists()
+
+
+def test_a_sharable_named_card_does_not_move_the_teams_own_tree(
+    client: TestClient,
+    team_with_workspace: uuid.UUID,
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+) -> None:
+    """AC #5: with no default-layout card, the omitted selector is the per-principal default.
+
+    Only a default-layout card decides the team's own tree. A sharable *named*
+    card declares a different tree and leaves this one where it was.
+    """
+    _declare(
+        community_services,
+        team_with_workspace,
+        WorkspaceTool(workspace_id="notes", workspace_sharable=True),
+    )
+
+    resp = client.get(f"/workspace/{team_with_workspace}/tree")
+
+    assert resp.status_code == 200
+    assert "output.txt" in [e["name"] for e in resp.json()["entries"]]
+    assert not (seeded_settings.workspaces_root / SHARED_SCOPE).exists()
+
+
+def test_default_cards_that_disagree_on_sharing_are_500_with_an_error_naming_the_team(
+    client: TestClient,
+    team_with_workspace: uuid.UUID,
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """AC #5: two default-layout cards, one sharable and one not, have no right answer.
+
+    Picking one would let the order the store returns cards decide whose tree a
+    caller reaches. It is a configuration defect, so it is a 500 with an ERROR
+    naming the team, and nothing is opened.
+    """
+    root = seeded_settings.workspaces_root
+    _declare(community_services, team_with_workspace, WorkspaceTool(), role="Private")
+    _declare(
+        community_services, team_with_workspace, WorkspaceTool(workspace_sharable=True), role="Open"
+    )
+    before = _disk(root)
+
+    with caplog.at_level(logging.ERROR):
+        resp = client.get(f"/workspace/{team_with_workspace}/tree")
+
+    assert resp.status_code == 500
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any(
+        str(team_with_workspace) in m and "disagree on workspace_sharable" in m for m in errors
+    ), errors
+    assert _disk(root) == before
+
+
+def test_an_unresolvable_card_fails_the_omitted_branch_too(
+    client: TestClient,
+    team_with_workspace: uuid.UUID,
+    community_services: CommunityServices,
+) -> None:
+    """AC #5: the omitted branch reads the cards now, so it fails closed on one it cannot read.
+
+    Without every card the default card's scope cannot be known. Serving the
+    per-principal tree anyway would be a guess, and the wrong guess serves an
+    empty directory while the agents write to the shared one.
+    """
+    store: EventStore = community_services.event_store
+    process = store.load_team(team_with_workspace)
+    assert process is not None
+    dangling = AgentCardRef(role="Ghost", card_hash="0" * 64)
+    store.save_team(process.model_copy(update={"agent_cards": [*process.agent_cards, dangling]}))
+
+    resp = client.get(f"/workspace/{team_with_workspace}/tree")
+
+    assert resp.status_code == 500
+
+
+class _BareConn:
+    """The one thing ``_get_workspace`` needs of a request: a ``state``."""
+
+    def __init__(self) -> None:
+        self.state = State()
+
+
+def test_get_workspace_fails_closed_on_the_omitted_branch_even_with_the_team_at_hand() -> None:
+    """AC #4: no stashed path is 404 for an omitted selector, as for a named one.
+
+    The authorized team *is* stashed, so the fallback this story deleted, which
+    resolved the team's own tree from it, would have everything it needs. Only
+    the stashed path may be opened.
+    """
+    process = process_with_cards([tool_card("Writer", WorkspaceTool())])
+    conn = _BareConn()
+    stash_team_process(conn, process)  # type: ignore[arg-type]
+
+    with pytest.raises(HTTPException) as excinfo:
+        _get_workspace(process.team_id, CommunitySettings(), request=conn)  # type: ignore[arg-type]
+
+    assert excinfo.value.status_code == 404
+
+
+@pytest.mark.parametrize("workspace_id", [None, "drafts"], ids=["omitted", "named"])
+def test_get_workspace_refuses_a_stashed_path_the_selector_does_not_name(
+    tmp_path: Path, workspace_id: str | None
+) -> None:
+    """AC #4: the stash must be the path this request's selector names, or nothing opens."""
+    conn = _BareConn()
+    stash_workspace_path(conn, PurePosixPath("alice", "_id", "notes"))  # type: ignore[arg-type]
+
+    with pytest.raises(HTTPException) as excinfo:
+        _get_workspace(
+            uuid.uuid4(),
+            CommunitySettings(workspaces_root=tmp_path),
+            request=conn,  # type: ignore[arg-type]
+            workspace_id=workspace_id,
+        )
+
+    assert excinfo.value.status_code == 404
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["omitted", "named"])
+def test_get_workspace_opens_exactly_the_stashed_path(tmp_path: Path, named: bool) -> None:
+    """The positive beside the refusals: the stashed path is the directory that opens."""
+    team_id = uuid.uuid4()
+    path = (
+        PurePosixPath("alice", "_id", "notes")
+        if named
+        else PurePosixPath("alice", "_team", str(team_id))
+    )
+    conn = _BareConn()
+    stash_workspace_path(conn, path)  # type: ignore[arg-type]
+
+    _get_workspace(
+        team_id,
+        CommunitySettings(workspaces_root=tmp_path),
+        request=conn,  # type: ignore[arg-type]
+        workspace_id="notes" if named else None,
+    )
+
+    assert {p for p in tmp_path.rglob("*") if p.is_dir()} == {
+        tmp_path.joinpath(*path.parts[:i]) for i in range(1, 4)
+    }
