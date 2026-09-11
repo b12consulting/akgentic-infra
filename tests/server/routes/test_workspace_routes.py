@@ -1455,18 +1455,29 @@ def test_a_principal_whose_id_folds_to_shared_is_refused(
     as_user: Callable[[RequestUser], TestClient],
     seeded_settings: ServerSettings,
     community_services: CommunityServices,
+    caplog: pytest.LogCaptureFixture,
     named: bool,
 ) -> None:
-    """A user scope spelled ``_ſhared`` (long s) is refused as the shared scope.
+    """An owner spelled ``_ſhared`` (long s) is an unusable owner: 500, and nothing is opened.
 
-    The tool's reserved-scope rule lowercases, and ``"_ſhared".lower()`` is
-    unchanged, so the tool accepts it as a principal's scope. A case-insensitive
-    filesystem (APFS, NTFS) folds it and opens ``_shared/``. Without the
-    case-fold, the owner of such a team passes the user-scope arm as herself
-    and reads and writes the shared tree every sharable ``notes`` card binds
-    to. The shared tree is seeded, so that outcome would answer 200. The
-    refusal is asserted on the code only the scope check produces, and the
-    disk is compared over every path.
+    A case-insensitive filesystem (APFS, NTFS) folds ``_ſhared/`` and opens
+    ``_shared/``, so the owner of such a team must never pass the user-scope arm
+    as herself: she would read and write the shared tree every sharable
+    ``notes`` card binds to. The shared tree is seeded, so that outcome would
+    answer 200.
+
+    **This spec expected 403 until story 70-3, and the change is a decision
+    applied, not a guard narrowed.** The tool's reserved-scope check now
+    case-folds (b12consulting/akgentic-tool#383), so ``user_segment`` refuses
+    this owner and the resolver never produces a path. An owner the resolver
+    refuses is an unusable owner, and an unusable owner on the read path is 500,
+    exactly as for ``""`` in ``test_unusable_owner_id_on_the_read_path_is_500``.
+    The route's own case-folded ``_shared`` check stays as defence in depth, and
+    ``test_team_access.py`` still covers it directly with this spelling.
+
+    What matters is unchanged: nothing is served, nothing is created anywhere
+    under the root (so no ``_shared`` tree is opened, since ``Filesystem``
+    creates its root eagerly), and the ERROR names the owner the tool refused.
     """
     root = seeded_settings.workspaces_root
     folded = as_user(RequestUser(user_id=_LONG_S_SHARED))
@@ -1477,10 +1488,19 @@ def test_a_principal_whose_id_folds_to_shared_is_refused(
     _seed_probe(root / SHARED_SCOPE / "_id" / "notes")
     before = _disk(root)
 
-    refused = _hit(folded, "GET", "/workspace/{team_id}/tree", team_id, "notes" if named else None)
+    with caplog.at_level(logging.ERROR):
+        refused = _hit(
+            folded, "GET", "/workspace/{team_id}/tree", team_id, "notes" if named else None
+        )
 
-    assert refused.status_code == 403
-    assert refused.json()["code"] == _SHARED_REFUSED
+    assert refused.status_code == 500
+    assert refused.json()["detail"] == "Workspace path could not be resolved"
+    assert _PROBE not in refused.text
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any(
+        "workspace path resolution failed" in m and str(team_id) in m and repr(_LONG_S_SHARED) in m
+        for m in errors
+    ), errors
     assert _disk(root) == before
 
 
