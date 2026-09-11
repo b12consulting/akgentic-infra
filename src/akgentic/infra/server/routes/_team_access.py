@@ -137,7 +137,7 @@ async def _deny_foreign_named_team(
     Kept from the original gate and still first, but **no longer the branch
     isolation rests on.** It was written when the served directory was the
     ``workspace_id`` itself, so naming a foreign team's id reached that team's
-    tree. Under the two-segment layout it cannot: the id is a *leaf*, resolved
+    tree. Under the three-segment layout it cannot: the id is a *leaf*, resolved
     under the authorized team's own owner scope, and the declared-workspace
     check below refuses it in any case. What survives is the sharper answer —
     a 404 carrying the foreign owner in the log record — for the one team that

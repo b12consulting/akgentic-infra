@@ -275,7 +275,7 @@ async def test_malformed_workspace_id_is_400_before_any_card_read() -> None:
 
 
 async def test_declared_workspace_passes_and_stashes_its_path() -> None:
-    """A declared id passes, and its resolved two-segment path reaches the route."""
+    """A declared id passes, and its resolved three-segment path reaches the route."""
     user = RequestUser(user_id="alice")
     process, store = _declaring_team(WorkspaceTool(workspace_id="notes"))
     request = _FakeRequest()
@@ -287,7 +287,7 @@ async def test_declared_workspace_passes_and_stashes_its_path() -> None:
     assert result is user
     stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
     assert stashed is not None
-    assert str(stashed["notes"]) == "alice/notes"
+    assert str(stashed["notes"]) == "alice/_id/notes"
 
 
 async def test_declared_exec_only_workspace_passes() -> None:
@@ -301,7 +301,7 @@ async def test_declared_exec_only_workspace_passes() -> None:
 
 
 async def test_declared_metadata_workspace_resolves_under_meta() -> None:
-    """AC #1: a metadata card's joined leaf passes, and its scope is ``_meta``."""
+    """A metadata card's joined leaf passes, under the owner with ``_meta`` as its kind."""
     user = RequestUser(user_id="alice")
     process, store = _declaring_team(
         WorkspaceTool(workspace_metadata_keys=["customer_id", "case_id"]),
@@ -316,7 +316,7 @@ async def test_declared_metadata_workspace_resolves_under_meta() -> None:
 
     stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
     assert stashed is not None
-    assert str(stashed[leaf]) == f"_meta/{leaf}"
+    assert str(stashed[leaf]) == f"alice/_meta/{leaf}"
 
 
 # The metadata leaf is the team's own metadata, encoded (Story 67.2). A metadata
@@ -362,7 +362,7 @@ async def test_the_admitted_metadata_leaf_is_the_only_key_in_the_stashed_map() -
     stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
     assert stashed is not None
     assert {leaf: str(path) for leaf, path in stashed.items()} == {
-        _ACME_LEAF: f"_meta/{_ACME_LEAF}"
+        _ACME_LEAF: f"alice/_meta/{_ACME_LEAF}"
     }
     assert len(store.calls) == 1
 
@@ -463,7 +463,7 @@ async def test_an_odd_caller_id_does_not_affect_resolution() -> None:
 
     stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
     assert stashed is not None
-    assert str(stashed["notes"]) == "alice/notes"
+    assert str(stashed["notes"]) == "alice/_id/notes"
 
 
 async def test_missing_authorized_team_is_404() -> None:

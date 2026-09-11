@@ -13,18 +13,27 @@ by :func:`akgentic.tool.workspace.resolve_workspace_path`, the single statement
 of the rule (ADR-048 Decision 5). This module resolves the team's declared cards
 through it and hands back what it produced.
 
-The layout it produces is two segments, ``<scope>/<leaf>`` (ADR-048 Decision 1):
+The layout it produces is three segments, ``<scope>/<kind>/<leaf>`` (ADR-052
+Decision 1). ``<scope>`` answers who may reach the tree, ``<kind>`` how its leaf
+was derived, and ``<leaf>`` which one:
 
-===========================================  ===================================
-Card                                         Path
-===========================================  ===================================
-``WorkspaceTool()``                          ``<user_id>/<team_id>``
-``WorkspaceTool(workspace_id="notes")``      ``<user_id>/notes``
-``WorkspaceTool(workspace_metadata_keys=…)``  ``_meta/customer_id-ACME__case_id-42``
-===========================================  ===================================
+==============================================  ================================================
+Card                                            Path
+==============================================  ================================================
+``WorkspaceTool()``                             ``<user_id>/_team/<team_id>``
+``WorkspaceTool(workspace_id="notes")``         ``<user_id>/_id/notes``
+``WorkspaceTool(workspace_metadata_keys=…)``    ``<user_id>/_meta/customer_id-ACME__case_id-42``
+``… workspace_sharable=True`` (each of above)   ``_shared/<kind>/<leaf>``
+==============================================  ================================================
 
-Only the ``<leaf>`` is ever on the wire (ADR-048 Decision 8): the scope is not
-the client's to choose, and the server recomputes it from the matching card.
+Per-principal is the default for every kind, metadata included; a card's
+``workspace_sharable`` swaps the principal for the reserved shared scope and
+changes nothing else. This module reads that field off the card and hands it to
+the resolver — it never supplies the answer itself.
+
+Only the ``<leaf>`` is ever on the wire (ADR-048 Decision 8): the scope and the
+kind are not the client's to choose, and the server recomputes both from the
+matching card.
 
 ``<user_id>`` above is the **team owner's** ``Process.user_id``, never the
 calling principal's. The caller's identity governs authorization; the team's
@@ -89,7 +98,7 @@ def validate_workspace_id(workspace_id: str) -> str:
 
     It guards what the *caller* sent, which is why it survives ADR-048
     untouched: :func:`akgentic.tool.workspace.leaf_segment` guards what the
-    *resolver* emits, and the composed two-segment path is built server-side
+    *resolver* emits, and the composed three-segment path is built server-side
     from values the caller cannot supply, so it never passes through here.
     """
     if workspace_id in ("", ".", "..") or not _WORKSPACE_ID_RE.fullmatch(workspace_id):
@@ -97,20 +106,26 @@ def validate_workspace_id(workspace_id: str) -> str:
     return workspace_id
 
 
-def _declared_layout(tool: ToolCard) -> tuple[str | None, list[str]] | None:
-    """The ``(workspace_id, workspace_metadata_keys)`` a card declares, or ``None``.
+def _declared_layout(tool: ToolCard) -> tuple[str | None, list[str], bool] | None:
+    """The ``(workspace_id, workspace_metadata_keys, workspace_sharable)`` a card declares.
 
-    ``WorkspaceTool`` is the **only** card that declares a workspace. Sandboxed
-    execution is one of its capabilities (``workspace_exec=...``), not a card of
-    its own: a shell-only agent is a ``WorkspaceTool`` with every file
-    capability off and ``workspace_exec`` on, and it declares its directory
-    through the same two fields as any other. There is no second shape to read,
-    and a blanket ``getattr(tool, "workspace_metadata_keys", [])`` would only
-    swallow a ``WorkspaceTool`` that lost the field — so the type is checked and
-    the fields are read directly.
+    ``None`` for a card that declares no workspace. ``WorkspaceTool`` is the
+    **only** card that declares one. Sandboxed execution is one of its
+    capabilities (``workspace_exec=...``), not a card of its own: a shell-only
+    agent is a ``WorkspaceTool`` with every file capability off and
+    ``workspace_exec`` on, and it declares its directory through the same three
+    fields as any other. There is no second shape to read, and a blanket
+    ``getattr(tool, "workspace_metadata_keys", [])`` would only swallow a
+    ``WorkspaceTool`` that lost the field — so the type is checked and the fields
+    are read directly.
+
+    ``workspace_sharable`` travels with the other two because it is as much the
+    card's declaration as they are: it picks the ``<scope>``, and the resolver
+    takes it as a required argument precisely so no caller can answer it for the
+    card.
     """
     if isinstance(tool, WorkspaceTool):
-        return tool.workspace_id, tool.workspace_metadata_keys
+        return tool.workspace_id, tool.workspace_metadata_keys, tool.workspace_sharable
     return None
 
 
@@ -119,11 +134,12 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
 
     ADR-048 Decision 7 in one sentence: resolve every card of the authorized
     team through the same resolver, and the query's ``workspace_id`` must equal
-    one of the identifiers that produces. The matching card's layout supplies
-    the scope, so a metadata workspace resolves under ``_meta/`` and a named one
-    under the **team owner's** principal — the route never infers which from the
-    string, and never falls back to an unscoped path when a directory is absent,
-    which is the hole being closed.
+    one of the identifiers that produces. The matching card supplies the kind
+    and the scope: a metadata workspace resolves under ``<owner>/_meta/`` and a
+    named one under ``<owner>/_id/``, where ``<owner>`` is the **team owner's**
+    principal, or ``_shared`` when the card declares ``workspace_sharable``. The
+    route never infers any of it from the string, and never falls back to an
+    unscoped path when a directory is absent, which is the hole being closed.
 
     **The scope is ``process.user_id``, and the calling principal is not an
     input here at all.** The caller's identity governs *authorization*; the
@@ -135,8 +151,8 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
     wrote nothing.
 
     That is safe against the obvious attack without consulting the caller: Bob
-    cannot reach ``<alice>/notes`` by declaring ``workspace_id="notes"`` on his
-    own team, because his team resolves under *his* ``process.user_id``.
+    cannot reach ``<alice>/_id/notes`` by declaring ``workspace_id="notes"`` on
+    his own team, because his team resolves under *his* ``process.user_id``.
     Reaching Alice's tree needs a team Alice owns, which ``require_team_access``
     refuses him.
 
@@ -162,12 +178,13 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
 
     Args:
         process: The **authorized** team — the one named in the route path. Its
-            ``user_id`` is the ``<scope>`` of every per-user layout.
+            ``user_id`` is the ``<scope>`` of every card that does not declare
+            ``workspace_sharable``.
         store: The card store to resolve the team's ``agent_cards`` against.
 
     Returns:
-        Leaf -> resolved two-segment path, for every workspace any of the team's
-        cards declares. Empty when the team declares no workspace at all, which
+        Leaf -> resolved three-segment path, for every workspace any of the
+        team's cards declares. Empty when the team declares no workspace at all, which
         is a team no ``?workspace_id=`` can name.
 
     Raises:
@@ -193,13 +210,14 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
             layout = _declared_layout(tool)
             if layout is None:
                 continue
-            workspace_id, metadata_keys = layout
+            workspace_id, metadata_keys, sharable = layout
             path = resolve_workspace_path(
                 workspace_id=workspace_id,
                 workspace_metadata_keys=metadata_keys,
                 team_id=str(process.team_id),
                 user_id=process.user_id,
                 metadata=process.metadata,
+                workspace_sharable=sharable,
             )
             paths[path.name] = path
     return paths

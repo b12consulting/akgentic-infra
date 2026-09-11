@@ -43,14 +43,14 @@ def team_for_upload(client: TestClient, seeded_settings: ServerSettings) -> uuid
 
     Mirrors the local fixture in ``test_workspace_routes.py``; duplicated
     here so this module is self-contained and does not depend on import
-    order. The directory is the two-segment ``<owner>/<team_id>`` of ADR-048,
+    order. The directory is the three-segment ``<owner>/_team/<team_id>``,
     ``anonymous`` being the principal the unauthenticated community client
     creates the team under.
     """
     resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
     assert resp.status_code == 201
     team_id = uuid.UUID(resp.json()["team_id"])
-    ws_root = seeded_settings.workspaces_root / "anonymous" / str(team_id)
+    ws_root = seeded_settings.workspaces_root / "anonymous" / "_team" / str(team_id)
     ws_root.mkdir(parents=True, exist_ok=True)
     return team_id
 

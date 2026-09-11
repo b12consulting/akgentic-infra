@@ -2,21 +2,22 @@
 
 All three routes (GET ``.../tree``, GET ``.../file``, POST ``.../file``) accept an
 optional ``workspace_id`` **query** parameter that selects which workspace of the
-team is served. Every directory they open is a two-segment ``<scope>/<leaf>``
-path under ``workspaces_root``, produced by the single tool-side
-:func:`akgentic.tool.workspace.resolve_workspace_path` (ADR-048 Decisions 1 and
-5) — this module composes none of it:
+team is served. Every directory they open is a three-segment
+``<scope>/<kind>/<leaf>`` path under ``workspaces_root``, produced by the single
+tool-side :func:`akgentic.tool.workspace.resolve_workspace_path` (ADR-052
+Decision 1, ADR-048 Decision 5) — this module composes none of it:
 
-- When omitted, the directory is the team's own,
-  ``<workspaces_root>/<team owner's user_id>/<team_id>``.
+- When omitted, the directory is the team's own per-principal default,
+  ``<workspaces_root>/<team owner's user_id>/_team/<team_id>``.
 - When present, it must be a single safe path segment matching
   ``[A-Za-z0-9._-]{1,128}``; anything else (empty, ``.``/``..``, separators,
   absolute paths, over-length) is rejected with HTTP 400 *before* any
   ``Filesystem`` is constructed. It must also be a workspace one of the
   authorized team's own cards declares, or it is refused with 404 by
-  ``require_workspace_access``. The matching card's layout supplies the scope,
-  so a named workspace resolves under the team owner's principal and a
-  metadata-keyed one under the reserved ``_meta`` scope.
+  ``require_workspace_access``. The matching card supplies the kind and the
+  scope: a named workspace resolves under ``<owner>/_id/`` and a metadata-keyed
+  one under ``<owner>/_meta/``, or under ``_shared/`` in place of the owner when
+  the card declares ``workspace_sharable``.
 
 **The ``<scope>`` is always the team owner's ``Process.user_id``, never the
 calling principal's.** The caller's identity governs authorization — that is
@@ -27,7 +28,7 @@ admin who has already *passed* authorization to a different, empty directory,
 which is worse than a refusal: nothing signals it, and the caller concludes the
 agent wrote nothing.
 
-That needs no extra check to be safe. Bob cannot reach ``<alice>/notes`` by
+That needs no extra check to be safe. Bob cannot reach ``<alice>/_id/notes`` by
 declaring ``workspace_id="notes"`` on a team of his own, because his team
 resolves under *his* ``process.user_id``; reaching Alice's tree requires a team
 Alice owns, which ``require_team_access`` refuses him.
@@ -35,7 +36,7 @@ Alice owns, which ``require_team_access`` refuses him.
 The segment guard remains a route-boundary traversal/correctness invariant, not
 an access policy — it proves the value is a safe segment. **Ownership
 authorization is no longer deferred:** it is the declared-workspace check in
-``require_workspace_access``, and the two-segment layout means a workspace
+``require_workspace_access``, and the three-segment layout means a workspace
 cannot be reached by naming it even so.
 """
 
@@ -78,7 +79,7 @@ _MAX_FILE_SIZE = 10_485_760  # 10 MB
 
 
 def _team_own_path(team_id: uuid.UUID, service: TeamService, request: Request) -> PurePosixPath:
-    """The team's own tree, scoped to its **owner**, through the one resolver.
+    """The team's own tree, ``<owner>/_team/<team_id>``, through the one resolver.
 
     Reached only when ``workspace_id`` was omitted, which
     ``require_workspace_access`` passes through because
@@ -106,6 +107,12 @@ def _team_own_path(team_id: uuid.UUID, service: TeamService, request: Request) -
             team_id=str(team_id),
             user_id=process.user_id,
             metadata=process.metadata,
+            # No card is resolved on this branch: it has always served the team's
+            # per-principal default tree, whatever the team's cards declare, and it
+            # still does. A literal is honest only because no card is consulted.
+            # TODO(#456): resolve the team's default card inside the access gate and
+            # pass its own workspace_sharable, which retires this function.
+            workspace_sharable=False,
         )
     except ValueError as exc:
         # ADR-048 Decision 4, read-path row: nobody supplied this user_id
@@ -130,7 +137,7 @@ def _get_workspace(
     service: TeamService,
     workspace_id: str | None = None,
 ) -> Filesystem:
-    """Instantiate a Filesystem over the team's two-segment workspace path.
+    """Instantiate a Filesystem over the team's three-segment workspace path.
 
     The path is never composed here, and the calling principal is not an input:
     the caller's identity governed *authorization*, which the two gates have

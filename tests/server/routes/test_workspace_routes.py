@@ -1,9 +1,12 @@
 """Tests for workspace file access endpoints.
 
-Since ADR-048 (Story 67.1) every directory these routes open is the two-segment
-``<scope>/<leaf>`` path the tool-side resolver produces, so every seed here sits
-under the **team owner's** principal — ``anonymous`` for a team created by the
-unauthenticated community client — rather than at the root. The caller's
+Every directory these routes open is the three-segment ``<scope>/<kind>/<leaf>``
+path the tool-side resolver produces, so every seed here sits under the **team
+owner's** principal — ``anonymous`` for a team created by the unauthenticated
+community client — and under the kind its card declares: ``_team`` for the
+team's own tree, ``_id`` for a named one, ``_meta`` for a metadata-keyed one.
+Each seed spells that path literally, so a spec pins the layout rather than
+agreeing with whatever the resolver returns. The caller's
 identity governs authorization; the owner's governs the path, which is why an
 admin reading a team they do not own still reaches the owner's files.
 
@@ -61,7 +64,7 @@ def team_with_workspace(client: TestClient, seeded_settings: ServerSettings) -> 
     resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
     assert resp.status_code == 201
     team_id = uuid.UUID(resp.json()["team_id"])
-    ws_root = seeded_settings.workspaces_root / ANONYMOUS / str(team_id)
+    ws_root = seeded_settings.workspaces_root / ANONYMOUS / "_team" / str(team_id)
     ws_root.mkdir(parents=True, exist_ok=True)
     (ws_root / "output.txt").write_text("hello world")
     (ws_root / "subdir").mkdir()
@@ -123,7 +126,7 @@ def test_workspace_file_size_limit(
     seeded_settings: ServerSettings,
 ) -> None:
     """GET /workspace/{team_id}/file returns 413 for files exceeding 10 MB."""
-    ws_root = seeded_settings.workspaces_root / ANONYMOUS / str(team_with_workspace)
+    ws_root = seeded_settings.workspaces_root / ANONYMOUS / "_team" / str(team_with_workspace)
     big_file = ws_root / "huge.bin"
     big_file.write_bytes(b"\x00" * (10_485_760 + 1))
     resp = client.get(f"/workspace/{team_with_workspace}/file", params={"path": "huge.bin"})
@@ -222,7 +225,7 @@ def test_workspace_tree_honours_selector(
 ) -> None:
     """GET .../tree with a declared ?workspace_id= lists the caller's own alt-ws."""
     _declare(community_services, team_with_workspace, WorkspaceTool(workspace_id="alt-ws"))
-    alt_root = seeded_settings.workspaces_root / ANONYMOUS / "alt-ws"
+    alt_root = seeded_settings.workspaces_root / ANONYMOUS / "_id" / "alt-ws"
     alt_root.mkdir(parents=True, exist_ok=True)
     (alt_root / "alt-only.txt").write_text("alt content")
 
@@ -241,9 +244,9 @@ def test_workspace_file_read_honours_selector(
     seeded_settings: ServerSettings,
     community_services: CommunityServices,
 ) -> None:
-    """GET .../file with a declared ?workspace_id= reads <root>/<caller>/alt-ws."""
+    """GET .../file with a declared ?workspace_id= reads <root>/<caller>/_id/alt-ws."""
     _declare(community_services, team_with_workspace, WorkspaceTool(workspace_id="alt-ws"))
-    alt_root = seeded_settings.workspaces_root / ANONYMOUS / "alt-ws"
+    alt_root = seeded_settings.workspaces_root / ANONYMOUS / "_id" / "alt-ws"
     alt_root.mkdir(parents=True, exist_ok=True)
     (alt_root / "alt.txt").write_text("from alt")
 
@@ -276,8 +279,8 @@ def test_workspace_file_upload_honours_selector(
     assert resp.status_code == 201
     assert resp.json()["path"] == "uploaded-alt.txt"
 
-    # The write landed under <root>/<caller>/alt-ws ...
-    alt_file = seeded_settings.workspaces_root / ANONYMOUS / "alt-ws" / "uploaded-alt.txt"
+    # The write landed under <root>/<caller>/_id/alt-ws ...
+    alt_file = seeded_settings.workspaces_root / ANONYMOUS / "_id" / "alt-ws" / "uploaded-alt.txt"
     assert alt_file.exists()
     assert alt_file.read_bytes() == b"alt upload"
 
@@ -286,7 +289,11 @@ def test_workspace_file_upload_honours_selector(
 
     # ... and NOT under the team directory (isolation both ways).
     team_file = (
-        seeded_settings.workspaces_root / ANONYMOUS / str(team_with_workspace) / "uploaded-alt.txt"
+        seeded_settings.workspaces_root
+        / ANONYMOUS
+        / "_team"
+        / str(team_with_workspace)
+        / "uploaded-alt.txt"
     )
     assert not team_file.exists()
     read_back = client.get(
@@ -360,13 +367,13 @@ def _owned_team_with_file(
 ) -> uuid.UUID:
     """Create a team via REST under the owner's identity and seed ``output.txt``.
 
-    The seed sits at ``<root>/<owner>/<team_id>`` — the two-segment layout — so
-    it is reachable by the owner and by nobody else's principal.
+    The seed sits at ``<root>/<owner>/_team/<team_id>`` — the three-segment
+    layout — so it is reachable by the owner and by nobody else's principal.
     """
     resp = owner_client.post("/teams/", json={"catalog_namespace": "test-team"})
     assert resp.status_code == 201
     team_id = uuid.UUID(resp.json()["team_id"])
-    ws_root = ws_root_parent / owner_user_id / str(team_id)
+    ws_root = ws_root_parent / owner_user_id / "_team" / str(team_id)
     ws_root.mkdir(parents=True, exist_ok=True)
     (ws_root / "output.txt").write_text("hello world")
     return team_id
@@ -400,9 +407,10 @@ def test_workspace_routes_admin_non_owner_allowed(
 
     **This is the regression the caller-vs-owner finding was about.** The admin
     clears ``require_team_access``, and the directory they then open must be the
-    one the team's agents write to — ``<owner>/<team_id>``, with the owner's file
-    in it. Scoping on the caller instead would send an already-authorized admin
-    to their own empty ``<admin>/<team_id>``, which is worse than a refusal:
+    one the team's agents write to — ``<owner>/_team/<team_id>``, with the
+    owner's file in it. Scoping on the caller instead would send an
+    already-authorized admin to their own empty ``<admin>/_team/<team_id>``,
+    which is worse than a refusal:
     nothing signals it, and the admin concludes the agent wrote nothing.
     """
     owner = _identity(app, RequestUser(user_id="alice"))
@@ -425,7 +433,7 @@ def test_workspace_routes_admin_non_owner_allowed(
     assert upload.status_code == 201
     # The admin's write landed in the OWNER's tree — the one the agent shares.
     assert (
-        seeded_settings.workspaces_root / "alice" / str(team_id) / "by-admin.txt"
+        seeded_settings.workspaces_root / "alice" / "_team" / str(team_id) / "by-admin.txt"
     ).read_bytes() == b"admin data"
     # Nothing was created under the admin's own principal.
     assert not (seeded_settings.workspaces_root / "root").exists()
@@ -442,7 +450,7 @@ def test_admin_reads_the_owners_named_workspace_too(
     owner = _identity(app, RequestUser(user_id="alice"))
     team_id = _owned_team_with_file(owner, root, "alice")
     _declare(community_services, team_id, WorkspaceTool(workspace_id="notes"))
-    notes = root / "alice" / "notes"
+    notes = root / "alice" / "_id" / "notes"
     notes.mkdir(parents=True, exist_ok=True)
     (notes / "alice-note.txt").write_text("owned by alice")
 
@@ -488,7 +496,7 @@ def test_workspace_id_unknown_uuid_is_404(
     be served on the strength of the caller naming it.
     """
     stray = uuid.uuid4()
-    alt_root = seeded_settings.workspaces_root / ANONYMOUS / str(stray)
+    alt_root = seeded_settings.workspaces_root / ANONYMOUS / "_id" / str(stray)
     alt_root.mkdir(parents=True, exist_ok=True)
     (alt_root / "shared.txt").write_text("shared content")
 
@@ -544,7 +552,7 @@ def test_exec_only_declared_workspace_is_not_404(
         exec_only_workspace("shell"),
         WorkspaceTool(workspace_id="notes"),
     )
-    shell_root = seeded_settings.workspaces_root / ANONYMOUS / "shell"
+    shell_root = seeded_settings.workspaces_root / ANONYMOUS / "_id" / "shell"
     shell_root.mkdir(parents=True, exist_ok=True)
     (shell_root / "run.log").write_text("ran")
 
@@ -556,13 +564,18 @@ def test_exec_only_declared_workspace_is_not_404(
     assert notes.status_code == 200
 
 
-def test_metadata_card_resolves_under_meta_scope(
+def test_metadata_card_resolves_per_principal_under_the_meta_kind(
     client: TestClient,
     team_with_workspace: uuid.UUID,
     seeded_settings: ServerSettings,
     community_services: CommunityServices,
 ) -> None:
-    """AC #1, second half: a metadata card serves ``<root>/_meta/<joined key>``."""
+    """A metadata card serves ``<root>/<owner>/_meta/<joined key>``.
+
+    ``_meta`` is the card's kind, not a scope: a metadata tree sits under the
+    team owner like the other two kinds, and is shared across principals only
+    when its card declares ``workspace_sharable``. This one does not.
+    """
     _declare(
         community_services,
         team_with_workspace,
@@ -570,15 +583,17 @@ def test_metadata_card_resolves_under_meta_scope(
         metadata=CaseMetadata(),
     )
     leaf = "customer_id-ACME__case_id-42"
-    meta_root = seeded_settings.workspaces_root / "_meta" / leaf
+    root = seeded_settings.workspaces_root
+    meta_root = root / ANONYMOUS / "_meta" / leaf
     meta_root.mkdir(parents=True, exist_ok=True)
-    (meta_root / "case.txt").write_text("shared by declaration")
+    (meta_root / "case.txt").write_text("owned by the team's principal")
 
     resp = client.get(f"/workspace/{team_with_workspace}/tree", params={"workspace_id": leaf})
     assert resp.status_code == 200
     assert "case.txt" in [e["name"] for e in resp.json()["entries"]]
-    # The shared tree is NOT under the caller's principal.
-    assert not (seeded_settings.workspaces_root / ANONYMOUS / leaf).exists()
+    # Neither the retired cross-user location nor the shared scope was touched.
+    assert not (root / "_meta").exists()
+    assert not (root / "_shared").exists()
 
 
 def test_two_users_naming_one_workspace_id_stay_isolated(
@@ -593,8 +608,8 @@ def test_two_users_naming_one_workspace_id_stay_isolated(
     ADR-048 this string was a global key and both calls returned one tree.
 
     This is also why owner-scoping needs no extra check to be safe: Bob
-    declaring ``notes`` on a team of his own lands in ``bob/notes``, and
-    reaching ``alice/notes`` would require a team Alice owns — which
+    declaring ``notes`` on a team of his own lands in ``bob/_id/notes``, and
+    reaching ``alice/_id/notes`` would require a team Alice owns — which
     ``require_team_access`` refuses him.
 
     ``_identity`` replaces one process-wide override, so each caller is
@@ -607,7 +622,7 @@ def test_two_users_naming_one_workspace_id_stay_isolated(
     for team_id in (alice_team, bob_team):
         _declare(community_services, team_id, WorkspaceTool(workspace_id="notes"))
     for owner in ("alice", "bob"):
-        notes = root / owner / "notes"
+        notes = root / owner / "_id" / "notes"
         notes.mkdir(parents=True, exist_ok=True)
         (notes / f"{owner}.txt").write_text(f"{owner} only")
 
@@ -842,12 +857,15 @@ def _case_card() -> WorkspaceTool:
 
 
 def _seed_meta_tree(root: Path, leaf: str) -> str:
-    """Seed ``<root>/_meta/<leaf>/`` with one file named after the leaf; return the name.
+    """Seed ``<root>/anonymous/_meta/<leaf>/`` with one file named after the leaf.
+
+    Every team in this section is created by the community client, so its
+    metadata trees sit under that principal. Returns the seeded file's name.
 
     The foreign trees exist on disk so that a 404 on ``/tree`` can only be the
     gate's: ``Filesystem.__init__`` creates its root and ``list`` never 404s.
     """
-    tree = root / "_meta" / leaf
+    tree = root / ANONYMOUS / "_meta" / leaf
     tree.mkdir(parents=True, exist_ok=True)
     name = f"{leaf}.txt"
     (tree / name).write_text(f"seeded in {leaf}")
@@ -855,8 +873,8 @@ def _seed_meta_tree(root: Path, leaf: str) -> str:
 
 
 def _meta_listing(root: Path) -> dict[str, set[str]]:
-    """Every ``_meta/<leaf>`` directory and the names inside it."""
-    meta = root / "_meta"
+    """Every ``anonymous/_meta/<leaf>`` directory and the names inside it."""
+    meta = root / ANONYMOUS / "_meta"
     if not meta.exists():
         return {}
     return {d.name: {p.name for p in d.iterdir()} for d in meta.iterdir()}
@@ -955,10 +973,10 @@ def test_one_team_reaches_its_own_leaf_and_is_refused_the_three_foreign_ones(
         assert resp.json()["detail"] == _TEAM_NOT_FOUND
 
     # The disk is exactly as seeded: nothing created, nothing moved, and no
-    # tree of any of the four names under the caller's own principal.
+    # tree of any of the four names under the caller's named-workspace kind.
     assert _meta_listing(root) == before
     for leaf in (_ACME_LEAF, *_FOREIGN_LEAVES):
-        assert not (root / ANONYMOUS / leaf).exists()
+        assert not (root / ANONYMOUS / "_id" / leaf).exists()
 
 
 def test_a_foreign_leaf_is_refused_by_the_gate_not_only_by_the_routes_backstop(
@@ -1035,13 +1053,13 @@ def test_the_write_path_admits_the_own_leaf_and_refuses_the_foreign_one_writing_
     """AC #3: ``POST .../file`` refuses the foreign leaf the same way, and writes nothing.
 
     The positive first: the team's own leaf takes the upload, and it lands under
-    ``_meta/<own leaf>/`` and nowhere else — in particular not under the caller's
-    principal, which is where a fallback to the per-user layout would put it.
-    Then the foreign leaf: 404 with the gate's body, and the foreign tree
-    byte-identical to its seed.
+    ``anonymous/_meta/<own leaf>/`` and nowhere else — in particular not under
+    another kind of the caller's principal, which is where a fallback to the
+    named layout would put it. Then the foreign leaf: 404 with the gate's body,
+    and the foreign tree byte-identical to its seed.
     """
     root = seeded_settings.workspaces_root
-    contoso_tree = root / "_meta" / _CONTOSO_LEAF
+    contoso_tree = root / ANONYMOUS / "_meta" / _CONTOSO_LEAF
     contoso_before = {p.name: p.read_bytes() for p in contoso_tree.iterdir()}
     anonymous_before = set((root / ANONYMOUS).rglob("*"))
 
@@ -1052,7 +1070,7 @@ def test_the_write_path_admits_the_own_leaf_and_refuses_the_foreign_one_writing_
         files={"file": ("uploaded.txt", b"by the team", "text/plain")},
     )
     assert own.status_code == 201
-    landed = root / "_meta" / _ACME_LEAF / "uploaded.txt"
+    landed = root / ANONYMOUS / "_meta" / _ACME_LEAF / "uploaded.txt"
     assert landed.read_bytes() == b"by the team"
     assert list(root.rglob("uploaded.txt")) == [landed]
 
@@ -1066,8 +1084,9 @@ def test_the_write_path_admits_the_own_leaf_and_refuses_the_foreign_one_writing_
     assert foreign.json()["detail"] == _TEAM_NOT_FOUND
     assert {p.name: p.read_bytes() for p in contoso_tree.iterdir()} == contoso_before
     assert list(root.rglob("intruded.txt")) == []
-    # The caller's own scope gained nothing on either request.
-    assert set((root / ANONYMOUS).rglob("*")) == anonymous_before
+    # The caller's own scope gained the one file the team's own leaf took, and
+    # nothing on the foreign request.
+    assert set((root / ANONYMOUS).rglob("*")) == anonymous_before | {landed}
 
 
 def test_the_resolved_meta_path_is_400_even_for_the_team_that_owns_the_tree(
@@ -1075,7 +1094,7 @@ def test_the_resolved_meta_path_is_400_even_for_the_team_that_owns_the_tree(
     acme_case_team: uuid.UUID,
     seeded_settings: ServerSettings,
 ) -> None:
-    """AC #5: ``workspace_id=_meta/<own leaf>`` is 400 for the very team whose tree it is.
+    """AC #5: ``workspace_id=<scope>/_meta/<own leaf>`` is 400 for the team whose tree it is.
 
     This is the exact ``workspace_path`` string a ``ResourceAttached`` event
     carries, sent back inbound. Only the leaf is ever on the wire; the scope is
@@ -1090,7 +1109,7 @@ def test_the_resolved_meta_path_is_400_even_for_the_team_that_owns_the_tree(
 
     assert _tree(client, acme_case_team, _ACME_LEAF).status_code == 200
 
-    resp = _tree(client, acme_case_team, f"_meta/{_ACME_LEAF}")
+    resp = _tree(client, acme_case_team, f"{ANONYMOUS}/_meta/{_ACME_LEAF}")
     assert resp.status_code == 400
     assert _directories(root) == before
 
@@ -1100,7 +1119,7 @@ def test_get_workspace_fails_closed_for_a_metadata_leaf_without_the_gates_map() 
 
     Beside ``test_get_workspace_fails_closed_without_the_gates_map`` on purpose:
     "if the map is missing and the leaf looks like metadata, build
-    ``_meta/<leaf>``" is the arm a decoupling refactor would most plausibly
+    ``<scope>/_meta/<leaf>``" is the arm a decoupling refactor would most plausibly
     reach for, and this is the spec that goes red under it.
     """
 
