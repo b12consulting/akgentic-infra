@@ -38,26 +38,41 @@ from ._workspace_cards import (
     process_with_cards,
     tool_card,
 )
+from ._workspace_ids import PATH_SAFE_UNDECLARED_IDS, REJECTED_WORKSPACE_IDS
 
 # ---------------------------------------------------------------------------
-# validate_workspace_id — unchanged by ADR-048 (AC #7)
+# validate_workspace_id — the tool's leaf_segment, as a traversal guard (Story 70.3)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "bad_value",
-    ["../x", "a/b", "a\\b", "/abs", "..", ".", "", "a" * 129, "case_id-42%2F"],
-)
+@pytest.mark.parametrize("bad_value", REJECTED_WORKSPACE_IDS)
 def test_validate_workspace_id_rejects_non_segments(bad_value: str) -> None:
-    """AC #7: the request-boundary guard still answers 400 for a non-segment."""
+    """The request-boundary guard answers 400 for anything ``leaf_segment`` refuses.
+
+    The detail is fixed. The tool's message reflects the caller's value and
+    names internal directories, so it stays out of the response.
+    """
     with pytest.raises(HTTPException) as excinfo:
         validate_workspace_id(bad_value)
     assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == "Invalid workspace_id"
 
 
-@pytest.mark.parametrize("good", ["notes", "a" * 128, "a.b_c-d", str(uuid.uuid4())])
+@pytest.mark.parametrize(
+    "good",
+    [
+        "notes",
+        "a" * 128,
+        "a.b_c-d",
+        str(uuid.uuid4()),
+        # ``%2F`` is a literal three-character name: nothing decodes the
+        # selector again after the query layer. The literal ``/`` stays 400.
+        "case_id-42%2F",
+        *PATH_SAFE_UNDECLARED_IDS,
+    ],
+)
 def test_validate_workspace_id_returns_valid_segments(good: str) -> None:
-    """A single safe segment comes back unchanged."""
+    """A single leaf comes back unchanged, whatever its length and whether it carries ``%``."""
     assert validate_workspace_id(good) == good
 
 

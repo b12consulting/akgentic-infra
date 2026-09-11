@@ -11,10 +11,12 @@ Decision 1, ADR-048 Decision 5) — this module composes none of it:
   card binds to: ``<workspaces_root>/<team owner's user_id>/_team/<team_id>``,
   or ``_shared/_team/<team_id>`` when that card declares ``workspace_sharable``.
   A team with no default-layout card gets the per-principal form.
-- When present, it must be a single safe path segment matching
-  ``[A-Za-z0-9._-]{1,128}``; anything else (empty, ``.``/``..``, separators,
-  absolute paths, over-length) is rejected with HTTP 400 *before* any
-  ``Filesystem`` is constructed. It must also be a workspace one of the
+- When present, it must be a leaf the tool's
+  :func:`akgentic.tool.workspace.leaf_segment` admits; anything else (empty, a
+  leading dot, ``/``, ``\\``, NUL, a kind name, a sidecar suffix) is rejected
+  with HTTP 400 *before* any card is read or any ``Filesystem`` is constructed.
+  There is no length bound and ``%`` is a literal character, so a
+  percent-encoded metadata leaf passes. It must also be a workspace one of the
   authorized team's own cards declares, or it is refused with 404 by
   ``require_workspace_access``. The matching card supplies the kind and the
   scope: a named workspace resolves under ``<owner>/_id/`` and a metadata-keyed
@@ -47,7 +49,7 @@ opens the stashed path and nothing else, so no route can open a path the check
 never saw.
 
 The segment guard remains a route-boundary traversal/correctness invariant, not
-an access policy — it proves the value is a safe segment.
+an access policy — it proves the value is a single leaf.
 """
 
 from __future__ import annotations
