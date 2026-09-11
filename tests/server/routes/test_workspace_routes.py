@@ -29,9 +29,7 @@ import pytest
 from akgentic.team.models import AgentCardRef, Process
 from akgentic.team.ports import EventStore
 from akgentic.tool.workspace import (
-    GIT_DIR_SUFFIX,
     ID_KIND,
-    META_DIR_SUFFIX,
     METADATA_KIND,
     SHARED_SCOPE,
     WorkspaceTool,
@@ -1735,15 +1733,20 @@ _LEAVES_THE_REGEX_REFUSED = [
 ]
 """Team metadata whose leaf the old regex refused: by its charset (``%``), or by its length."""
 
-# The rows of ``REJECTED_WORKSPACE_IDS`` that ``PurePosixPath`` keeps as the last
-# segment of a stashed path. ``"."``, ``"a/b"`` and ``"/abs"`` are left out: the
-# path would not end in them, so the stash could not name them.
+
+def _stash_ending_in(value: str) -> PurePosixPath:
+    """A stashed path whose leaf is *value*, as the gate would stash a named workspace."""
+    return PurePosixPath("alice", ID_KIND, value)
+
+
+# The rows of ``REJECTED_WORKSPACE_IDS`` a stashed path can end in, derived from
+# the shared table rather than listed again, so a row added there reaches this
+# call site too. ``PurePosixPath`` does not keep ``"../x"``, ``"."``, ``"a/b"``,
+# ``"/abs"`` or ``""`` as the last segment, so the stash could not name them.
 _STASHABLE_REJECTED_IDS = [
-    pytest.param("..", id="dot-dot"),
-    pytest.param(".hidden", id="leading-dot"),
-    pytest.param(METADATA_KIND, id="metadata-kind"),
-    pytest.param(f"notes{GIT_DIR_SUFFIX}", id="git-suffix"),
-    pytest.param(f"notes{META_DIR_SUFFIX}", id="meta-suffix"),
+    row
+    for row in REJECTED_WORKSPACE_IDS
+    if _stash_ending_in(str(row.values[0])).name == row.values[0]
 ]
 
 
@@ -1868,7 +1871,7 @@ def test_get_workspace_guards_the_selector_even_when_the_stash_names_it(
     The root must stay empty: ``Filesystem`` creates its root eagerly.
     """
     conn = _BareConn()
-    stash_workspace_path(conn, PurePosixPath("alice", ID_KIND, value))  # type: ignore[arg-type]
+    stash_workspace_path(conn, _stash_ending_in(value))  # type: ignore[arg-type]
 
     with pytest.raises(HTTPException) as excinfo:
         _get_workspace(
