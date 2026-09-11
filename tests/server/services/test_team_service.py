@@ -7,7 +7,7 @@ import logging
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import get_type_hints
 from unittest.mock import MagicMock
 
@@ -16,6 +16,7 @@ from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFound
 from akgentic.team.models import Process, TeamStatus
 
 from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
+from akgentic.infra.server.services import team_service as team_service_module
 from akgentic.infra.server.services.team_service import (
     MAX_PAGE_SIZE,
     CatalogTeamEntryMissingError,
@@ -648,6 +649,7 @@ def _stub_team_service(
         process = MagicMock(spec=Process)
         process.status = TeamStatus.STOPPED
         process.user_id = owner
+        process.metadata = None
         services.worker_handle.get_team.return_value = process
     else:
         services.worker_handle.get_team.return_value = None
@@ -655,19 +657,17 @@ def _stub_team_service(
 
 
 class TestDeleteTeamWorkspaceCleanup:
-    """Story 24.1 / 67.1: delete_team removes the team's **scoped** workspace dir."""
+    """Story 24.1 / 67.1 / 70.1: delete_team removes the team's **scoped** workspace dir."""
 
     def test_happy_path_removes_scoped_workspace_dir(self, tmp_path: Path) -> None:
-        """AC #5: the dir at ``<root>/<owner>/<team_id>`` and its contents are removed.
+        """AC #5: the dir at ``<root>/<owner>/_team/<team_id>`` and its contents are removed.
 
-        **This is the guard Story 67.1 mutation-tests.** Reverting
-        ``_remove_workspace_dir``'s target to the unscoped
-        ``workspaces_root / str(team_id)`` makes it no-op on a tree that is not
-        there, and this assertion goes red — the only signal that exists, since
-        missing the site raises nothing and logs nothing.
+        The on-disk guard that a *real* bind's tree is the one removed is
+        ``test_team_deletion_removes_the_bound_tree.py``; this one pins the
+        literal location for a hand-seeded tree.
         """
         team_id = uuid.uuid4()
-        team_dir = tmp_path / _OWNER / str(team_id)
+        team_dir = tmp_path / _OWNER / "_team" / str(team_id)
         team_dir.mkdir(parents=True)
         (team_dir / "file.txt").write_text("content")
 
@@ -676,32 +676,79 @@ class TestDeleteTeamWorkspaceCleanup:
 
         assert not team_dir.exists()
 
-    def test_unscoped_sibling_tree_is_left_alone(self, tmp_path: Path) -> None:
-        """The pre-ADR-048 flat directory is not this team's and is not touched.
+    def test_the_deletion_target_is_the_one_the_resolver_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """AC #3, Guard 2: the target comes from ``resolve_workspace_path``, and only from it.
 
-        Migrating what is on disk belongs to the tool-side migration story, so a
-        leftover flat tree must survive a delete rather than be swept by a path
-        this code no longer owns.
+        The resolver ``team_service`` imports is replaced with one returning a
+        sentinel three-segment path. The sentinel is removed and the tree at the
+        default location is not, so a deletion target hand-built beside the
+        resolver — even a correct three-segment one — goes red here, where the
+        on-disk guard cannot tell the two apart.
         """
         team_id = uuid.uuid4()
-        scoped = tmp_path / _OWNER / str(team_id)
+        sentinel = PurePosixPath("resolver-chose", "_team", "this-tree")
+        calls: list[dict[str, object]] = []
+
+        def _resolver(**kwargs: object) -> PurePosixPath:
+            calls.append(kwargs)
+            return sentinel
+
+        monkeypatch.setattr(team_service_module, "resolve_workspace_path", _resolver)
+        chosen = tmp_path / sentinel
+        chosen.mkdir(parents=True)
+        (chosen / "file.txt").write_text("content")
+        default = tmp_path / _OWNER / "_team" / str(team_id)
+        default.mkdir(parents=True)
+
+        service = _stub_team_service(tmp_path, team_exists=True)
+        service.delete_team(team_id)
+
+        assert not chosen.exists()
+        assert default.exists()
+        # The team's per-principal default tree: no card is consulted on delete.
+        assert calls == [
+            {
+                "workspace_id": None,
+                "workspace_metadata_keys": [],
+                "team_id": str(team_id),
+                "user_id": _OWNER,
+                "metadata": None,
+                "workspace_sharable": False,
+            }
+        ]
+
+    def test_unscoped_sibling_tree_is_left_alone(self, tmp_path: Path) -> None:
+        """The flat and two-segment directories are not this team's and are not touched.
+
+        Migrating what is on disk belongs to the tool-side migration story, so a
+        leftover tree of an earlier layout must survive a delete rather than be
+        swept by a path this code no longer owns.
+        """
+        team_id = uuid.uuid4()
+        scoped = tmp_path / _OWNER / "_team" / str(team_id)
         scoped.mkdir(parents=True)
         legacy = tmp_path / str(team_id)
         legacy.mkdir(parents=True)
         (legacy / "old.txt").write_text("pre-migration")
+        two_segment = tmp_path / _OWNER / str(team_id)
+        two_segment.mkdir(parents=True)
+        (two_segment / "old.txt").write_text("pre-three-segment")
 
         service = _stub_team_service(tmp_path, team_exists=True)
         service.delete_team(team_id)
 
         assert not scoped.exists()
         assert (legacy / "old.txt").read_text() == "pre-migration"
+        assert (two_segment / "old.txt").read_text() == "pre-three-segment"
 
     def test_scope_is_the_owner_not_the_caller(self, tmp_path: Path) -> None:
         """The scope comes from the deleted team's own ``Process.user_id``."""
         team_id = uuid.uuid4()
-        owner_dir = tmp_path / "owner-principal" / str(team_id)
+        owner_dir = tmp_path / "owner-principal" / "_team" / str(team_id)
         owner_dir.mkdir(parents=True)
-        other_dir = tmp_path / "some-other-principal" / str(team_id)
+        other_dir = tmp_path / "some-other-principal" / "_team" / str(team_id)
         other_dir.mkdir(parents=True)
 
         service = _stub_team_service(tmp_path, team_exists=True, owner="owner-principal")
@@ -759,7 +806,7 @@ class TestDeleteTeamWorkspaceCleanup:
     ) -> None:
         """AC #3: an rmtree failure is logged at WARNING and suppressed."""
         team_id = uuid.uuid4()
-        team_dir = tmp_path / _OWNER / str(team_id)
+        team_dir = tmp_path / _OWNER / "_team" / str(team_id)
         team_dir.mkdir(parents=True)
         (team_dir / "file.txt").write_text("content")
 

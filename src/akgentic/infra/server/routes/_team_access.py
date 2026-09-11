@@ -27,6 +27,14 @@ to *every* value: a workspace the authorized team's own cards do not declare is
 refused rather than passed through to be served as a directory name. The
 declared set is resolved through the single tool-side resolver in
 ``_workspace_resolution`` — the gate composes no path of its own.
+
+It is also the **one convergence point** for every workspace route (ADR-052
+Decision 4). On both branches, a named ``workspace_id`` and an omitted one, it
+selects the single path the route will open, and decides who may reach it with
+:func:`check_workspace_scope`, from that path's scope segment alone. It then
+stashes that one path, and the route opens nothing else. A route or a kind added
+later is handed a path that already says which check applies, so it cannot
+forget a check it never had to write.
 """
 
 from __future__ import annotations
@@ -37,12 +45,14 @@ from pathlib import PurePosixPath
 
 from fastapi import Depends, HTTPException, Request
 
+from akgentic.infra.errors import SharedWorkspaceRefusedError
 from akgentic.infra.protocols.authz import TeamAccessContext, TeamAccessPolicy
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.routes._workspace_resolution import (
     declared_workspace_paths,
+    default_workspace_path,
     stash_team_process,
-    stash_workspace_paths,
+    stash_workspace_path,
     stashed_team_process,
     validate_workspace_id,
 )
@@ -50,10 +60,12 @@ from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.state_keys import SERVICES, TEAM_SERVICE
 from akgentic.team.models import Process
 from akgentic.team.ports import AgentCardNotFoundError, EventStore
+from akgentic.tool.workspace import SHARED_SCOPE
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "check_workspace_scope",
     "get_event_store",
     "get_team_access_policy",
     "get_team_service",
@@ -126,6 +138,71 @@ async def require_team_access(
     return user
 
 
+async def check_workspace_scope(
+    path: PurePosixPath,
+    *,
+    team_id: uuid.UUID,
+    user: RequestUser,
+    policy: TeamAccessPolicy,
+) -> None:
+    """Decide whether ``user`` may reach ``path``, from its scope segment alone.
+
+    The scope segment says which question applies (ADR-052 Decision 4):
+
+    - **``_shared``**: the tree has no owner, so ownership is the wrong
+      question. The right one is whether this principal is entitled to the
+      values the tree is keyed on, which is ``akgentic-infra-auth``'s
+      metadata-entitlement policy, and that policy does not exist yet. So the
+      path is refused with :class:`SharedWorkspaceRefusedError` (403) for
+      **every** caller, admins included. An admin's authority is over
+      principals, and entitlement to a metadata value is not a principal
+      question. ``_shared`` never means "skip the check": that reading would
+      ship the hole the check exists to close. The comparison **case-folds**
+      the scope, because a case-insensitive filesystem opens one directory for
+      every spelling that folds to ``_shared``. ``_SHARED/`` is one, and so is
+      ``_ſhared/`` (a long s), which ``str.lower()`` leaves unchanged and
+      APFS still resolves to ``_shared/``. The tool's reserved-scope rule
+      case-folds too, so the resolver already refuses an owner whose id folds
+      to ``_shared``, and the read path answers 500 for that unusable owner.
+      This check is defence in depth, for a path that did not come through
+      the resolver.
+    - **Anything else is a user scope.** The wired policy is asked whether the
+      caller may act for that principal, with the scope segment as
+      ``owner_user_id``. It is a policy call and not a string comparison, so
+      an admin still reads another principal's tree (ADR-048 Decision 7) and a
+      tier's own policy still decides. A deny is 404, like every other gate
+      denial here.
+
+    Nothing else is read: not the kind, not the leaf, not the card, not
+    ``process.user_id``. The leaf is never parsed to recover what the card
+    meant.
+
+    Args:
+        path: The resolved three-segment path the route is about to open.
+        team_id: The **authorized** team, bound from the route path.
+        user: The authenticated principal.
+        policy: The wired per-team authorization rule.
+
+    Raises:
+        SharedWorkspaceRefusedError: For a ``_shared`` path, whoever asks.
+        HTTPException: 404 when the policy denies the caller the user scope.
+    """
+    scope = path.parts[0]
+    if scope.casefold() == SHARED_SCOPE:
+        logger.info(
+            "workspace-scope gate refused a shared tree",
+            extra={"team_id": str(team_id), "user_id": user.user_id, "path": str(path)},
+        )
+        raise SharedWorkspaceRefusedError()
+    ctx = TeamAccessContext(team_id=team_id, owner_user_id=scope)
+    if not await policy.is_allowed(ctx=ctx, user=user):
+        logger.info(
+            "workspace-scope gate denied",
+            extra={"team_id": str(team_id), "user_id": user.user_id, "owner": scope},
+        )
+        raise HTTPException(status_code=404, detail="Team not found")
+
+
 async def _deny_foreign_named_team(
     workspace_id: str,
     user: RequestUser,
@@ -137,12 +214,13 @@ async def _deny_foreign_named_team(
     Kept from the original gate and still first, but **no longer the branch
     isolation rests on.** It was written when the served directory was the
     ``workspace_id`` itself, so naming a foreign team's id reached that team's
-    tree. Under the two-segment layout it cannot: the id is a *leaf*, resolved
-    under the authorized team's own owner scope, and the declared-workspace
-    check below refuses it in any case. What survives is the sharper answer —
-    a 404 carrying the foreign owner in the log record — for the one team that
-    really declares another team's id as a ``workspace_id``, which would
-    otherwise be served its own directory of that name.
+    tree. Under the three-segment layout it cannot: the id is a *leaf* of the
+    ``_id`` kind, under the scope the authorized team's own card gives it, never
+    the ``_team`` kind another team's own tree lives under, and the
+    declared-workspace check below refuses it in any case. What survives is the
+    sharper answer — a 404 carrying the foreign owner in the log record — for
+    the one team that really declares another team's id as a ``workspace_id``,
+    which would otherwise be served its own directory of that name.
 
     A value that is not a team id, or names no team, falls through to the
     declared-workspace check — it is no longer a pass-through.
@@ -171,17 +249,27 @@ def _resolve_declared(
     team_id: uuid.UUID,
     process: Process,
     store: EventStore,
-) -> dict[str, PurePosixPath]:
-    """Resolve the team's declared workspaces, turning both failure modes into 5xx.
+    workspace_id: str | None,
+) -> PurePosixPath | None:
+    """Select the one path this request concerns, turning both failure modes into 5xx.
 
-    Both are server-side integrity failures rather than anything the caller can
-    restate — there is no request field to change — so neither may become a 400
-    that blames the client or a 404 that quietly shrinks the allowed set.
-    ``AgentCardNotFoundError`` is a ``LookupError``, deliberately never a
-    ``ValueError``, and is caught in its own arm accordingly.
+    An omitted ``workspace_id`` selects the tree the team's default-layout card
+    binds to. A named one selects the declared workspace of that leaf, or
+    ``None`` when no card of the team declares it. Either way the card store is
+    read once.
+
+    Both failure modes are server-side integrity failures rather than anything
+    the caller can restate — there is no request field to change — so neither
+    may become a 400 that blames the client or a 404 that quietly shrinks the
+    allowed set. ``AgentCardNotFoundError`` is a ``LookupError``, deliberately
+    never a ``ValueError``, and is caught in its own arm accordingly. Default
+    cards that disagree on ``workspace_sharable`` arrive as a ``ValueError``,
+    so they take the second arm.
     """
     try:
-        return declared_workspace_paths(process=process, store=store)
+        if workspace_id is None:
+            return default_workspace_path(process=process, store=store)
+        return declared_workspace_paths(process=process, store=store).get(workspace_id)
     except AgentCardNotFoundError as exc:
         # The message names the unresolved ref's role AND hash.
         logger.error("workspace-access card resolution failed — team_id=%s: %s", team_id, exc)
@@ -205,25 +293,37 @@ async def require_workspace_access(
     policy: TeamAccessPolicy = Depends(get_team_access_policy),
     store: EventStore = Depends(get_event_store),
 ) -> RequestUser:
-    """Authorize the optional ``?workspace_id=`` query param (ADR-048 Decision 7).
+    """Select and authorize the one workspace path this request may open.
 
-    **A ``workspace_id`` no card of the authorized team declares is refused with
-    404** — ADR-034's 404-over-403 no-existence-leak answer, and the reason the
-    two ``return user`` pass-throughs this gate used to end in are gone. They
-    let any value that was not a foreign team's id through to be served as a
-    directory name, which is how one caller reached another's tree by naming it.
+    **The one convergence point.** On both branches it selects a single path
+    through the team's own cards, runs :func:`check_workspace_scope` on it, and
+    stashes it. ``_get_workspace`` opens only that stashed path. The scope check
+    lives here rather than in the route because the policy is ``async`` and two
+    of the three routes are sync.
+
+    - **Omitted ``workspace_id``**: the tree the team's default-layout card
+      binds to, with that card's ``workspace_sharable``, so a sharable default
+      card selects ``_shared/_team/<team_id>`` and is refused. With no such
+      card it is the team's per-principal default.
+    - **Named ``workspace_id``** (ADR-048 Decision 7): **a value no card of the
+      authorized team declares is refused with 404**. That is ADR-034's
+      404-over-403 answer, and the reason the two ``return user``
+      pass-throughs this gate used to end in are gone. They let any value that
+      was not a foreign team's id through to be served as a directory name,
+      which is how one caller reached another's tree by naming it.
 
     The allowed set is the team's own declared cards, resolved through the same
     :func:`akgentic.tool.workspace.resolve_workspace_path` the agent side uses,
     so the matching card's layout supplies the scope and the gate never infers
-    it from the string. The resolved map is recorded on the request for the
-    route that opens the directory, so the card store is read once per request.
+    it from the string. The card store is read once per request, and so is the
+    team.
 
     **The caller's identity governs authorization here; the team owner's governs
     the paths.** ``user`` decides whether this request may touch the team at all
-    — that is what the policy is for — and every resolved path is scoped on
+    — that is what the policy is for — and a principal-scoped path is scoped on
     ``process.user_id``, so what the caller reaches is the tree the team's own
-    agents write to.
+    agents write to. The scope check then asks the policy again, about the path
+    actually selected rather than about the team.
 
     **A metadata leaf is admitted iff it is byte-equal to the leaf the team's
     own ``process.metadata`` produces through the card's declared keys, in
@@ -235,11 +335,9 @@ async def require_workspace_access(
     in ``tests/server/routes/test_workspace_routes.py`` and
     ``tests/server/routes/test_team_access.py``.
 
-    An omitted ``workspace_id`` is still a pass-through: it selects the team's
-    own tree, which ``require_team_access`` has already authorized.
-
     Args:
-        request: The live request, carrying the slot the resolved map lands in.
+        request: The live request, carrying the slot the one authorized path
+            lands in.
         team_id: The **authorized** team, bound from the route path. The cards
             of this team are the authority — not of whatever team the
             ``workspace_id`` may happen to name.
@@ -253,21 +351,25 @@ async def require_workspace_access(
         The authenticated ``RequestUser`` on success.
 
     Raises:
-        HTTPException: **400** when the value is not a single safe path segment;
-            **404** when it names an existing team the wired policy denies, or
-            when no card of the authorized team declares it (both 404-over-403,
-            no existence leak); **500** when a card cannot be read or the path
-            cannot be resolved (ADR-048 Decision 4's read-path row).
+        HTTPException: **400** when the tool's ``leaf_segment`` refuses the
+            value as a leaf, a kind name or a sidecar suffix included;
+            **404** when it names an existing team the wired policy denies, when
+            no card of the authorized team declares it, or when the policy
+            denies the caller the selected path's user scope (all 404-over-403,
+            no existence leak); **500** when a card cannot be read, the path
+            cannot be resolved (ADR-048 Decision 4's read-path row), or the
+            team's default-layout cards disagree on ``workspace_sharable``.
+        SharedWorkspaceRefusedError: **403** when the selected path is under
+            the shared scope, for every caller.
     """
-    if workspace_id is None:
-        return user
-    validate_workspace_id(workspace_id)
-    await _deny_foreign_named_team(workspace_id, user, service, policy)
+    if workspace_id is not None:
+        validate_workspace_id(workspace_id)
+        await _deny_foreign_named_team(workspace_id, user, service, policy)
     process = stashed_team_process(request) or service.get_team(team_id)
     if process is None:
         raise HTTPException(status_code=404, detail="Team not found")
-    declared = _resolve_declared(team_id, process, store)
-    if workspace_id not in declared:
+    path = _resolve_declared(team_id, process, store, workspace_id)
+    if path is None:
         logger.info(
             "workspace-access gate denied",
             extra={
@@ -277,5 +379,6 @@ async def require_workspace_access(
             },
         )
         raise HTTPException(status_code=404, detail="Team not found")
-    stash_workspace_paths(request, declared)
+    await check_workspace_scope(path, team_id=team_id, user=user, policy=policy)
+    stash_workspace_path(request, path)
     return user

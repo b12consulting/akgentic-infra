@@ -9,24 +9,31 @@ no-existence-leak machinery. Direct unit calls pass ``policy=`` explicitly
 
 from __future__ import annotations
 
+import logging
 import uuid
+from pathlib import PurePosixPath
 from typing import Any
 
 import pytest
 from akgentic.core.agent_card import AgentCard
 from akgentic.team.models import Process
-from akgentic.tool.workspace import WorkspaceTool
+from akgentic.tool.workspace import SHARED_SCOPE, WorkspaceTool
 from fastapi import HTTPException
 from starlette.datastructures import State
 
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
+from akgentic.infra.errors import SharedWorkspaceRefusedError
 from akgentic.infra.protocols.authz import TeamAccessContext, TeamAccessPolicy
 from akgentic.infra.server.auth import RequestUser
 from akgentic.infra.server.routes._team_access import (
+    check_workspace_scope,
     require_team_access,
     require_workspace_access,
 )
-from akgentic.infra.server.routes._workspace_resolution import stashed_workspace_paths
+from akgentic.infra.server.routes._workspace_resolution import (
+    declared_workspace_paths,
+    stashed_workspace_path,
+)
 
 from ._workspace_cards import (
     CaseMetadata,
@@ -35,6 +42,9 @@ from ._workspace_cards import (
     process_with_cards,
     tool_card,
 )
+from ._workspace_ids import REJECTED_WORKSPACE_IDS
+
+_GATE_LOGGER = "akgentic.infra.server.routes._team_access"
 
 
 class _FakeProcess:
@@ -210,19 +220,111 @@ async def test_injected_false_policy_gives_owner_404() -> None:
     assert len(policy.calls) == 1
 
 
-# --- require_workspace_access: the omitted param is the only pass-through -----
+# --- require_workspace_access: the omitted param is no longer a pass-through ---
+#
+# Story 70.2 reverses this by decision. The omitted branch used to return before
+# anything was resolved, and the route resolved the team's own tree with no check
+# of its own. The gate is now the one convergence point: it selects and checks
+# the path on both branches.
 
 
-async def test_workspace_none_passes_through() -> None:
-    """An omitted workspace_id passes through without a policy call.
+async def test_an_omitted_workspace_id_is_checked_like_a_named_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The gate itself refuses a stranger the team's own tree, with no team gate in front.
 
-    It selects the team's own tree, which ``require_team_access`` has already
-    authorized — the one pass-through ADR-048 Decision 7 leaves standing.
+    The team gate is not called here, so a gate that still passed the omitted
+    branch through would return the user. The scope check reads ``alice`` off
+    the selected path and the real policy refuses ``mallory``.
+
+    Three 404s in this gate carry the same detail, so the refusal is pinned to
+    the scope check by the denial record only that check writes.
     """
-    user = RequestUser(user_id="mallory")
-    assert (
-        await _call_workspace(user, workspace_id=None, owner=None, policy=_RaisingPolicy()) is user
+    with (
+        caplog.at_level(logging.INFO, logger=_GATE_LOGGER),
+        pytest.raises(HTTPException) as excinfo,
+    ):
+        await _call_workspace(RequestUser(user_id="mallory"), workspace_id=None, owner="alice")
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail == "Team not found"
+    [denied] = [r for r in caplog.records if r.getMessage() == "workspace-scope gate denied"]
+    assert (denied.user_id, denied.owner) == ("mallory", "alice")
+
+
+async def test_an_omitted_workspace_id_stashes_the_owners_team_tree() -> None:
+    """With no default-layout card, the omitted branch selects the per-principal default.
+
+    The policy is asked about that path's scope, with the authorized team.
+    """
+    process, store = _declaring_team(WorkspaceTool(workspace_id="notes"))
+    policy = _FixedPolicy(True)
+    request = _FakeRequest()
+
+    await _call_workspace(
+        RequestUser(user_id="alice"),
+        workspace_id=None,
+        owner=None,
+        policy=policy,
+        process=process,
+        store=store,
+        request=request,
     )
+
+    stashed = stashed_workspace_path(request)  # type: ignore[arg-type]
+    assert str(stashed) == f"alice/_team/{process.team_id}"
+    assert [ctx.owner_user_id for ctx in policy.calls] == ["alice"]
+    assert len(store.calls) == 1
+
+
+async def test_an_omitted_workspace_id_on_a_sharable_default_card_is_refused() -> None:
+    """The omitted branch reads the default card's flag, so its shared tree is refused."""
+    process, store = _declaring_team(WorkspaceTool(workspace_sharable=True))
+    request = _FakeRequest()
+
+    with pytest.raises(SharedWorkspaceRefusedError):
+        await _call_workspace(
+            RequestUser(user_id="alice"),
+            workspace_id=None,
+            owner=None,
+            policy=_RaisingPolicy(),
+            process=process,
+            store=store,
+            request=request,
+        )
+    assert stashed_workspace_path(request) is None  # type: ignore[arg-type]
+
+
+async def test_default_cards_that_disagree_on_sharing_are_500() -> None:
+    """Two default-layout cards with different flags name no single tree."""
+    process, store = _declaring_team(WorkspaceTool(), WorkspaceTool(workspace_sharable=True))
+    with pytest.raises(HTTPException) as excinfo:
+        await _call_workspace(
+            RequestUser(user_id="alice"),
+            workspace_id=None,
+            owner=None,
+            process=process,
+            store=store,
+        )
+    assert excinfo.value.status_code == 500
+    # The resolution arm, not the card-read arm: the cards were read fine.
+    assert excinfo.value.detail == "Workspace path could not be resolved"
+
+
+async def test_a_named_shared_workspace_is_refused_to_an_admin() -> None:
+    """The named branch reaches the same check, and ``_shared`` has no admin exception."""
+    process, store = _declaring_team(WorkspaceTool(workspace_id="notes", workspace_sharable=True))
+    request = _FakeRequest()
+
+    with pytest.raises(SharedWorkspaceRefusedError):
+        await _call_workspace(
+            RequestUser(user_id="root", roles=["admin"]),
+            workspace_id="notes",
+            owner=None,
+            process=process,
+            store=store,
+            request=request,
+        )
+    assert stashed_workspace_path(request) is None  # type: ignore[arg-type]
 
 
 # --- require_workspace_access: the two removed pass-throughs (AC #2) ----------
@@ -261,13 +363,22 @@ async def test_undeclared_refusal_is_404_not_400_or_403() -> None:
     assert excinfo.value.detail == "Team not found"
 
 
-async def test_malformed_workspace_id_is_400_before_any_card_read() -> None:
-    """AC #7: the segment guard still answers 400, and the store is never touched."""
+@pytest.mark.parametrize("bad_value", REJECTED_WORKSPACE_IDS)
+async def test_malformed_workspace_id_is_400_before_any_card_read(bad_value: str) -> None:
+    """The guard answers 400 for anything ``leaf_segment`` refuses, and the store is never touched.
+
+    ``store.calls == []`` is what proves the guard runs before the membership
+    read: a kind name or a sidecar suffix that slipped past it would be read
+    against the team's cards and refused with the membership 404 instead.
+    """
     user = RequestUser(user_id="alice")
     process, store = _declaring_team(WorkspaceTool(workspace_id="notes"))
     with pytest.raises(HTTPException) as excinfo:
-        await _call_workspace(user, workspace_id="../x", owner=None, process=process, store=store)
+        await _call_workspace(
+            user, workspace_id=bad_value, owner=None, process=process, store=store
+        )
     assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == "Invalid workspace_id"
     assert store.calls == []
 
 
@@ -275,7 +386,7 @@ async def test_malformed_workspace_id_is_400_before_any_card_read() -> None:
 
 
 async def test_declared_workspace_passes_and_stashes_its_path() -> None:
-    """A declared id passes, and its resolved two-segment path reaches the route."""
+    """A declared id passes, and its resolved three-segment path reaches the route."""
     user = RequestUser(user_id="alice")
     process, store = _declaring_team(WorkspaceTool(workspace_id="notes"))
     request = _FakeRequest()
@@ -285,9 +396,8 @@ async def test_declared_workspace_passes_and_stashes_its_path() -> None:
     )
 
     assert result is user
-    stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
-    assert stashed is not None
-    assert str(stashed["notes"]) == "alice/notes"
+    stashed = stashed_workspace_path(request)  # type: ignore[arg-type]
+    assert str(stashed) == "alice/_id/notes"
 
 
 async def test_declared_exec_only_workspace_passes() -> None:
@@ -301,7 +411,7 @@ async def test_declared_exec_only_workspace_passes() -> None:
 
 
 async def test_declared_metadata_workspace_resolves_under_meta() -> None:
-    """AC #1: a metadata card's joined leaf passes, and its scope is ``_meta``."""
+    """A metadata card's joined leaf passes, under the owner with ``_meta`` as its kind."""
     user = RequestUser(user_id="alice")
     process, store = _declaring_team(
         WorkspaceTool(workspace_metadata_keys=["customer_id", "case_id"]),
@@ -314,9 +424,8 @@ async def test_declared_metadata_workspace_resolves_under_meta() -> None:
         user, workspace_id=leaf, owner=None, process=process, store=store, request=request
     )
 
-    stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
-    assert stashed is not None
-    assert str(stashed[leaf]) == f"_meta/{leaf}"
+    stashed = stashed_workspace_path(request)  # type: ignore[arg-type]
+    assert str(stashed) == f"alice/_meta/{leaf}"
 
 
 # The metadata leaf is the team's own metadata, encoded (Story 67.2). A metadata
@@ -343,12 +452,16 @@ def _acme_case_team() -> tuple[Process, RecordingCardStore]:
     )
 
 
-async def test_the_admitted_metadata_leaf_is_the_only_key_in_the_stashed_map() -> None:
+async def test_the_admitted_metadata_leaf_is_the_only_leaf_the_team_declares() -> None:
     """Story 67.2, the positive: ACME/42 reaches its own leaf, and the map holds only it.
 
     Exactly one key, so the refusals beside this can be read as *absent from
     the map* rather than present-and-refused — nothing compares pairs, because
     the leaf is derived from the metadata rather than matched against it.
+
+    Since Story 70.2 the gate stashes the one path it authorized rather than the
+    map, so the map is read from the same resolution function, on a fresh store
+    so the gate's one-read count stays its own.
     """
     user = RequestUser(user_id="alice")
     process, store = _acme_case_team()
@@ -359,10 +472,11 @@ async def test_the_admitted_metadata_leaf_is_the_only_key_in_the_stashed_map() -
     )
 
     assert result is user
-    stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
-    assert stashed is not None
-    assert {leaf: str(path) for leaf, path in stashed.items()} == {
-        _ACME_LEAF: f"_meta/{_ACME_LEAF}"
+    assert str(stashed_workspace_path(request)) == f"alice/_meta/{_ACME_LEAF}"  # type: ignore[arg-type]
+    _, fresh_store = _acme_case_team()
+    declared = declared_workspace_paths(process=process, store=fresh_store)  # type: ignore[arg-type]
+    assert {leaf: str(path) for leaf, path in declared.items()} == {
+        _ACME_LEAF: f"alice/_meta/{_ACME_LEAF}"
     }
     assert len(store.calls) == 1
 
@@ -403,7 +517,7 @@ async def test_a_leaf_the_teams_metadata_cannot_produce_is_404_and_stashes_nothi
 
     assert excinfo.value.status_code == 404
     assert excinfo.value.detail == "Team not found"
-    assert stashed_workspace_paths(request) is None  # type: ignore[arg-type]
+    assert stashed_workspace_path(request) is None  # type: ignore[arg-type]
     assert len(store.calls) == 1
 
 
@@ -461,9 +575,7 @@ async def test_an_odd_caller_id_does_not_affect_resolution() -> None:
         policy=_FixedPolicy(True),
     )
 
-    stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
-    assert stashed is not None
-    assert str(stashed["notes"]) == "alice/notes"
+    assert str(stashed_workspace_path(request)) == "alice/_id/notes"  # type: ignore[arg-type]
 
 
 async def test_missing_authorized_team_is_404() -> None:
@@ -515,3 +627,94 @@ async def test_workspace_foreign_team_allowed_still_meets_the_declared_check() -
         await _call_workspace(user, workspace_id=str(uuid.uuid4()), owner="alice", policy=policy)
     assert excinfo.value.status_code == 404
     assert len(policy.calls) == 1
+
+
+# --- check_workspace_scope: the scope segment is the whole input (Story 70.2) --
+#
+# The check alone, with no HTTP and the real ``OwnerOrAdminPolicy``. A user
+# scope is put to the policy with the scope as owner; ``_shared`` is refused for
+# every caller without consulting the policy at all.
+
+_OWNER = RequestUser(user_id="alice")
+_ADMIN = RequestUser(user_id="root", roles=["admin"])
+_STRANGER = RequestUser(user_id="mallory")
+_SHARED_CODE = "shared_workspace_entitlement_undecided"
+# ``_shared`` spelled with U+017F, the long s. ``.lower()`` leaves it as is,
+# ``.casefold()`` turns it into ``_shared``, and so does APFS: on a
+# case-insensitive volume ``_ſhared/`` opens the shared directory.
+_LONG_S_SHARED = "_ſhared"
+
+
+async def _check(
+    path: str,
+    user: RequestUser,
+    policy: TeamAccessPolicy | None = None,
+    team_id: uuid.UUID | None = None,
+) -> None:
+    await check_workspace_scope(
+        PurePosixPath(path),
+        team_id=team_id or uuid.uuid4(),
+        user=user,
+        policy=OwnerOrAdminPolicy() if policy is None else policy,
+    )
+
+
+@pytest.mark.parametrize("path", ["alice/_team/t", "alice/_id/notes", "alice/_meta/case_id-42"])
+@pytest.mark.parametrize("user", [_OWNER, _ADMIN], ids=["owner", "admin"])
+async def test_a_user_scope_serves_its_principal_and_an_admin(path: str, user: RequestUser) -> None:
+    """The owner of the scope is allowed, and so is an admin, through the policy."""
+    await _check(path, user)
+
+
+@pytest.mark.parametrize("path", ["alice/_team/t", "alice/_id/notes", "alice/_meta/case_id-42"])
+async def test_a_user_scope_refuses_a_stranger_with_404(path: str) -> None:
+    """Another principal is refused with the gates' 404, never a 403."""
+    with pytest.raises(HTTPException) as excinfo:
+        await _check(path, _STRANGER)
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail == "Team not found"
+
+
+async def test_the_policy_is_asked_about_the_scope_and_the_authorized_team() -> None:
+    """The context carries the scope segment as owner and the authorized team, nothing else."""
+    policy = _FixedPolicy(True)
+    team_id = uuid.uuid4()
+    await _check("mallory/_id/alice", _OWNER, policy=policy, team_id=team_id)
+    assert policy.calls == [TeamAccessContext(team_id=team_id, owner_user_id="mallory")]
+
+
+async def test_only_the_scope_is_read_never_the_leaf() -> None:
+    """Pairs that differ only in where the caller's id sits: the scope decides, the leaf never."""
+    await _check("alice/_id/mallory", _OWNER)
+    with pytest.raises(HTTPException) as excinfo:
+        await _check("mallory/_id/alice", _OWNER)
+    assert excinfo.value.status_code == 404
+
+
+@pytest.mark.parametrize("user", [_OWNER, _ADMIN, _STRANGER], ids=["owner", "admin", "stranger"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"{SHARED_SCOPE}/_team/t",
+        f"{SHARED_SCOPE}/_id/notes",
+        f"{SHARED_SCOPE}/_meta/case_id-42",
+        f"{SHARED_SCOPE}/_id/alice",
+        f"{SHARED_SCOPE.upper()}/_id/notes",
+        _LONG_S_SHARED + "/_id/notes",
+    ],
+)
+async def test_a_shared_scope_is_refused_to_every_caller_without_asking_the_policy(
+    path: str, user: RequestUser
+) -> None:
+    """``_shared`` is 403 with the entitlement code, for every caller and every kind.
+
+    ``_RaisingPolicy`` fails the spec if consulted, so an arm that fell through
+    to the policy cannot pass by the policy happening to refuse. The leaf equal
+    to the caller's id, the upper-cased scope, and the long-s spelling, which
+    ``str.lower()`` leaves unchanged but a case-folding filesystem opens as
+    ``_shared``, are refused all the same.
+    """
+    with pytest.raises(SharedWorkspaceRefusedError) as excinfo:
+        await _check(path, user, policy=_RaisingPolicy())
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.code == _SHARED_CODE
