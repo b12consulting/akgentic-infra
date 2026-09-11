@@ -157,9 +157,13 @@ async def check_workspace_scope(
       **every** caller, admins included. An admin's authority is over
       principals, and entitlement to a metadata value is not a principal
       question. ``_shared`` never means "skip the check": that reading would
-      ship the hole the check exists to close. The comparison ignores case,
-      as the tool's reserved-scope rule does, because ``_SHARED/`` and
-      ``_shared/`` are one directory on a case-insensitive filesystem.
+      ship the hole the check exists to close. The comparison **case-folds**
+      the scope, because a case-insensitive filesystem opens one directory for
+      every spelling that folds to ``_shared``. ``_SHARED/`` is one, and so is
+      ``_ſhared/`` (a long s), which ``str.lower()`` leaves unchanged and
+      APFS still resolves to ``_shared/``. That is stricter than the tool's
+      reserved-scope rule, which lowercases, so a principal whose id folds to
+      ``_shared`` is refused here even though the tool accepted the id.
     - **Anything else is a user scope.** The wired policy is asked whether the
       caller may act for that principal, with the scope segment as
       ``owner_user_id``. It is a policy call and not a string comparison, so
@@ -182,7 +186,7 @@ async def check_workspace_scope(
         HTTPException: 404 when the policy denies the caller the user scope.
     """
     scope = path.parts[0]
-    if scope.lower() == SHARED_SCOPE:
+    if scope.casefold() == SHARED_SCOPE:
         logger.info(
             "workspace-scope gate refused a shared tree",
             extra={"team_id": str(team_id), "user_id": user.user_id, "path": str(path)},
@@ -330,7 +334,8 @@ async def require_workspace_access(
     ``tests/server/routes/test_team_access.py``.
 
     Args:
-        request: The live request, carrying the slot the resolved map lands in.
+        request: The live request, carrying the slot the one authorized path
+            lands in.
         team_id: The **authorized** team, bound from the route path. The cards
             of this team are the authority — not of whatever team the
             ``workspace_id`` may happen to name.

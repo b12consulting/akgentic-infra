@@ -9,6 +9,7 @@ no-existence-leak machinery. Direct unit calls pass ``policy=`` explicitly
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import PurePosixPath
 from typing import Any
@@ -41,6 +42,9 @@ from ._workspace_cards import (
     process_with_cards,
     tool_card,
 )
+
+
+_GATE_LOGGER = "akgentic.infra.server.routes._team_access"
 
 
 class _FakeProcess:
@@ -224,17 +228,27 @@ async def test_injected_false_policy_gives_owner_404() -> None:
 # the path on both branches.
 
 
-async def test_an_omitted_workspace_id_is_checked_like_a_named_one() -> None:
+async def test_an_omitted_workspace_id_is_checked_like_a_named_one(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """The gate itself refuses a stranger the team's own tree, with no team gate in front.
 
     The team gate is not called here, so a gate that still passed the omitted
     branch through would return the user. The scope check reads ``alice`` off
     the selected path and the real policy refuses ``mallory``.
+
+    Three 404s in this gate carry the same detail, so the refusal is pinned to
+    the scope check by the denial record only that check writes.
     """
-    with pytest.raises(HTTPException) as excinfo:
+    with (
+        caplog.at_level(logging.INFO, logger=_GATE_LOGGER),
+        pytest.raises(HTTPException) as excinfo,
+    ):
         await _call_workspace(RequestUser(user_id="mallory"), workspace_id=None, owner="alice")
     assert excinfo.value.status_code == 404
     assert excinfo.value.detail == "Team not found"
+    [denied] = [r for r in caplog.records if r.getMessage() == "workspace-scope gate denied"]
+    assert (denied.user_id, denied.owner) == ("mallory", "alice")
 
 
 async def test_an_omitted_workspace_id_stashes_the_owners_team_tree() -> None:
@@ -292,6 +306,8 @@ async def test_default_cards_that_disagree_on_sharing_are_500() -> None:
             store=store,
         )
     assert excinfo.value.status_code == 500
+    # The resolution arm, not the card-read arm: the cards were read fine.
+    assert excinfo.value.detail == "Workspace path could not be resolved"
 
 
 async def test_a_named_shared_workspace_is_refused_to_an_admin() -> None:
@@ -614,6 +630,10 @@ _OWNER = RequestUser(user_id="alice")
 _ADMIN = RequestUser(user_id="root", roles=["admin"])
 _STRANGER = RequestUser(user_id="mallory")
 _SHARED_CODE = "shared_workspace_entitlement_undecided"
+# ``_shared`` spelled with U+017F, the long s. ``.lower()`` leaves it as is,
+# ``.casefold()`` turns it into ``_shared``, and so does APFS: on a
+# case-insensitive volume ``_ſhared/`` opens the shared directory.
+_LONG_S_SHARED = "_ſhared"
 
 
 async def _check(
@@ -671,6 +691,7 @@ async def test_only_the_scope_is_read_never_the_leaf() -> None:
         f"{SHARED_SCOPE}/_meta/case_id-42",
         f"{SHARED_SCOPE}/_id/alice",
         f"{SHARED_SCOPE.upper()}/_id/notes",
+        _LONG_S_SHARED + "/_id/notes",
     ],
 )
 async def test_a_shared_scope_is_refused_to_every_caller_without_asking_the_policy(
@@ -680,7 +701,9 @@ async def test_a_shared_scope_is_refused_to_every_caller_without_asking_the_poli
 
     ``_RaisingPolicy`` fails the spec if consulted, so an arm that fell through
     to the policy cannot pass by the policy happening to refuse. The leaf equal
-    to the caller's id and the upper-cased scope are refused all the same.
+    to the caller's id, the upper-cased scope, and the long-s spelling, which
+    ``str.lower()`` leaves unchanged but a case-folding filesystem opens as
+    ``_shared``, are refused all the same.
     """
     with pytest.raises(SharedWorkspaceRefusedError) as excinfo:
         await _check(path, user, policy=_RaisingPolicy())
