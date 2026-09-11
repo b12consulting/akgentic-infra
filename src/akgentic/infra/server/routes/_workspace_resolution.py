@@ -141,8 +141,8 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
     route never infers any of it from the string, and never falls back to an
     unscoped path when a directory is absent, which is the hole being closed.
 
-    **The scope is ``process.user_id``, and the calling principal is not an
-    input here at all.** The caller's identity governs *authorization*; the
+    **A principal scope is ``process.user_id``, and the calling principal is not
+    an input here at all.** The caller's identity governs *authorization*; the
     team's owner governs *path resolution*. The agent writes under
     ``observer.user_id``, which is propagated from ``Process.user_id``, so
     resolving the caller's scope instead would send an admin who has already
@@ -154,7 +154,9 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
     cannot reach ``<alice>/_id/notes`` by declaring ``workspace_id="notes"`` on
     his own team, because his team resolves under *his* ``process.user_id``.
     Reaching Alice's tree needs a team Alice owns, which ``require_team_access``
-    refuses him.
+    refuses him. That argument holds for a per-principal tree only. A
+    ``_shared`` tree has no owner, so this map admits it for every team that
+    declares the same kind and leaf, and nothing here refuses it.
 
     A metadata card is the same rule with no second clause: its key is the leaf
     ``process.metadata`` produces through the declared keys, in declaration
