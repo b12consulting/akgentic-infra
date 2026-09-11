@@ -28,7 +28,15 @@ import httpx
 import pytest
 from akgentic.team.models import AgentCardRef, Process
 from akgentic.team.ports import EventStore
-from akgentic.tool.workspace import SHARED_SCOPE, WorkspaceTool
+from akgentic.tool.workspace import (
+    GIT_DIR_SUFFIX,
+    ID_KIND,
+    META_DIR_SUFFIX,
+    METADATA_KIND,
+    SHARED_SCOPE,
+    WorkspaceTool,
+    resolve_workspace_path,
+)
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.datastructures import State
@@ -51,6 +59,7 @@ from ._workspace_cards import (
     process_with_cards,
     tool_card,
 )
+from ._workspace_ids import PATH_SAFE_UNDECLARED_IDS, REJECTED_WORKSPACE_IDS
 
 ANONYMOUS = "anonymous"
 """The principal the community client carries — and so its workspace scope."""
@@ -214,19 +223,11 @@ def test_workspace_file_upload_traversal_attack(
 
 # --- workspace_id selector tests (Story 33.1) ---
 
-# Values that _validate_workspace_id must reject with HTTP 400: empty, the dot
-# segments, anything containing a path separator, absolute paths, and an
-# over-length (129-char) value.
-_REJECTED_WORKSPACE_IDS = [
-    "../x",
-    "a/b",
-    "a\\b",
-    "/abs",
-    "..",
-    ".",
-    "",
-    "a" * 129,
-]
+# The values ``validate_workspace_id`` refuses with HTTP 400 are the ones the
+# tool's ``leaf_segment`` refuses: see ``REJECTED_WORKSPACE_IDS``, shared with
+# the gate and unit specs. There is no length bound. A path-safe value the team
+# does not declare reaches the membership check and gets its 404.
+_INVALID_WORKSPACE_ID = "Invalid workspace_id"
 
 
 def test_workspace_tree_honours_selector(
@@ -314,7 +315,7 @@ def test_workspace_file_upload_honours_selector(
     assert read_back.status_code == 404
 
 
-@pytest.mark.parametrize("bad_value", _REJECTED_WORKSPACE_IDS)
+@pytest.mark.parametrize("bad_value", REJECTED_WORKSPACE_IDS)
 def test_workspace_tree_rejects_bad_selector(
     client: TestClient,
     team_with_workspace: uuid.UUID,
@@ -322,14 +323,15 @@ def test_workspace_tree_rejects_bad_selector(
     bad_value: str,
 ) -> None:
     """GET .../tree returns 400 for any malformed workspace_id and creates no stray dir."""
-    before = set(seeded_settings.workspaces_root.iterdir())
+    before = _directories(seeded_settings.workspaces_root)
     resp = client.get(f"/workspace/{team_with_workspace}/tree", params={"workspace_id": bad_value})
     assert resp.status_code == 400
+    assert resp.json()["detail"] == _INVALID_WORKSPACE_ID
     # No directory was created or read outside the existing workspace roots.
-    assert set(seeded_settings.workspaces_root.iterdir()) == before
+    assert _directories(seeded_settings.workspaces_root) == before
 
 
-@pytest.mark.parametrize("bad_value", _REJECTED_WORKSPACE_IDS)
+@pytest.mark.parametrize("bad_value", REJECTED_WORKSPACE_IDS)
 def test_workspace_file_read_rejects_bad_selector(
     client: TestClient,
     team_with_workspace: uuid.UUID,
@@ -337,16 +339,17 @@ def test_workspace_file_read_rejects_bad_selector(
     bad_value: str,
 ) -> None:
     """GET .../file returns 400 for any malformed workspace_id and creates no stray dir."""
-    before = set(seeded_settings.workspaces_root.iterdir())
+    before = _directories(seeded_settings.workspaces_root)
     resp = client.get(
         f"/workspace/{team_with_workspace}/file",
         params={"path": "output.txt", "workspace_id": bad_value},
     )
     assert resp.status_code == 400
-    assert set(seeded_settings.workspaces_root.iterdir()) == before
+    assert resp.json()["detail"] == _INVALID_WORKSPACE_ID
+    assert _directories(seeded_settings.workspaces_root) == before
 
 
-@pytest.mark.parametrize("bad_value", _REJECTED_WORKSPACE_IDS)
+@pytest.mark.parametrize("bad_value", REJECTED_WORKSPACE_IDS)
 def test_workspace_file_upload_rejects_bad_selector(
     client: TestClient,
     team_with_workspace: uuid.UUID,
@@ -354,7 +357,7 @@ def test_workspace_file_upload_rejects_bad_selector(
     bad_value: str,
 ) -> None:
     """POST .../file returns 400 for any malformed workspace_id and creates no stray dir."""
-    before = set(seeded_settings.workspaces_root.iterdir())
+    before = _directories(seeded_settings.workspaces_root)
     resp = client.post(
         f"/workspace/{team_with_workspace}/file",
         params={"workspace_id": bad_value},
@@ -362,7 +365,8 @@ def test_workspace_file_upload_rejects_bad_selector(
         files={"file": ("evil.txt", b"data", "text/plain")},
     )
     assert resp.status_code == 400
-    assert set(seeded_settings.workspaces_root.iterdir()) == before
+    assert resp.json()["detail"] == _INVALID_WORKSPACE_ID
+    assert _directories(seeded_settings.workspaces_root) == before
 
 
 # --- Route-level authorization: path team_id (ADR-034 §Layered authz, AC1-AC5) ---
@@ -1121,7 +1125,7 @@ def test_the_resolved_meta_path_is_400_even_for_the_team_that_owns_the_tree(
     This is the exact ``workspace_path`` string a ``ResourceAttached`` event
     carries, sent back inbound. Only the leaf is ever on the wire; the scope is
     the server's to recompute from the matching card, never the client's to
-    name. It is deliberately **not** a row in ``_REJECTED_WORKSPACE_IDS``: those
+    name. It is deliberately **not** a row in ``REJECTED_WORKSPACE_IDS``: those
     parametrised specs run against a team that declares nothing, so they cannot
     show that the refusal beats a legitimate declaration. Here the team *does*
     own the tree — the positive proves it — and the path form is refused anyway.
@@ -1690,3 +1694,170 @@ def test_get_workspace_opens_exactly_the_stashed_path(tmp_path: Path, named: boo
     assert {p for p in tmp_path.rglob("*") if p.is_dir()} == {
         tmp_path.joinpath(*path.parts[:i]) for i in range(1, 4)
     }
+
+
+# --- the route guards its selector with the tool's leaf rule (Story 70.3) ---
+#
+# ``?workspace_id=`` is a leaf selector. The guard in front of it is the tool's
+# ``leaf_segment``, a traversal guard, and membership in the team's declared
+# workspaces is the authorization. Every leaf a card can declare is therefore
+# reachable, including a metadata leaf carrying ``%`` or running past 128 bytes,
+# which the private regex this replaced refused with 400.
+#
+# Each leaf below comes from the tool's own resolver, never from infra's
+# ``declared_workspace_paths``: the gate is built on that function, so a spec
+# built on it would agree with whatever the gate does.
+
+_LEAVES_THE_REGEX_REFUSED = [
+    pytest.param(CaseMetadata(customer_id="Acme Corp", case_id="42"), "percent", id="space"),
+    pytest.param(CaseMetadata(customer_id="Zürich", case_id="42"), "percent", id="non_ascii"),
+    pytest.param(CaseMetadata(customer_id="A" * 150, case_id="42"), "length", id="over_128_bytes"),
+]
+"""Team metadata whose leaf the old regex refused: by its charset (``%``), or by its length."""
+
+# The rows of ``REJECTED_WORKSPACE_IDS`` that ``PurePosixPath`` keeps as the last
+# segment of a stashed path. ``"."``, ``"a/b"`` and ``"/abs"`` are left out: the
+# path would not end in them, so the stash could not name them.
+_STASHABLE_REJECTED_IDS = [
+    pytest.param("..", id="dot-dot"),
+    pytest.param(".hidden", id="leading-dot"),
+    pytest.param(METADATA_KIND, id="metadata-kind"),
+    pytest.param(f"notes{GIT_DIR_SUFFIX}", id="git-suffix"),
+    pytest.param(f"notes{META_DIR_SUFFIX}", id="meta-suffix"),
+]
+
+
+@pytest.mark.parametrize(("method", "route"), _ROUTES)
+@pytest.mark.parametrize(("metadata", "needed"), _LEAVES_THE_REGEX_REFUSED)
+def test_a_declared_leaf_the_old_regex_refused_is_served_on_every_route(
+    client: TestClient,
+    team_with_workspace: uuid.UUID,
+    seeded_settings: ServerSettings,
+    community_services: CommunityServices,
+    method: str,
+    route: str,
+    metadata: CaseMetadata,
+    needed: str,
+) -> None:
+    """AC #2: a metadata leaf with ``%`` or over 128 bytes is served when the team declares it.
+
+    The preconditions come before any request. They prove each value really
+    needed the change: two leaves carry ``%``, and the third is encoding-free
+    but longer than the old 128-character bound.
+
+    The leaf goes on the wire through ``params=``, as the frontend sends it with
+    ``encodeURIComponent``. The ``%`` is encoded once by the client and decoded
+    once by the server, so the selector the gate sees is byte-equal to the leaf.
+    """
+    root = seeded_settings.workspaces_root
+    _declare(community_services, team_with_workspace, _case_card(), metadata=metadata)
+    path = resolve_workspace_path(
+        workspace_id=None,
+        workspace_metadata_keys=list(_META_KEYS),
+        team_id=str(team_with_workspace),
+        user_id=ANONYMOUS,
+        metadata=metadata,
+        workspace_sharable=False,
+    )
+    assert path.parts[:2] == (ANONYMOUS, METADATA_KIND)
+    if needed == "percent":
+        assert "%" in path.name
+    else:
+        assert "%" not in path.name
+        assert len(path.name.encode()) > 128
+    tree = _seed_probe(root.joinpath(*path.parts))
+
+    resp = _hit(client, method, route, team_with_workspace, workspace_id=path.name)
+
+    assert resp.status_code == _served(method)
+    if route.endswith("/tree"):
+        assert [e["name"] for e in resp.json()["entries"]] == [_PROBE]
+    elif method == "GET":
+        assert resp.content == f"seeded in {path.name}".encode()
+    else:
+        assert (tree / _PROBE).read_bytes() == b"uploaded"
+        assert list(root.rglob(_PROBE)) == [tree / _PROBE]
+
+
+@pytest.mark.parametrize(("method", "route"), _ROUTES)
+@pytest.mark.parametrize("value", PATH_SAFE_UNDECLARED_IDS)
+def test_a_path_safe_value_no_card_declares_is_the_membership_404_on_every_route(
+    client: TestClient,
+    team_with_workspace: uuid.UUID,
+    seeded_settings: ServerSettings,
+    caplog: pytest.LogCaptureFixture,
+    method: str,
+    route: str,
+    value: str,
+) -> None:
+    """AC #4: a value the guard lets through, and no card declares, is 404 and never 400.
+
+    A 404 alone could be the team gate's or the scope check's. The denial record
+    only the membership check writes pins it, and there is exactly one.
+    """
+    root = seeded_settings.workspaces_root
+    before = _disk(root)
+
+    with caplog.at_level(logging.INFO, logger=_GATE_LOGGER):
+        resp = _hit(client, method, route, team_with_workspace, workspace_id=value)
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == _TEAM_NOT_FOUND
+    [denied] = _denials(caplog)
+    assert denied.workspace_id == value
+    assert _disk(root) == before
+
+
+def test_the_guard_is_the_tools_leaf_segment_and_not_a_copy_of_it(
+    client: TestClient,
+    team_with_workspace: uuid.UUID,
+    community_services: CommunityServices,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC #1: the route consults the tool's function, so a stand-in for it decides.
+
+    The team declares ``notes`` and is served it first. With ``leaf_segment``
+    replaced by a stand-in that refuses ``notes`` only, the same request is 400.
+    A guard hand-copied into infra would ignore the stand-in and still serve it.
+    The stand-in's message is not echoed to the caller.
+    """
+    _declare(community_services, team_with_workspace, WorkspaceTool(workspace_id="notes"))
+    assert _tree(client, team_with_workspace, "notes").status_code == 200
+
+    def _refuses_notes(value: str) -> str:
+        if value == "notes":
+            raise ValueError("the stand-in refuses notes")
+        return value
+
+    monkeypatch.setattr(_workspace_resolution, "leaf_segment", _refuses_notes)
+    resp = _tree(client, team_with_workspace, "notes")
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == _INVALID_WORKSPACE_ID
+
+
+@pytest.mark.parametrize("value", _STASHABLE_REJECTED_IDS)
+def test_get_workspace_guards_the_selector_even_when_the_stash_names_it(
+    tmp_path: Path, value: str
+) -> None:
+    """AC #3: the route's own guard refuses a non-leaf selector the stash agrees with.
+
+    The stashed path ends in the selector, so the leaf comparison passes and
+    only the guard can refuse. The gate runs the same guard first on every real
+    request, so a direct call is the one way to see this call site on its own.
+    The root must stay empty: ``Filesystem`` creates its root eagerly.
+    """
+    conn = _BareConn()
+    stash_workspace_path(conn, PurePosixPath("alice", ID_KIND, value))  # type: ignore[arg-type]
+
+    with pytest.raises(HTTPException) as excinfo:
+        _get_workspace(
+            uuid.uuid4(),
+            CommunitySettings(workspaces_root=tmp_path),
+            request=conn,  # type: ignore[arg-type]
+            workspace_id=value,
+        )
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == _INVALID_WORKSPACE_ID
+    assert list(tmp_path.iterdir()) == []

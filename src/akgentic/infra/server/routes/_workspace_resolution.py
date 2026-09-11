@@ -48,7 +48,6 @@ owner governs path resolution. See :func:`declared_workspace_paths`.
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import PurePosixPath
 
 from fastapi import HTTPException
@@ -59,7 +58,7 @@ from akgentic.team import resolve_agent_cards
 from akgentic.team.models import Process
 from akgentic.team.ports import EventStore
 from akgentic.tool import ToolCard
-from akgentic.tool.workspace import WorkspaceTool, resolve_workspace_path
+from akgentic.tool.workspace import WorkspaceTool, leaf_segment, resolve_workspace_path
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +71,6 @@ __all__ = [
     "stashed_workspace_path",
     "validate_workspace_id",
 ]
-
-# A workspace_id is a single safe path segment: alphanumerics plus dot, dash, and
-# underscore, 1-128 chars. This is a route-boundary traversal guard (a correctness
-# invariant) applying to the **logical** id the caller sent, NOT an access-policy
-# check — the allow/deny answer is the declared-workspace check below.
-_WORKSPACE_ID_RE = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 
 # Per-request slot holding the ONE resolved path the access gate authorized, on
 # either branch. The route that opens the directory opens this path and nothing
@@ -95,21 +88,32 @@ _TEAM_PROCESS_SLOT = "akgentic_authorized_team_process"
 
 
 def validate_workspace_id(workspace_id: str) -> str:
-    """Reject any workspace_id that is not a single safe path segment.
+    """Reject any workspace_id that cannot be a workspace leaf, with HTTP 400.
 
-    Mandatory traversal guard (ADR-029 §2): rejects ``""``, ``"."``, ``".."``,
-    any value containing a path separator, absolute paths, and over-length
-    values with HTTP 400, raising **before** any ``Filesystem`` is constructed.
-    Returns the value unchanged when it is a valid single segment.
+    ``?workspace_id=`` is a **leaf selector**, so the guard is the tool's own
+    :func:`akgentic.tool.workspace.leaf_segment` (ADR-052 Decision 6), applied
+    to the value the caller sent. It refuses the empty string, a leading dot
+    (``.`` and ``..`` included), ``/``, ``\\``, NUL, the three kind names and
+    the sidecar suffixes, in any letter case, raising **before** any card is
+    read or any ``Filesystem`` is constructed. It caps no length and admits
+    ``%``, so every leaf a card can declare, a percent-encoded metadata leaf
+    included, gets through.
 
-    It guards what the *caller* sent, which is why it survives ADR-048
-    untouched: :func:`akgentic.tool.workspace.leaf_segment` guards what the
-    *resolver* emits, and the composed three-segment path is built server-side
-    from values the caller cannot supply, so it never passes through here.
+    This is a traversal guard, not an access policy. Authorization is
+    membership: the selector is served only when it is byte-equal to a leaf in
+    :func:`declared_workspace_paths`. A path-safe value no card declares is
+    refused there with 404.
+
+    The detail is fixed: the tool's message reflects the caller's value and
+    names internal directories, so it stays out of the response.
+
+    Returns:
+        The value unchanged when it is a valid leaf.
     """
-    if workspace_id in ("", ".", "..") or not _WORKSPACE_ID_RE.fullmatch(workspace_id):
-        raise HTTPException(status_code=400, detail="Invalid workspace_id")
-    return workspace_id
+    try:
+        return leaf_segment(workspace_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid workspace_id") from None
 
 
 def _declared_layout(tool: ToolCard) -> tuple[str | None, list[str], bool] | None:

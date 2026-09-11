@@ -42,7 +42,7 @@ from ._workspace_cards import (
     process_with_cards,
     tool_card,
 )
-
+from ._workspace_ids import REJECTED_WORKSPACE_IDS
 
 _GATE_LOGGER = "akgentic.infra.server.routes._team_access"
 
@@ -363,13 +363,22 @@ async def test_undeclared_refusal_is_404_not_400_or_403() -> None:
     assert excinfo.value.detail == "Team not found"
 
 
-async def test_malformed_workspace_id_is_400_before_any_card_read() -> None:
-    """AC #7: the segment guard still answers 400, and the store is never touched."""
+@pytest.mark.parametrize("bad_value", REJECTED_WORKSPACE_IDS)
+async def test_malformed_workspace_id_is_400_before_any_card_read(bad_value: str) -> None:
+    """The guard answers 400 for anything ``leaf_segment`` refuses, and the store is never touched.
+
+    ``store.calls == []`` is what proves the guard runs before the membership
+    read: a kind name or a sidecar suffix that slipped past it would be read
+    against the team's cards and refused with the membership 404 instead.
+    """
     user = RequestUser(user_id="alice")
     process, store = _declaring_team(WorkspaceTool(workspace_id="notes"))
     with pytest.raises(HTTPException) as excinfo:
-        await _call_workspace(user, workspace_id="../x", owner=None, process=process, store=store)
+        await _call_workspace(
+            user, workspace_id=bad_value, owner=None, process=process, store=store
+        )
     assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == "Invalid workspace_id"
     assert store.calls == []
 
 
