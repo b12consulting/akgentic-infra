@@ -8,6 +8,7 @@ from akgentic.catalog import Catalog
 from akgentic.core import ActorSystem
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
+from akgentic.infra.adapters.shared.team_tree_only_policy import TeamTreeOnlyPolicy
 from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
@@ -15,6 +16,7 @@ from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.worker_handle import WorkerHandle
+from akgentic.infra.protocols.workspace_deletion import WorkspaceDeletionPolicy
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import EventStore, ServiceRegistry
@@ -35,6 +37,14 @@ class TierServices(BaseModel):
     team_access_policy: TeamAccessPolicy = Field(
         default_factory=OwnerOrAdminPolicy,
         description="Per-team authorization rule (owner-or-admin by default)",
+    )
+    workspace_deletion_policy: WorkspaceDeletionPolicy = Field(
+        default_factory=TeamTreeOnlyPolicy,
+        description=(
+            "Which of a team's workspace trees its deletion takes with it. The "
+            "default approves the team's own _team tree in either scope and "
+            "refuses every other kind, so a deployment that wires nothing is safe"
+        ),
     )
     event_store: SkipValidation[EventStore] = Field(
         description="Persistence backend for team event sourcing"

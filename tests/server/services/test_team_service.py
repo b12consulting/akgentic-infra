@@ -13,15 +13,32 @@ from unittest.mock import MagicMock
 
 import pytest
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
-from akgentic.team.models import Process, TeamStatus
+from akgentic.core.agent_card import AgentCard
+from akgentic.core.utils.serializer import SerializableBaseModel
+from akgentic.team.models import AgentCardRef, Process, TeamStatus
+from akgentic.team.projection import hash_agent_card
+from akgentic.tool.workspace import (
+    ID_KIND,
+    METADATA_KIND,
+    TEAM_KIND,
+    WorkspaceTool,
+    git_dir_for,
+    meta_dir_for,
+)
 
+from akgentic.infra.adapters.shared.team_tree_only_policy import TeamTreeOnlyPolicy
 from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
-from akgentic.infra.server.services import team_service as team_service_module
+from akgentic.infra.protocols.workspace_deletion import (
+    WorkspaceDeletionContext,
+    WorkspaceDeletionPolicy,
+)
+from akgentic.infra.server.services import _workspace_paths as workspace_paths_module
 from akgentic.infra.server.services.team_service import (
     MAX_PAGE_SIZE,
     CatalogTeamEntryMissingError,
     TeamService,
 )
+from tests.server.routes._workspace_cards import CaseMetadata, RecordingCardStore, tool_card
 
 
 def test_create_team_returns_process(team_service: TeamService) -> None:
@@ -632,27 +649,54 @@ _OWNER = "alice"
 
 
 def _stub_team_service(
-    workspaces_root: Path, *, team_exists: bool, owner: str = _OWNER
+    workspaces_root: Path,
+    *,
+    team_exists: bool,
+    owner: str = _OWNER,
+    team_id: uuid.UUID | None = None,
+    cards: list[AgentCard] | None = None,
+    missing_cards: bool = False,
+    metadata: SerializableBaseModel | None = None,
+    policy: WorkspaceDeletionPolicy | None = None,
 ) -> TeamService:
     """Build a TeamService with mocked tier services for FS-cleanup tests.
 
     When ``team_exists`` is False, ``worker_handle.get_team`` returns None so
-    ``delete_team`` raises ``ValueError`` before any FS work.
+    ``delete_team`` raises ``TeamNotFoundError`` before any FS work.
 
-    ``process.user_id`` is set explicitly: it is the ``<scope>`` segment of the
-    workspace path since ADR-048, so leaving it as a bare ``MagicMock``
-    attribute would make every one of these tests exercise the unusable-owner
-    arm instead of the path under test.
+    Three attributes are set with **real** values rather than left as bare
+    ``MagicMock`` ones, because the deletion path now reads all three and a mock
+    in any of them silently changes what is under test:
+
+    * ``process.user_id`` is the ``<scope>`` segment (ADR-048), so a mock would
+      send every spec down the unusable-owner arm;
+    * ``process.team_id`` is the ``<leaf>`` of the team's own tree *and* what
+      the default policy compares that leaf against, so a mock refuses
+      everything;
+    * ``process.agent_cards`` and ``services.event_store`` are what the sharing
+      axis is read from — a mock card store returns a mock and the candidate set
+      is nonsense.
+
+    ``services.workspace_deletion_policy`` is likewise real: a ``MagicMock``
+    would return a truthy mock from ``may_delete`` and approve every candidate,
+    which is the opposite of the default under test.
     """
     services = MagicMock()
     if team_exists:
+        cards = cards or []
         process = MagicMock(spec=Process)
         process.status = TeamStatus.STOPPED
         process.user_id = owner
-        process.metadata = None
+        process.team_id = team_id or uuid.uuid4()
+        process.metadata = metadata
+        process.agent_cards = [
+            AgentCardRef(role=card.role, card_hash=hash_agent_card(card)) for card in cards
+        ]
+        services.event_store = RecordingCardStore(cards, missing=missing_cards)
         services.worker_handle.get_team.return_value = process
     else:
         services.worker_handle.get_team.return_value = None
+    services.workspace_deletion_policy = policy or TeamTreeOnlyPolicy()
     return TeamService(services, workspaces_root=workspaces_root)
 
 
@@ -671,7 +715,7 @@ class TestDeleteTeamWorkspaceCleanup:
         team_dir.mkdir(parents=True)
         (team_dir / "file.txt").write_text("content")
 
-        service = _stub_team_service(tmp_path, team_exists=True)
+        service = _stub_team_service(tmp_path, team_exists=True, team_id=team_id)
         service.delete_team(team_id)
 
         assert not team_dir.exists()
@@ -679,45 +723,60 @@ class TestDeleteTeamWorkspaceCleanup:
     def test_the_deletion_target_is_the_one_the_resolver_names(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """AC #3, Guard 2: the target comes from ``resolve_workspace_path``, and only from it.
+        """AC #1: the target comes from the resolver only, on the sharing axis the card gave.
 
-        The resolver ``team_service`` imports is replaced with one returning a
-        sentinel three-segment path. The sentinel is removed and the tree at the
-        default location is not, so a deletion target hand-built beside the
-        resolver — even a correct three-segment one — goes red here, where the
-        on-disk guard cannot tell the two apart.
+        The property this protects is unchanged from when it was written — the
+        deletion target is whatever ``resolve_workspace_path`` returned, so a
+        hand-built target beside the resolver, *even a correct three-segment
+        one*, goes red here where an on-disk guard cannot tell the two apart.
+
+        What changed, on the strength of epic 71's decision, is the argument the
+        assertion pins. It used to read ``"workspace_sharable": False`` under the
+        comment *"no card is consulted on delete"*. That **was** the defect: the
+        deletion site answered a question belonging to the card, so a team whose
+        card declared sharing wrote to ``_shared/…`` and deletion looked under
+        ``<owner>/…``. The team here declares ``workspace_sharable=True``, and
+        the assertion is that every call carried the card's ``True`` — loosening
+        it to drop the kwargs comparison would be a check narrowed until it
+        agreed, where re-expressing it is the reversal the decision asked for.
         """
         team_id = uuid.uuid4()
-        sentinel = PurePosixPath("resolver-chose", "_team", "this-tree")
+        sentinel = PurePosixPath("resolver-chose", TEAM_KIND, str(team_id))
         calls: list[dict[str, object]] = []
 
         def _resolver(**kwargs: object) -> PurePosixPath:
             calls.append(kwargs)
             return sentinel
 
-        monkeypatch.setattr(team_service_module, "resolve_workspace_path", _resolver)
+        monkeypatch.setattr(workspace_paths_module, "resolve_workspace_path", _resolver)
         chosen = tmp_path / sentinel
         chosen.mkdir(parents=True)
         (chosen / "file.txt").write_text("content")
-        default = tmp_path / _OWNER / "_team" / str(team_id)
+        default = tmp_path / _OWNER / TEAM_KIND / str(team_id)
         default.mkdir(parents=True)
 
-        service = _stub_team_service(tmp_path, team_exists=True)
+        service = _stub_team_service(
+            tmp_path,
+            team_exists=True,
+            team_id=team_id,
+            cards=[tool_card("Sharer", WorkspaceTool(workspace_sharable=True))],
+        )
         service.delete_team(team_id)
 
         assert not chosen.exists()
         assert default.exists()
-        # The team's per-principal default tree: no card is consulted on delete.
-        assert calls == [
-            {
-                "workspace_id": None,
-                "workspace_metadata_keys": [],
-                "team_id": str(team_id),
-                "user_id": _OWNER,
-                "metadata": None,
-                "workspace_sharable": False,
-            }
-        ]
+        # The card's declaration, on every call: the declared workspace and the
+        # team's own default tree are one and the same tree for this card, so
+        # the resolver is asked the same question twice and told ``True`` twice.
+        declared = {
+            "workspace_id": None,
+            "workspace_metadata_keys": [],
+            "team_id": str(team_id),
+            "user_id": _OWNER,
+            "metadata": None,
+            "workspace_sharable": True,
+        }
+        assert calls == [declared, declared]
 
     def test_unscoped_sibling_tree_is_left_alone(self, tmp_path: Path) -> None:
         """The flat and two-segment directories are not this team's and are not touched.
@@ -736,7 +795,7 @@ class TestDeleteTeamWorkspaceCleanup:
         two_segment.mkdir(parents=True)
         (two_segment / "old.txt").write_text("pre-three-segment")
 
-        service = _stub_team_service(tmp_path, team_exists=True)
+        service = _stub_team_service(tmp_path, team_exists=True, team_id=team_id)
         service.delete_team(team_id)
 
         assert not scoped.exists()
@@ -751,7 +810,9 @@ class TestDeleteTeamWorkspaceCleanup:
         other_dir = tmp_path / "some-other-principal" / "_team" / str(team_id)
         other_dir.mkdir(parents=True)
 
-        service = _stub_team_service(tmp_path, team_exists=True, owner="owner-principal")
+        service = _stub_team_service(
+            tmp_path, team_exists=True, team_id=team_id, owner="owner-principal"
+        )
         service.delete_team(team_id)
 
         assert not owner_dir.exists()
@@ -769,7 +830,7 @@ class TestDeleteTeamWorkspaceCleanup:
         orphaned directory for a stuck record.
         """
         team_id = uuid.uuid4()
-        service = _stub_team_service(tmp_path, team_exists=True, owner="")
+        service = _stub_team_service(tmp_path, team_exists=True, team_id=team_id, owner="")
 
         with caplog.at_level(logging.WARNING):
             service.delete_team(team_id)  # must NOT raise
@@ -790,7 +851,7 @@ class TestDeleteTeamWorkspaceCleanup:
         """AC #2: a missing workspace dir produces no WARNING log and no error."""
         team_id = uuid.uuid4()
         # workspaces_root exists, but the scoped subdir does NOT.
-        service = _stub_team_service(tmp_path, team_exists=True)
+        service = _stub_team_service(tmp_path, team_exists=True, team_id=team_id)
 
         with caplog.at_level(logging.WARNING):
             service.delete_team(team_id)
@@ -815,7 +876,7 @@ class TestDeleteTeamWorkspaceCleanup:
 
         monkeypatch.setattr(shutil, "rmtree", _boom)
 
-        service = _stub_team_service(tmp_path, team_exists=True)
+        service = _stub_team_service(tmp_path, team_exists=True, team_id=team_id)
         with caplog.at_level(logging.WARNING):
             service.delete_team(team_id)  # must NOT raise
 
@@ -844,6 +905,420 @@ class TestDeleteTeamWorkspaceCleanup:
 
         assert rmtree_calls == []
         service._services.worker_handle.delete_team.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Story 71.1 — the sharing axis is the card's, the rule is the kind and the
+# leaf, and that rule is an overridable policy with a safe default.
+# ---------------------------------------------------------------------------
+
+
+class _PermitKind:
+    """A test-wired policy permitting exactly one ``<kind>``.
+
+    Stands in for a deployment that knows something this package cannot — that
+    its named workspaces really do belong to one team at a time. Its only job
+    here is to prove the override path is reachable and that it narrows to
+    exactly what it names.
+    """
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+
+    def may_delete(self, *, ctx: WorkspaceDeletionContext) -> bool:
+        return ctx.kind == self.kind
+
+
+def _kept_records(caplog: pytest.LogCaptureFixture, team_id: uuid.UUID) -> list[str]:
+    """Every "workspace kept" record this deletion produced."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if "Workspace kept" in record.getMessage() and str(team_id) in record.getMessage()
+    ]
+
+
+class TestTheDefaultRuleIsTheKindAndTheLeaf:
+    """AC #3 + AC #6: only ``_team``/<this team id> is deletable, and refusals are logged.
+
+    The candidates are forced through a monkeypatched resolver rather than built
+    from cards, because the point is the *shape of the path*, whatever produced
+    it: the default policy must refuse a named or metadata tree even when the
+    resolver hands it one. A named tree is reachable by every team of that
+    principal and a metadata tree by every team carrying those values, so taking
+    either with one team would wipe a workspace others still use.
+    """
+
+    @pytest.mark.parametrize(
+        ("candidate", "kind"),
+        [
+            (PurePosixPath(_OWNER, ID_KIND, "notes"), "a per-principal named tree"),
+            (PurePosixPath("_shared", METADATA_KIND, "customer_id-ACME"), "a shared metadata tree"),
+            (PurePosixPath("_shared", ID_KIND, "notes"), "a shared named tree"),
+            (PurePosixPath(_OWNER, METADATA_KIND, "customer_id-ACME"), "a metadata tree"),
+        ],
+    )
+    def test_a_candidate_that_is_not_this_teams_own_tree_is_kept_and_recorded(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        candidate: PurePosixPath,
+        kind: str,
+    ) -> None:
+        team_id = uuid.uuid4()
+        monkeypatch.setattr(
+            workspace_paths_module, "resolve_workspace_path", lambda **_kwargs: candidate
+        )
+        target = tmp_path / candidate
+        target.mkdir(parents=True)
+        (target / "file.txt").write_text("content")
+
+        service = _stub_team_service(tmp_path, team_exists=True, team_id=team_id)
+        with caplog.at_level(logging.INFO):
+            service.delete_team(team_id)
+
+        assert (target / "file.txt").read_text() == "content", f"{kind} was removed"
+        # AC #6: the candidate and the deciding policy are both on the record,
+        # so a deletion that did not happen can be explained afterwards.
+        kept = _kept_records(caplog, team_id)
+        assert len(kept) == 1
+        assert str(candidate) in kept[0]
+        assert TeamTreeOnlyPolicy.__name__ in kept[0]
+
+    def test_a_team_leaf_belonging_to_another_team_is_kept(self, tmp_path: Path) -> None:
+        """The leaf must be **this** team's id, not merely of the ``_team`` kind.
+
+        A ``_team`` leaf is a team id, so a candidate naming a different one is
+        another team's tree. Checking only the kind would delete it.
+        """
+        team_id = uuid.uuid4()
+        other = tmp_path / _OWNER / TEAM_KIND / str(uuid.uuid4())
+        other.mkdir(parents=True)
+
+        assert not TeamTreeOnlyPolicy().may_delete(
+            ctx=WorkspaceDeletionContext(
+                team_id=team_id,
+                owner_user_id=_OWNER,
+                path=PurePosixPath(other.relative_to(tmp_path).as_posix()),
+                scope=_OWNER,
+                kind=TEAM_KIND,
+                leaf=other.name,
+            )
+        )
+
+    def test_the_shared_team_tree_is_deletable_in_the_shared_scope_too(
+        self, tmp_path: Path
+    ) -> None:
+        """``_shared/_team/<team_id>`` is an orphan once the team is gone, not sharing."""
+        team_id = uuid.uuid4()
+        assert TeamTreeOnlyPolicy().may_delete(
+            ctx=WorkspaceDeletionContext(
+                team_id=team_id,
+                owner_user_id=_OWNER,
+                path=PurePosixPath("_shared", TEAM_KIND, str(team_id)),
+                scope="_shared",
+                kind=TEAM_KIND,
+                leaf=str(team_id),
+            )
+        )
+
+
+class TestTheRuleIsAWiredPolicyNotAConstant:
+    """AC #4: the default is overridable, and an override narrows to what it names."""
+
+    def test_an_unwired_deployment_gets_the_refusing_default(self) -> None:
+        """The ``default_factory`` is what makes wiring nothing safe.
+
+        ``wiring.py`` deliberately does not set this field, so the container's
+        own default is the only thing standing between a deployment and a policy
+        that answers nothing.
+        """
+        from akgentic.infra.server.deps import TierServices
+
+        field = TierServices.model_fields["workspace_deletion_policy"]
+        assert field.default_factory is TeamTreeOnlyPolicy
+        assert isinstance(TeamTreeOnlyPolicy(), WorkspaceDeletionPolicy)
+
+    def test_a_policy_permitting_named_trees_takes_exactly_those(self, tmp_path: Path) -> None:
+        """Exactly the ``_id`` candidates go; every other kind — ``_meta`` included — stays.
+
+        The team declares one of each kind, so the permissive policy has
+        something to refuse as well as something to permit. A policy that simply
+        approved everything it was asked about would pass a spec that only
+        seeded the permitted kind.
+        """
+        team_id = uuid.uuid4()
+        service = _stub_team_service(
+            tmp_path,
+            team_exists=True,
+            team_id=team_id,
+            metadata=CaseMetadata(),
+            cards=[
+                tool_card(
+                    "Worker",
+                    WorkspaceTool(workspace_id="notes"),
+                    WorkspaceTool(workspace_metadata_keys=["customer_id"]),
+                    WorkspaceTool(),
+                )
+            ],
+            policy=_PermitKind(ID_KIND),
+        )
+        named = tmp_path / _OWNER / ID_KIND / "notes"
+        meta = tmp_path / _OWNER / METADATA_KIND / "customer_id-ACME"
+        own = tmp_path / _OWNER / TEAM_KIND / str(team_id)
+        for directory in (named, meta, own):
+            directory.mkdir(parents=True)
+            (directory / "file.txt").write_text("content")
+
+        service.delete_team(team_id)
+
+        assert not named.exists()
+        assert (meta / "file.txt").read_text() == "content"
+        assert (own / "file.txt").read_text() == "content"
+
+
+class TestNoPolicyCanReachOutsideTheWorkspacesRoot:
+    """AC #5b: containment and depth are the caller's, enforced whatever the policy says.
+
+    Both specs wire a policy that approves **everything**, so the only thing
+    that can stop the removal is the caller's own check.
+    """
+
+    def test_a_candidate_resolving_outside_the_root_is_refused_and_logged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        team_id = uuid.uuid4()
+        root = tmp_path / "workspaces"
+        root.mkdir()
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        (outside / "file.txt").write_text("not ours")
+        escape = PurePosixPath("..", "elsewhere", "..")
+        monkeypatch.setattr(
+            workspace_paths_module, "resolve_workspace_path", lambda **_kwargs: escape
+        )
+
+        service = _stub_team_service(
+            root, team_exists=True, team_id=team_id, policy=_PermitKind(escape.parts[1])
+        )
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)
+
+        assert (outside / "file.txt").read_text() == "not ours"
+        refusals = [r for r in caplog.records if "not a contained workspace path" in r.getMessage()]
+        assert len(refusals) == 1
+        assert refusals[0].levelno == logging.WARNING
+
+    def test_a_candidate_that_is_not_three_segments_is_refused_and_logged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Depth is what makes no workspace path a proper prefix of another.
+
+        A two-segment candidate inside the root is the **parent** of every
+        three-segment tree beneath it, so removing one would take trees this
+        team never bound — the containment hazard ADR-052's fixed depth removes.
+        """
+        team_id = uuid.uuid4()
+        shallow = PurePosixPath(_OWNER, TEAM_KIND)
+        monkeypatch.setattr(
+            workspace_paths_module, "resolve_workspace_path", lambda **_kwargs: shallow
+        )
+        sibling = tmp_path / _OWNER / TEAM_KIND / str(uuid.uuid4())
+        sibling.mkdir(parents=True)
+
+        service = _stub_team_service(
+            tmp_path, team_exists=True, team_id=team_id, policy=_PermitKind(TEAM_KIND)
+        )
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)
+
+        assert sibling.exists()
+        assert (tmp_path / shallow).exists()
+        refusals = [r for r in caplog.records if "not a contained workspace path" in r.getMessage()]
+        assert len(refusals) == 1
+
+
+class TestBothSiblingsGoAndOneFailureDoesNotSkipTheOther:
+    """AC #2 + AC #7: the journal and the index go too, each independently best-effort."""
+
+    def _seed(self, tmp_path: Path, team_id: uuid.UUID) -> tuple[Path, Path, Path]:
+        """The team's own tree and its two sidecars, seeded and located as production does."""
+        relative = PurePosixPath(_OWNER, TEAM_KIND, str(team_id))
+        tree = tmp_path / relative
+        tree.mkdir(parents=True)
+        (tree / "file.txt").write_text("content")
+        journal = git_dir_for(tree)
+        journal.mkdir()
+        (journal / "HEAD").write_text("ref: refs/heads/main\n")
+        index = meta_dir_for(str(relative))
+        (index / "rag").mkdir(parents=True)
+        (index / "rag" / "doc.yaml").write_text("text: extracted\n")
+        return tree, journal, index
+
+    def test_the_tree_and_both_sidecars_are_removed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AKGENTIC_WORKSPACES_ROOT", str(tmp_path))
+        monkeypatch.delenv("AKGENTIC_WORKSPACE_META_ROOT", raising=False)
+        team_id = uuid.uuid4()
+        tree, journal, index = self._seed(tmp_path, team_id)
+
+        service = _stub_team_service(tmp_path, team_exists=True, team_id=team_id)
+        service.delete_team(team_id)
+
+        assert not tree.exists()
+        assert not journal.exists()
+        assert not index.exists()
+
+    def test_a_failure_removing_the_journal_does_not_skip_the_index(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The index is the retention half, so it must be attempted regardless.
+
+        ``<tree>.index/rag/*.yaml`` holds the extracted text of every document
+        the tree indexed. Sequencing the three removals so one failure aborts
+        the rest would leave exactly that behind whenever the journal — a git
+        repository, full of files a sandbox may have written as another uid —
+        is the one that fails.
+        """
+        monkeypatch.setenv("AKGENTIC_WORKSPACES_ROOT", str(tmp_path))
+        monkeypatch.delenv("AKGENTIC_WORKSPACE_META_ROOT", raising=False)
+        team_id = uuid.uuid4()
+        tree, journal, index = self._seed(tmp_path, team_id)
+        real_rmtree = shutil.rmtree
+
+        def _fail_on_the_journal(path: Path) -> None:
+            if Path(path) == journal:
+                raise PermissionError("denied")
+            real_rmtree(path)
+
+        monkeypatch.setattr(shutil, "rmtree", _fail_on_the_journal)
+
+        service = _stub_team_service(tmp_path, team_exists=True, team_id=team_id)
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)  # must NOT raise
+
+        assert not tree.exists()
+        assert journal.exists(), "the failing target is left behind, as best-effort implies"
+        assert not index.exists(), "the retention half was skipped by the journal's failure"
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert str(journal) in warnings[0].getMessage()
+        # The team is still deleted from the system of record.
+        service._services.worker_handle.delete_team.assert_called_once_with(team_id)
+
+
+class TestNoTeamBecomesUndeletable:
+    """AC #7: each new way the candidate set can fail logs a WARNING and completes.
+
+    Letting any of these propagate would trade an orphaned directory for a stuck
+    record — a team nobody can remove at all.
+    """
+
+    def test_cards_disagreeing_on_workspace_sharable_skip_cleanup_and_still_delete(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Two default-layout cards, one sharing and one not: no single tree is the team's own.
+
+        Picking one would depend on the order the card store returned rows in,
+        and the tree not picked would survive silently — the defect again, in
+        miniature.
+        """
+        team_id = uuid.uuid4()
+        service = _stub_team_service(
+            tmp_path,
+            team_exists=True,
+            team_id=team_id,
+            cards=[
+                tool_card("Private", WorkspaceTool()),
+                tool_card("Sharer", WorkspaceTool(workspace_sharable=True)),
+            ],
+        )
+
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)  # must NOT raise
+
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and str(team_id) in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "disagree on workspace_sharable" in warnings[0].getMessage()
+        service._services.worker_handle.delete_team.assert_called_once_with(team_id)
+
+    def test_an_unresolvable_card_hash_skips_cleanup_and_still_deletes(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A card blob the store cannot resolve leaves the sharing axis unknowable.
+
+        Falling back to the per-principal default would be the wrong guess
+        precisely when it cannot be checked, so nothing is removed rather than
+        the wrong thing — and the record deletion still succeeds.
+        """
+        team_id = uuid.uuid4()
+        tree = tmp_path / _OWNER / TEAM_KIND / str(team_id)
+        tree.mkdir(parents=True)
+        service = _stub_team_service(
+            tmp_path,
+            team_exists=True,
+            team_id=team_id,
+            cards=[tool_card("Worker", WorkspaceTool())],
+            missing_cards=True,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)  # must NOT raise
+
+        assert tree.exists(), "nothing is removed when the cards cannot be read"
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and str(team_id) in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "unresolvable" in warnings[0].getMessage()
+        service._services.worker_handle.delete_team.assert_called_once_with(team_id)
+
+
+class TestTheCandidateSetIsResolvedBeforeTheRecordIsDeleted:
+    """AC #5a's ordering half: the card read does not depend on card blobs outliving the team.
+
+    The filesystem work still runs last — a worker-delete failure must not leave
+    a removed workspace behind — but the **resolution** moves ahead of it. A
+    card store purged by ``worker_handle.delete_team`` would otherwise return
+    nothing, the sharing axis would revert to the per-principal default, and the
+    defect would come back with no spec failing.
+    """
+
+    def test_the_cards_are_read_before_the_worker_delete(self, tmp_path: Path) -> None:
+        team_id = uuid.uuid4()
+        order: list[str] = []
+        service = _stub_team_service(
+            tmp_path,
+            team_exists=True,
+            team_id=team_id,
+            cards=[tool_card("Worker", WorkspaceTool())],
+        )
+        store = service._services.event_store
+        real_load = store.load_agent_cards
+
+        def _recording_load(hashes: list[str]) -> dict[str, AgentCard]:
+            order.append("cards-read")
+            return real_load(hashes)
+
+        store.load_agent_cards = _recording_load  # type: ignore[method-assign]
+        service._services.worker_handle.delete_team.side_effect = lambda _id: order.append(
+            "worker-delete"
+        )
+
+        service.delete_team(team_id)
+
+        assert order == ["cards-read", "worker-delete"]
 
 
 # ---------------------------------------------------------------------------

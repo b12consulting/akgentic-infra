@@ -6,7 +6,7 @@ import logging
 import shutil
 import uuid
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
@@ -20,9 +20,15 @@ from akgentic.infra.errors import (
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
+from akgentic.infra.protocols.workspace_deletion import (
+    WorkspaceDeletionContext,
+    WorkspaceDeletionPolicy,
+)
 from akgentic.infra.server.services._metadata_payload import validate_metadata
+from akgentic.infra.server.services._workspace_paths import deletion_candidate_paths
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
-from akgentic.tool.workspace import resolve_workspace_path
+from akgentic.team.ports import AgentCardNotFoundError
+from akgentic.tool.workspace import git_dir_for, meta_dir_for
 
 if TYPE_CHECKING:
     from akgentic.core.messages.message import Message
@@ -32,6 +38,13 @@ logger = logging.getLogger(__name__)
 
 # Maximum page size for GET /teams; the default is 250 (ADR-032 §Decision 1).
 MAX_PAGE_SIZE = 500
+
+# The number of segments a resolved workspace path has, by construction
+# (ADR-052 Decision 1: ``<scope>/<kind>/<leaf>``). Named because the containment
+# guard below tests it: depth is what makes no workspace path a proper prefix of
+# another, and a candidate of any other depth is a path this code does not
+# recognise and must not remove.
+_WORKSPACE_PATH_SEGMENTS = 3
 
 
 class CatalogTeamEntryMissingError(EntryNotFoundError):
@@ -54,70 +67,126 @@ class CatalogTeamEntryMissingError(EntryNotFoundError):
     """
 
 
-def _remove_workspace_dir(workspaces_root: Path, team_id: uuid.UUID, process: Process) -> None:
-    """Best-effort removal of a team's **scoped** workspace directory.
+def _contained_target(
+    workspaces_root: Path, candidate: PurePosixPath, team_id: uuid.UUID
+) -> Path | None:
+    """The absolute tree for *candidate*, or ``None`` when it may not be touched.
 
-    Removes ``{workspaces_root}/{owner}/_team/{team_id}`` recursively — the
-    team's own tree in the three-segment ``<scope>/<kind>/<leaf>`` layout of
-    ADR-052. The target is **resolved**, through the same
-    :func:`akgentic.tool.workspace.resolve_workspace_path` the agent binds with,
-    never composed here: a hand-built target is one more copy of the path rule,
-    and the copy that drifts is the one nobody notices. The scope is the
-    **deleted team's own** ``Process.user_id``, never the request caller's:
-    confusing the two would delete under the wrong principal and say nothing,
-    since a missing directory is a silent no-op here.
+    The second of the two limits the deletion path enforces rather than
+    documents (the first being that candidates come only from the team's own
+    cards). A candidate that is not exactly three segments, or that does not
+    resolve **strictly inside** ``workspaces_root``, is refused and logged —
+    whatever any policy answered about it. The check is on the *resolved* path,
+    so a symlinked tree pointing out of the root is refused too.
 
-    Getting this wrong is the quiet failure ADR-048 §The rule is written nine
-    times calls out as the most dangerous of its ten sites: leaving the target on
-    an old layout after the layout moved raises nothing, fails no test and logs
-    nothing — deletion simply stops removing anything, and orphaned trees
-    accumulate under every principal for ever.
-
-    A missing directory is a silent no-op (ephemeral teams that never invoked a
-    ``Filesystem`` write have no directory to clean). Any ``shutil.rmtree``
-    failure is logged at WARNING and suppressed so team deletion still completes
-    in the system of record — a later janitor pass can sweep orphans. **A
-    ``ValueError`` out of the resolver joins that arm** (ADR-048 Decision 4's
-    delete-path row): letting it propagate would make a team whose stored
-    ``user_id`` cannot be a directory name undeletable, trading an orphaned
-    directory for a stuck record.
-
-    Generalized from akgentic-infra-enterprise's
-    ``routes/enterprise_server_teams.py`` per Epic 24 (Tier-Alignment Fixes
-    from Department + Enterprise); see ADR-022 §D7 for the original
-    best-effort, log-not-raise rationale.
+    Returns:
+        The resolved absolute tree, or ``None`` when the candidate is refused.
     """
-    try:
-        relative = resolve_workspace_path(
-            workspace_id=None,
-            workspace_metadata_keys=[],
-            team_id=str(team_id),
-            user_id=process.user_id,
-            metadata=process.metadata,
-            # The tree a default card writes when no card asked for sharing: the
-            # team's per-principal default. No card is read on this path, so this
-            # is that default, not an answer given on some card's behalf.
-            workspace_sharable=False,
-        )
-    except ValueError as exc:
+    root = workspaces_root.resolve()
+    target = (workspaces_root / candidate).resolve()
+    if len(candidate.parts) != _WORKSPACE_PATH_SEGMENTS or not target.is_relative_to(root):
         logger.warning(
-            "Workspace cleanup skipped — team_id=%s owner=%r error=%s",
+            "Workspace cleanup refused, candidate is not a contained workspace path — "
+            "team_id=%s candidate=%s root=%s",
             team_id,
-            process.user_id,
-            exc,
+            candidate,
+            root,
         )
-        return
-    target = workspaces_root / relative
+        return None
+    return target
+
+
+def _rmtree_best_effort(target: Path, team_id: uuid.UUID) -> None:
+    """Remove *target* recursively, logging and swallowing whatever goes wrong.
+
+    A missing directory is a **silent** no-op: an ephemeral team that never
+    invoked a ``Filesystem`` write has no tree to clean, and neither sidecar
+    exists until something creates it. Any other failure is logged at WARNING
+    and suppressed so team deletion still completes in the system of record — a
+    later janitor pass can sweep orphans. Callers invoke this once per target
+    precisely so one failure cannot skip the next: a failed ``<tree>.git`` must
+    not take ``<tree>.index`` with it, which is the retention half.
+
+    See ADR-022 §D7 for the original best-effort, log-not-raise rationale;
+    generalized here from akgentic-infra-enterprise's
+    ``routes/enterprise_server_teams.py`` per Epic 24.
+    """
     if not target.exists():
         return
     try:
         shutil.rmtree(target)
     except Exception as exc:  # noqa: BLE001 — log-not-raise; cleanup is best-effort
         logger.warning(
-            "Workspace cleanup failed — team_id=%s error=%s",
+            "Workspace cleanup failed — team_id=%s target=%s error=%s",
             team_id,
+            target,
             exc,
         )
+
+
+def _remove_workspace_trees(
+    workspaces_root: Path,
+    team_id: uuid.UUID,
+    process: Process,
+    candidates: list[PurePosixPath],
+    policy: WorkspaceDeletionPolicy,
+) -> None:
+    """Best-effort removal of the trees *policy* approves, and both of their sidecars.
+
+    *candidates* are the paths the team's **own** cards resolved to, plus its own
+    default tree — never a free-form path, and never a path this function
+    composed. The sharing axis therefore comes from the card that declared the
+    tree, which is the whole of the defect this replaced: that code asked the
+    resolver for a target but answered ``workspace_sharable=False`` itself, so a
+    team whose card declared sharing wrote to ``_shared/_team/<team_id>`` while
+    deletion looked under ``<owner>/_team/<team_id>``. ``exists()`` was false,
+    the function returned, and the tree survived for ever. ADR-048 §The rule is
+    written nine times calls this the most dangerous of its ten sites precisely
+    because it raises nothing, logs nothing and fails no test.
+
+    For each approved candidate, three targets are removed independently: the
+    tree, its journal (``<tree>.git``), and its metadata directory
+    (``<tree>.index``). Both siblings are located through the tool's own
+    ``git_dir_for`` / ``meta_dir_for`` — never by appending a suffix here, which
+    would be one more copy of the placement rule and the same shape of defect
+    one scale down. ``<tree>.index/rag/*.yaml`` holds the extracted text of
+    every document the tree indexed, so removing it is a retention fix rather
+    than tidying.
+
+    **The two siblings anchor differently, deliberately.** The tree and its
+    ``.git`` are contained against the injected *workspaces_root*
+    (:func:`_contained_target`). The ``.index`` is anchored to whatever parent
+    ``meta_dir_for`` resolved, because an operator may legitimately relocate the
+    metadata root with ``AKGENTIC_WORKSPACE_META_ROOT`` — and refusing to delete
+    it there would re-open the retention leak in precisely the deployment that
+    configured a separate root.
+    """
+    for candidate in candidates:
+        target = _contained_target(workspaces_root, candidate, team_id)
+        if target is None:
+            continue
+        scope, kind, leaf = candidate.parts
+        ctx = WorkspaceDeletionContext(
+            team_id=team_id,
+            owner_user_id=process.user_id,
+            path=candidate,
+            scope=scope,
+            kind=kind,
+            leaf=leaf,
+        )
+        if not policy.may_delete(ctx=ctx):
+            # On the record, because a deletion nobody can explain afterwards is
+            # worse than one that did not happen.
+            logger.info(
+                "Workspace kept — team_id=%s candidate=%s policy=%s",
+                team_id,
+                candidate,
+                type(policy).__name__,
+            )
+            continue
+        _rmtree_best_effort(target, team_id)
+        _rmtree_best_effort(git_dir_for(target), team_id)
+        _rmtree_best_effort(meta_dir_for(str(candidate)), team_id)
 
 
 class TeamService:
@@ -134,10 +203,10 @@ class TeamService:
 
         Args:
             services: Pre-wired tier services container.
-            workspaces_root: Server-side root directory under which each
-                team's own workspace lives at
-                ``{workspaces_root}/{owner user_id}/_team/{team_id}/`` (ADR-052).
-                Used by ``delete_team`` for best-effort FS cleanup.
+            workspaces_root: Server-side root directory under which every
+                workspace tree lives, at ``<scope>/<kind>/<leaf>`` (ADR-052).
+                Used by ``delete_team`` for best-effort FS cleanup, and as the
+                containment anchor no deletion candidate may resolve outside of.
         """
         self._services = services
         self._cache: RuntimeCache = services.runtime_cache
@@ -349,16 +418,70 @@ class TeamService:
         logger.info("Team metadata updated: team_id=%s", team_id)
         return updated.metadata
 
+    def _deletion_candidates(self, process: Process) -> list[PurePosixPath]:
+        """The trees this team's deletion may consider, or an empty list and a WARNING.
+
+        **No team may become undeletable.** Three things can stop the candidate
+        set being resolved, and none of them may propagate: an owner id that
+        cannot be a directory name (ADR-048 Decision 4's delete-path row),
+        default-layout cards that disagree on ``workspace_sharable``, and a
+        ``card_hash`` the store cannot resolve. Each is logged at WARNING and
+        skips workspace cleanup for that team; the record deletion still
+        succeeds. Letting any of them through would trade an orphaned directory
+        for a stuck record.
+        """
+        team_id = process.team_id
+        try:
+            return deletion_candidate_paths(process=process, store=self._services.event_store)
+        except ValueError as exc:
+            # Either the owner id cannot be a directory name, or the team's
+            # default-layout cards disagree on where its own tree lives. Neither
+            # has a right answer, and guessing one would pick a tree on the
+            # strength of the order the card store returned rows in.
+            logger.warning(
+                "Workspace cleanup skipped, no candidate resolved — team_id=%s owner=%r error=%s",
+                team_id,
+                process.user_id,
+                exc,
+            )
+        except AgentCardNotFoundError as exc:
+            # A card blob the team references is gone. The sharing axis is
+            # unknowable without every card, and the wrong guess — the
+            # per-principal default — is precisely the defect epic 71 removes,
+            # so nothing is removed rather than the wrong thing.
+            logger.warning(
+                "Workspace cleanup skipped, a team card is unresolvable — team_id=%s error=%s",
+                team_id,
+                exc,
+            )
+        return []
+
     def delete_team(self, team_id: uuid.UUID) -> None:
         """Stop (if running) and delete a team.
 
-        After the team is removed from the system of record, the team's scoped
-        workspace directory (``{workspaces_root}/{owner user_id}/_team/{team_id}/``,
-        the three-segment ``<scope>/<kind>/<leaf>`` layout, resolved through the
-        tool-side resolver) is removed on a best-effort basis — a missing
-        directory, an unusable owner id, or an ``rmtree`` failure does not
-        prevent deletion from completing. The scope comes from the deleted
-        team's own ``Process.user_id``, not from the request caller.
+        After the team is removed from the system of record, the trees the team
+        **owns** — each with its ``<tree>.git`` journal and its ``<tree>.index``
+        metadata directory — are removed on a best-effort basis. A missing
+        directory, an unusable owner id, an unresolvable card or an ``rmtree``
+        failure does not prevent deletion from completing.
+
+        Which trees those are is not a constant: the candidates come from the
+        team's own cards (so the sharing axis is the card's answer, never this
+        method's), and ``TierServices.workspace_deletion_policy`` decides which
+        of them go. Its default approves the team's own ``_team`` tree in either
+        scope and refuses every other kind.
+
+        **The candidate set is resolved early — right after the team is loaded
+        and stopped — while the filesystem work still runs last.** The ordering
+        of the removal is load-bearing and unchanged: it follows the worker-side
+        delete so a worker failure does not leave a removed workspace behind.
+        But resolving the candidates depends on a card-store read, and doing
+        that read on the far side of the worker delete would make this code
+        depend on card blobs outliving the team. Card blobs are content-
+        addressed rather than team-keyed, so they should — but if a tier ever
+        purged them the read would come back empty, the sharing axis would
+        silently revert to the per-principal default, and this story's defect
+        would return with nothing failing. Resolution moves; deletion does not.
 
         Raises:
             TeamNotFoundError: If the team is unknown. Raised before any
@@ -371,6 +494,7 @@ class TeamService:
             raise TeamNotFoundError(msg)
         if process.status == TeamStatus.RUNNING:
             self._services.worker_handle.stop_team(team_id)
+        candidates = self._deletion_candidates(process)
         self._cache.remove(team_id)
         # Safety net: remove ephemeral stream if not already removed on stop
         try:
@@ -380,7 +504,13 @@ class TeamService:
         self._services.worker_handle.delete_team(team_id)
         # FS cleanup runs LAST — after the worker-side delete — so a worker
         # delete failure does not leave behind a removed workspace dir.
-        _remove_workspace_dir(self._workspaces_root, team_id, process)
+        _remove_workspace_trees(
+            self._workspaces_root,
+            team_id,
+            process,
+            candidates,
+            self._services.workspace_deletion_policy,
+        )
         logger.info("Team deleted: team_id=%s", team_id)
 
     def emit_message(self, team_id: uuid.UUID, message: Message) -> None:
