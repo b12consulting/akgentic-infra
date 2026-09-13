@@ -75,16 +75,30 @@ def _contained_target(
     The second of the two limits the deletion path enforces rather than
     documents (the first being that candidates come only from the team's own
     cards). A candidate that is not exactly three segments, or that does not
-    resolve **strictly inside** ``workspaces_root``, is refused and logged —
-    whatever any policy answered about it. The check is on the *resolved* path,
-    so a symlinked tree pointing out of the root is refused too.
+    resolve **strictly inside** ``workspaces_root`` three segments deep, is
+    refused and logged — whatever any policy answered about it. The containment
+    half is checked on the *resolved* path, so a symlinked tree pointing out of
+    the root is refused too.
+
+    **Depth is measured twice, on the literal candidate and on what it
+    resolves to, because the two can disagree.** ``a/../b`` is three parts and
+    lands inside the root, yet names ``<root>/b`` — one segment deep, and the
+    *parent* of every tree beneath it. Measuring only the literal would approve
+    it and hand back a target containing trees the team never bound, which is
+    exactly the proper-prefix hazard ADR-052's fixed depth exists to remove.
+    Checking the literal as well is what keeps the caller's
+    ``scope, kind, leaf`` unpack total.
 
     Returns:
         The resolved absolute tree, or ``None`` when the candidate is refused.
     """
     root = workspaces_root.resolve()
     target = (workspaces_root / candidate).resolve()
-    if len(candidate.parts) != _WORKSPACE_PATH_SEGMENTS or not target.is_relative_to(root):
+    if (
+        len(candidate.parts) != _WORKSPACE_PATH_SEGMENTS
+        or not target.is_relative_to(root)
+        or len(target.relative_to(root).parts) != _WORKSPACE_PATH_SEGMENTS
+    ):
         logger.warning(
             "Workspace cleanup refused, candidate is not a contained workspace path — "
             "team_id=%s candidate=%s root=%s",

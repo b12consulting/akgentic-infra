@@ -648,6 +648,30 @@ _OWNER = "alice"
 """The owning principal on the stubbed ``Process`` — the workspace's ``<scope>``."""
 
 
+@pytest.fixture()
+def _workspace_roots_under_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every path this suite can remove inside ``tmp_path``.
+
+    ``TeamService`` is handed its ``workspaces_root`` directly, but the
+    ``<tree>.index`` sibling is located by the tool's ``meta_dir_for``, which
+    resolves its own parent from ``AKGENTIC_WORKSPACE_META_ROOT`` or, failing
+    that, ``AKGENTIC_WORKSPACES_ROOT`` — defaulting to ``./workspaces``,
+    relative to the process cwd. That is deliberate (an operator may relocate
+    the metadata root, and refusing to delete it there would re-open the
+    retention leak), and it means the injected root does **not** bound the
+    index removal.
+
+    So a spec that leaves the variables unset aims a real ``rmtree`` at
+    ``<cwd>/workspaces/<scope>/<kind>/<leaf>.index`` — a live directory in this
+    checkout, holding the demo stack's trees. Nothing is lost today only
+    because the leaves these specs build (a fixed ``notes``, otherwise random
+    UUIDs) happen not to collide. Pinning both variables removes the
+    coincidence rather than relying on it.
+    """
+    monkeypatch.setenv("AKGENTIC_WORKSPACES_ROOT", str(tmp_path))
+    monkeypatch.delenv("AKGENTIC_WORKSPACE_META_ROOT", raising=False)
+
+
 def _stub_team_service(
     workspaces_root: Path,
     *,
@@ -700,6 +724,7 @@ def _stub_team_service(
     return TeamService(services, workspaces_root=workspaces_root)
 
 
+@pytest.mark.usefixtures("_workspace_roots_under_tmp")
 class TestDeleteTeamWorkspaceCleanup:
     """Story 24.1 / 67.1 / 70.1: delete_team removes the team's **scoped** workspace dir."""
 
@@ -938,6 +963,7 @@ def _kept_records(caplog: pytest.LogCaptureFixture, team_id: uuid.UUID) -> list[
     ]
 
 
+@pytest.mark.usefixtures("_workspace_roots_under_tmp")
 class TestTheDefaultRuleIsTheKindAndTheLeaf:
     """AC #3 + AC #6: only ``_team``/<this team id> is deletable, and refusals are logged.
 
@@ -1024,6 +1050,7 @@ class TestTheDefaultRuleIsTheKindAndTheLeaf:
         )
 
 
+@pytest.mark.usefixtures("_workspace_roots_under_tmp")
 class TestTheRuleIsAWiredPolicyNotAConstant:
     """AC #4: the default is overridable, and an override narrows to what it names."""
 
@@ -1078,6 +1105,7 @@ class TestTheRuleIsAWiredPolicyNotAConstant:
         assert (own / "file.txt").read_text() == "content"
 
 
+@pytest.mark.usefixtures("_workspace_roots_under_tmp")
 class TestNoPolicyCanReachOutsideTheWorkspacesRoot:
     """AC #5b: containment and depth are the caller's, enforced whatever the policy says.
 
@@ -1138,7 +1166,41 @@ class TestNoPolicyCanReachOutsideTheWorkspacesRoot:
         refusals = [r for r in caplog.records if "not a contained workspace path" in r.getMessage()]
         assert len(refusals) == 1
 
+    def test_a_three_part_candidate_that_resolves_shallow_is_refused_and_logged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Depth is measured on what the candidate *resolves to*, not on its parts.
 
+        ``a/../b`` is three parts and lands inside the root, so a depth check
+        that counted only ``candidate.parts`` would approve it — while the
+        target it names is ``<root>/b``, one segment deep and the parent of
+        every tree beneath it. That is the same proper-prefix hazard as the
+        two-segment case above, reached by a candidate that merely *looks*
+        three-segment, and the policy is no help: it is shown ``kind='..'``,
+        which describes nothing on disk.
+        """
+        team_id = uuid.uuid4()
+        disguised = PurePosixPath("a", "..", _OWNER)
+        assert len(disguised.parts) == 3, "the whole point is that the literal looks well-formed"
+        monkeypatch.setattr(
+            workspace_paths_module, "resolve_workspace_path", lambda **_kwargs: disguised
+        )
+        sibling = tmp_path / _OWNER / TEAM_KIND / str(uuid.uuid4())
+        sibling.mkdir(parents=True)
+
+        service = _stub_team_service(
+            tmp_path, team_exists=True, team_id=team_id, policy=_PermitKind("..")
+        )
+        with caplog.at_level(logging.WARNING):
+            service.delete_team(team_id)
+
+        assert sibling.exists()
+        assert (tmp_path / _OWNER).exists()
+        refusals = [r for r in caplog.records if "not a contained workspace path" in r.getMessage()]
+        assert len(refusals) == 1
+
+
+@pytest.mark.usefixtures("_workspace_roots_under_tmp")
 class TestBothSiblingsGoAndOneFailureDoesNotSkipTheOther:
     """AC #2 + AC #7: the journal and the index go too, each independently best-effort."""
 
@@ -1156,11 +1218,7 @@ class TestBothSiblingsGoAndOneFailureDoesNotSkipTheOther:
         (index / "rag" / "doc.yaml").write_text("text: extracted\n")
         return tree, journal, index
 
-    def test_the_tree_and_both_sidecars_are_removed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("AKGENTIC_WORKSPACES_ROOT", str(tmp_path))
-        monkeypatch.delenv("AKGENTIC_WORKSPACE_META_ROOT", raising=False)
+    def test_the_tree_and_both_sidecars_are_removed(self, tmp_path: Path) -> None:
         team_id = uuid.uuid4()
         tree, journal, index = self._seed(tmp_path, team_id)
 
@@ -1185,8 +1243,6 @@ class TestBothSiblingsGoAndOneFailureDoesNotSkipTheOther:
         repository, full of files a sandbox may have written as another uid —
         is the one that fails.
         """
-        monkeypatch.setenv("AKGENTIC_WORKSPACES_ROOT", str(tmp_path))
-        monkeypatch.delenv("AKGENTIC_WORKSPACE_META_ROOT", raising=False)
         team_id = uuid.uuid4()
         tree, journal, index = self._seed(tmp_path, team_id)
         real_rmtree = shutil.rmtree
@@ -1212,6 +1268,7 @@ class TestBothSiblingsGoAndOneFailureDoesNotSkipTheOther:
         service._services.worker_handle.delete_team.assert_called_once_with(team_id)
 
 
+@pytest.mark.usefixtures("_workspace_roots_under_tmp")
 class TestNoTeamBecomesUndeletable:
     """AC #7: each new way the candidate set can fail logs a WARNING and completes.
 
@@ -1285,6 +1342,7 @@ class TestNoTeamBecomesUndeletable:
         service._services.worker_handle.delete_team.assert_called_once_with(team_id)
 
 
+@pytest.mark.usefixtures("_workspace_roots_under_tmp")
 class TestTheCandidateSetIsResolvedBeforeTheRecordIsDeleted:
     """AC #5a's ordering half: the card read does not depend on card blobs outliving the team.
 
