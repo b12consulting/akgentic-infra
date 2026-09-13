@@ -80,6 +80,12 @@ class TestTheRetiredWorkspacesRootVariableIsHarmless:
     def test_constructing_with_the_variable_still_set_succeeds(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # The retired variable is the only one this spec sets. The others are
+        # cleared for the same reason ``TestDefaultValues`` clears them: the
+        # model reads the real environment, so an ambient ``AKGENTIC_WORKER_*``
+        # would redden the one guard standing between two deployments and a
+        # startup crash, for a reason that has nothing to do with AC #6.
+        monkeypatch.delenv("AKGENTIC_WORKER_PORT", raising=False)
         monkeypatch.setenv(WORKSPACES_ROOT_ENV, "/data/workspaces")
 
         settings = WorkerSettings()

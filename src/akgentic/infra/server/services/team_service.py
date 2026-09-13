@@ -435,13 +435,15 @@ class TeamService:
     def _deletion_candidates(self, process: Process) -> list[PurePosixPath]:
         """The trees this team's deletion may consider, or an empty list and a WARNING.
 
-        **No team may become undeletable.** Two things can stop the candidate
-        set being resolved, and neither may propagate: an owner id that cannot
-        be a directory name (ADR-048 Decision 4's delete-path row) and a
-        ``card_hash`` the store cannot resolve. Each is logged at WARNING and
-        skips workspace cleanup for that team; the record deletion still
-        succeeds. Letting either through would trade an orphaned directory for a
-        stuck record.
+        **No team may become undeletable.** Two kinds of failure can stop the
+        candidate set being resolved, and neither may propagate: a declaration
+        the resolver cannot turn into a path — an owner id that cannot be a
+        directory name (ADR-048 Decision 4's delete-path row), a leaf that
+        cannot either, or a metadata card whose keys the team's metadata does
+        not satisfy — and a ``card_hash`` the store cannot resolve. Each is
+        logged at WARNING and skips workspace cleanup for that team; the record
+        deletion still succeeds. Letting either through would trade an orphaned
+        directory for a stuck record.
 
         Default-layout cards that disagree on ``workspace_sharable`` used to be
         a third, and are not one any more: both of the trees they name are this
@@ -453,8 +455,11 @@ class TeamService:
         try:
             return deletion_candidate_paths(process=process, store=self._services.event_store)
         except ValueError as exc:
-            # The owner id cannot be a directory name, so no tree of this team
-            # can be located at all.
+            # Some declaration of this team cannot be turned into a path: the
+            # owner id, a leaf, or a metadata card's keys against the team's
+            # metadata. ``owner`` is logged because it is the commonest of the
+            # three, not because it is the only one — ``error`` names the
+            # actual cause.
             logger.warning(
                 "Workspace cleanup skipped, no candidate resolved — team_id=%s owner=%r error=%s",
                 team_id,
