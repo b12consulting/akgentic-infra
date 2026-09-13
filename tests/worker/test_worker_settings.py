@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
 
 from akgentic.infra.worker.settings import WorkerSettings
+
+WORKSPACES_ROOT_ENV = "AKGENTIC_WORKER_WORKSPACES_ROOT"
+"""The variable the retired ``workspaces_root`` field used to bind.
+
+Named as a literal because no field declares it any more — which is the point.
+``WorkerSettings`` carries ``env_prefix="AKGENTIC_WORKER_"``, while the tool
+resolves the workspace tree from ``AKGENTIC_WORKSPACES_ROOT``, so this was never
+the knob the tool reads: an operator who set it got silence. Both deployment
+tiers still export it (enterprise's Helm worker template; department's compose),
+so it outlives the field it bound.
+"""
 
 
 class TestDefaultValues:
@@ -17,7 +26,7 @@ class TestDefaultValues:
         monkeypatch.delenv("AKGENTIC_WORKER_HOST", raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_PORT", raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_LOG_LEVEL", raising=False)
-        monkeypatch.delenv("AKGENTIC_WORKER_WORKSPACES_ROOT", raising=False)
+        monkeypatch.delenv(WORKSPACES_ROOT_ENV, raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_SHUTDOWN_DRAIN_TIMEOUT", raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_SHUTDOWN_PRE_DRAIN_DELAY", raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_WORKER_LABELS", raising=False)
@@ -25,7 +34,6 @@ class TestDefaultValues:
         assert settings.host == "0.0.0.0"
         assert settings.port == 8001
         assert settings.log_level == "INFO"
-        assert settings.workspaces_root == Path("/data/workspaces")
         assert settings.shutdown_drain_timeout == 30
         assert settings.shutdown_pre_drain_delay == 0
         assert settings.worker_labels == {}
@@ -38,7 +46,6 @@ class TestEnvVarOverride:
         monkeypatch.setenv("AKGENTIC_WORKER_HOST", "127.0.0.1")
         monkeypatch.setenv("AKGENTIC_WORKER_PORT", "9999")
         monkeypatch.setenv("AKGENTIC_WORKER_LOG_LEVEL", "DEBUG")
-        monkeypatch.setenv("AKGENTIC_WORKER_WORKSPACES_ROOT", "/tmp/ws")
         monkeypatch.setenv("AKGENTIC_WORKER_SHUTDOWN_DRAIN_TIMEOUT", "60")
         monkeypatch.setenv("AKGENTIC_WORKER_SHUTDOWN_PRE_DRAIN_DELAY", "5")
         monkeypatch.setenv(
@@ -49,10 +56,36 @@ class TestEnvVarOverride:
         assert settings.host == "127.0.0.1"
         assert settings.port == 9999
         assert settings.log_level == "DEBUG"
-        assert settings.workspaces_root == Path("/tmp/ws")
         assert settings.shutdown_drain_timeout == 60
         assert settings.shutdown_pre_drain_delay == 5
         assert settings.worker_labels == {"gpu": "true", "region": "eu"}
+
+
+class TestTheRetiredWorkspacesRootVariableIsHarmless:
+    """Story 71.2 AC #6: removing the field must not crash a worker that still sets it.
+
+    ``akgentic-infra-enterprise``'s ``EnterpriseWorkerSettings`` **inherits**
+    this model and its Helm worker template sets ``AKGENTIC_WORKER_WORKSPACES_ROOT``
+    on every worker pod, so after this story an enterprise worker starts in an
+    environment that sets a prefixed variable no field binds. Removing the
+    variable from either tier's chart is another repository's work (Golden
+    Rule 4), which is exactly why the safety has to be asserted here.
+
+    pydantic-settings' environment source collects values for **declared** fields
+    only, so an undeclared prefixed variable should be ignored rather than
+    tripping the model's ``extra`` behaviour. *Should* is not the guarantee to
+    ship on a path that would crash two deployments at startup.
+    """
+
+    def test_constructing_with_the_variable_still_set_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(WORKSPACES_ROOT_ENV, "/data/workspaces")
+
+        settings = WorkerSettings()
+
+        assert settings.port == 8001
+        assert not hasattr(settings, "workspaces_root")
 
 
 class TestLogLevelNormalization:
@@ -99,12 +132,19 @@ class TestModelStructure:
             assert field_info.description is not None, f"Field {name} missing description"
 
     def test_has_only_tier_agnostic_fields(self) -> None:
+        """The exact field set — kept exact, because it is AC #5's guard.
+
+        ``workspaces_root`` is absent by decision, not by oversight: it bound
+        ``AKGENTIC_WORKER_WORKSPACES_ROOT`` while the tool reads
+        ``AKGENTIC_WORKSPACES_ROOT``, so it was a differently-named knob nothing
+        could ever have read, with exactly one reference in ``src/`` — its own
+        declaration. Loosening this to a subset check would let it come back.
+        """
         fields = set(WorkerSettings.model_fields.keys())
         expected = {
             "host",
             "port",
             "log_level",
-            "workspaces_root",
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "worker_labels",

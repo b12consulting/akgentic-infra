@@ -36,10 +36,19 @@ established direction of dependency is ``routes -> services``; nothing under
 reversing that for one import would be the worse of the two available mistakes —
 the other being a second copy of the card read inside the service, which is the
 shape of the defect epic 71 exists to remove. ``routes/_workspace_resolution.py``
-re-exports :func:`declared_workspace_paths` and :func:`default_workspace_path`,
-so every route and every existing test import keeps resolving unchanged. Nothing
-here imports FastAPI; the request-boundary plumbing stays on the other side of
-that seam.
+re-exports :func:`declared_workspace_paths`, :func:`default_workspace_path` and
+:func:`select_declared_path`, so every route and every existing test import keeps
+resolving unchanged. Nothing here imports FastAPI; the request-boundary plumbing
+stays on the other side of that seam.
+
+**Every reader keys on the whole path.** A ``<leaf>`` is unique only within a
+scope and a kind, so a set of declared workspaces keyed on ``path.name`` loses
+one of ``<owner>/_id/x`` and ``<owner>/_meta/x`` — and one of ``<owner>/_id/x``
+and ``_shared/_id/x`` — to whichever the card order put last. Both readers
+de-duplicate on the whole resolved path through :func:`_declared_from_layouts`,
+which is the single statement of that rule. The leaf survives only as the
+*selector* a client sends, and :func:`select_declared_path` refuses a leaf two
+declared paths share rather than picking one.
 
 Nothing here authorizes. The access gate selects one path from here, reads its
 ``<scope>`` and decides from that alone.
@@ -63,6 +72,7 @@ __all__ = [
     "declared_workspace_paths",
     "default_workspace_path",
     "deletion_candidate_paths",
+    "select_declared_path",
 ]
 
 # One card's workspace declaration: ``(workspace_id, workspace_metadata_keys,
@@ -128,45 +138,107 @@ def _resolve_layout(layout: _Layout, process: Process) -> PurePosixPath:
     )
 
 
-def _default_from_layouts(layouts: list[_Layout], process: Process) -> PurePosixPath:
-    """The team's own ``_team`` tree, with the sharing axis read off its default card.
+def _declared_from_layouts(layouts: list[_Layout], process: Process) -> list[PurePosixPath]:
+    """Every declared layout resolved, de-duplicated on the **whole path**.
 
-    Split out of :func:`default_workspace_path` so
-    :func:`deletion_candidate_paths` can reach it on the layouts it has already
-    read, rather than paying for a second card-store read.
+    The one statement of the keying rule both public readers use. ``path.name``
+    is the ``<leaf>``, which stopped being unique the moment a path gained a
+    scope and a kind, so keying on it drops one of ``<owner>/_id/x`` and
+    ``<owner>/_meta/x`` — and one of ``<owner>/_id/x`` and ``_shared/_id/x`` —
+    on the strength of the order the card store happened to return rows in.
 
-    Raises:
-        ValueError: If the team's default-layout cards disagree on
-            ``workspace_sharable``, or from the resolver for an owner id that
-            cannot be a directory name.
+    ``dict.fromkeys`` rather than ``set``: it de-duplicates on the whole path
+    while keeping first-seen declaration order, so the list a log record names
+    is stable run to run.
     """
-    sharable = {
+    return list(dict.fromkeys(_resolve_layout(layout, process) for layout in layouts))
+
+
+def _default_sharable(layouts: list[_Layout]) -> set[bool]:
+    """Every ``workspace_sharable`` the team's **default-layout** cards declare.
+
+    Empty when no card declares the default layout; a set of two when the
+    team's default cards disagree, which is a configuration defect with no
+    right answer. The two readers differ only in what they do about that.
+    """
+    return {
         card_sharable
         for workspace_id, metadata_keys, card_sharable in layouts
         if workspace_id is None and not metadata_keys
     }
-    if len(sharable) > 1:
-        raise ValueError(
-            "the team's default-layout workspace cards disagree on workspace_sharable, "
-            "so no single tree is the team's own"
-        )
+
+
+def _resolve_default(process: Process, *, sharable: bool) -> PurePosixPath:
+    """The team's own ``_team`` tree under the given sharing axis.
+
+    *sharable* is the value a default-layout card declared. ``False`` is only
+    honest for a team with no such card, where nothing declares this tree and
+    the per-principal default is what these routes have always served (the
+    seeded catalog team is such a team).
+    """
     return resolve_workspace_path(
         workspace_id=None,
         workspace_metadata_keys=[],
         team_id=str(process.team_id),
         user_id=process.user_id,
         metadata=process.metadata,
-        # With no default-layout card, nothing declares this tree. It is the
-        # team's per-principal default, which is what these routes have always
-        # served for a team without one (the seeded catalog team is such a
-        # team). ``False`` is honest only on that branch, because no card
-        # exists to say otherwise. With a card, the card's own value is used.
-        workspace_sharable=sharable.pop() if sharable else False,
+        workspace_sharable=sharable,
     )
 
 
-def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str, PurePosixPath]:
-    """Every workspace the team declares, keyed by the leaf a client may name.
+def select_declared_path(*, paths: list[PurePosixPath], leaf: str) -> PurePosixPath | None:
+    """The one declared path a client's ``?workspace_id=`` leaf names.
+
+    The wire carries a ``<leaf>`` and nothing else (ADR-048 Decision 8), so this
+    is the lookup that replaced the leaf-keyed map. A leaf is unique within a
+    scope and a kind, never across them, which leaves three answers rather than
+    two:
+
+    - **one match**: that path, exactly as the map's lookup returned it;
+    - **no match**: ``None`` — the team declares no such workspace, and the gate
+      answers its membership 404;
+    - **more than one match**: a ``ValueError`` naming the leaf and *every*
+      colliding path.
+
+    **The ambiguous leaf is refused, never disambiguated.** With a leaf-only
+    wire there is no input that separates two declared paths sharing a leaf, so
+    the only choices are to pick one or to refuse — and picking one is the
+    defect this replaced, whatever tie-break dresses it up. "Prefer the user
+    scope over ``_shared``" is the tempting one and the wrong one: it bakes an
+    authorization rule into path resolution and stops being right the moment an
+    entitlement policy makes ``_shared`` reachable.
+
+    A ``ValueError`` rather than a type of its own because the plumbing exists:
+    the gate's resolution arm already turns one into a logged 500, for the
+    sibling configuration defect of default cards that disagree on
+    ``workspace_sharable``. Both are unanswerable questions about the team's
+    cards rather than anything the caller can restate.
+
+    Args:
+        paths: The team's declared paths, from :func:`declared_workspace_paths`.
+        leaf: The value the client sent, already through the tool's
+            ``leaf_segment`` guard.
+
+    Returns:
+        The single declared path whose ``<leaf>`` is *leaf*, or ``None``.
+
+    Raises:
+        ValueError: If two or more declared paths share *leaf*. The message
+            carries both the leaf and every colliding path, so the log record
+            the gate writes tells an operator which cards to fix.
+    """
+    matches = [path for path in paths if path.name == leaf]
+    if len(matches) > 1:
+        collisions = ", ".join(str(path) for path in matches)
+        raise ValueError(
+            f"the workspace leaf {leaf!r} is declared by more than one of the team's "
+            f"cards, so no single path is the one requested: {collisions}"
+        )
+    return matches[0] if matches else None
+
+
+def declared_workspace_paths(*, process: Process, store: EventStore) -> list[PurePosixPath]:
+    """Every workspace the team declares, de-duplicated on the whole resolved path.
 
     ADR-048 Decision 7 in one sentence: resolve every card of the authorized
     team through the same resolver, and the query's ``workspace_id`` must equal
@@ -191,21 +263,27 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
     his own team, because his team resolves under *his* ``process.user_id``.
     Reaching Alice's tree needs a team Alice owns, which ``require_team_access``
     refuses him. That argument holds for a per-principal tree only. A
-    ``_shared`` tree has no owner, so this map holds it for every team that
-    declares the same kind and leaf. **This map is not the authorization.** The
+    ``_shared`` tree has no owner, so this list holds it for every team that
+    declares the same kind and leaf. **This list is not the authorization.** The
     gate reads the scope segment of the one path it selects from here and
     refuses a ``_shared`` path outright (``check_workspace_scope`` in
     ``_team_access``).
 
-    A metadata card is the same rule with no second clause: its key is the leaf
+    A metadata card is the same rule with no second clause: its leaf is the one
     ``process.metadata`` produces through the declared keys, in declaration
     order, so a ``?workspace_id=`` naming a metadata workspace is admitted iff
     it is byte-equal to that leaf. Nothing here parses a leaf or compares
     key-value pairs — the leaf is derived from the metadata, not matched
     against it — which is why another case's values, another key set, or the
-    reversed order are absent from the map rather than present and refused.
+    reversed order are absent from the list rather than present and refused.
     Pinned in pairs by ``tests/server/routes/test_workspace_routes.py`` and
     ``tests/server/routes/test_team_access.py``.
+
+    **The de-duplication is on the whole path, so nothing is lost to a leaf
+    collision.** A team declaring both ``<owner>/_id/x`` and ``<owner>/_meta/x``
+    gets both, and so does one declaring ``<owner>/_id/notes`` beside
+    ``_shared/_id/notes``. Which of the two a client's leaf then names is
+    :func:`select_declared_path`'s question, and it refuses rather than picks.
 
     The cards are resolved through ``akgentic.team.resolve_agent_cards`` — the
     one place a hash becomes a card — which makes a **single** batch
@@ -224,9 +302,10 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
         store: The card store to resolve the team's ``agent_cards`` against.
 
     Returns:
-        Leaf -> resolved three-segment path, for every workspace any of the
-        team's cards declares. Empty when the team declares no workspace at all, which
-        is a team no ``?workspace_id=`` can name.
+        The resolved three-segment paths, one per workspace any of the team's
+        cards declares, de-duplicated on the whole path and in declaration
+        order. Empty when the team declares no workspace at all, which is a team
+        no ``?workspace_id=`` can name.
 
     Raises:
         AgentCardNotFoundError: If a ``card_hash`` does not resolve. A
@@ -239,11 +318,7 @@ def declared_workspace_paths(*, process: Process, store: EventStore) -> dict[str
             cannot be a directory name, or for a metadata card the team's
             metadata cannot satisfy.
     """
-    paths: dict[str, PurePosixPath] = {}
-    for layout in _team_layouts(process, store):
-        path = _resolve_layout(layout, process)
-        paths[path.name] = path
-    return paths
+    return _declared_from_layouts(_team_layouts(process, store), process)
 
 
 def default_workspace_path(*, process: Process, store: EventStore) -> PurePosixPath:
@@ -274,7 +349,13 @@ def default_workspace_path(*, process: Process, store: EventStore) -> PurePosixP
             returns cards. Also propagated from the resolver for an owner id
             that cannot be a directory name.
     """
-    return _default_from_layouts(_team_layouts(process, store), process)
+    sharable = _default_sharable(_team_layouts(process, store))
+    if len(sharable) > 1:
+        raise ValueError(
+            "the team's default-layout workspace cards disagree on workspace_sharable, "
+            "so no single tree is the team's own"
+        )
+    return _resolve_default(process, sharable=sharable.pop() if sharable else False)
 
 
 def deletion_candidate_paths(*, process: Process, store: EventStore) -> list[PurePosixPath]:
@@ -289,16 +370,28 @@ def deletion_candidate_paths(*, process: Process, store: EventStore) -> list[Pur
     is then *removed* is the policy's answer plus the caller's containment check;
     membership here is necessary, never sufficient.
 
-    **De-duplicated on the whole path, never on the leaf.**
-    :func:`declared_workspace_paths` keys its map on ``path.name``, which stopped
-    being unique the moment a path gained a scope and a kind: a team declaring
-    both ``<owner>/_id/x`` and ``<owner>/_meta/x`` loses one of them there. That
-    map is not reused here for exactly that reason. (Re-keying it is story 71-2's
-    scope and deliberately not done here.)
+    **De-duplicated on the whole path, never on the leaf** — through the same
+    :func:`_declared_from_layouts` the client-facing reader uses, so the rule is
+    stated once. The two readers stay separate because they answer different
+    questions: that one is "what may a client name", this one is "what may this
+    team's deletion consider", and only this one includes the team's own default
+    ``_team`` tree, which exists whether or not any card declares it. Folding
+    them would mean one caller filtering that member back out.
 
     Order is declaration order with the default tree last, and duplicates keep
     their first position — so a team declaring its own default tree explicitly
     yields one candidate, not two.
+
+    **Default cards that disagree on ``workspace_sharable`` do not empty this
+    set.** ``default_workspace_path`` refuses that team, because a route serving
+    one of two trees would be guessing. Deletion is the opposite case: both
+    trees are ``_team/<this team id>``, both were resolved from this team's own
+    cards, and once the team is gone neither can be addressed again. Discarding
+    the whole list — which is what letting the refusal propagate did — left both
+    trees and both ``.index`` sidecars behind for ever, in the one configuration
+    where the code had already computed both correct targets. Both are declared
+    layouts, so both are already in the list; the disagreement is recorded at
+    WARNING because it is still a card defect an operator should repair.
 
     Args:
         process: The team being deleted.
@@ -316,12 +409,19 @@ def deletion_candidate_paths(*, process: Process, store: EventStore) -> list[Pur
             guess — and guessing would silently reinstate the per-principal
             default, which is the defect this module's readers exist to remove.
         ValueError: From the resolver for an owner id, a leaf or a metadata
-            declaration that cannot yield a path, or when the team's
-            default-layout cards disagree on ``workspace_sharable``.
+            declaration that cannot yield a path.
     """
     layouts = _team_layouts(process, store)
-    candidates = [_resolve_layout(layout, process) for layout in layouts]
-    candidates.append(_default_from_layouts(layouts, process))
+    candidates = _declared_from_layouts(layouts, process)
+    sharable = _default_sharable(layouts)
+    if len(sharable) > 1:
+        logger.warning(
+            "the team's default-layout workspace cards disagree on workspace_sharable; "
+            "every tree they declare stays a deletion candidate — team_id=%s",
+            process.team_id,
+        )
+    else:
+        candidates.append(_resolve_default(process, sharable=sharable.pop() if sharable else False))
     # ``dict.fromkeys`` rather than ``set``: it de-duplicates on the whole path
     # while keeping first-seen order, so the candidate list a log record names is
     # stable run to run.

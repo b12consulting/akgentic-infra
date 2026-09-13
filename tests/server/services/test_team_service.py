@@ -20,6 +20,7 @@ from akgentic.team.projection import hash_agent_card
 from akgentic.tool.workspace import (
     ID_KIND,
     METADATA_KIND,
+    SHARED_SCOPE,
     TEAM_KIND,
     WorkspaceTool,
     git_dir_for,
@@ -1276,14 +1277,23 @@ class TestNoTeamBecomesUndeletable:
     record — a team nobody can remove at all.
     """
 
-    def test_cards_disagreeing_on_workspace_sharable_skip_cleanup_and_still_delete(
+    def test_cards_disagreeing_on_workspace_sharable_still_delete_both_trees(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Two default-layout cards, one sharing and one not: no single tree is the team's own.
+        """Two default-layout cards, one sharing and one not: **both** trees go, warned about.
 
-        Picking one would depend on the order the card store returned rows in,
-        and the tree not picked would survive silently — the defect again, in
-        miniature.
+        Decided 2026-09-13, closing the deferred finding 71-1's review recorded.
+        Skipping here was this epic's own retention leak in miniature: the
+        declared candidates had already resolved, and the refusal raised from
+        the default-tree append discarded the whole list — so the team kept both
+        its ``<owner>/_team/<team_id>`` and ``_shared/_team/<team_id>`` trees and
+        both ``.index`` sidecars for ever, in the one configuration where the
+        code had already computed both correct, policy-approvable targets.
+
+        Both are ``_team`` trees whose leaf is **this** team's id, so both pass
+        the kind-and-leaf rule and the default policy unchanged, and once the
+        team is gone neither can be addressed again. The WARNING stays: the
+        disagreement is still a card defect worth telling an operator about.
         """
         team_id = uuid.uuid4()
         service = _stub_team_service(
@@ -1295,10 +1305,23 @@ class TestNoTeamBecomesUndeletable:
                 tool_card("Sharer", WorkspaceTool(workspace_sharable=True)),
             ],
         )
+        trees = {}
+        for scope in (_OWNER, SHARED_SCOPE):
+            relative = PurePosixPath(scope, TEAM_KIND, str(team_id))
+            tree = tmp_path / relative
+            tree.mkdir(parents=True)
+            (tree / "file.txt").write_text("content")
+            index = meta_dir_for(str(relative))
+            (index / "rag").mkdir(parents=True)
+            (index / "rag" / "doc.yaml").write_text("text: extracted\n")
+            trees[scope] = (tree, index)
 
         with caplog.at_level(logging.WARNING):
             service.delete_team(team_id)  # must NOT raise
 
+        for scope, (tree, index) in trees.items():
+            assert not tree.exists(), f"the {scope} tree survived the deletion"
+            assert not index.exists(), f"the {scope} tree's .index sidecar survived"
         warnings = [
             r
             for r in caplog.records

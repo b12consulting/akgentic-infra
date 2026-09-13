@@ -435,23 +435,26 @@ class TeamService:
     def _deletion_candidates(self, process: Process) -> list[PurePosixPath]:
         """The trees this team's deletion may consider, or an empty list and a WARNING.
 
-        **No team may become undeletable.** Three things can stop the candidate
-        set being resolved, and none of them may propagate: an owner id that
-        cannot be a directory name (ADR-048 Decision 4's delete-path row),
-        default-layout cards that disagree on ``workspace_sharable``, and a
+        **No team may become undeletable.** Two things can stop the candidate
+        set being resolved, and neither may propagate: an owner id that cannot
+        be a directory name (ADR-048 Decision 4's delete-path row) and a
         ``card_hash`` the store cannot resolve. Each is logged at WARNING and
         skips workspace cleanup for that team; the record deletion still
-        succeeds. Letting any of them through would trade an orphaned directory
-        for a stuck record.
+        succeeds. Letting either through would trade an orphaned directory for a
+        stuck record.
+
+        Default-layout cards that disagree on ``workspace_sharable`` used to be
+        a third, and are not one any more: both of the trees they name are this
+        team's own ``_team`` tree, so ``deletion_candidate_paths`` keeps both as
+        candidates and records the disagreement itself. Skipping there left both
+        trees and both ``.index`` sidecars behind for ever.
         """
         team_id = process.team_id
         try:
             return deletion_candidate_paths(process=process, store=self._services.event_store)
         except ValueError as exc:
-            # Either the owner id cannot be a directory name, or the team's
-            # default-layout cards disagree on where its own tree lives. Neither
-            # has a right answer, and guessing one would pick a tree on the
-            # strength of the order the card store returned rows in.
+            # The owner id cannot be a directory name, so no tree of this team
+            # can be located at all.
             logger.warning(
                 "Workspace cleanup skipped, no candidate resolved — team_id=%s owner=%r error=%s",
                 team_id,

@@ -11,12 +11,12 @@ module is the duplication ADR-048 exists to remove, one scale down.
 **The card-reading half now lives in**
 :mod:`akgentic.infra.server.services._workspace_paths`, because
 ``TeamService.delete_team`` needs it too and the direction of dependency in this
-package is ``routes -> services``. :func:`declared_workspace_paths` and
-:func:`default_workspace_path` are re-exported here — listed in ``__all__``,
-which is what makes the re-export legal under mypy's ``no_implicit_reexport`` —
-so every route and every existing test that imports them from this module keeps
-resolving unchanged. That module's docstring carries the layout table and the
-scope/kind/leaf rules.
+package is ``routes -> services``. :func:`declared_workspace_paths`,
+:func:`default_workspace_path` and :func:`select_declared_path` are re-exported
+here — listed in ``__all__``, which is what makes the re-export legal under
+mypy's ``no_implicit_reexport`` — so every route and every existing test that
+imports them from this module keeps resolving unchanged. That module's docstring
+carries the layout table and the scope/kind/leaf rules.
 
 The seam that remains is clean: card-reading path resolution on one side, with
 no FastAPI import; ``HTTPException`` and ``conn.state`` on this one.
@@ -37,6 +37,7 @@ from starlette.requests import HTTPConnection
 from akgentic.infra.server.services._workspace_paths import (
     declared_workspace_paths,
     default_workspace_path,
+    select_declared_path,
 )
 from akgentic.team.models import Process
 from akgentic.tool.workspace import leaf_segment
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "declared_workspace_paths",
     "default_workspace_path",
+    "select_declared_path",
     "stash_team_process",
     "stash_workspace_path",
     "stashed_team_process",
@@ -81,9 +83,10 @@ def validate_workspace_id(workspace_id: str) -> str:
     included, gets through.
 
     This is a traversal guard, not an access policy. Authorization is
-    membership: the selector is served only when it is byte-equal to a leaf in
-    :func:`declared_workspace_paths`. A path-safe value no card declares is
-    refused there with 404.
+    membership: the selector is served only when it is byte-equal to the
+    ``<leaf>`` of exactly one path in :func:`declared_workspace_paths`. A
+    path-safe value no card declares is refused there with 404, and one two
+    declared paths share is refused with 500 rather than resolved to either.
 
     The detail is fixed: the tool's message reflects the caller's value and
     names internal directories, so it stays out of the response.
