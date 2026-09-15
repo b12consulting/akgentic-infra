@@ -758,12 +758,14 @@ async def _check(
     user: RequestUser,
     policy: TeamAccessPolicy | None = None,
     team_id: uuid.UUID | None = None,
+    metadata_indexes: list[str] | None = None,
 ) -> None:
     await check_workspace_scope(
         PurePosixPath(path),
         team_id=team_id or uuid.uuid4(),
         user=user,
         policy=OwnerOrAdminPolicy() if policy is None else policy,
+        metadata_indexes=[] if metadata_indexes is None else metadata_indexes,
     )
 
 
@@ -789,6 +791,59 @@ async def test_the_policy_is_asked_about_the_scope_and_the_authorized_team() -> 
     team_id = uuid.uuid4()
     await _check("mallory/_id/alice", _OWNER, policy=policy, team_id=team_id)
     assert policy.calls == [TeamAccessContext(team_id=team_id, owner_user_id="mallory")]
+
+
+async def test_the_context_carries_the_authorized_teams_metadata_indexes() -> None:
+    """The team's own indexes reach the policy, not an empty default.
+
+    ``require_team_access`` passes ``process.metadata_indexes``; this check must
+    pass the same team's, or a metadata-driven policy is asked to rule on a team
+    it cannot see.
+    """
+    policy = _FixedPolicy(True)
+    team_id = uuid.uuid4()
+    await _check(
+        "alice/_meta/case_id-42",
+        _OWNER,
+        policy=policy,
+        team_id=team_id,
+        metadata_indexes=["case_id|42"],
+    )
+    assert policy.calls == [
+        TeamAccessContext(
+            team_id=team_id, owner_user_id="alice", metadata_indexes=["case_id|42"]
+        )
+    ]
+
+
+async def test_a_metadata_policy_that_admits_the_team_also_admits_its_tree() -> None:
+    """The two gates agree for a policy that decides on metadata rather than ownership.
+
+    The failing shape this pins: a policy granting on an index entry allowed the
+    caller at the team gate and denied them the tree, because the scope check
+    built its context with the field left at its empty default. A 404 on the
+    workspace of a team the caller had just been admitted to, with nothing
+    raised and nothing logged — an empty list is a valid context.
+    """
+
+    class _EntitlementPolicy:
+        """Allows iff the context carries the entitling index entry."""
+
+        async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+            return []
+
+        async def can_create(self, *, ctx: UserAccessContext, user: RequestUser) -> bool:
+            return True
+
+        async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+            return "case_id|42" in ctx.metadata_indexes
+
+    await _check(
+        "alice/_meta/case_id-42",
+        _STRANGER,
+        policy=_EntitlementPolicy(),
+        metadata_indexes=["case_id|42"],
+    )
 
 
 async def test_only_the_scope_is_read_never_the_leaf() -> None:
