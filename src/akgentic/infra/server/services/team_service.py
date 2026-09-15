@@ -35,7 +35,7 @@ from akgentic.team.metadata import (
 )
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamCard, TeamStatus
 from akgentic.team.ports import AgentCardNotFoundError
-from akgentic.tool.workspace import git_dir_for, meta_dir_for, user_segment
+from akgentic.tool.workspace import git_dir_for, meta_dir_for
 
 if TYPE_CHECKING:
     from akgentic.core.messages.message import Message
