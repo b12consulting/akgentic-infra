@@ -23,7 +23,12 @@ from starlette.datastructures import State
 
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.errors import SharedWorkspaceRefusedError
-from akgentic.infra.protocols.authz import TeamAccessContext, TeamAccessPolicy, TeamListFilter
+from akgentic.infra.protocols.authz import (
+    TeamAccessContext,
+    TeamAccessPolicy,
+    TeamListFilter,
+    UserAccessContext,
+)
 from akgentic.infra.server.auth import RequestUser
 from akgentic.infra.server.routes._team_access import (
     check_workspace_scope,
@@ -91,7 +96,7 @@ class _FixedPolicy:
         return []
 
     async def can_create(
-        self, *, metadata_indexes: list[str], user: RequestUser
+        self, *, ctx: UserAccessContext, user: RequestUser
     ) -> bool:
         return self._verdict
 
@@ -107,7 +112,7 @@ class _RaisingPolicy:
         raise AssertionError("policy must not be consulted on the pass-through path")
 
     async def can_create(
-        self, *, metadata_indexes: list[str], user: RequestUser
+        self, *, ctx: UserAccessContext, user: RequestUser
     ) -> bool:
         raise AssertionError("policy must not be consulted on the pass-through path")
 

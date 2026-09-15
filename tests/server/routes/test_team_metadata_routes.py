@@ -26,7 +26,7 @@ from akgentic.team.metadata import make_index_entry
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from akgentic.infra.protocols.authz import TeamAccessContext, TeamListFilter
+from akgentic.infra.protocols.authz import TeamAccessContext, TeamListFilter, UserAccessContext
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.deps import CommunityServices
@@ -70,10 +70,10 @@ class _CreationPolicy:
     async def can_create(
         self,
         *,
-        metadata_indexes: list[str],
+        ctx: UserAccessContext,
         user: RequestUser,
     ) -> bool:
-        self.creation_indexes.append(metadata_indexes)
+        self.creation_indexes.append(ctx.metadata_indexes)
         return self._allowed
 
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
@@ -90,7 +90,7 @@ class _OwnerOrEntitlementPolicy:
     async def can_create(
         self,
         *,
-        metadata_indexes: list[str],
+        ctx: UserAccessContext,
         user: RequestUser,
     ) -> bool:
         return True

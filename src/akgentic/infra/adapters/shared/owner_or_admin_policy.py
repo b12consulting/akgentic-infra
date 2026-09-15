@@ -9,7 +9,11 @@ mirroring the ``AuthStrategy`` protocol / ``NoAuth`` community-default split.
 
 from __future__ import annotations
 
-from akgentic.infra.protocols.authz import TeamAccessContext, TeamListFilter
+from akgentic.infra.protocols.authz import (
+    TeamAccessContext,
+    TeamListFilter,
+    UserAccessContext,
+)
 from akgentic.infra.server.auth import RequestUser
 
 _ADMIN_ROLE = "admin"
@@ -36,7 +40,7 @@ class OwnerOrAdminPolicy:
     async def can_create(
         self,
         *,
-        metadata_indexes: list[str],
+        ctx: UserAccessContext,
         user: RequestUser,
     ) -> bool:
         """Preserve the historical behavior: every authenticated caller may create."""

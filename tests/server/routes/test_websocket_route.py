@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from akgentic.infra.protocols.authz import TeamAccessContext, TeamListFilter
+from akgentic.infra.protocols.authz import TeamAccessContext, TeamListFilter, UserAccessContext
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.routes.ws import ConnectionManager
 
@@ -22,7 +22,7 @@ class _DenyAllPolicy:
         return []
 
     async def can_create(
-        self, *, metadata_indexes: list[str], user: RequestUser
+        self, *, ctx: UserAccessContext, user: RequestUser
     ) -> bool:
         return False
 
@@ -40,7 +40,7 @@ class _AllowAllPolicy:
         return [TeamListFilter()]
 
     async def can_create(
-        self, *, metadata_indexes: list[str], user: RequestUser
+        self, *, ctx: UserAccessContext, user: RequestUser
     ) -> bool:
         return True
 

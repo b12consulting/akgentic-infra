@@ -37,7 +37,8 @@ flowchart TD
     CANDIDATES --> EXACT[Exact policy check]
     EXACT --> PAGE[Sort, count, paginate]
 
-    TEAM[Team owner and indexed metadata] --> POLICY
+    NEW[Validated metadata for a new team] -->|UserAccessContext| POLICY
+    TEAM[Existing team owner and indexed metadata] -->|TeamAccessContext| POLICY
     POLICY --> ROUTES[REST and WebSocket routes]
 ```
 
@@ -65,12 +66,17 @@ customer entitlements remain resource-level decisions.
 **Status: Approved and implemented**
 
 The policy does not introduce separate viewer, editor, sender, owner, or
-deleter permissions. If a policy grants access to an existing team, the caller
-may perform the currently protected operations on that team, including REST,
-workspace, and WebSocket operations.
+deleter permissions. The protocol exposes named hooks for the currently
+protected operations — `can_get_team`, `can_stop_team`, `can_delete_team`,
+`can_restore_team`, and `can_update_metadata` — but the default policy applies
+the same coarse existing-team decision to each hook. Events and agent state do
+not receive separate policy hooks; they remain covered by the broader team
+operation that serves them.
 
-Listing and creation remain separate policy questions because there is no
-existing team to authorize in those flows.
+Listing and creation remain separate policy questions. Creation has no existing
+team identifier, so it passes validated prospective metadata in a
+`UserAccessContext`; existing-team operations pass owner and metadata in a
+`TeamAccessContext`.
 
 ## ADR 3: Inject the policy during application construction
 
@@ -201,12 +207,64 @@ class TeamListFilter(BaseModel):
     metadata: dict[str, list[str]] | None = None
 
 
+class UserAccessContext(BaseModel):
+  metadata_indexes: list[str] = Field(default_factory=list)
+
+
+class TeamAccessContext(BaseModel):
+  team_id: uuid.UUID
+  owner_user_id: str
+  metadata_indexes: list[str] = Field(default_factory=list)
+
+
 class TeamAccessPolicy(Protocol):
+  async def can_create(
+    self,
+    *,
+    ctx: UserAccessContext,
+    user: RequestUser,
+  ) -> bool: ...
+
     async def list_filters(
         self,
         *,
         user: RequestUser,
     ) -> list[TeamListFilter]: ...
+
+  async def can_get_team(
+    self,
+    *,
+    ctx: TeamAccessContext,
+    user: RequestUser,
+  ) -> bool: ...
+
+  async def can_stop_team(
+    self,
+    *,
+    ctx: TeamAccessContext,
+    user: RequestUser,
+  ) -> bool: ...
+
+  async def can_delete_team(
+    self,
+    *,
+    ctx: TeamAccessContext,
+    user: RequestUser,
+  ) -> bool: ...
+
+  async def can_restore_team(
+    self,
+    *,
+    ctx: TeamAccessContext,
+    user: RequestUser,
+  ) -> bool: ...
+
+  async def can_update_metadata(
+    self,
+    *,
+    ctx: TeamAccessContext,
+    user: RequestUser,
+  ) -> bool: ...
 ```
 
 The combination rules are explicit:

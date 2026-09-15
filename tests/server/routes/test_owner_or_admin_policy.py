@@ -13,7 +13,12 @@ import pytest
 from pydantic import ValidationError
 
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
-from akgentic.infra.protocols.authz import TeamAccessContext, TeamAccessPolicy, TeamListFilter
+from akgentic.infra.protocols.authz import (
+    TeamAccessContext,
+    TeamAccessPolicy,
+    TeamListFilter,
+    UserAccessContext,
+)
 from akgentic.infra.server.auth import RequestUser
 from akgentic.infra.server.deps import CommunityServices
 
@@ -97,6 +102,13 @@ class TestTeamAccessContext:
         assert restored.team_id == team_id
         assert restored.owner_user_id == "alice"
         assert restored.metadata_indexes == ["customer_id|1234"]
+
+
+class TestUserAccessContext:
+    def test_round_trips_through_model_dump(self) -> None:
+        ctx = UserAccessContext(metadata_indexes=["customer_id|1234"])
+        restored = UserAccessContext.model_validate(ctx.model_dump())
+        assert restored == ctx
 
 
 class TestTeamListFilter:

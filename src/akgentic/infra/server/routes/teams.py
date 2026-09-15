@@ -15,7 +15,7 @@ from akgentic.infra.errors import (
     TeamNotFoundError,
     TeamStateConflictError,
 )
-from akgentic.infra.protocols.authz import TeamAccessPolicy
+from akgentic.infra.protocols.authz import TeamAccessPolicy, UserAccessContext
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.models import (
     AgentStateListResponse,
@@ -96,7 +96,7 @@ async def create_team(
             body.metadata,
         )
         if not await policy.can_create(
-            metadata_indexes=resolved.metadata_indexes,
+            ctx=UserAccessContext(metadata_indexes=resolved.metadata_indexes),
             user=user,
         ):
             raise HTTPException(status_code=403, detail="Team creation not allowed")

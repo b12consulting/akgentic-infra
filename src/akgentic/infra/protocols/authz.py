@@ -5,8 +5,10 @@ authentication (who is this principal?, ``protocols/auth.py`` ``AuthStrategy``).
 :class:`TeamAccessPolicy` is a **sibling** of ``AuthStrategy``, not a member of
 it. Infra owns the team lookup and the load-bearing 404-over-403
 no-existence-leak machinery; only the allow/deny *rule* is pluggable. A policy
-consumes the neutral :class:`TeamAccessContext` — never the team ``Process`` —
-so a tier or library policy never has to import ``akgentic.team.models``.
+consumes neutral authorization contexts — :class:`TeamAccessContext` for
+existing teams and :class:`UserAccessContext` for pre-creation decisions — never
+the team ``Process``, so a tier or library policy never has to import
+``akgentic.team.models``.
 """
 
 from __future__ import annotations
@@ -62,6 +64,16 @@ class TeamAccessContext(BaseModel):
     metadata_indexes: list[str] = Field(default_factory=list)
 
 
+class UserAccessContext(BaseModel):
+    """Context for authorization decisions made before a team exists.
+
+    Carries the validated metadata indexes for a prospective team without
+    inventing a team identifier that does not exist yet.
+    """
+
+    metadata_indexes: list[str] = Field(default_factory=list)
+
+
 @runtime_checkable
 class TeamAccessPolicy(Protocol):
     """Tier-agnostic per-team authorization contract (ADR-035 Decision 8).
@@ -80,7 +92,7 @@ class TeamAccessPolicy(Protocol):
     async def can_create(
         self,
         *,
-        metadata_indexes: list[str],
+        ctx: UserAccessContext,
         user: RequestUser,
     ) -> bool:
         """Return whether ``user`` may create a team with the validated metadata."""
