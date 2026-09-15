@@ -12,6 +12,7 @@ from akgentic.infra.errors import (
     MetadataValidationError,
     PlacementConsistencyError,
     ServerError,
+    SharedWorkspaceRefusedError,
     TeamNotFoundError,
     TeamStateConflictError,
 )
@@ -163,6 +164,22 @@ class TestMetadataValidationError:
         assert isinstance(err, ServerError)
         assert not isinstance(err, ValueError)
         assert not isinstance(err, PlacementError)
+
+
+class TestSharedWorkspaceRefusedError:
+    """Story 70.2: the ``_shared`` refusal is a 403 with a stable code, and never a 404."""
+
+    def test_status_and_code(self) -> None:
+        err = SharedWorkspaceRefusedError()
+        assert err.status_code == 403
+        assert err.code == "shared_workspace_entitlement_undecided"
+
+    def test_is_a_server_error_so_the_one_handler_maps_it(self) -> None:
+        """The registered ``ServerError`` handler is what turns it into ``{detail, code}``."""
+        err = SharedWorkspaceRefusedError()
+        assert isinstance(err, ServerError)
+        assert not isinstance(err, PlacementError)
+        assert err.detail
 
 
 class TestTeamErrorClassification:

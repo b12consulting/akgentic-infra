@@ -65,6 +65,38 @@ class MetadataValidationError(ServerError):
     code = "invalid_metadata"
 
 
+_SHARED_WORKSPACE_REFUSED_DETAIL = (
+    "This workspace is shared across principals, and no policy yet decides who may reach "
+    "a shared workspace: that is akgentic-infra-auth's metadata-entitlement policy, which "
+    "does not exist yet. Shared workspaces are refused to every caller until it does."
+)
+
+
+class SharedWorkspaceRefusedError(ServerError):
+    """A workspace route was asked to open a tree under the shared scope.
+
+    A shared tree has no owner, so whether the caller owns the team is the wrong
+    question for it, and an admin's authority over principals does not answer
+    it either. The right question is entitlement: may this principal assert the
+    values the tree is keyed on. ``akgentic-infra-auth`` owns that policy, and
+    until it exists every caller is refused, admins included.
+
+    **403, not 404.** The 404-over-403 rule hides the existence of something the
+    caller may not see. The caller has already passed the team gate, and the
+    tree is one their own authorized team declares, so they know it exists. A
+    404 would misstate the reason.
+
+    The ``detail`` names the missing policy. Clients should match on ``code``,
+    which is stable, and not on the wording.
+    """
+
+    status_code = 403
+    code = "shared_workspace_entitlement_undecided"
+
+    def __init__(self, detail: str = _SHARED_WORKSPACE_REFUSED_DETAIL) -> None:
+        super().__init__(detail)
+
+
 class TeamNotFoundError(ValueError):
     """The team does not exist in the system of record.
 
