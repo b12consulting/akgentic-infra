@@ -45,7 +45,6 @@ from akgentic.team import resolve_agent_cards
 from akgentic.team.models import Process
 from akgentic.team.ports import EventStore
 from akgentic.tool import ToolCard
-from akgentic.tool.sandbox import ExecTool
 from akgentic.tool.workspace import WorkspaceTool, resolve_workspace_path
 
 logger = logging.getLogger(__name__)
@@ -101,23 +100,17 @@ def validate_workspace_id(workspace_id: str) -> str:
 def _declared_layout(tool: ToolCard) -> tuple[str | None, list[str]] | None:
     """The ``(workspace_id, workspace_metadata_keys)`` a card declares, or ``None``.
 
-    **The two cards do not share a shape, and reading them as if they did would
-    hide a regression.** ``WorkspaceTool`` carries both fields;
-    ``ExecTool`` — the deprecated card epic 41 removes — carries
-    ``workspace_id`` only and will never gain ``workspace_metadata_keys``
-    (ADR-048 Decision 2), a metadata-scoped shell being already reachable
-    through ``WorkspaceTool(workspace_exec=...)``. A blanket
-    ``getattr(tool, "workspace_metadata_keys", [])`` across both would also
-    swallow a ``WorkspaceTool`` that lost the field.
-
-    ``ExecTool`` is included rather than skipped because it is a real
-    declaration site: it resolves its own directory during ``observer()``, so
-    omitting it would 404 a ``workspace_id`` an agent really is configured with.
+    ``WorkspaceTool`` is the **only** card that declares a workspace. Sandboxed
+    execution is one of its capabilities (``workspace_exec=...``), not a card of
+    its own: a shell-only agent is a ``WorkspaceTool`` with every file
+    capability off and ``workspace_exec`` on, and it declares its directory
+    through the same two fields as any other. There is no second shape to read,
+    and a blanket ``getattr(tool, "workspace_metadata_keys", [])`` would only
+    swallow a ``WorkspaceTool`` that lost the field — so the type is checked and
+    the fields are read directly.
     """
     if isinstance(tool, WorkspaceTool):
         return tool.workspace_id, tool.workspace_metadata_keys
-    if isinstance(tool, ExecTool):
-        return tool.workspace_id, []
     return None
 
 

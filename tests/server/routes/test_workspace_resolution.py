@@ -9,18 +9,19 @@ the single tool-side ``resolve_workspace_path``.
 from __future__ import annotations
 
 import inspect
+import re
 import uuid
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import pytest
 from akgentic.team.ports import AgentCardNotFoundError
 from akgentic.team.projection import hash_agent_card
 from akgentic.tool import MetadataTool
-from akgentic.tool.sandbox import ExecTool
 from akgentic.tool.workspace import WorkspaceTool
 from fastapi import HTTPException
 from starlette.datastructures import State
 
+import akgentic.infra
 from akgentic.infra.server.routes._workspace_resolution import (
     declared_workspace_paths,
     stash_workspace_paths,
@@ -32,6 +33,7 @@ from ._workspace_cards import (
     CaseMetadata,
     RecordingCardStore,
     bare_card,
+    exec_only_workspace,
     process_with_cards,
     tool_card,
 )
@@ -137,13 +139,13 @@ def test_one_workspace_id_on_two_owners_teams_is_two_trees() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The two card shapes are not one shape
+# Sandboxed execution is a WorkspaceTool capability, not a second card shape
 # ---------------------------------------------------------------------------
 
 
-def test_exec_tool_contributes_a_leaf() -> None:
-    """``ExecTool`` is a real declaration site — omitting it would 404 a live id."""
-    card = tool_card("Runner", ExecTool(workspace_id="shell"))
+def test_exec_only_workspace_contributes_a_leaf() -> None:
+    """A shell-only card is a real declaration site — omitting it would 404 a live id."""
+    card = tool_card("Runner", exec_only_workspace("shell"))
     process = process_with_cards([card])
     store = RecordingCardStore([card])
 
@@ -152,15 +154,10 @@ def test_exec_tool_contributes_a_leaf() -> None:
     assert {k: str(v) for k, v in paths.items()} == {"shell": "alice/shell"}
 
 
-def test_exec_tool_and_workspace_tool_on_one_team() -> None:
-    """Both shapes resolve side by side; ``ExecTool``'s missing field is exercised.
-
-    ``ExecTool`` carries no ``workspace_metadata_keys`` and never will, so a
-    team holding both cards is what proves the enumeration reads the field off
-    ``WorkspaceTool`` only rather than assuming one shape.
-    """
+def test_exec_only_and_file_workspaces_on_one_team() -> None:
+    """A shell-only card and a file card resolve side by side, through one shape."""
     workspace = tool_card("Writer", WorkspaceTool(workspace_id="notes"))
-    runner = tool_card("Runner", ExecTool(workspace_id="shell"))
+    runner = tool_card("Runner", exec_only_workspace("shell"))
     process = process_with_cards([workspace, runner])
     store = RecordingCardStore([workspace, runner])
 
@@ -172,10 +169,37 @@ def test_exec_tool_and_workspace_tool_on_one_team() -> None:
     }
 
 
-def test_exec_tool_has_no_metadata_keys_field() -> None:
-    """The field really is absent — the reason the two shapes are written apart."""
-    assert "workspace_metadata_keys" not in ExecTool.model_fields
-    assert "workspace_metadata_keys" in WorkspaceTool.model_fields
+def test_exec_only_metadata_workspace_resolves_under_meta() -> None:
+    """A metadata-scoped shell is reachable — the reason the standalone card went."""
+    tool = exec_only_workspace(workspace_metadata_keys=["customer_id", "case_id"])
+    card = tool_card("Runner", tool)
+    process = process_with_cards([card], metadata=CaseMetadata())
+    store = RecordingCardStore([card])
+
+    paths = declared_workspace_paths(process=process, store=store)
+
+    leaf = "customer_id-ACME__case_id-42"
+    assert {k: str(v) for k, v in paths.items()} == {leaf: f"_meta/{leaf}"}
+
+
+_EXEC_TOOL_REFERENCE = re.compile(r"\bExecTool\b|akgentic\.tool\.sandbox\b")
+
+
+def test_no_infra_module_imports_the_retired_exec_card() -> None:
+    """Nothing under ``akgentic.infra`` names the retired standalone exec card.
+
+    ``akgentic-tool`` removed it and makes the name raise ``ImportError`` at
+    import time, so one surviving reference in any server module fails the
+    whole suite at collection. The guard scans the source rather than importing,
+    because an import-time failure is exactly what it must catch early.
+    """
+    src_root = Path(akgentic.infra.__file__).parent
+    offenders = [
+        str(path.relative_to(src_root))
+        for path in sorted(src_root.rglob("*.py"))
+        if _EXEC_TOOL_REFERENCE.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
 
 
 def test_bare_base_config_card_declares_nothing() -> None:
