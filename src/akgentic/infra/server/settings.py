@@ -88,6 +88,13 @@ class ServerSettings(BaseSettings):
             "cross-subsystem starvation."
         ),
     )
+    admin_list_all_teams: bool = Field(
+        default=False,
+        description=(
+            "Allow administrators using the default team-access policy to list "
+            "every team. False preserves the historical owner-filtered listing."
+        ),
+    )
     # ``NoDecode`` is load-bearing, not decoration: pydantic-settings
     # json-decodes complex fields in its env source *before* any mode="before"
     # validator runs, so a bare ``list[str]`` would make the comma form raise

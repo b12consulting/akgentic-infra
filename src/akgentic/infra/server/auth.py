@@ -16,12 +16,17 @@ class RequestUser(BaseModel):
     ``scopes`` is the additive, default-empty inbound-authz axis: it carries
     the principal's granted scopes for scope-based authorization, alongside the
     coarser ``roles`` axis (ADR-035).
+
+    ``entitlements`` carries server-trusted resource grants for policy-based
+    authorization. Its keys name resource fields and its values are the exact
+    values granted to the principal.
     """
 
     user_id: str
     email: str = ""
     roles: list[str] = Field(default_factory=list)
     scopes: list[str] = Field(default_factory=list)
+    entitlements: dict[str, list[str]] = Field(default_factory=dict)
 
 
 def get_request_user(conn: HTTPConnection) -> RequestUser:

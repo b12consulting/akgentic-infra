@@ -23,7 +23,12 @@ from starlette.datastructures import State
 
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.errors import SharedWorkspaceRefusedError
-from akgentic.infra.protocols.authz import TeamAccessContext, TeamAccessPolicy
+from akgentic.infra.protocols.authz import (
+    TeamAccessContext,
+    TeamAccessPolicy,
+    TeamListFilter,
+    UserAccessContext,
+)
 from akgentic.infra.server.auth import RequestUser
 from akgentic.infra.server.routes._team_access import (
     check_workspace_scope,
@@ -60,6 +65,7 @@ class _FakeProcess:
         self.team_id = uuid.uuid4()
         self.agent_cards: list[Any] = []
         self.metadata = None
+        self.metadata_indexes = ["customer_id|1234"]
 
 
 class _FakeTeamService:
@@ -86,6 +92,14 @@ class _FixedPolicy:
         self._verdict = verdict
         self.calls: list[TeamAccessContext] = []
 
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        return []
+
+    async def can_create(
+        self, *, ctx: UserAccessContext, user: RequestUser
+    ) -> bool:
+        return self._verdict
+
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         self.calls.append(ctx)
         return self._verdict
@@ -93,6 +107,14 @@ class _FixedPolicy:
 
 class _RaisingPolicy:
     """Fake policy that fails the test if consulted (missing-team assertion)."""
+
+    async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+        raise AssertionError("policy must not be consulted on the pass-through path")
+
+    async def can_create(
+        self, *, ctx: UserAccessContext, user: RequestUser
+    ) -> bool:
+        raise AssertionError("policy must not be consulted on the pass-through path")
 
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         raise AssertionError("policy must not be consulted on the pass-through path")
@@ -208,6 +230,7 @@ async def test_injected_true_policy_lets_non_owner_through() -> None:
     policy = _FixedPolicy(True)
     assert await _call(user, owner="alice", policy=policy) is user
     assert len(policy.calls) == 1
+    assert policy.calls[0].metadata_indexes == ["customer_id|1234"]
 
 
 async def test_injected_false_policy_gives_owner_404() -> None:
@@ -701,6 +724,7 @@ async def test_workspace_foreign_team_denied_is_404() -> None:
         await _call_workspace(user, workspace_id=str(uuid.uuid4()), owner="alice", policy=policy)
     assert excinfo.value.status_code == 404
     assert len(policy.calls) == 1
+    assert policy.calls[0].metadata_indexes == ["customer_id|1234"]
 
 
 async def test_workspace_foreign_team_allowed_still_meets_the_declared_check() -> None:
@@ -734,12 +758,14 @@ async def _check(
     user: RequestUser,
     policy: TeamAccessPolicy | None = None,
     team_id: uuid.UUID | None = None,
+    metadata_indexes: list[str] | None = None,
 ) -> None:
     await check_workspace_scope(
         PurePosixPath(path),
         team_id=team_id or uuid.uuid4(),
         user=user,
         policy=OwnerOrAdminPolicy() if policy is None else policy,
+        metadata_indexes=[] if metadata_indexes is None else metadata_indexes,
     )
 
 
@@ -765,6 +791,59 @@ async def test_the_policy_is_asked_about_the_scope_and_the_authorized_team() -> 
     team_id = uuid.uuid4()
     await _check("mallory/_id/alice", _OWNER, policy=policy, team_id=team_id)
     assert policy.calls == [TeamAccessContext(team_id=team_id, owner_user_id="mallory")]
+
+
+async def test_the_context_carries_the_authorized_teams_metadata_indexes() -> None:
+    """The team's own indexes reach the policy, not an empty default.
+
+    ``require_team_access`` passes ``process.metadata_indexes``; this check must
+    pass the same team's, or a metadata-driven policy is asked to rule on a team
+    it cannot see.
+    """
+    policy = _FixedPolicy(True)
+    team_id = uuid.uuid4()
+    await _check(
+        "alice/_meta/case_id-42",
+        _OWNER,
+        policy=policy,
+        team_id=team_id,
+        metadata_indexes=["case_id|42"],
+    )
+    assert policy.calls == [
+        TeamAccessContext(
+            team_id=team_id, owner_user_id="alice", metadata_indexes=["case_id|42"]
+        )
+    ]
+
+
+async def test_a_metadata_policy_that_admits_the_team_also_admits_its_tree() -> None:
+    """The two gates agree for a policy that decides on metadata rather than ownership.
+
+    The failing shape this pins: a policy granting on an index entry allowed the
+    caller at the team gate and denied them the tree, because the scope check
+    built its context with the field left at its empty default. A 404 on the
+    workspace of a team the caller had just been admitted to, with nothing
+    raised and nothing logged — an empty list is a valid context.
+    """
+
+    class _EntitlementPolicy:
+        """Allows iff the context carries the entitling index entry."""
+
+        async def list_filters(self, *, user: RequestUser) -> list[TeamListFilter]:
+            return []
+
+        async def can_create(self, *, ctx: UserAccessContext, user: RequestUser) -> bool:
+            return True
+
+        async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+            return "case_id|42" in ctx.metadata_indexes
+
+    await _check(
+        "alice/_meta/case_id-42",
+        _STRANGER,
+        policy=_EntitlementPolicy(),
+        metadata_indexes=["case_id|42"],
+    )
 
 
 async def test_only_the_scope_is_read_never_the_leaf() -> None:
