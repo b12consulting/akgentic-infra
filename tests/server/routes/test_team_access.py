@@ -319,6 +319,94 @@ async def test_declared_metadata_workspace_resolves_under_meta() -> None:
     assert str(stashed[leaf]) == f"_meta/{leaf}"
 
 
+# The metadata leaf is the team's own metadata, encoded (Story 67.2). A metadata
+# leaf is admitted iff it is byte-equal to the one ``process.metadata`` produces
+# through the card's declared keys, in declaration order; the gate never parses
+# a leaf or compares pairs, so a foreign leaf is *absent* from the map rather
+# than present and refused. Each negative below is paired with the positive in
+# the same fixture, positive first — a foreign leaf is absent from an empty map
+# too, so an unpaired 404 says nothing about the gate.
+
+_ACME_LEAF = "customer_id-ACME__case_id-42"
+_FOREIGN_META_LEAVES = [
+    "customer_id-CONTOSO__case_id-42",  # another customer, the same key set
+    "customer_id-ACME",  # a key set the card does not declare
+    "case_id-42__customer_id-ACME",  # the same keys, the other order
+]
+
+
+def _acme_case_team() -> tuple[Process, RecordingCardStore]:
+    """A team on case ACME/42 whose one card declares ``["customer_id", "case_id"]``."""
+    return _declaring_team(
+        WorkspaceTool(workspace_metadata_keys=["customer_id", "case_id"]),
+        metadata=CaseMetadata(customer_id="ACME", case_id="42"),
+    )
+
+
+async def test_the_admitted_metadata_leaf_is_the_only_key_in_the_stashed_map() -> None:
+    """Story 67.2, the positive: ACME/42 reaches its own leaf, and the map holds only it.
+
+    Exactly one key, so the refusals beside this can be read as *absent from
+    the map* rather than present-and-refused — nothing compares pairs, because
+    the leaf is derived from the metadata rather than matched against it.
+    """
+    user = RequestUser(user_id="alice")
+    process, store = _acme_case_team()
+    request = _FakeRequest()
+
+    result = await _call_workspace(
+        user, workspace_id=_ACME_LEAF, owner=None, process=process, store=store, request=request
+    )
+
+    assert result is user
+    stashed = stashed_workspace_paths(request)  # type: ignore[arg-type]
+    assert stashed is not None
+    assert {leaf: str(path) for leaf, path in stashed.items()} == {
+        _ACME_LEAF: f"_meta/{_ACME_LEAF}"
+    }
+    assert len(store.calls) == 1
+
+
+@pytest.mark.parametrize("leaf", _FOREIGN_META_LEAVES)
+async def test_a_leaf_the_teams_metadata_cannot_produce_is_404_and_stashes_nothing(
+    leaf: str,
+) -> None:
+    """Story 67.2, the refusals: another case's values, an undeclared key set, the other order.
+
+    The positive is re-asserted first on the same declaration, so the 404 that
+    follows is a membership decision on a non-empty map. The refusal carries
+    the body a missing team gets, stashes nothing, and is decided from the
+    team's own cards read once — not from a second lookup keyed on the leaf.
+    The reversed-order leaf names a different workspace under the sequence
+    model, so its refusal is real rather than a leftover of the correction
+    that moved the tool to declaration order.
+    """
+    user = RequestUser(user_id="alice")
+    admitted_process, admitted_store = _acme_case_team()
+    assert (
+        await _call_workspace(
+            user,
+            workspace_id=_ACME_LEAF,
+            owner=None,
+            process=admitted_process,
+            store=admitted_store,
+        )
+        is user
+    )
+
+    process, store = _acme_case_team()
+    request = _FakeRequest()
+    with pytest.raises(HTTPException) as excinfo:
+        await _call_workspace(
+            user, workspace_id=leaf, owner=None, process=process, store=store, request=request
+        )
+
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail == "Team not found"
+    assert stashed_workspace_paths(request) is None  # type: ignore[arg-type]
+    assert len(store.calls) == 1
+
+
 async def test_card_set_is_read_once_per_request() -> None:
     """AC #8: the gate makes exactly one ``load_agent_cards`` call."""
     user = RequestUser(user_id="alice")
