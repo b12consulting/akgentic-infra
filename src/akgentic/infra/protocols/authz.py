@@ -86,6 +86,28 @@ class TeamAccessPolicy(Protocol):
         """Return whether ``user`` may create a team with the validated metadata."""
         ...
 
+    async def can_get_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        """Return whether ``user`` may retrieve the team described by ``ctx``."""
+        ...
+
+    async def can_stop_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        """Return whether ``user`` may stop the team described by ``ctx``."""
+        ...
+
+    async def can_delete_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        """Return whether ``user`` may delete the team described by ``ctx``."""
+        ...
+
+    async def can_restore_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        """Return whether ``user`` may restore the team described by ``ctx``."""
+        ...
+
+    async def can_update_metadata(
+        self, *, ctx: TeamAccessContext, user: RequestUser
+    ) -> bool:
+        """Return whether ``user`` may update metadata for the team in ``ctx``."""
+        ...
+
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         """Return ``True`` iff ``user`` may access the team described by ``ctx``."""
         ...

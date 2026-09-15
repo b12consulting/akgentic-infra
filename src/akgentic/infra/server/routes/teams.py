@@ -91,7 +91,7 @@ async def create_team(
     logger.info("POST /teams — catalog_namespace=%s", body.catalog_namespace)
     try:
         resolved = await asyncio.to_thread(
-            service.resolve_team_creation,
+            service.resolve_team_metadata,
             body.catalog_namespace,
             body.metadata,
         )

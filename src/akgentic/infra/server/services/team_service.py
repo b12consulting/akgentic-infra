@@ -55,7 +55,7 @@ _WORKSPACE_PATH_SEGMENTS = 3
 
 
 @dataclass(frozen=True)
-class ResolvedTeamCreation:
+class ResolvedTeamMetadata:
     """Resolved catalog team and validated metadata, ready for authorization."""
 
     catalog_namespace: str
@@ -316,7 +316,7 @@ class TeamService:
                 body never leaves a half-created team behind.
         """
         logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
-        resolved = self.resolve_team_creation(catalog_namespace, metadata)
+        resolved = self.resolve_team_metadata(catalog_namespace, metadata)
         return self.create_resolved_team(
             resolved,
             user_id=user_id,
@@ -324,11 +324,11 @@ class TeamService:
             team_id=team_id,
         )
 
-    def resolve_team_creation(
+    def resolve_team_metadata(
         self,
         catalog_namespace: str,
         metadata: dict[str, Any] | None = None,
-    ) -> ResolvedTeamCreation:
+    ) -> ResolvedTeamMetadata:
         """Resolve the catalog team and validate metadata without creating it."""
         logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
         try:
@@ -349,7 +349,7 @@ class TeamService:
             # original so its message and traceback survive to the client.
             raise
         validated_metadata = validate_metadata(team_card.metadata_type, metadata)
-        return ResolvedTeamCreation(
+        return ResolvedTeamMetadata(
             catalog_namespace=catalog_namespace,
             team_card=team_card,
             metadata=validated_metadata,
@@ -358,7 +358,7 @@ class TeamService:
 
     def create_resolved_team(
         self,
-        resolved: ResolvedTeamCreation,
+        resolved: ResolvedTeamMetadata,
         *,
         user_id: str,
         user_email: str = "",

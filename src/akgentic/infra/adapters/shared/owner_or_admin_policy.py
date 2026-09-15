@@ -42,6 +42,23 @@ class OwnerOrAdminPolicy:
         """Preserve the historical behavior: every authenticated caller may create."""
         return True
 
+    async def can_get_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        return await self.is_allowed(ctx=ctx, user=user)
+
+    async def can_stop_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        return await self.is_allowed(ctx=ctx, user=user)
+
+    async def can_delete_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        return await self.is_allowed(ctx=ctx, user=user)
+
+    async def can_restore_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
+        return await self.is_allowed(ctx=ctx, user=user)
+
+    async def can_update_metadata(
+        self, *, ctx: TeamAccessContext, user: RequestUser
+    ) -> bool:
+        return await self.is_allowed(ctx=ctx, user=user)
+
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         """Allow iff the caller owns the team or holds the ``admin`` role."""
         return ctx.owner_user_id == user.user_id or _ADMIN_ROLE in user.roles

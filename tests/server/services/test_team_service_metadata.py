@@ -72,12 +72,12 @@ def test_validated_model_is_forwarded_to_placement(metadata_service: TeamService
     assert forwarded.case == "C-1234"
 
 
-def test_resolve_team_creation_validates_without_reaching_placement(
+def test_resolve_team_metadata_validates_without_reaching_placement(
     metadata_service: TeamService,
 ) -> None:
     placement = _mock_placement(metadata_service)
 
-    resolved = metadata_service.resolve_team_creation(
+    resolved = metadata_service.resolve_team_metadata(
         TYPED_NS,
         {"tenant": "Acme", "case": "C-1234"},
     )

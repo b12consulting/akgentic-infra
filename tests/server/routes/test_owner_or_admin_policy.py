@@ -38,6 +38,22 @@ class TestOwnerOrAdminPolicy:
         policy = OwnerOrAdminPolicy()
         assert not await policy.is_allowed(ctx=_ctx("alice"), user=RequestUser(user_id="mallory"))
 
+    async def test_team_actions_use_owner_or_admin_rule(self) -> None:
+        policy = OwnerOrAdminPolicy()
+        owner = RequestUser(user_id="alice")
+        stranger = RequestUser(user_id="mallory")
+        ctx = _ctx("alice")
+        actions = (
+            policy.can_get_team,
+            policy.can_stop_team,
+            policy.can_delete_team,
+            policy.can_restore_team,
+            policy.can_update_metadata,
+        )
+
+        assert all([await action(ctx=ctx, user=owner) for action in actions])
+        assert not any([await action(ctx=ctx, user=stranger) for action in actions])
+
     async def test_owner_filter_is_the_default_for_users_and_admins(self) -> None:
         policy = OwnerOrAdminPolicy()
 
