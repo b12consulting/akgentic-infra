@@ -51,6 +51,7 @@ from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.routes._workspace_resolution import (
     declared_workspace_paths,
     default_workspace_path,
+    select_declared_path,
     stash_team_process,
     stash_workspace_path,
     stashed_team_process,
@@ -265,11 +266,21 @@ def _resolve_declared(
     never a ``ValueError``, and is caught in its own arm accordingly. Default
     cards that disagree on ``workspace_sharable`` arrive as a ``ValueError``,
     so they take the second arm.
+
+    **An ambiguous leaf takes that same second arm.** Two declared paths of one
+    team can share a ``<leaf>`` across kinds or across scopes, and the wire
+    carries only the leaf, so nothing in the request separates them.
+    :func:`select_declared_path` raises rather than picking one, and the arm
+    below logs the exception text — which names the leaf and both paths — and
+    answers 500. No new exception type and no new arm: it is the same shape of
+    unanswerable card question as the sibling above it.
     """
     try:
         if workspace_id is None:
             return default_workspace_path(process=process, store=store)
-        return declared_workspace_paths(process=process, store=store).get(workspace_id)
+        return select_declared_path(
+            paths=declared_workspace_paths(process=process, store=store), leaf=workspace_id
+        )
     except AgentCardNotFoundError as exc:
         # The message names the unresolved ref's role AND hash.
         logger.error("workspace-access card resolution failed — team_id=%s: %s", team_id, exc)
@@ -310,7 +321,9 @@ async def require_workspace_access(
       404-over-403 answer, and the reason the two ``return user``
       pass-throughs this gate used to end in are gone. They let any value that
       was not a foreign team's id through to be served as a directory name,
-      which is how one caller reached another's tree by naming it.
+      which is how one caller reached another's tree by naming it. A leaf **two**
+      of the team's declared paths share names no single workspace, so it is
+      refused with 500 rather than resolved to whichever card came first.
 
     The allowed set is the team's own declared cards, resolved through the same
     :func:`akgentic.tool.workspace.resolve_workspace_path` the agent side uses,
@@ -357,8 +370,11 @@ async def require_workspace_access(
             no card of the authorized team declares it, or when the policy
             denies the caller the selected path's user scope (all 404-over-403,
             no existence leak); **500** when a card cannot be read, the path
-            cannot be resolved (ADR-048 Decision 4's read-path row), or the
-            team's default-layout cards disagree on ``workspace_sharable``.
+            cannot be resolved (ADR-048 Decision 4's read-path row), the team's
+            default-layout cards disagree on ``workspace_sharable``, or two of
+            the team's declared paths share the requested leaf — that last one
+            refused rather than resolved to either, with both paths on the
+            record.
         SharedWorkspaceRefusedError: **403** when the selected path is under
             the shared scope, for every caller.
     """

@@ -47,6 +47,7 @@ from akgentic.infra.server.routes._workspace_resolution import (
     stash_workspace_path,
 )
 from akgentic.infra.server.routes.workspace import _get_workspace, router
+from akgentic.infra.server.services import _workspace_paths
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
@@ -1257,8 +1258,13 @@ def _lie_about_the_scope(monkeypatch: pytest.MonkeyPatch, scope: str) -> None:
     The resolver scopes a principal tree on ``process.user_id``, so on a real
     request the path and the team gate always agree. Lying to the resolver is
     the one route-level way to hand the gate a path under another principal.
+
+    Patched on ``services._workspace_paths``, which is where the card-reading
+    readers the gate calls now live — the routes module re-exports those two
+    names but never calls the resolver itself, so patching it there would lie to
+    nobody.
     """
-    real = _workspace_resolution.resolve_workspace_path
+    real = _workspace_paths.resolve_workspace_path
 
     # ``**kwargs: Any``: a pass-through wrapper whose callers use the resolver's
     # own keyword set, forwarded unchanged.
@@ -1266,7 +1272,7 @@ def _lie_about_the_scope(monkeypatch: pytest.MonkeyPatch, scope: str) -> None:
         resolved = real(**kwargs)
         return PurePosixPath(scope, *resolved.parts[1:])
 
-    monkeypatch.setattr(_workspace_resolution, "resolve_workspace_path", _lying)
+    monkeypatch.setattr(_workspace_paths, "resolve_workspace_path", _lying)
 
 
 def test_the_route_parametrization_is_every_route_on_the_router() -> None:

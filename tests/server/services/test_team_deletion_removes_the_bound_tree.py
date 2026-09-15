@@ -38,12 +38,18 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from akgentic.core import ActorAddressImpl, ActorRegistry, Akgent, Orchestrator
 from akgentic.team.models import Process
-from akgentic.tool.workspace import WorkspaceTool
+from akgentic.tool.workspace import (
+    SHARED_SCOPE,
+    TEAM_KIND,
+    WorkspaceTool,
+    git_dir_for,
+    meta_dir_for,
+)
 
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
@@ -58,10 +64,23 @@ DESK_NS = "acme-desk"
 OWNER = "alice"
 """The principal the team is created for — the ``<scope>`` of its tree."""
 
+SHARED_KINDS_ENV = "AKGENTIC_WORKSPACE_SHARED_KINDS"
+"""The platform's permission for shared trees, named as a literal on purpose.
 
-@pytest.fixture()
-def bound_services(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+``workspace_sharable=True`` on a card is a *request*; this variable is the
+*permission*, read at bind by ``WorkspaceTool.observer``. Unset means no kind
+may be shared, and a card asking for an unpermitted kind **raises at bind** — so
+a spec that only set the card field would fail at team creation with a message
+about sharing, never reaching its assertion.
+
+The tool defines this name but does not re-export it from
+``akgentic.tool.workspace`` at the version this package runs against, so there
+is no constant to import; the literal is the only way to name it here.
+"""
+
+
+def _wire_community_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *tools: WorkspaceTool
 ) -> Generator[CommunityServices, None, None]:
     """A wired community whose agents and whose deletion read one workspaces root.
 
@@ -80,12 +99,32 @@ def bound_services(
         event_store_path=tmp_path / "event_store",
         catalog_path=tmp_path / "catalog",
     )
-    seed_metadata_namespace(
-        settings.catalog_path, DESK_NS, with_type=False, tools=[WorkspaceTool()]
-    )
+    seed_metadata_namespace(settings.catalog_path, DESK_NS, with_type=False, tools=list(tools))
     services = wire_community(settings)
     yield services
     services.actor_system.shutdown()
+
+
+@pytest.fixture()
+def bound_services(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Generator[CommunityServices, None, None]:
+    """A community whose Manager carries a default, per-principal ``WorkspaceTool()``."""
+    yield from _wire_community_with(tmp_path, monkeypatch, WorkspaceTool())
+
+
+@pytest.fixture()
+def sharing_services(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Generator[CommunityServices, None, None]:
+    """A community whose Manager declares ``workspace_sharable=True``, and may.
+
+    The permission is set **before** wiring, for the reason
+    :data:`SHARED_KINDS_ENV` gives: the bind refuses an unpermitted shared kind
+    rather than quietly handing back a per-principal tree.
+    """
+    monkeypatch.setenv(SHARED_KINDS_ENV, TEAM_KIND.removeprefix("_"))
+    yield from _wire_community_with(tmp_path, monkeypatch, WorkspaceTool(workspace_sharable=True))
 
 
 def _orchestrator_of(services: CommunityServices, team_id: uuid.UUID) -> Orchestrator:
@@ -140,3 +179,52 @@ class TestDeletingATeamRemovesTheTreeItsAgentBound:
         service.delete_team(process.team_id)
 
         assert not tree.exists()
+
+
+class TestDeletingASharingTeamRemovesTheSharedTreeAndBothSiblings:
+    """AC #1 + AC #2: the sharing axis comes from the card, and both siblings go too.
+
+    The defect this reverses answered the sharing question at the deletion site
+    with a hard-coded ``workspace_sharable=False``. A team whose card declares
+    sharing therefore wrote its tree to ``_shared/_team/<team_id>`` while
+    deletion looked under ``<owner>/_team/<team_id>``, which never existed:
+    ``exists()`` was false, the function returned, the tree survived for ever.
+
+    The precondition below is what makes the postcondition mean anything — it
+    proves the tree deletion removes is the one a *real card* put there. Both
+    sidecar directories are located the way production locates them
+    (``git_dir_for`` / ``meta_dir_for``), never by appending a suffix here: a
+    hand-built copy of the placement rule is the shape of the original defect.
+
+    The ``.index`` seeding is not decoration. ``<tree>.index/rag/*.yaml`` holds
+    the extracted text of every document the tree indexed, so leaving it behind
+    is a retention leak, and a spec asserting only that the tree is gone would
+    pass over a half-fix.
+    """
+
+    def test_the_shared_tree_and_both_sidecars_are_gone_and_the_owner_scope_was_never_used(
+        self, sharing_services: CommunityServices, tmp_path: Path
+    ) -> None:
+        service = sharing_services.team_service
+        assert service is not None
+        process = _create_bound_team(sharing_services)
+        workspaces_root = tmp_path / "workspaces"
+        relative = PurePosixPath(SHARED_SCOPE) / TEAM_KIND / str(process.team_id)
+        tree = workspaces_root / relative
+        assert tree.is_dir(), f"the Manager's bind wrote no shared tree at {tree}"
+        per_principal = workspaces_root / OWNER / TEAM_KIND / str(process.team_id)
+        assert not per_principal.exists(), "the card asked for sharing; nothing is under the owner"
+
+        journal = git_dir_for(tree)
+        journal.mkdir(parents=True, exist_ok=True)
+        (journal / "HEAD").write_text("ref: refs/heads/main\n")
+        index = meta_dir_for(str(relative))
+        (index / "rag").mkdir(parents=True, exist_ok=True)
+        (index / "rag" / "doc.yaml").write_text("text: the extracted text of a document\n")
+
+        service.stop_team(process.team_id)
+        service.delete_team(process.team_id)
+
+        assert not tree.exists()
+        assert not journal.exists()
+        assert not index.exists()

@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from akgentic.core.agent_card import AgentCard
 from akgentic.team.models import Process
-from akgentic.tool.workspace import SHARED_SCOPE, WorkspaceTool
+from akgentic.tool.workspace import ID_KIND, SHARED_SCOPE, WorkspaceTool
 from fastapi import HTTPException
 from starlette.datastructures import State
 
@@ -475,9 +475,7 @@ async def test_the_admitted_metadata_leaf_is_the_only_leaf_the_team_declares() -
     assert str(stashed_workspace_path(request)) == f"alice/_meta/{_ACME_LEAF}"  # type: ignore[arg-type]
     _, fresh_store = _acme_case_team()
     declared = declared_workspace_paths(process=process, store=fresh_store)  # type: ignore[arg-type]
-    assert {leaf: str(path) for leaf, path in declared.items()} == {
-        _ACME_LEAF: f"alice/_meta/{_ACME_LEAF}"
-    }
+    assert [str(path) for path in declared] == [f"alice/_meta/{_ACME_LEAF}"]
     assert len(store.calls) == 1
 
 
@@ -518,6 +516,92 @@ async def test_a_leaf_the_teams_metadata_cannot_produce_is_404_and_stashes_nothi
     assert excinfo.value.status_code == 404
     assert excinfo.value.detail == "Team not found"
     assert stashed_workspace_path(request) is None  # type: ignore[arg-type]
+    assert len(store.calls) == 1
+
+
+# --- an ambiguous leaf is refused loudly, never picked (Story 71.2, AC #3, #4) ---
+#
+# Two declared paths of one team can share a ``<leaf>`` across scopes (below) or
+# across kinds, and the wire carries only the leaf, so nothing in the request
+# separates them. Picking one is the defect; the gate refuses instead, with both
+# paths on the record so an operator knows which two cards to repair.
+#
+# The colliding leaf is deliberately a ``workspace_id``-style string rather than
+# a UUID naming an existing team: ``_deny_foreign_named_team`` runs *before*
+# ``_resolve_declared`` and answers 404 for that case, so such a guard would
+# assert the wrong refusal and pass for the wrong reason.
+
+_COLLIDING_LEAF = "notes"
+_UNAMBIGUOUS_LEAF = "shell"
+
+
+def _team_with_a_colliding_leaf() -> tuple[Process, RecordingCardStore]:
+    """A team declaring ``notes`` twice — once per scope — and ``shell`` once."""
+    return _declaring_team(
+        WorkspaceTool(workspace_id=_COLLIDING_LEAF),
+        WorkspaceTool(workspace_id=_COLLIDING_LEAF, workspace_sharable=True),
+        WorkspaceTool(workspace_id=_UNAMBIGUOUS_LEAF),
+    )
+
+
+async def test_an_ambiguous_leaf_is_500_stashes_nothing_and_logs_both_paths(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """AC #4: the refusal answer, the empty stash, and the record naming both trees.
+
+    500 rather than 404 or 400: the caller sent a leaf the team really does
+    declare — twice. 404 would say "no such workspace", which is false and hides
+    a configuration defect behind a membership answer, and 400 would blame a
+    request field the caller cannot restate.
+    """
+    process, store = _team_with_a_colliding_leaf()
+    request = _FakeRequest()
+
+    with (
+        caplog.at_level(logging.ERROR, logger=_GATE_LOGGER),
+        pytest.raises(HTTPException) as excinfo,
+    ):
+        await _call_workspace(
+            RequestUser(user_id="alice"),
+            workspace_id=_COLLIDING_LEAF,
+            owner=None,
+            process=process,
+            store=store,
+            request=request,
+        )
+
+    assert excinfo.value.status_code == 500
+    # The resolution arm, not the card-read arm: the cards were read fine.
+    assert excinfo.value.detail == "Workspace path could not be resolved"
+    assert stashed_workspace_path(request) is None  # type: ignore[arg-type]
+    [record] = [r for r in caplog.records if "workspace path resolution failed" in r.getMessage()]
+    message = record.getMessage()
+    assert f"alice/{ID_KIND}/{_COLLIDING_LEAF}" in message
+    assert f"{SHARED_SCOPE}/{ID_KIND}/{_COLLIDING_LEAF}" in message
+
+
+async def test_the_refusal_is_per_leaf_not_per_team() -> None:
+    """AC #3: an unambiguous leaf on a team that also declares a colliding pair still resolves.
+
+    A gate that refused the whole team on finding any collision would take two
+    workspaces out of service for a defect in the other one — and would make the
+    ordinary specs above pass for a reason that has nothing to do with them.
+    """
+    user = RequestUser(user_id="alice")
+    process, store = _team_with_a_colliding_leaf()
+    request = _FakeRequest()
+
+    result = await _call_workspace(
+        user,
+        workspace_id=_UNAMBIGUOUS_LEAF,
+        owner=None,
+        process=process,
+        store=store,
+        request=request,
+    )
+
+    assert result is user
+    assert str(stashed_workspace_path(request)) == f"alice/{ID_KIND}/{_UNAMBIGUOUS_LEAF}"  # type: ignore[arg-type]
     assert len(store.calls) == 1
 
 

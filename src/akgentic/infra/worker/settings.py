@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +15,16 @@ class WorkerSettings(BaseSettings):
 
     Contains only settings common to all deployment tiers.
     All fields can be overridden via environment variables prefixed with ``AKGENTIC_WORKER_``.
+
+    **There is no workspaces-root knob here, deliberately.** The tree's location
+    is the tool's own ``AKGENTIC_WORKSPACES_ROOT``, read wherever a card binds.
+    A field on this model would bind ``AKGENTIC_WORKER_WORKSPACES_ROOT`` — a
+    differently named variable nothing reads — and making the tool observe it
+    would mean writing ``os.environ`` from settings, in a module that has no
+    process entrypoint to do it in. Both deployment tiers already export the
+    tool's variable on every service from one source. An undeclared
+    ``AKGENTIC_WORKER_``-prefixed variable left over in a tier's chart is simply
+    ignored, which is what keeps removing the field safe.
     """
 
     model_config = SettingsConfigDict(env_prefix="AKGENTIC_WORKER_")
@@ -31,10 +40,6 @@ class WorkerSettings(BaseSettings):
     log_level: str = Field(
         default="INFO",
         description="Application log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
-    )
-    workspaces_root: Path = Field(
-        default=Path("/data/workspaces"),
-        description="Root directory for team workspace storage",
     )
     shutdown_drain_timeout: int = Field(
         default=30,

@@ -21,7 +21,10 @@ Decision 1, ADR-048 Decision 5) — this module composes none of it:
   ``require_workspace_access``. The matching card supplies the kind and the
   scope: a named workspace resolves under ``<owner>/_id/`` and a metadata-keyed
   one under ``<owner>/_meta/``, or under ``_shared/`` in place of the owner when
-  the card declares ``workspace_sharable``.
+  the card declares ``workspace_sharable``. A leaf **two** of the team's
+  declared paths share — across kinds, or across scopes — names no single
+  workspace, and the gate answers 500 with both paths logged rather than serving
+  whichever card came first.
 
 **A principal ``<scope>`` is always the team owner's ``Process.user_id``, never
 the calling principal's.** The caller's identity governs authorization — that is
