@@ -1,13 +1,13 @@
 # Orphaned team-resource sweep
 
 Deleting a team reclaims its event-store documents and nothing else. Its
-Weaviate vectors, its Docker sandbox container and its workspace directory
-survive it, indefinitely. This job finds those and removes them.
+vector-store rows and its workspace directory survive it, indefinitely. This job
+finds those and removes them.
 
 ```bash
 python -m akgentic.infra.maintenance                     # dry run — prints the plan
 python -m akgentic.infra.maintenance --apply             # actually deletes
-python -m akgentic.infra.maintenance --only docker       # one backend
+python -m akgentic.infra.maintenance --only vector       # one kind of backend
 ```
 
 Design rationale: **ADR-042**, in the workspace repo at
@@ -17,19 +17,30 @@ Design rationale: **ADR-042**, in the workspace repo at
 ## What leaks, and why
 
 `TeamManager.delete_team` calls `event_store.delete_team()` and deregisters the
-team. Two other systems hold team-keyed state and hear nothing:
+team. Two other kinds of system hold team-keyed state and hear nothing:
 
 | Backend | What is left | How it is keyed |
 |---|---|---|
 | Weaviate | every vector object the team ingested | a `team_id` property on each object — collections are shared by all teams, so this is the *only* thing that says who owns an object |
-| Docker | one stopped container per team | the container name, `sandbox-<team_id>`. `DockerSandboxActor` stops it on teardown and deliberately never runs `docker rm` |
+| Qdrant | every point the team ingested | a `team_id` payload key on each point — the same mechanism, same leak |
 | Workspace filesystem | the directory tree and its git journal | `$AKGENTIC_WORKSPACES_ROOT/<workspace_id or team_id>`, journalling to a sibling `<name>.git` |
 
-**The workspace reaper deletes data, not runtime.** A vector can be re-ingested
-and a container rebuilt from its image; the files an agent wrote cannot be
+The vector reapers are resolved through `akgentic-tool`'s backend registry, one
+per backend a deployment has provisioned — so a cluster running only Qdrant is
+swept rather than reported clean. Backends that hold nothing reclaimable (the
+in-memory index, the local on-disk index) are declared as such in
+`vector_backends.py`, and a test fails if a newly registered backend is neither
+reapable nor excused.
+
+**There is no sandbox-container reaper.** The sandbox names its container after
+random hex rather than after a team, and removes it on every stop, so a reaper
+could attribute nothing and would report every deployment clean — worse than
+none at all.
+
+**The workspace reaper deletes data, not runtime.** A vector row can be
+re-ingested from the source it came from; the files an agent wrote cannot be
 recovered from anywhere. Read its dry run before applying it, and if you want
-only the recoverable half unattended on a schedule, run
-`--only weaviate --only docker`.
+only the recoverable half unattended on a schedule, run `--only vector`.
 
 ## How it works
 
@@ -61,15 +72,17 @@ This exists because the event store answers "which teams exist" on a
 best-effort basis — the YAML and Mongo backends both log and skip a document
 they cannot parse. On the first machine this ran on, every stored team failed
 `Process` validation after a schema change, so `list_teams()` returned nothing
-and all 39 sandboxes looked orphaned. The guard is what stands between that
-and a mass deletion. `--force` overrides it, for an operator who has read the
+and all 39 live teams' resources looked orphaned. The guard is what stands
+between that and a mass deletion. `--force` overrides it, for an operator who has read the
 dry run.
 
 **The grace period.** `--grace-seconds` (default 3600) holds back resources
-younger than the threshold regardless of the live set, covering the window
-where a container starts before its team's first persisted checkpoint. It
-applies only where the backend exposes a creation time — Docker does, Weaviate
-objects do not, and they appear only on ingest, long after the team is durable.
+younger than the threshold regardless of the live set, covering the window where
+a resource is created before its team's first persisted checkpoint. It applies
+only where the backend exposes an age — the workspace reaper does, by directory
+mtime, so an actively written tree reads as young and survives a sweep that
+misjudged it. Vector rows do not: they appear only on ingest, long after the
+team is durable, and expose no cheap creation time per `(collection, team)`.
 
 **Claims, not just team ids.** A workspace directory is named
 `workspace_id or team_id`, and `workspace_id` is an operator-chosen override
@@ -79,10 +92,11 @@ whose name is not its id, so every `workspace_id` on a card a live team
 references is protected too. If a card cannot be resolved, that set is
 incomplete and the sweep refuses rather than act on a partial answer.
 
-**Never reaped:** running containers; symlinks; any workspace whose name is
-not a UUID (a named shared tree belongs to whoever configured it, and no
-team's deletion can orphan it); and anything unattributable — a container
-whose name suffix is not a UUID, an object with no `team_id`.
+**Never reaped:** symlinks; any workspace whose name is not a UUID (a named
+shared tree belongs to whoever configured it, and no team's deletion can orphan
+it); any collection that is not team-scoped, where `team_id` records who *wrote*
+a row rather than who owns it, and which both backends refuse to delete from by
+team anyway; and anything unattributable — a row with no `team_id`.
 
 ## Configuration
 
@@ -92,8 +106,10 @@ as "no orphans".
 
 | Variable | Effect |
 |---|---|
-| `AKGENTIC_WEAVIATE_URL` | enables the Weaviate reaper |
-| `AKGENTIC_WEAVIATE_API_KEY` | optional cluster credential |
+| `AKGENTIC_WEAVIATE_URL` | provisions Weaviate, and so its reaper |
+| `AKGENTIC_WEAVIATE_API_KEY` | optional Weaviate credential |
+| `AKGENTIC_QDRANT_URL` | provisions Qdrant, and so its reaper |
+| `AKGENTIC_QDRANT_API_KEY` | optional Qdrant credential |
 | `AKGENTIC_WORKSPACES_ROOT` | workspace root to sweep (default `./workspaces`) |
 | `MONGO_URI` + `MONGO_DB` | read the live team set from Mongo (enterprise, department) |
 | `AKGENTIC_EVENT_STORE_PATH` | filesystem event-store root (community) — used when the Mongo pair is not set |
@@ -125,23 +141,20 @@ containers:
       - akgentic.infra.maintenance
       - --apply
       - --only
-      - weaviate
-      - --only
-      - docker
+      - vector
 ```
 
-The `--only` pair is deliberate: it keeps the two recoverable backends on the
-schedule and leaves workspace deletion to a human who has read the plan. Drop
-it once you are satisfied with what the workspace half proposes.
-
-The Docker reaper shells out to the `docker` CLI, so a containerised sweep
-needs the daemon socket mounted. Where that is unacceptable, run
-`--only weaviate` in-cluster and the Docker half on the host.
+The `--only vector` is deliberate: it keeps the recoverable backends on the
+schedule — every vector store the deployment runs — and leaves workspace
+deletion to a human who has read the plan. Drop it once you are satisfied with
+what the workspace half proposes.
 
 ## Extending it
 
 A reaper is anything satisfying `TeamResourceReaper` — `scan()` returning
 `ResourceRef`s tagged with their owning team, `purge(ref)`, `close()`. It
 knows nothing about live teams; that decision belongs to the driver, which is
-the only place the ordering above can be enforced once. Adding a backend means
-adding a class and a line in `_build_reapers`.
+the only place the ordering above can be enforced once. Adding a *kind* of
+backend means adding a class and a line in `_build_reapers`; adding a *vector*
+backend means one entry in `BACKEND_DISPOSITIONS`, naming either how to read its
+team ids or why it holds nothing to reclaim.

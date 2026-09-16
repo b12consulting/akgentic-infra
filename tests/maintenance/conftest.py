@@ -115,7 +115,7 @@ class FakeReaper:
         *,
         scan_error: Exception | None = None,
         purge_error: Exception | None = None,
-        kind: ResourceKind = ResourceKind.DOCKER,
+        kind: ResourceKind = ResourceKind.WORKSPACE,
     ) -> None:
         self.kind = kind
         self._refs = refs
@@ -145,12 +145,17 @@ class FakeReaper:
 
 
 def make_ref(team_id: str, *, age_seconds: float | None = None, size: int = 1) -> ResourceRef:
-    """Build a Docker-kind reference owned by *team_id*."""
+    """Build a workspace-kind reference owned by *team_id*.
+
+    The workspace reaper is the one that carries an age today, so this is the
+    kind the grace-period specs need — and the default ``FakeReaper`` kind for
+    the same reason.
+    """
     return ResourceRef(
-        kind=ResourceKind.DOCKER,
+        kind=ResourceKind.WORKSPACE,
         team_id=team_id,
-        detail=f"cid-{team_id[:8]}",
-        label=f"sandbox-{team_id}",
+        detail=f"/workspaces/{team_id}",
+        label=team_id,
         size_hint=size,
         age_seconds=age_seconds,
     )

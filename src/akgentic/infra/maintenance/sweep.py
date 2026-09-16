@@ -1,7 +1,7 @@
 """Driver for the orphaned team-resource sweep.
 
 ``TeamManager.delete_team`` purges the event store and deregisters the team.
-It touches no Weaviate object and removes no Docker container, so every
+It touches no vector row and removes no workspace directory, so every
 deleted team leaks its side-store state by construction — and a delete hook
 bolted on now would still leak on every crash between the two writes, with no
 way to recover what leaked before it existed. This is therefore a reverse
@@ -17,11 +17,12 @@ property.** Take a team created while the sweep is running:
   present in the scan, and the sweep deletes a brand-new team's data.
 
 Nothing else in this module protects against that, so nothing else may be
-allowed to reorder it. The grace period is a second, weaker line of defence
-for backends whose resource is created before the team's first persisted
-checkpoint — Docker, where the container starts with the team. Weaviate
-objects appear only on ingest, long after the team is durable, so no grace
-period applies there.
+allowed to reorder it. The grace period is a second, weaker line of defence,
+and it applies wherever a backend exposes an age: today that is the workspace
+reaper, whose directory mtime moves on every write, so an actively used tree
+reads as young and survives a sweep that misjudged it. Vector rows appear only
+on ingest, long after the team is durable, and expose no cheap creation time at
+the granularity a reference is cut on, so no grace period applies there.
 
 **A soft-deleted team is dead for this purpose.** ``list_teams`` returns
 ``DELETED`` processes alongside live ones, so "present in the store" is not
@@ -42,10 +43,10 @@ Mongo backends both log and skip a document they cannot parse, so a schema
 migration that leaves stored documents behind makes every surviving team
 invisible — and every one of its resources look orphaned. That is not
 hypothetical; it was the state of a developer machine the first time this
-sweep ran there, where a live set of zero would have reaped 39 live
-sandboxes. The blast-radius guard below refuses to apply such a plan. It is
-the last line of defence, and unlike the other two it fires on a wrong
-*answer* rather than a wrong *order*.
+sweep ran there, where a live set of zero would have condemned the resources
+of all 39 live teams on it. The blast-radius guard below refuses to apply such
+a plan. It is the last line of defence, and unlike the other two it fires on a
+wrong *answer* rather than a wrong *order*.
 """
 
 from __future__ import annotations
@@ -82,7 +83,7 @@ def live_team_ids(event_store: EventStore) -> set[str]:
     """Return the ids of every team that still owns its resources.
 
     A ``DELETED`` process is excluded: it is a tombstone, and its vectors and
-    containers are exactly what this sweep exists to reap.
+    workspace files are exactly what this sweep exists to reap.
 
     Args:
         event_store: Store to read. Any backend satisfying the protocol works
@@ -307,8 +308,8 @@ def _blast_radius_refusal(report: SweepReport, max_orphan_fraction: float) -> st
 
     The unreadable-claims rule is checked first and is the strictest, because
     it is the one that bears on the workspace reaper: an incomplete claim set
-    condemns files that a live team is still writing to, and unlike a container
-    or a vector those cannot be rebuilt.
+    condemns files that a live team is still writing to, and unlike a vector row
+    those cannot be rebuilt.
 
     Args:
         report: The classified plan.
@@ -325,7 +326,7 @@ def _blast_radius_refusal(report: SweepReport, max_orphan_fraction: float) -> st
             f"{report.unreadable_teams} agent card(s) referenced by a live team could "
             "not be read, so the workspace claims are incomplete and a directory a "
             "live team owns could be condemned. Fix the store, or re-run with "
-            "--only weaviate --only docker to sweep the recoverable backends."
+            "--only vector to sweep the recoverable backends."
         )
     if report.live_team_ids == 0:
         return (
@@ -348,8 +349,8 @@ def _blast_radius_refusal(report: SweepReport, max_orphan_fraction: float) -> st
 def _purge_orphans(reaper: TeamResourceReaper, report: ReaperReport) -> None:
     """Delete every orphan in *report*, recording failures in place.
 
-    One failure never aborts the pass: a container Docker refuses to remove
-    must not strand every other orphan behind it.
+    One failure never aborts the pass: a collection the cluster refuses to
+    delete from must not strand every other orphan behind it.
 
     Args:
         reaper: Backend to delete through.

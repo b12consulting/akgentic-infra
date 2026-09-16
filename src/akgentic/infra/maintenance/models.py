@@ -15,10 +15,17 @@ from pydantic import BaseModel, Field
 
 
 class ResourceKind(StrEnum):
-    """Which backend a reapable resource lives in."""
+    """Which backend a reapable resource lives in.
 
-    WEAVIATE = "weaviate"
-    DOCKER = "docker"
+    ``VECTOR`` is one kind for the whole vector-store family rather than one per
+    backend: a deployment running both Weaviate and Qdrant produces two
+    ``ReaperReport`` entries of this kind, told apart by their labels. The
+    distinction an operator acts on is *which resources are condemned*, and that
+    is per collection and team, not per vendor — and ``--only vector`` then means
+    "every vector store", which is the selector a schedule actually wants.
+    """
+
+    VECTOR = "vector"
     WORKSPACE = "workspace"
 
 
@@ -34,17 +41,20 @@ class ResourceRef(BaseModel):
         kind: The backend this resource lives in.
         team_id: The key the resource is filed under, spelled exactly as the
             resource itself spells it — a Weaviate ``team_id`` property value,
-            the suffix of a ``sandbox-<team_id>`` container name, a workspace
-            directory name. It is a team id in every case **except** a
-            workspace directory named after a shared ``workspace_id``, which
-            is a supported configuration and is why the sweep compares against
-            live *claims* rather than live team ids alone. Kept as ``str``
-            rather than ``uuid.UUID`` because a malformed value must survive
-            the scan and be reported, not crash it.
-        detail: Backend handle the purge acts on — a Weaviate collection name,
-            a Docker container id.
-        label: Human-readable identity for the report (container name, or
-            ``collection/team``). Never used to address the resource.
+            a Qdrant ``team_id`` payload value, a workspace directory name. It
+            is a team id in every case **except** a workspace directory named
+            after a shared ``workspace_id``, which is a supported configuration
+            and is why the sweep compares against live *claims* rather than
+            live team ids alone. Kept as ``str`` rather than ``uuid.UUID``
+            because a malformed value must survive the scan and be reported,
+            not crash it.
+        detail: Backend handle the purge acts on — a vector collection name, a
+            workspace directory path.
+        label: Human-readable identity for the report
+            (``backend:collection/team``, or a workspace directory name). Never
+            used to address the resource: two backends share one
+            ``ResourceKind``, so the label is the only thing in the report that
+            says which cluster an orphan is in.
         size_hint: Objects behind the reference when the backend reports one
             cheaply, else ``0``. Advisory only — it sizes the report, it does
             not gate the delete.
@@ -75,7 +85,7 @@ class ReaperReport(BaseModel):
         skipped_young: Resources inside the grace period, held back from this
             sweep regardless of the live set.
         orphans: Resources whose owning team is not live.
-        purged: Objects or containers actually removed. Zero on a dry run.
+        purged: Objects or directories actually removed. Zero on a dry run.
         failures: One line per resource whose purge raised, naming the
             resource. A failure never aborts the sweep — the remaining
             orphans are still reaped.
@@ -134,7 +144,7 @@ class SweepReport(BaseModel):
 
     @property
     def total_purged(self) -> int:
-        """Objects and containers actually removed across every reaper."""
+        """Objects and directories actually removed across every reaper."""
         return sum(report.purged for report in self.reports)
 
     @property

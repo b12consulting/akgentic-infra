@@ -37,7 +37,7 @@ def test_live_set_excludes_deleted_teams() -> None:
 
 
 def test_stopped_team_keeps_its_resources() -> None:
-    """STOPPED is resumable, so its vectors and sandbox must survive."""
+    """STOPPED is resumable, so its vectors and its files must survive."""
     stopped = uuid.uuid4()
     store = FakeEventStore([make_process(stopped, TeamStatus.STOPPED)])
     reaper = FakeReaper([make_ref(str(stopped))])
@@ -63,8 +63,8 @@ def test_every_reaper_is_scanned_before_the_live_set_is_read() -> None:
     journal: list[str] = []
     store = FakeEventStore([], journal)
     reapers = [
-        FakeReaper([], journal, kind=ResourceKind.WEAVIATE),
-        FakeReaper([], journal, kind=ResourceKind.DOCKER),
+        FakeReaper([], journal, kind=ResourceKind.VECTOR),
+        FakeReaper([], journal, kind=ResourceKind.WORKSPACE),
     ]
 
     sweep(reapers, store)
@@ -76,8 +76,8 @@ def test_live_set_is_read_once_for_the_whole_sweep() -> None:
     """All reapers decide against one snapshot, never a per-backend re-read."""
     store = FakeEventStore([])
     reapers = [
-        FakeReaper([], kind=ResourceKind.WEAVIATE),
-        FakeReaper([], kind=ResourceKind.DOCKER),
+        FakeReaper([], kind=ResourceKind.VECTOR),
+        FakeReaper([], kind=ResourceKind.WORKSPACE),
     ]
 
     sweep(reapers, store)
@@ -159,10 +159,10 @@ def test_unreachable_backend_is_reported_not_reported_clean() -> None:
 
 
 def test_one_unreachable_backend_does_not_stop_the_others() -> None:
-    """A dead Weaviate must not leave Docker containers leaking too."""
+    """A dead vector cluster must not leave workspace trees leaking too."""
     dead = uuid.uuid4()
-    broken = FakeReaper([], scan_error=OSError("down"), kind=ResourceKind.WEAVIATE)
-    working = FakeReaper([make_ref(str(dead))], kind=ResourceKind.DOCKER)
+    broken = FakeReaper([], scan_error=OSError("down"), kind=ResourceKind.VECTOR)
+    working = FakeReaper([make_ref(str(dead))], kind=ResourceKind.WORKSPACE)
 
     report = sweep([broken, working], FakeEventStore([]), apply=True, force=True)
 
@@ -171,7 +171,7 @@ def test_one_unreachable_backend_does_not_stop_the_others() -> None:
 
 
 def test_a_failed_purge_is_recorded_and_the_sweep_continues() -> None:
-    """One stuck container must not strand every other orphan."""
+    """One resource the backend refuses must not strand every other orphan."""
     reaper = FakeReaper(
         [make_ref(str(uuid.uuid4())), make_ref(str(uuid.uuid4()))],
         purge_error=OSError("device busy"),
@@ -194,7 +194,7 @@ def test_an_empty_live_set_refuses_to_delete_anything() -> None:
 
     This is not hypothetical: a schema migration left every stored team
     document unparseable on a developer machine, and the first sweep there
-    condemned all 39 live sandboxes.
+    condemned the resources of all 39 live teams on it.
     """
     reaper = FakeReaper([make_ref(str(uuid.uuid4())) for _ in range(39)])
 
@@ -298,7 +298,7 @@ def test_a_claim_a_dead_team_made_does_not_protect_anything() -> None:
 
 def test_claims_protect_every_backend_not_only_the_workspace_one() -> None:
     """The protected set is one set; a reaper does not get its own rules."""
-    reaper = FakeReaper([make_ref("shared-docs")], kind=ResourceKind.DOCKER)
+    reaper = FakeReaper([make_ref("shared-docs")], kind=ResourceKind.VECTOR)
 
     report = sweep([reaper], make_claiming_store(uuid.uuid4(), "shared-docs"), apply=True)
 

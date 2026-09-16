@@ -1006,8 +1006,8 @@ bearer token and sent as `Authorization: Bearer`.
 ## Maintenance
 
 Deleting a team reclaims its event-store documents and nothing else — its
-Weaviate vectors, its `sandbox-<team_id>` Docker container and its workspace
-directory all outlive it. The sweep reclaims those:
+vector-store rows and its workspace directory both outlive it. The sweep
+reclaims those:
 
 ```bash
 python -m akgentic.infra.maintenance            # dry run — prints the plan
@@ -1015,11 +1015,13 @@ python -m akgentic.infra.maintenance --apply    # actually deletes
 ```
 
 It is a reverse sweep: enumerate what each backend holds, diff against what the
-live teams claim, delete the difference. Dry run is the default, and it refuses
-to apply an implausibly large plan (an empty live set usually means the store
-could not read its documents, not that every team is gone). The workspace half
-deletes **data** rather than runtime — `--only weaviate --only docker` is the
-combination to put on an unattended schedule. Full operator documentation:
+live teams claim, delete the difference. The vector backends come from
+`akgentic-tool`'s registry, one reaper per backend the deployment has
+provisioned, so a Qdrant cluster is swept as readily as a Weaviate one. Dry run
+is the default, and it refuses to apply an implausibly large plan (an empty live
+set usually means the store could not read its documents, not that every team is
+gone). The workspace half deletes **data** rather than runtime — `--only vector`
+is the selector to put on an unattended schedule. Full operator documentation:
 [`src/akgentic/infra/maintenance/README.md`](src/akgentic/infra/maintenance/README.md);
 rationale in ADR-042.
 

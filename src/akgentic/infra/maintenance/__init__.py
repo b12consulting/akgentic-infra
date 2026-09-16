@@ -1,9 +1,11 @@
 """Operational maintenance jobs for a running akgentic deployment.
 
 Today this is one job: the orphaned team-resource sweep, which removes the
-Weaviate objects, Docker sandbox containers and workspace directories left
-behind by teams that no longer exist. See :mod:`akgentic.infra.maintenance.sweep`
-for why it is a reverse sweep rather than a delete-time hook.
+vector-store rows and workspace directories left behind by teams that no longer
+exist. See :mod:`akgentic.infra.maintenance.sweep` for why it is a reverse sweep
+rather than a delete-time hook, and
+:mod:`akgentic.infra.maintenance.vector_backends` for which vector backends it
+reclaims and which it deliberately leaves alone.
 """
 
 from __future__ import annotations
@@ -16,10 +18,8 @@ from akgentic.infra.maintenance.models import (
 )
 from akgentic.infra.maintenance.reapers import (
     GIT_DIR_SUFFIX,
-    SANDBOX_CONTAINER_PREFIX,
-    DockerReaper,
     TeamResourceReaper,
-    WeaviateReaper,
+    VectorStoreReaper,
     WorkspaceReaper,
     default_workspace_root,
 )
@@ -29,21 +29,29 @@ from akgentic.infra.maintenance.sweep import (
     live_team_ids,
     sweep,
 )
+from akgentic.infra.maintenance.vector_backends import (
+    BACKEND_DISPOSITIONS,
+    NotSwept,
+    sweepable_backends,
+    unaccounted_backends,
+)
 
 __all__ = [
+    "BACKEND_DISPOSITIONS",
     "DEFAULT_GRACE_SECONDS",
     "DEFAULT_MAX_ORPHAN_FRACTION",
     "GIT_DIR_SUFFIX",
-    "SANDBOX_CONTAINER_PREFIX",
-    "DockerReaper",
+    "NotSwept",
     "ReaperReport",
     "ResourceKind",
     "ResourceRef",
     "SweepReport",
     "TeamResourceReaper",
-    "WeaviateReaper",
+    "VectorStoreReaper",
     "WorkspaceReaper",
     "default_workspace_root",
     "live_team_ids",
     "sweep",
+    "sweepable_backends",
+    "unaccounted_backends",
 ]
