@@ -39,22 +39,30 @@ class ResourceRef(BaseModel):
 
     Attributes:
         kind: The backend this resource lives in.
-        team_id: The key the resource is filed under, spelled exactly as the
-            resource itself spells it — a Weaviate ``team_id`` property value,
-            a Qdrant ``team_id`` payload value, a workspace directory name. It
-            is a team id in every case **except** a workspace directory named
-            after a shared ``workspace_id``, which is a supported configuration
-            and is why the sweep compares against live *claims* rather than
-            live team ids alone. Kept as ``str`` rather than ``uuid.UUID``
-            because a malformed value must survive the scan and be reported,
-            not crash it.
-        detail: Backend handle the purge acts on — a vector collection name, a
-            workspace directory path.
+        team_id: The team the resource belongs to, spelled exactly as the
+            resource itself spells it — a Weaviate ``team_id`` property value, a
+            Qdrant ``team_id`` payload value, the ``<leaf>`` of a workspace
+            tree under the ``_team`` kind. It is a team id in every case: a
+            named or metadata workspace tree is addressed by no team id and is
+            therefore never scanned at all. Kept as ``str`` rather than
+            ``uuid.UUID`` because a malformed value must survive the scan and be
+            reported, not crash it.
+        detail: Backend handle the purge acts on — a vector collection name, an
+            absolute workspace directory path.
         label: Human-readable identity for the report
-            (``backend:collection/team``, or a workspace directory name). Never
-            used to address the resource: two backends share one
-            ``ResourceKind``, so the label is the only thing in the report that
-            says which cluster an orphan is in.
+            (``backend:collection/team``, or a workspace's relative
+            ``<scope>/<kind>/<leaf>`` path). Never used to address the resource:
+            two backends share one ``ResourceKind``, so the label is the only
+            thing in the report that says which cluster an orphan is in.
+        claim_key: What the driver diffs against the protected set, when that is
+            not ``team_id``. The vector reapers protect on a team id, because a
+            row is addressed by one and nothing else; the workspace reaper
+            protects on the whole three-segment path, because a ``<leaf>`` is
+            unique only within a scope and a kind — and because a live team can
+            own ``_shared/_team/<id>`` while an identically-leafed
+            ``<owner>/_team/<id>`` beside it is a stale tree nothing will write
+            to again. Defaults to ``None``, meaning "diff on ``team_id``", so a
+            reaper that has nothing sharper to say says nothing.
         size_hint: Objects behind the reference when the backend reports one
             cheaply, else ``0``. Advisory only — it sizes the report, it does
             not gate the delete.
@@ -66,6 +74,7 @@ class ResourceRef(BaseModel):
     team_id: str
     detail: str
     label: str
+    claim_key: str | None = None
     size_hint: int = 0
     age_seconds: float | None = None
 
@@ -123,13 +132,18 @@ class SweepReport(BaseModel):
         live_team_ids: Size of the live set the orphan decision was made
             against, for sanity: a sweep that finds zero live teams against a
             populated cluster is a misconfigured store, not an empty product.
-        extra_claims: Names protected on top of the live team ids — the
-            ``workspace_id`` values live teams declare, which are directory
-            names owned by a team whose id they are not.
-        unreadable_teams: Agent cards referenced by a live team that the store
-            could not resolve. Any value above zero means the workspace claims
-            are incomplete, so the guard refuses to apply: under-protection
-            here deletes data.
+        extra_claims: Claims protected on top of the bare live team ids — the
+            resolved ``<scope>/<kind>/<leaf>`` paths of every live team's
+            deletion candidates. A live team routinely owns a tree its id alone
+            does not name, and a tree whose leaf *is* its id may still be one
+            the team no longer writes to. The field name predates the change
+            from names to paths and is kept because it is on the ``--json``
+            surface; the meaning — claims beyond the bare live team ids — is
+            unchanged.
+        unreadable_teams: Live teams whose deletion candidates the store could
+            not resolve. Any value above zero means the workspace claims are
+            incomplete, so the guard refuses to apply: under-protection here
+            deletes data.
         reports: One entry per reaper, in the order they ran.
     """
 

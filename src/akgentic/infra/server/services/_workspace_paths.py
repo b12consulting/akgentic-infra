@@ -69,11 +69,25 @@ from akgentic.tool.workspace import WorkspaceTool, resolve_workspace_path
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "WORKSPACE_PATH_SEGMENTS",
     "declared_workspace_paths",
     "default_workspace_path",
     "deletion_candidate_paths",
     "select_declared_path",
 ]
+
+WORKSPACE_PATH_SEGMENTS = 3
+"""The number of segments a resolved workspace path has, by construction.
+
+``<scope>/<kind>/<leaf>`` (ADR-052 Decision 1). It lives here, beside the
+readers that produce such a path, because more than one guard tests it: the
+delete path's ``_contained_target`` and the maintenance sweep's workspace
+reaper both refuse a candidate of any other depth, and each would otherwise
+carry its own literal. Depth is what makes no workspace path a proper prefix of
+another — a path one segment shallower is a *kind* directory holding every
+team's tree under it — so two literals that have to agree is the defect this
+module exists to remove, one scale down.
+"""
 
 # One card's workspace declaration: ``(workspace_id, workspace_metadata_keys,
 # workspace_sharable)``. Named once so the three readers below agree on it.

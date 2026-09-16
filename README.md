@@ -1005,9 +1005,11 @@ bearer token and sent as `Authorization: Bearer`.
 
 ## Maintenance
 
-Deleting a team reclaims its event-store documents and nothing else — its
-vector-store rows and its workspace directory both outlive it. The sweep
-reclaims those:
+Deleting a team reclaims its event-store documents and removes the team's own
+workspace trees. Its vector-store rows outlive it unconditionally, and its trees
+outlive it whenever that removal did not run — a crash mid-delete, a tier whose
+deletion policy refused, or a tree written before that path existed. The sweep
+reclaims what is left:
 
 ```bash
 python -m akgentic.infra.maintenance            # dry run — prints the plan
@@ -1020,8 +1022,12 @@ live teams claim, delete the difference. The vector backends come from
 provisioned, so a Qdrant cluster is swept as readily as a Weaviate one. Dry run
 is the default, and it refuses to apply an implausibly large plan (an empty live
 set usually means the store could not read its documents, not that every team is
-gone). The workspace half deletes **data** rather than runtime — `--only vector`
-is the selector to put on an unattended schedule. Full operator documentation:
+gone). The workspace half is keyed on the whole `<scope>/<kind>/<leaf>` path:
+only a `<scope>/_team/<team_id>` tree is ever a candidate, an `_id` or `_meta`
+tree is addressed by no team id and never enters a plan, and every candidate is
+put to the same `WorkspaceDeletionPolicy` the delete path consults. It deletes
+**data** rather than runtime — `--only vector` is the selector to put on an
+unattended schedule. Full operator documentation:
 [`src/akgentic/infra/maintenance/README.md`](src/akgentic/infra/maintenance/README.md);
 rationale in ADR-042.
 

@@ -6,17 +6,17 @@ knows what a live team is — the orphan decision belongs to the driver in
 :mod:`akgentic.infra.maintenance.sweep`, which is the only place the ordering
 invariant that makes the sweep safe can be enforced once.
 
-Two families of backend leak team-scoped resources today, because
-``TeamManager``'s delete path purges the event store and nothing else:
+Two families of backend leak team-scoped resources today:
 
 * **The vector stores** — every row a team writes to a cluster backend carries
   its ``team_id``, and deleting the team removes none of them. There is one
   reaper per *configured* backend, resolved through ``akgentic-tool``'s
   registry, so a deployment running Qdrant is swept rather than reported clean.
-* **Workspace filesystem** — ``<AKGENTIC_WORKSPACES_ROOT>/<workspace_id or
-  team_id>``, plus a sibling ``<name>.git`` journal. This one holds the team's
-  *data*: it is the only reaper here whose deletions are unrecoverable, and
-  ``WorkspaceReaper`` documents the extra rules that follow from that.
+* **Workspace filesystem** — ``<AKGENTIC_WORKSPACES_ROOT>/<scope>/<kind>/<leaf>``,
+  plus the tree's ``<leaf>.git`` journal and ``<leaf>.index`` metadata sidecars.
+  This one holds the team's *data*: it is the only reaper here whose deletions
+  are unrecoverable, and ``WorkspaceReaper`` documents the extra rules that
+  follow from that.
 
 There is deliberately **no sandbox-container reaper**. The sandbox names its
 container after random hex rather than after a team, and removes it on every
@@ -31,22 +31,28 @@ import os
 import shutil
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Protocol
 
+from akgentic.infra.adapters.shared.team_tree_only_policy import TeamTreeOnlyPolicy
 from akgentic.infra.maintenance.models import ResourceKind, ResourceRef
 from akgentic.infra.maintenance.vector_backends import (
     administrative_backend,
     team_index_factory,
 )
+from akgentic.infra.protocols.workspace_deletion import (
+    WorkspaceDeletionContext,
+    WorkspaceDeletionPolicy,
+)
+from akgentic.infra.server.services._workspace_paths import WORKSPACE_PATH_SEGMENTS
+from akgentic.tool.workspace import TEAM_KIND, git_dir_for, meta_dir_for
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from akgentic.infra.maintenance.vector_backends import TeamIndex, VectorAdminBackend
 
 logger = logging.getLogger(__name__)
-
-GIT_DIR_SUFFIX: str = ".git"
-"""Suffix of a workspace's sibling git journal: ``foo`` journals to ``foo.git``."""
 
 
 class TeamResourceReaper(Protocol):
@@ -213,54 +219,84 @@ class VectorStoreReaper:
 
 
 class WorkspaceReaper:
-    """Reaps workspace directories under ``AKGENTIC_WORKSPACES_ROOT``.
+    """Reaps team workspace trees under ``AKGENTIC_WORKSPACES_ROOT``.
 
     **This is the one reaper that destroys data rather than runtime.** A vector
     row can be re-ingested from the source it was derived from; the files an
     agent wrote cannot be recovered from anywhere. Every rule below exists
     because of that asymmetry, and none of them may be relaxed for convenience.
 
-    A workspace directory is ``<root>/<workspace_id or team_id>``, with the git
-    journal in a sibling ``<name>.git`` (``GIT_DIR_SUFFIX``). The two are
-    reaped together — a journal outliving its tree is a leak whose name no
-    longer resolves to anything.
+    **It is the safety net behind ``TeamService.delete_team``, not the
+    mechanism.** That path removes a team's trees as the team goes, resolving
+    its candidates through ``deletion_candidate_paths`` and filtering them
+    through the tier's ``WorkspaceDeletionPolicy``. What is left for a sweep is
+    what that path could not take: a crash between the event-store write and the
+    ``rmtree``, a tier whose policy refused at the time, and every tree written
+    before that path existed.
 
-    **Only a name that parses as a UUID is ever a candidate.** ``workspace_id``
-    is an operator-chosen override and ``WorkspaceTool(workspace_id="shared")``
-    is a supported configuration: a named shared tree belongs to whoever
-    configured it, is not addressed by any team id, and this reaper must never
-    touch it. A UUID-named directory that *is* a shared workspace is protected
-    the other way — the driver adds every ``workspace_id`` a live team declares
-    to the protected set before anything is condemned.
+    A workspace path is three segments, ``<root>/<scope>/<kind>/<leaf>``, where
+    ``<scope>`` is the owner's user id or the reserved ``_shared`` and ``<kind>``
+    is one of ``_team`` / ``_id`` / ``_meta``. The tree's ``<leaf>.git`` journal
+    and ``<leaf>.index`` metadata directory are reaped with it — a journal or an
+    index outliving its tree is a leak whose name no longer resolves to
+    anything, and ``<leaf>.index/rag/*.yaml`` holds the extracted text of every
+    document the tree indexed.
 
-    Symlinks are skipped rather than followed: the root is a directory of
-    workspaces, and a link in it points at something whose ownership this
-    reaper cannot reason about.
+    **The ``_team`` kind segment is what makes a leaf a team id.** Only
+    ``<scope>/_team/<uuid>`` is ever a candidate, in **either** scope: a
+    ``_shared/_team/<team_id>`` tree is still one team's own. An ``_id`` or
+    ``_meta`` tree is addressed by no team id, so no team's deletion can orphan
+    it and it never enters a plan at all. That is structurally sharper than the
+    rule it replaces — a UUID-shaped *name* could be an operator's
+    ``workspace_id``, which had to be handed to the driver's claim set to be
+    safe.
+
+    **Nothing is condemned that the deletion policy refuses.** The same
+    ``WorkspaceDeletionPolicy`` the delete path consults is asked about every
+    candidate before it enters the plan, so the sweep cannot drift from the
+    delete path's judgement in the one direction that is unrecoverable.
+
+    Symlinks are skipped rather than followed, at every level: a link in place
+    of a scope, a kind or a leaf points at something whose ownership this reaper
+    cannot reason about.
 
     Args:
         root: Workspace root. Defaults to the ``AKGENTIC_WORKSPACES_ROOT``
             environment variable, or ``./workspaces`` — the same resolution
             ``akgentic.tool.workspace.get_workspace`` performs.
+        policy: Rule deciding which trees may go. Defaults to
+            :class:`~akgentic.infra.adapters.shared.team_tree_only_policy.TeamTreeOnlyPolicy`,
+            exactly as ``TierServices.workspace_deletion_policy``'s
+            ``default_factory`` does.
     """
 
     kind: ResourceKind = ResourceKind.WORKSPACE
     backend: str | None = None
     """There is one workspace reaper per sweep, so its kind needs no qualifier."""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(
+        self, root: Path | None = None, policy: WorkspaceDeletionPolicy | None = None
+    ) -> None:
         self._root = root if root is not None else default_workspace_root()
+        self._policy: WorkspaceDeletionPolicy = (
+            policy if policy is not None else TeamTreeOnlyPolicy()
+        )
 
     def scan(self) -> list[ResourceRef]:
-        """Return one reference per UUID-named workspace directory.
+        """Return one reference per ``<scope>/_team/<uuid>`` tree the policy allows.
 
         A missing root is not an error — a deployment whose agents never wrote
         a file has nothing here — and yields an empty scan.
 
+        Sorted at every level, so a plan an operator reads twice is the same
+        plan twice.
+
         Returns:
-            References whose ``detail`` is the absolute directory path,
-            ``size_hint`` the file count, and ``age_seconds`` the directory's
-            age by mtime. A busy workspace therefore looks young and is held
-            back by the grace period, which is the safe bias.
+            References whose ``detail`` is the absolute leaf path, ``label`` and
+            ``claim_key`` the relative ``<scope>/<kind>/<leaf>``, ``size_hint``
+            the file count, and ``age_seconds`` the directory's age by mtime. A
+            busy workspace therefore looks young and is held back by the grace
+            period, which is the safe bias.
 
         Raises:
             OSError: If the root exists but cannot be listed.
@@ -269,30 +305,49 @@ class WorkspaceReaper:
             logger.info("Workspace root %s does not exist; nothing to scan", self._root)
             return []
         refs: list[ResourceRef] = []
-        for entry in sorted(self._root.iterdir()):
-            ref = self._candidate(entry)
-            if ref is not None:
-                refs.append(ref)
+        for kind_dir in self._team_kind_dirs():
+            for leaf in _child_directories(kind_dir):
+                ref = self._candidate(leaf)
+                if ref is not None:
+                    refs.append(ref)
         return refs
 
     def purge(self, ref: ResourceRef) -> int:
-        """Delete one workspace tree and its sibling git journal.
+        """Delete one workspace tree and both of its sidecars.
+
+        The three targets are attempted **independently**, so a failure on one
+        cannot skip the next: a ``<leaf>.git`` that will not go must not take
+        ``<leaf>.index`` with it, which is the retention half.
+
+        **The two sidecars anchor differently, deliberately.** The tree and its
+        ``.git`` are bounded against this reaper's root by
+        :func:`_assert_inside`. The ``.index`` is anchored to whatever
+        ``meta_dir_for`` resolved, because an operator may legitimately relocate
+        the metadata root with ``AKGENTIC_WORKSPACE_META_ROOT`` — and refusing
+        to delete it there would re-open the retention leak in precisely the
+        deployment that configured a separate root. ``TeamService``'s
+        ``_remove_workspace_trees`` does the same; the two must stay the same.
 
         Returns:
-            Directories removed — ``1`` for the tree, ``2`` when it had a
-            journal.
+            Directories actually removed — between ``1`` and ``3``, since
+            neither sidecar exists until something creates it.
 
         Raises:
-            OSError: If either removal fails.
+            OSError: If the reference is not a workspace tree of this root, or
+                if any of the three removals failed. The message names every
+                failure, and the driver records it against this orphan.
         """
-        path = Path(ref.detail)
-        _assert_inside(path, self._root)
-        shutil.rmtree(path)
-        removed = 1
-        journal = path.parent / f"{path.name}{GIT_DIR_SUFFIX}"
-        if journal.is_dir() and not journal.is_symlink():
-            shutil.rmtree(journal)
-            removed += 1
+        target = Path(ref.detail)
+        relative = _assert_inside(target, self._root)
+        removed = 0
+        failures: list[str] = []
+        for victim in (target, git_dir_for(target), meta_dir_for(str(relative))):
+            try:
+                removed += _remove_tree(victim)
+            except OSError as exc:
+                failures.append(f"{victim}: {exc}")
+        if failures:
+            raise OSError("; ".join(failures))
         return removed
 
     def close(self) -> None:
@@ -302,28 +357,81 @@ class WorkspaceReaper:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _candidate(self, entry: Path) -> ResourceRef | None:
-        """Turn one root entry into a reference, or ``None`` to skip it.
+    def _team_kind_dirs(self) -> Iterator[Path]:
+        """Yield every ``<root>/<scope>/_team`` directory, scopes in sorted order.
 
-        Skips anything that is not a plain directory, every symlink, the
-        ``<name>.git`` journals (reaped with their tree, never on their own —
-        their name does not parse as a UUID in any case), and every name that
-        is not a UUID.
+        Both scopes are walked: ``_shared`` holds one team's own tree under
+        ``_team`` exactly as a principal scope does. Any other kind — the
+        reserved ``_id`` and ``_meta``, or a name this layout does not know — is
+        logged at DEBUG and skipped: it belongs to no team and is nobody's
+        orphan.
         """
-        if entry.is_symlink() or not entry.is_dir():
-            return None
+        for scope in _child_directories(self._root):
+            for kind_dir in _child_directories(scope):
+                if kind_dir.name != TEAM_KIND:
+                    logger.debug(
+                        "Skipping %s/%s: no team id addresses a '%s' tree",
+                        scope.name,
+                        kind_dir.name,
+                        kind_dir.name,
+                    )
+                    continue
+                yield kind_dir
+
+    def _candidate(self, leaf: Path) -> ResourceRef | None:
+        """Turn one ``<scope>/_team/<leaf>`` directory into a reference, or skip it.
+
+        Skips a leaf whose name does not parse as a UUID — which is what the
+        ``<leaf>.git`` and ``<leaf>.index`` sidecars are, so they are never
+        candidates in their own right — and then anything the deletion policy
+        refuses.
+
+        **The refusal is recorded at INFO**, mirroring the delete path's
+        "Workspace kept": a deletion nobody can explain afterwards is worse than
+        one that did not happen, and so is a tree that quietly survived every
+        sweep.
+
+        **``owner_user_id`` is the ``<scope>`` segment, and that is the best
+        answer available here.** The delete path reads ``Process.user_id``; this
+        reaper has no process, because the team being gone is the whole signal.
+        For a principal scope the segment *is* the owner's user id verbatim —
+        ``user_segment`` is identity, with no encoding and no digest — and for a
+        ``_shared`` tree the scope names no principal at all. A tier policy
+        keying on the owner therefore fails to match a shared tree and refuses
+        it, which is the safe direction for an unrecoverable delete. The default
+        ``TeamTreeOnlyPolicy`` reads only ``kind`` and ``leaf`` and is
+        unaffected.
+        """
         try:
-            uuid.UUID(entry.name)
+            team_id = uuid.UUID(leaf.name)
         except ValueError:
-            logger.debug("Skipping workspace '%s': not a team-id-shaped name", entry.name)
+            logger.debug("Skipping workspace leaf '%s': not a team-id-shaped name", leaf.name)
+            return None
+        relative = PurePosixPath(*leaf.relative_to(self._root).parts)
+        scope, kind, leaf_name = relative.parts
+        ctx = WorkspaceDeletionContext(
+            team_id=team_id,
+            owner_user_id=scope,
+            path=relative,
+            scope=scope,
+            kind=kind,
+            leaf=leaf_name,
+        )
+        if not self._policy.may_delete(ctx=ctx):
+            logger.info(
+                "Workspace kept — candidate=%s policy=%s",
+                relative,
+                type(self._policy).__name__,
+            )
             return None
         return ResourceRef(
             kind=self.kind,
-            team_id=entry.name,
-            detail=str(entry),
-            label=entry.name,
-            size_hint=_count_files(entry),
-            age_seconds=_directory_age(entry),
+            team_id=leaf_name,
+            detail=str(leaf),
+            label=str(relative),
+            claim_key=relative.as_posix(),
+            size_hint=_count_files(leaf),
+            age_seconds=_directory_age(leaf),
         )
 
 
@@ -336,21 +444,95 @@ def default_workspace_root() -> Path:
     return Path(os.environ.get("AKGENTIC_WORKSPACES_ROOT", "./workspaces"))
 
 
-def _assert_inside(path: Path, root: Path) -> None:
-    """Refuse to delete anything that is not a direct child of *root*.
+def _child_directories(parent: Path) -> list[Path]:
+    """Every real subdirectory of *parent*, sorted by name.
 
-    A belt-and-braces check on the one operation in this package that removes
-    a directory tree: the reference came from this reaper's own scan, so this
-    can only fire if something between the two rewrote it.
+    Files and symlinks are dropped, and the symlink test comes **first**:
+    ``is_dir`` follows a link, so a link to a directory would otherwise pass as
+    one. Sorting at every level is what makes a plan stable run to run.
 
     Raises:
-        OSError: If *path* is not a direct child of *root*.
+        OSError: If *parent* cannot be listed. Unavailable is never clean — the
+            driver turns it into an ``available=False`` report rather than an
+            empty, clean-looking scan.
     """
-    resolved_root = root.resolve()
-    resolved = path.resolve()
-    if resolved.parent != resolved_root:
-        msg = f"refusing to remove {resolved}: not a direct child of {resolved_root}"
+    return [
+        entry for entry in sorted(parent.iterdir()) if not entry.is_symlink() and entry.is_dir()
+    ]
+
+
+def _remove_tree(target: Path) -> int:
+    """Remove *target* recursively when it is a real directory.
+
+    A missing sidecar is a silent no-op: neither the journal nor the metadata
+    directory exists until something creates it. A symlink is refused rather
+    than followed, for the reason the scan skips them.
+
+    Returns:
+        ``1`` when a directory was removed, ``0`` when there was nothing there.
+
+    Raises:
+        OSError: If the removal itself failed.
+    """
+    if target.is_symlink() or not target.is_dir():
+        return 0
+    shutil.rmtree(target)
+    return 1
+
+
+def _assert_inside(path: Path, root: Path) -> PurePosixPath:
+    """Return *path*'s workspace path below *root*, or refuse to touch it.
+
+    The last check before the one operation in this package that removes a
+    directory tree, and ADR-042 §7 rule 3 requires it even though the reference
+    came from this reaper's own scan: it can only fire if something between the
+    two rewrote it, which is exactly when it matters.
+
+    **Depth is checked as well as containment, and that is the dangerous half.**
+    A path *two* segments below the root is a ``<scope>/<kind>`` directory
+    holding every team's tree of that kind, and an ``rmtree`` of one would take
+    all of them. Only a path exactly ``WORKSPACE_PATH_SEGMENTS`` deep is a tree.
+
+    **Depth is measured twice, on the literal reference and on what it resolves
+    to, because the two can disagree.** ``a/../b`` is three parts and lands one
+    segment deep, naming the *parent* of every tree beneath it; measuring only
+    the literal would approve it. This is the same hazard ``_contained_target``
+    in ``server/services/team_service.py`` documents for the delete path, and
+    the reaper keeps its own check rather than borrowing that one because the
+    two guard different inputs.
+
+    Returns:
+        The relative ``<scope>/<kind>/<leaf>`` path, which ``purge`` needs to
+        locate the metadata sidecar through the tool's own resolver.
+
+    Raises:
+        OSError: If *path* is not exactly one workspace path below *root*,
+            literally or once resolved.
+    """
+    literal = _segments_below(path.absolute(), root.absolute())
+    resolved = _segments_below(path.resolve(), root.resolve())
+    if literal is None or resolved is None:
+        msg = (
+            f"refusing to remove {path}: not a workspace tree "
+            f"{WORKSPACE_PATH_SEGMENTS} segments below {root}"
+        )
         raise OSError(msg)
+    return resolved
+
+
+def _segments_below(path: Path, root: Path) -> PurePosixPath | None:
+    """*path* relative to *root*, iff it is exactly one workspace path deep.
+
+    ``None`` for anything outside *root* and for any other depth. Neither
+    argument is resolved here: the caller decides which of the two measurements
+    it is taking.
+    """
+    if not path.is_relative_to(root):
+        return None
+    relative = path.relative_to(root)
+    if len(relative.parts) != WORKSPACE_PATH_SEGMENTS:
+        return None
+    return PurePosixPath(*relative.parts)
 
 
 def _count_files(directory: Path) -> int:

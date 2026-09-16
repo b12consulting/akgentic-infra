@@ -17,7 +17,6 @@ from akgentic.infra.maintenance.models import (
     SweepReport,
 )
 from akgentic.infra.maintenance.reapers import (
-    GIT_DIR_SUFFIX,
     TeamResourceReaper,
     VectorStoreReaper,
     WorkspaceReaper,
@@ -40,7 +39,6 @@ __all__ = [
     "BACKEND_DISPOSITIONS",
     "DEFAULT_GRACE_SECONDS",
     "DEFAULT_MAX_ORPHAN_FRACTION",
-    "GIT_DIR_SUFFIX",
     "NotSwept",
     "ReaperReport",
     "ResourceKind",

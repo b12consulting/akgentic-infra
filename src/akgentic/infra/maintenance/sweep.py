@@ -1,12 +1,13 @@
 """Driver for the orphaned team-resource sweep.
 
-``TeamManager.delete_team`` purges the event store and deregisters the team.
-It touches no vector row and removes no workspace directory, so every
-deleted team leaks its side-store state by construction — and a delete hook
-bolted on now would still leak on every crash between the two writes, with no
-way to recover what leaked before it existed. This is therefore a reverse
-sweep: enumerate what the backends hold, diff it against the teams that are
-still live, remove the difference.
+``TeamManager.delete_team`` purges the event store and deregisters the team. It
+touches no vector row, and the workspace trees it does remove it removes only on
+the path that runs to completion — so every crash between the event-store write
+and the ``rmtree``, every tier whose deletion policy refuses, and every tree or
+row written before those paths existed leaks by construction. A delete hook
+cannot recover any of it. This is therefore a reverse sweep: enumerate what the
+backends hold, diff it against the teams that are still live, remove the
+difference.
 
 **The scan happens before the live-set read, and that order is the safety
 property.** Take a team created while the sweep is running:
@@ -29,13 +30,23 @@ the granularity a reference is cut on, so no grace period applies there.
 the test — "present and not ``DELETED``" is.
 
 **What is protected is a set of claims, not a set of team ids.** A workspace
-directory is named ``workspace_id or team_id``, and ``workspace_id`` is an
-operator-chosen override that two teams may share — so a live team routinely
-owns a directory whose name is not its id. Every ``workspace_id`` on a card a
-live team references is therefore added to the protected set before anything
-is condemned. A card that cannot be resolved makes that set incomplete, which
-on the workspace path means deleting a live team's files; the guard refuses
-rather than proceed on a partial answer.
+reference is keyed on its whole ``<scope>/<kind>/<leaf>`` path, because a team's
+own tree can sit in either scope and a leaf is unique only within one. So the
+claim set is the resolved ``deletion_candidate_paths`` of every live team —
+the *same* reader the delete path resolves its targets through, never a second
+derivation of it, because a sweep that re-derived which trees a team owns would
+drift from the delete path silently and in the one direction that cannot be
+undone. A live team whose candidates cannot be resolved makes that set
+incomplete, which on the workspace path means deleting a live team's files; the
+guard refuses rather than proceed on a partial answer.
+
+That keying is what reclaims the one leak an id-keyed set cannot see. A team
+whose card once resolved per-principal has a tree at ``<owner>/_team/<id>``; if
+the card now declares ``workspace_sharable``, its agents write to
+``_shared/_team/<id>`` and nothing will ever write to the first tree again.
+Under id-keyed protection it is protected for ever, because the team is live.
+Under path-keyed protection it is not in the team's candidate set, and it is
+reclaimed — which is the safety-net job this sweep exists to do.
 
 **A thin live set is treated as a broken read, not as a mass deletion.** The
 event store answers "which teams exist" on a best-effort basis: the YAML and
@@ -55,6 +66,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from akgentic.infra.maintenance.models import ReaperReport, SweepReport
+from akgentic.infra.server.services._workspace_paths import deletion_candidate_paths
 from akgentic.team.models import TeamStatus
 
 if TYPE_CHECKING:
@@ -108,67 +120,54 @@ def _team_ids(processes: Sequence[Process]) -> set[str]:
 def _workspace_claims(
     processes: Sequence[Process], event_store: EventStore
 ) -> tuple[set[str], int]:
-    """Return the directory names live teams claim beyond their own ids.
+    """Return the workspace paths live teams claim, and how many would not resolve.
 
-    A workspace directory is named ``workspace_id or team_id``, so a team that
-    configures a ``workspace_id`` — including one shared with another team —
-    owns a directory its id does not name.
+    Every claim is a live team's own deletion candidate, resolved through
+    ``deletion_candidate_paths`` — the **same** reader
+    ``TeamService.delete_team`` resolves its targets through. Re-deriving which
+    trees a team owns here would drift from that reader silently, and the
+    direction of that drift is a sweep deleting what the delete path would have
+    kept. The reaper's own contribution is the reverse direction only: finding
+    trees no live team claims at all.
 
-    The names live on tool cards, which a ``Process`` holds only as content
-    hashes: the nested ``team_card`` was removed from the model in favour of
-    the flat projection, so the cards have to be resolved through the store.
-    All of them are resolved in **one** round trip, which is the contract
-    ``load_agent_cards`` exists to offer. Each card is then walked
-    structurally for ``workspace_id`` at any depth rather than by reaching
-    into a particular card type — the field appears on more than one tool
-    card, and a structural walk cannot miss a nesting the sweep has not been
-    told about.
+    **One card-store read per live team, where the old structural walk made one
+    batched read in total.** That is the price of not re-deriving the delete
+    path's judgement, and correctness on an unrecoverable delete path buys it
+    easily. If a large deployment needs it batched, that is a change to
+    ``_workspace_paths``' reader, never a re-derivation here.
+
+    A failure is counted **per process** so one unreadable team cannot hide the
+    rest. ``deletion_candidate_paths`` documents two raises —
+    ``AgentCardNotFoundError`` for a hash the store does not hold and
+    ``ValueError`` for a declaration that cannot yield a path — and anything
+    else the store does on its way to answering is the same danger, an
+    incomplete protected set, so it is counted rather than allowed to abort the
+    sweep or, far worse, to read as "this team claims nothing".
 
     Args:
-        processes: The live processes whose cards to read.
+        processes: The live processes whose candidates to resolve.
         event_store: Store holding the cards those processes reference.
 
     Returns:
-        The claimed names, and the number of card references that could not be
-        resolved. A non-zero count means the protected set is incomplete —
-        never treat it as "no extra claims".
+        The claimed paths as POSIX strings, and the number of live teams whose
+        candidates could not be resolved. A non-zero count means the protected
+        set is incomplete — never treat it as "no extra claims".
     """
-    hashes = sorted({ref.card_hash for process in processes for ref in process.agent_cards})
-    if not hashes:
-        return set(), 0
-    try:
-        cards = event_store.load_agent_cards(hashes)
-    except Exception as exc:  # noqa: BLE001 - an unreadable store must not crash the scan
-        logger.warning("Could not resolve agent cards for workspace claims: %s", exc)
-        return set(), len(hashes)
-
     claims: set[str] = set()
     unreadable = 0
-    for card_hash in hashes:
-        card = cards.get(card_hash)
-        if card is None:
-            logger.warning("Card %s is referenced by a live team but not in the store", card_hash)
+    for process in processes:
+        try:
+            candidates = deletion_candidate_paths(process=process, store=event_store)
+        except Exception as exc:  # noqa: BLE001 - one bad team must not hide the rest
+            logger.warning(
+                "Could not resolve the workspace candidates of live team %s: %s",
+                process.team_id,
+                exc,
+            )
             unreadable += 1
             continue
-        try:
-            _collect_workspace_ids(card.model_dump(), claims)
-        except Exception as exc:  # noqa: BLE001 - one bad card must not hide the rest
-            logger.warning("Could not read workspace claims from card %s: %s", card_hash, exc)
-            unreadable += 1
+        claims.update(path.as_posix() for path in candidates)
     return claims, unreadable
-
-
-def _collect_workspace_ids(node: object, into: set[str]) -> None:
-    """Collect every non-empty ``workspace_id`` string reachable from *node*."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "workspace_id" and isinstance(value, str) and value:
-                into.add(value)
-            else:
-                _collect_workspace_ids(value, into)
-    elif isinstance(node, (list, tuple)):
-        for item in node:
-            _collect_workspace_ids(item, into)
 
 
 def sweep(
@@ -259,9 +258,7 @@ def _scan_all(
         try:
             results.append((reaper.scan(), None))
         except Exception as exc:  # noqa: BLE001 - one backend must not stop the rest
-            logger.warning(
-                "Reaper %s could not scan: %s", reaper.backend or reaper.kind, exc
-            )
+            logger.warning("Reaper %s could not scan: %s", reaper.backend or reaper.kind, exc)
             results.append(([], str(exc)))
     return results
 
@@ -278,13 +275,20 @@ def _classify(
     Args:
         reaper: Backend the references came from.
         refs: Everything the scan found.
-        protected: Every name a live team claims — its id, plus any
-            ``workspace_id`` it declares.
+        protected: Every key a live team claims — its id, plus the resolved
+            path of every tree its deletion would consider.
         failure: Why the scan failed, or ``None`` when it succeeded.
         grace_seconds: Age below which a resource is held back.
 
     Returns:
         The reaper's report, with nothing purged yet.
+
+    Note:
+        A reference is diffed on its ``claim_key`` when it has one and on its
+        ``team_id`` otherwise. That is the whole of what the driver knows about
+        keying: the workspace reaper protects on a path and the vector reapers
+        on a team id, and putting the key on the reference is what keeps the
+        driver from learning either backend's layout.
     """
     if failure is not None:
         return ReaperReport(
@@ -296,7 +300,7 @@ def _classify(
 
     report = ReaperReport(kind=reaper.kind, backend=reaper.backend, scanned=len(refs))
     for ref in refs:
-        if ref.team_id in protected:
+        if (ref.claim_key or ref.team_id) in protected:
             continue
         if ref.age_seconds is not None and ref.age_seconds < grace_seconds:
             report.skipped_young += 1
@@ -330,10 +334,10 @@ def _blast_radius_refusal(report: SweepReport, max_orphan_fraction: float) -> st
         return None
     if report.unreadable_teams:
         return (
-            f"{report.unreadable_teams} agent card(s) referenced by a live team could "
-            "not be read, so the workspace claims are incomplete and a directory a "
-            "live team owns could be condemned. Fix the store, or re-run with "
-            "--only vector to sweep the recoverable backends."
+            f"{report.unreadable_teams} live team(s) would not yield their workspace "
+            "candidates, so the workspace claims are incomplete and a tree a live team "
+            "owns could be condemned. Fix the store, or re-run with --only vector to "
+            "sweep the recoverable backends."
         )
     if report.live_team_ids == 0:
         return (

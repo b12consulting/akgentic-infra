@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 from akgentic.team.models import TeamStatus
+from akgentic.tool.workspace import SHARED_SCOPE
 
 from akgentic.infra.maintenance.models import ResourceKind
 from akgentic.infra.maintenance.sweep import live_team_ids, sweep
@@ -15,6 +16,8 @@ from tests.maintenance.conftest import (
     make_claiming_store,
     make_process,
     make_ref,
+    make_tree_ref,
+    make_workspace_process,
 )
 
 # ---------------------------------------------------------------------------
@@ -293,49 +296,109 @@ def test_the_guard_never_fires_on_a_dry_run() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_shared_workspace_id_protects_a_directory_no_team_id_names() -> None:
+def test_a_live_teams_own_tree_is_protected_by_its_resolved_candidate_path() -> None:
     """The failure this prevents is deleting a live team's files.
 
-    ``WorkspaceTool(workspace_id=...)`` is a supported override, so a live
-    team routinely owns a directory whose name is not its id. Diffing against
-    team ids alone condemns it.
+    The claim is the path the *delete path's own reader* resolves, not a name
+    the sweep derived: a sweep that re-derived which trees a team owns would
+    drift from ``TeamService.delete_team`` silently, and in the one direction
+    that cannot be undone.
     """
     live = uuid.uuid4()
-    store = make_claiming_store(live, "shared-docs")
-    reaper = FakeReaper([make_ref("shared-docs"), make_ref(str(live))], kind=ResourceKind.WORKSPACE)
+    reaper = FakeReaper([make_tree_ref(str(live))], kind=ResourceKind.WORKSPACE)
 
-    report = sweep([reaper], store, apply=True)
+    report = sweep([reaper], FakeEventStore([make_process(live)]), apply=True)
 
     assert report.extra_claims == 1
     assert report.total_orphans == 0
     assert reaper.purged == []
 
 
+def test_a_live_teams_shared_tree_is_protected_in_the_shared_scope() -> None:
+    """``workspace_sharable`` moves the tree, and the claim moves with it."""
+    live = uuid.uuid4()
+    store = make_claiming_store(live, sharable=True)
+    reaper = FakeReaper([make_tree_ref(str(live), scope=SHARED_SCOPE)], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([reaper], store, apply=True)
+
+    assert report.total_orphans == 0
+    assert reaper.purged == []
+
+
+def test_a_stale_per_principal_tree_of_a_now_sharable_team_is_reclaimed() -> None:
+    """The whole value of path-keyed protection over id-keyed protection.
+
+    The team's card once resolved per-principal, so ``<owner>/_team/<id>``
+    exists on disk. The card now declares ``workspace_sharable``, so its agents
+    write to ``_shared/_team/<id>`` and nothing will ever write to the first
+    tree again. Keyed on the team id it would be protected for ever, because
+    the team is live; keyed on the path it is not in the team's candidate set,
+    and the safety net reclaims it.
+    """
+    live = uuid.uuid4()
+    store = make_claiming_store(live, sharable=True)
+    stale = make_tree_ref(str(live))
+    reaper = FakeReaper(
+        [stale, make_tree_ref(str(live), scope=SHARED_SCOPE)], kind=ResourceKind.WORKSPACE
+    )
+
+    report = sweep([reaper], store, apply=True, force=True)
+
+    assert report.total_orphans == 1
+    assert [ref.claim_key for ref in reaper.purged] == [stale.claim_key]
+
+
+def test_a_named_workspace_a_live_team_declares_is_claimed_too() -> None:
+    """The claim set is the delete path's whole candidate set, not just the team tree.
+
+    An ``_id`` tree is never *scanned* by this reaper, but it is still a path a
+    live team's deletion would consider — so it is in the protected set, and a
+    reaper that learns to see one later inherits the protection rather than
+    having to be told about it.
+    """
+    live = uuid.uuid4()
+    store = make_claiming_store(live, workspace_id="notes")
+
+    report = sweep([FakeReaper([])], store)
+
+    assert report.extra_claims == 2
+
+
 def test_a_claim_a_dead_team_made_does_not_protect_anything() -> None:
-    """Only *live* teams' claims count, or deletion would never reclaim a share."""
-    store = make_claiming_store(uuid.uuid4(), "shared-docs", TeamStatus.DELETED)
-    reaper = FakeReaper([make_ref("shared-docs")], kind=ResourceKind.WORKSPACE)
+    """Only *live* teams' claims count, or deletion would never reclaim a tree."""
+    dead = uuid.uuid4()
+    store = make_claiming_store(dead, status=TeamStatus.DELETED)
+    reaper = FakeReaper([make_tree_ref(str(dead))], kind=ResourceKind.WORKSPACE)
 
     report = sweep([reaper], store, apply=True, force=True)
 
     assert report.extra_claims == 0
-    assert [ref.team_id for ref in reaper.purged] == ["shared-docs"]
+    assert [ref.team_id for ref in reaper.purged] == [str(dead)]
 
 
-def test_claims_protect_every_backend_not_only_the_workspace_one() -> None:
-    """The protected set is one set; a reaper does not get its own rules."""
-    reaper = FakeReaper([make_ref("shared-docs")], kind=ResourceKind.VECTOR)
+def test_a_reference_without_a_claim_key_is_diffed_on_its_team_id() -> None:
+    """The protected set is one set; a reaper does not get its own rules.
 
-    report = sweep([reaper], make_claiming_store(uuid.uuid4(), "shared-docs"), apply=True)
+    A vector row is addressed by a team id and nothing else, so its reference
+    carries no ``claim_key`` and the live team id alone protects it. Putting the
+    key on the reference is what keeps the driver from learning either backend's
+    layout.
+    """
+    live = uuid.uuid4()
+    reaper = FakeReaper([make_ref(str(live))], kind=ResourceKind.VECTOR)
 
+    report = sweep([reaper], FakeEventStore([make_process(live)]), apply=True)
+
+    assert report.reports[0].scanned == 1
     assert report.total_orphans == 0
 
 
-def test_a_card_the_store_cannot_resolve_refuses_the_whole_apply() -> None:
+def test_a_live_team_whose_candidates_will_not_resolve_refuses_the_whole_apply() -> None:
     """Under-protection deletes files, so a partial answer is not acted on."""
-    store = make_claiming_store(uuid.uuid4(), "shared-docs")
+    store = make_claiming_store(uuid.uuid4())
     store.cards.clear()
-    reaper = FakeReaper([make_ref(str(uuid.uuid4()))], kind=ResourceKind.WORKSPACE)
+    reaper = FakeReaper([make_tree_ref(str(uuid.uuid4()))], kind=ResourceKind.WORKSPACE)
 
     report = sweep([reaper], store, apply=True)
 
@@ -346,10 +409,10 @@ def test_a_card_the_store_cannot_resolve_refuses_the_whole_apply() -> None:
 
 
 def test_a_store_that_cannot_resolve_cards_at_all_refuses_too() -> None:
-    """A raising ``load_agent_cards`` is the same danger as a missing card."""
-    store = make_claiming_store(uuid.uuid4(), "shared-docs")
+    """A raising card store is the same danger as a card it does not hold."""
+    store = make_claiming_store(uuid.uuid4())
     store.set_card_error(RuntimeError("store down"))
-    reaper = FakeReaper([make_ref(str(uuid.uuid4()))], kind=ResourceKind.WORKSPACE)
+    reaper = FakeReaper([make_tree_ref(str(uuid.uuid4()))], kind=ResourceKind.WORKSPACE)
 
     report = sweep([reaper], store, apply=True)
 
@@ -357,9 +420,31 @@ def test_a_store_that_cannot_resolve_cards_at_all_refuses_too() -> None:
     assert reaper.purged == []
 
 
-def test_the_cards_are_resolved_in_one_round_trip() -> None:
-    """``load_agent_cards`` exists to prevent an N+1 across a team's roles."""
-    store = make_claiming_store(uuid.uuid4(), "shared-docs")
+def test_one_unreadable_team_does_not_hide_the_claims_of_the_rest() -> None:
+    """The count is per team, so one broken card cannot empty the protected set."""
+    readable, broken = uuid.uuid4(), uuid.uuid4()
+    good_process, good_cards = make_workspace_process(readable)
+    # A different declaration gives the worker card a different hash, so only
+    # this team's card is the one the store is missing.
+    bad_process, _ = make_workspace_process(broken, workspace_id="unstored")
+    store = FakeEventStore([good_process, bad_process], cards=good_cards)
+    reaper = FakeReaper([make_tree_ref(str(readable))], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([reaper], store, apply=True)
+
+    assert report.unreadable_teams == 1
+    assert report.extra_claims == 1
+    assert report.total_orphans == 0
+
+
+def test_a_teams_cards_are_resolved_in_one_round_trip() -> None:
+    """``load_agent_cards`` exists to prevent an N+1 across a team's roles.
+
+    One read per live team is the deliberate price of resolving candidates
+    through the delete path's own reader; a read per *role* is the N+1 that
+    reader exists to prevent, and only a call count catches it coming back.
+    """
+    store = make_claiming_store(uuid.uuid4(), workspace_id="notes")
 
     sweep([FakeReaper([])], store)
 

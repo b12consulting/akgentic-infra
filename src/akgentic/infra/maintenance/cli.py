@@ -11,6 +11,13 @@ The workspace reaper deletes the team's **files**, which nothing can rebuild.
 Read the dry run before applying it, and prefer ``--only vector`` on a schedule
 if that is the only part you want unattended.
 
+**A standalone sweep builds no ``TierServices``, so its workspace reaper gets
+the base ``TeamTreeOnlyPolicy``, not a tier's own.** That base approves only a
+team's own ``_team`` tree in either scope and refuses every other kind, so a
+sweep can only ever under-delete relative to a stricter tier, never over-delete.
+A tier running a custom ``workspace_deletion_policy`` has no way to hand it to
+this CLI today; see the backlog entry for the loader that would close it.
+
 Vector backends are discovered through ``akgentic-tool``'s registry — one reaper
 per registered backend whose ``is_configured()`` reports the environment has
 provisioned it — so ``--only vector`` covers every vector store a deployment
@@ -205,7 +212,7 @@ def _render(report: SweepReport) -> str:
         headline = "APPLIED"
     else:
         headline = "DRY RUN — nothing deleted"
-    claims = f" (+{report.extra_claims} claimed workspace name(s))" if report.extra_claims else ""
+    claims = f" (+{report.extra_claims} claimed workspace path(s))" if report.extra_claims else ""
     lines = [f"Sweep {headline}", f"Live teams: {report.live_team_ids}{claims}."]
     if report.unreadable_teams:
         lines.append(

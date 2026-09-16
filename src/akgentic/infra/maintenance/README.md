@@ -1,8 +1,16 @@
 # Orphaned team-resource sweep
 
-Deleting a team reclaims its event-store documents and nothing else. Its
-vector-store rows and its workspace directory survive it, indefinitely. This job
-finds those and removes them.
+Deleting a team reclaims its event-store documents, and removes the team's own
+workspace trees on the path that runs to completion. Its vector-store rows
+outlive it unconditionally, and its trees outlive it whenever that path did not
+finish or was never reached. This job finds what is left and removes it.
+
+**The workspace reaper is the safety net behind `TeamService.delete_team`, not
+the mechanism.** That path reclaims the normal case, resolving the team's trees
+through `deletion_candidate_paths` and filtering them through the tier's
+`WorkspaceDeletionPolicy`. What is left for a sweep is the crash window between
+the event-store write and the `rmtree`, a tier whose policy refused at the time,
+and every tree written before that path existed.
 
 ```bash
 python -m akgentic.infra.maintenance                     # dry run — prints the plan
@@ -17,13 +25,15 @@ Design rationale: **ADR-042**, in the workspace repo at
 ## What leaks, and why
 
 `TeamManager.delete_team` calls `event_store.delete_team()` and deregisters the
-team. Two other kinds of system hold team-keyed state and hear nothing:
+team; `TeamService.delete_team` removes the team's own trees around it. Two
+other kinds of system hold team-keyed state, and the trees survive whenever that
+second path did not run:
 
 | Backend | What is left | How it is keyed |
 |---|---|---|
 | Weaviate | every vector object the team ingested | a `team_id` property on each object — collections are shared by all teams, so this is the *only* thing that says who owns an object |
 | Qdrant | every point the team ingested | a `team_id` payload key on each point — the same mechanism, same leak |
-| Workspace filesystem | the directory tree and its git journal | `$AKGENTIC_WORKSPACES_ROOT/<workspace_id or team_id>`, journalling to a sibling `<name>.git` |
+| Workspace filesystem | the tree, its git journal and its index sidecar | `$AKGENTIC_WORKSPACES_ROOT/<scope>/<kind>/<leaf>`, with a sibling `<leaf>.git` journal and `<leaf>.index` metadata directory. A team's own tree is `<scope>/_team/<team_id>`, where `<scope>` is the owner's user id or the reserved `_shared` |
 
 The vector reapers are resolved through `akgentic-tool`'s backend registry, one
 per backend a deployment has provisioned — so a cluster running only Qdrant is
@@ -48,8 +58,8 @@ Three steps, in this order:
 
 1. **Scan** every backend for team-owned resources.
 2. **Read** the protected set from the `EventStore` — every team present and
-   not `DELETED`, plus every `workspace_id` those teams' agent cards declare.
-   A `STOPPED` team is resumable and keeps everything.
+   not `DELETED`, plus the resolved workspace path of every tree those teams'
+   deletions would consider. A `STOPPED` team is resumable and keeps everything.
 3. **Purge** the resources nothing in that set claims.
 
 **Step 1 must precede step 2.** A team created while the sweep runs is absent
@@ -84,19 +94,33 @@ mtime, so an actively written tree reads as young and survives a sweep that
 misjudged it. Vector rows do not: they appear only on ingest, long after the
 team is durable, and expose no cheap creation time per `(collection, team)`.
 
-**Claims, not just team ids.** A workspace directory is named
-`workspace_id or team_id`, and `workspace_id` is an operator-chosen override
-that two teams may share — `WorkspaceTool(workspace_id="shared")` is a
-supported configuration. A live team therefore routinely owns a directory
-whose name is not its id, so every `workspace_id` on a card a live team
-references is protected too. If a card cannot be resolved, that set is
-incomplete and the sweep refuses rather than act on a partial answer.
+**Claims are paths, not team ids.** A workspace reference is keyed on its whole
+`<scope>/<kind>/<leaf>` path, because a team's own tree can sit in either scope
+and a leaf is unique only within one. The claim set is therefore the resolved
+`deletion_candidate_paths` of every live team — the *same* reader the delete
+path resolves its targets through, never a second derivation of it. That also
+reclaims the one leak an id-keyed set cannot see: a team whose card once
+resolved per-principal, and now declares `workspace_sharable`, leaves an
+`<owner>/_team/<id>` tree nothing will ever write to again. If a live team's
+candidates cannot be resolved, the set is incomplete and the sweep refuses
+rather than act on a partial answer.
 
-**Never reaped:** symlinks; any workspace whose name is not a UUID (a named
-shared tree belongs to whoever configured it, and no team's deletion can orphan
-it); any collection that is not team-scoped, where `team_id` records who *wrote*
-a row rather than who owns it, and which both backends refuse to delete from by
-team anyway; and anything unattributable — a row with no `team_id`.
+**Nothing is condemned that the deletion policy refuses.** The reaper asks the
+same `WorkspaceDeletionPolicy` the delete path asks about every candidate before
+it enters the plan, so the sweep cannot drift from that judgement in the one
+direction that cannot be undone. A standalone sweep builds no `TierServices`, so
+it gets the base `TeamTreeOnlyPolicy` — which approves only a team's own
+`_team` tree in either scope, meaning a sweep can only ever under-delete
+relative to a stricter tier, never over-delete.
+
+**Never reaped:** symlinks, at every level of the workspace layout; any tree
+whose `<kind>` segment is not `_team` — an `_id` or `_meta` tree is addressed
+by no team id, so no team's deletion can orphan it, and it never enters a plan
+at all; any `_team` tree whose `<leaf>` is not a team id; any tree the deletion
+policy refuses; any collection that is not team-scoped, where `team_id` records
+who *wrote* a row rather than who owns it, and which both backends refuse to
+delete from by team anyway; and anything unattributable — a row with no
+`team_id`.
 
 ## Configuration
 

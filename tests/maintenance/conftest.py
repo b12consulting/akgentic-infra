@@ -10,6 +10,7 @@ import pytest
 from akgentic.core.agent_card import AgentCard
 from akgentic.team.models import Process, TeamCard, TeamStatus
 from akgentic.team.projection import derive_team_projection
+from akgentic.tool.workspace import TEAM_KIND
 
 from akgentic.infra.maintenance.models import ResourceKind, ResourceRef
 
@@ -146,20 +147,50 @@ class FakeReaper:
         self.closed = True
 
 
-def make_ref(team_id: str, *, age_seconds: float | None = None, size: int = 1) -> ResourceRef:
+def make_ref(
+    team_id: str,
+    *,
+    age_seconds: float | None = None,
+    size: int = 1,
+    claim_key: str | None = None,
+) -> ResourceRef:
     """Build a workspace-kind reference owned by *team_id*.
 
     The workspace reaper is the one that carries an age today, so this is the
     kind the grace-period specs need — and the default ``FakeReaper`` kind for
     the same reason.
+
+    *claim_key* is left unset by default, which makes the driver diff on
+    ``team_id``: that is what the vector reapers do, and what every spec about
+    the live set alone wants. A workspace reference in the field always carries
+    one; pass :func:`make_tree_ref` for that shape.
     """
     return ResourceRef(
         kind=ResourceKind.WORKSPACE,
         team_id=team_id,
         detail=f"/workspaces/{team_id}",
         label=team_id,
+        claim_key=claim_key,
         size_hint=size,
         age_seconds=age_seconds,
+    )
+
+
+def make_tree_ref(team_id: str, *, scope: str = "user-1", size: int = 1) -> ResourceRef:
+    """Build the reference the workspace reaper produces for a team's own tree.
+
+    Keyed on the whole ``<scope>/_team/<team_id>`` path, because that is what a
+    live team's resolved deletion candidate spells — and the reason a stale tree
+    in the *other* scope is reclaimed while the live one is protected.
+    """
+    relative = f"{scope}/{TEAM_KIND}/{team_id}"
+    return ResourceRef(
+        kind=ResourceKind.WORKSPACE,
+        team_id=team_id,
+        detail=f"/workspaces/{relative}",
+        label=relative,
+        claim_key=relative,
+        size_hint=size,
     )
 
 
@@ -175,36 +206,38 @@ def dead_team_id() -> uuid.UUID:
     return uuid.uuid4()
 
 
-def make_claiming_store(
+def make_workspace_process(
     team_id: uuid.UUID,
-    workspace_id: str,
+    *,
+    workspace_id: str | None = None,
+    sharable: bool = False,
     status: TeamStatus = TeamStatus.RUNNING,
-) -> FakeEventStore:
-    """Build a store holding one team that declares *workspace_id*.
+) -> tuple[Process, dict[str, AgentCard]]:
+    """Build one team declaring a ``WorkspaceTool``, and the cards it references.
 
-    Uses a real ``WorkspaceTool`` card rather than a hand-shaped dict, and
-    resolves the cards through the store exactly as the driver does — so the
-    claim is discovered through the same nesting and the same round trip a
+    Uses a real card rather than a hand-shaped dict, so the deletion candidates
+    are resolved through the same resolver — and the same sharing axis — a
     deployment produces.
     """
     payload = json.loads(json.dumps(_TEAM_CARD_PAYLOAD))
+    tool: dict[str, object] = {
+        "__model__": "akgentic.tool.workspace.card.WorkspaceTool",
+        "workspace_sharable": sharable,
+    }
+    if workspace_id is not None:
+        tool["workspace_id"] = workspace_id
     payload["members"] = [
         {
             "card": {
                 "role": "Worker",
-                "description": "Worker with a shared workspace",
+                "description": "Worker with a workspace",
                 "skills": [],
                 "agent_class": "akgentic.agent.agent.BaseAgent",
                 "config": {
                     "__model__": "akgentic.agent.config.AgentConfig",
                     "name": "@Worker",
                     "role": "Worker",
-                    "tools": [
-                        {
-                            "__model__": "akgentic.tool.workspace.card.WorkspaceTool",
-                            "workspace_id": workspace_id,
-                        }
-                    ],
+                    "tools": [tool],
                 },
                 "routes_to": [],
             },
@@ -212,8 +245,7 @@ def make_claiming_store(
             "members": [],
         }
     ]
-    card = TeamCard.model_validate(payload)
-    projection = derive_team_projection(card)
+    projection = derive_team_projection(TeamCard.model_validate(payload))
     now = datetime.now(UTC)
     process = Process(
         team_id=team_id,
@@ -227,8 +259,22 @@ def make_claiming_store(
         agent_cards=projection.agent_cards,
         message_types=projection.message_types,
     )
-    stored = {
+    cards = {
         ref.card_hash: agent_card
         for ref, agent_card in zip(process.agent_cards, projection.cards, strict=True)
     }
-    return FakeEventStore([process], cards=stored)
+    return process, cards
+
+
+def make_claiming_store(
+    team_id: uuid.UUID,
+    *,
+    workspace_id: str | None = None,
+    sharable: bool = False,
+    status: TeamStatus = TeamStatus.RUNNING,
+) -> FakeEventStore:
+    """A store holding one team whose card declares the requested workspace."""
+    process, cards = make_workspace_process(
+        team_id, workspace_id=workspace_id, sharable=sharable, status=status
+    )
+    return FakeEventStore([process], cards=cards)
