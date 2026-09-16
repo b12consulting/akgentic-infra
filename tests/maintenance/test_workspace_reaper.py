@@ -462,6 +462,29 @@ def test_purge_refuses_a_three_part_reference_that_resolves_one_segment_deep(
     assert tree.exists()
 
 
+def test_purge_refuses_a_traversal_that_resolves_onto_a_real_tree(tmp_path: Path) -> None:
+    """The other half of measuring depth twice: the *literal* reference.
+
+    ``<scope>/<kind>/x/../<leaf>`` is five literal parts and resolves onto a
+    tree exactly three deep, so the resolved measurement approves it on its own
+    and only the literal one refuses. Without a case that separates the two, a
+    reader can delete the literal measurement with the whole suite green — which
+    is what the story's "measured twice" rule exists to prevent.
+    """
+    team_id = str(uuid.uuid4())
+    tree = _tree(tmp_path, team_id)
+    ref = ResourceRef(
+        kind=ResourceKind.WORKSPACE,
+        team_id=team_id,
+        detail=str(tmp_path / OWNER / TEAM_KIND / "x" / ".." / team_id),
+        label="traversal-onto-a-tree",
+    )
+
+    with pytest.raises(OSError, match="not a workspace tree"):
+        WorkspaceReaper(tmp_path).purge(ref)
+    assert tree.exists()
+
+
 def test_purge_refuses_a_path_outside_the_root(tmp_path: Path) -> None:
     """The last check before an ``rmtree``: the reference must be one of ours."""
     outside = tmp_path / "outside" / "a" / "b"

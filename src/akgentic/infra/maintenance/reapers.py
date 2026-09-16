@@ -329,8 +329,9 @@ class WorkspaceReaper:
         ``_remove_workspace_trees`` does the same; the two must stay the same.
 
         Returns:
-            Directories actually removed — between ``1`` and ``3``, since
-            neither sidecar exists until something creates it.
+            Directories actually removed — at most ``3``, since neither
+            sidecar exists until something creates it, and ``0`` when another
+            process took the tree between the scan and here.
 
         Raises:
             OSError: If the reference is not a workspace tree of this root, or
