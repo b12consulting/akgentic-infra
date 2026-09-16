@@ -49,8 +49,21 @@ class TelegramChannelParser:
                 {
                     "update_id": 123456,
                     "message": {
-                        "message_id": 42,
-                        "chat": {"id": 987654321},
+                        "message_id": 4,
+                        "from": {
+                            "id": 8892740599,
+                            "is_bot": false,
+                            "first_name": "John",
+                            "last_name": "Doe",
+                            "language_code": "en"
+                        },
+                        "chat": {
+                            "id": 8892740599,
+                            "first_name": "John",
+                            "last_name": "Doe",
+                            "type": "private"
+                        },
+                        "date": 1789587220,
                         "text": "Hello"
                     }
                 }
