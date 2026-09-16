@@ -128,7 +128,11 @@ async def require_team_access(
     process = service.get_team(team_id)
     if process is None:
         raise HTTPException(status_code=404, detail="Team not found")
-    ctx = TeamAccessContext(team_id=team_id, owner_user_id=process.user_id)
+    ctx = TeamAccessContext(
+        team_id=team_id,
+        owner_user_id=process.user_id,
+        metadata_indexes=process.metadata_indexes,
+    )
     if not await policy.is_allowed(ctx=ctx, user=user):
         logger.info(
             "team-access gate denied",
@@ -145,6 +149,7 @@ async def check_workspace_scope(
     team_id: uuid.UUID,
     user: RequestUser,
     policy: TeamAccessPolicy,
+    metadata_indexes: list[str],
 ) -> None:
     """Decide whether ``user`` may reach ``path``, from its scope segment alone.
 
@@ -174,15 +179,30 @@ async def check_workspace_scope(
       tier's own policy still decides. A deny is 404, like every other gate
       denial here.
 
-    Nothing else is read: not the kind, not the leaf, not the card, not
-    ``process.user_id``. The leaf is never parsed to recover what the card
-    meant.
+    Nothing else is read **off the path**: not the kind, not the leaf, not the
+    card, not ``process.user_id``. The leaf is never parsed to recover what the
+    card meant.
+
+    **The team's metadata indexes travel with the context, and must.** They are
+    not derived from the path — they are the authorized team's own, passed in by
+    the caller, exactly as :func:`require_team_access` passes them. A policy that
+    decides from metadata entitlement rather than ownership is the reason
+    :class:`TeamAccessContext` carries the field at all, and leaving it at its
+    empty default here asked such a policy to rule on a team it could not see:
+    it would admit the caller at the team gate and deny them the tree, a 404 on
+    the workspace of a team they had just been admitted to. The empty list is a
+    valid context, so nothing raised and nothing logged the difference.
 
     Args:
         path: The resolved three-segment path the route is about to open.
         team_id: The **authorized** team, bound from the route path.
         user: The authenticated principal.
         policy: The wired per-team authorization rule.
+        metadata_indexes: The authorized team's canonical index entries, so a
+            metadata-driven policy sees the same team here as at the team gate.
+            Required rather than defaulted: a caller that has no indexes to hand
+            has not read the team, and a silent ``[]`` is the defect this
+            parameter exists to remove.
 
     Raises:
         SharedWorkspaceRefusedError: For a ``_shared`` path, whoever asks.
@@ -195,7 +215,9 @@ async def check_workspace_scope(
             extra={"team_id": str(team_id), "user_id": user.user_id, "path": str(path)},
         )
         raise SharedWorkspaceRefusedError()
-    ctx = TeamAccessContext(team_id=team_id, owner_user_id=scope)
+    ctx = TeamAccessContext(
+        team_id=team_id, owner_user_id=scope, metadata_indexes=metadata_indexes
+    )
     if not await policy.is_allowed(ctx=ctx, user=user):
         logger.info(
             "workspace-scope gate denied",
@@ -233,7 +255,11 @@ async def _deny_foreign_named_team(
     process = service.get_team(named_team_id)
     if process is None:
         return
-    ctx = TeamAccessContext(team_id=named_team_id, owner_user_id=process.user_id)
+    ctx = TeamAccessContext(
+        team_id=named_team_id,
+        owner_user_id=process.user_id,
+        metadata_indexes=process.metadata_indexes,
+    )
     if not await policy.is_allowed(ctx=ctx, user=user):
         logger.info(
             "workspace-access gate denied",
@@ -395,6 +421,12 @@ async def require_workspace_access(
             },
         )
         raise HTTPException(status_code=404, detail="Team not found")
-    await check_workspace_scope(path, team_id=team_id, user=user, policy=policy)
+    await check_workspace_scope(
+        path,
+        team_id=team_id,
+        user=user,
+        policy=policy,
+        metadata_indexes=process.metadata_indexes,
+    )
     stash_workspace_path(request, path)
     return user

@@ -30,6 +30,9 @@ class TestServerSettingsDefaults:
         """ServerSettings does not have workspaces_root (community-specific)."""
         assert "workspaces_root" not in ServerSettings.model_fields
 
+    def test_admin_list_all_teams_defaults_false(self) -> None:
+        assert ServerSettings().admin_list_all_teams is False
+
 
 class TestServerSettingsEnvOverride:
     """ServerSettings loads from AKGENTIC_ prefixed env vars."""
@@ -51,6 +54,11 @@ class TestServerSettingsEnvOverride:
             assert settings.port == 9000
         finally:
             del os.environ["AKGENTIC_PORT"]
+
+    def test_admin_list_all_teams_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AKGENTIC_ADMIN_LIST_ALL_TEAMS", "true")
+
+        assert ServerSettings().admin_list_all_teams is True
 
     def test_stray_frontend_adapter_env_is_ignored(
         self, monkeypatch: pytest.MonkeyPatch
@@ -146,6 +154,7 @@ class TestSettingsHierarchy:
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "ws_reader_pool_size",
+            "admin_list_all_teams",
             "catalog_model_type_prefixes",
         }
         assert server_fields == expected, (
