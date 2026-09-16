@@ -97,7 +97,7 @@ async def webhook(
             new_team_id = await ingestion.initiate_team(
                 message.content,
                 message.channel_user_id,
-                parser.default_catalog_entry,
+                message.catalog_entry or parser.default_catalog_entry,
             )
             logger.debug(
                 "Webhook initiation: channel=%s, user=%s, new_team=%s",

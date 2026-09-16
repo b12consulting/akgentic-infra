@@ -21,8 +21,9 @@ class ChannelMessage(SerializableBaseModel):
 
     content: str = Field(description="Message content")
     channel_user_id: str = Field(description="Channel-specific user identifier")
-    team_id: uuid.UUID | None = Field(default=None, description="Associated team ID")
     message_id: str | None = Field(default=None, description="Channel-specific message ID")
+    team_id: uuid.UUID | None = Field(default=None, description="Associated team ID")
+    catalog_entry: str | None = Field(default=None, description="Catalog entry for the new team")
 
 
 @runtime_checkable
