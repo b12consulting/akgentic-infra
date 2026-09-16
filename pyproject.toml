@@ -83,6 +83,24 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 
+# The maintenance sweep reaches three clients that are not declared dependencies:
+# a deployment installs the ones its tier actually runs. CI installs `-e .[dev]`
+# from a wheelhouse and therefore has none of them, so without this mypy reports
+# import-not-found against code that is correct — and a developer whose venv does
+# have them sees a clean run and no warning. Every one of these is imported inside
+# the function that needs it, or under TYPE_CHECKING, so a missing client is a
+# skipped reaper at runtime rather than an ImportError at startup.
+[[tool.mypy.overrides]]
+module = [
+    "weaviate",
+    "weaviate.*",
+    "qdrant_client",
+    "qdrant_client.*",
+    "pymongo",
+    "pymongo.*",
+]
+ignore_missing_imports = true
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
