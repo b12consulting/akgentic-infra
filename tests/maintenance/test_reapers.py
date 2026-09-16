@@ -78,8 +78,8 @@ def _reaper(
 ) -> VectorStoreReaper:
     """Build a reaper around fakes, skipping the registry and the connect."""
     reaper = object.__new__(VectorStoreReaper)
-    reaper._name = name  # noqa: SLF001 - constructing the fake
-    reaper._backend = backend  # noqa: SLF001 - constructing the fake
+    reaper.backend = name
+    reaper._admin = backend  # noqa: SLF001 - constructing the fake
     reaper._index = index  # noqa: SLF001 - constructing the fake
     return reaper
 

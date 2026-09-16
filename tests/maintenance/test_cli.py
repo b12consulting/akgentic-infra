@@ -24,7 +24,7 @@ class _StubVectorReaper:
     kind = ResourceKind.VECTOR
 
     def __init__(self, backend_name: str) -> None:
-        self.backend_name = backend_name
+        self.backend = backend_name
 
 
 def _stub_vector_reapers(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
@@ -50,7 +50,7 @@ def test_a_qdrant_only_deployment_gets_a_vector_reaper(
     reapers = cli._build_reapers(set())
 
     assert [reaper.kind for reaper in reapers] == [ResourceKind.VECTOR, ResourceKind.WORKSPACE]
-    assert reapers[0].backend_name == "qdrant"
+    assert reapers[0].backend == "qdrant"
 
 
 def test_one_reaper_is_built_per_configured_backend(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -59,7 +59,7 @@ def test_one_reaper_is_built_per_configured_backend(monkeypatch: pytest.MonkeyPa
 
     reapers = cli._build_reapers(set())
 
-    assert [getattr(r, "backend_name", None) for r in reapers] == ["qdrant", "weaviate", None]
+    assert [r.backend for r in reapers] == ["qdrant", "weaviate", None]
 
 
 def test_only_restricts_the_sweep_to_one_kind(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,7 +113,7 @@ def test_one_unconstructable_backend_does_not_cost_the_other(
 
     reapers = cli._build_reapers(set())
 
-    assert [getattr(r, "backend_name", None) for r in reapers] == ["weaviate", None]
+    assert [r.backend for r in reapers] == ["weaviate", None]
 
 
 def test_the_filesystem_store_is_read_when_mongo_is_unconfigured(
@@ -174,6 +174,48 @@ def test_an_unavailable_backend_is_rendered_as_such() -> None:
 
     assert "UNAVAILABLE — connection refused" in text
     assert "orphaned 0" not in text
+
+
+def test_an_unavailable_vector_backend_names_the_cluster_that_is_down() -> None:
+    """The one line an operator must act on, and it carries no orphans to name.
+
+    Two configured vector stores report under the same kind, so without the
+    backend on the report both read ``vector: UNAVAILABLE`` and neither says
+    which cluster to go and look at.
+    """
+    text = cli._render(
+        _report(backend="qdrant", available=False, unavailable_reason="connection refused")
+    )
+
+    assert "vector (qdrant): UNAVAILABLE — connection refused" in text
+
+
+def test_two_vector_backends_do_not_share_one_anonymous_header() -> None:
+    """An operator reading the counts alone must still know whose counts they are."""
+    report = SweepReport(
+        applied=False,
+        live_team_ids=2,
+        reports=[
+            ReaperReport(kind=ResourceKind.VECTOR, backend="weaviate", scanned=5),
+            ReaperReport(kind=ResourceKind.VECTOR, backend="qdrant", scanned=7),
+        ],
+    )
+
+    headers = [line for line in cli._render(report).splitlines() if "scanned" in line]
+
+    assert "vector (weaviate): scanned 5" in headers[0]
+    assert "vector (qdrant): scanned 7" in headers[1]
+
+
+def test_a_kind_with_one_backend_is_not_qualified() -> None:
+    """``workspace (None)`` would be noise: there is only ever one of them."""
+    report = SweepReport(
+        applied=False,
+        live_team_ids=1,
+        reports=[ReaperReport(kind=ResourceKind.WORKSPACE, scanned=2)],
+    )
+
+    assert "  workspace: scanned 2" in cli._render(report)
 
 
 def test_a_clean_sweep_exits_zero() -> None:

@@ -399,6 +399,26 @@ def test_qdrant_follows_the_scroll_to_the_last_page() -> None:
     assert index._client.scrolls == [None, "page-2"]  # noqa: SLF001 - asserting on the fake
 
 
+def test_qdrant_stops_when_the_scroll_offset_stops_advancing() -> None:
+    """A cursor that does not move would hang an unattended sweep forever.
+
+    Stopping under-reports, which leaks an orphan — the safe direction. Looping
+    would leave the sweep running and reporting nothing at all.
+    """
+    key = qdrant_team_id_key()
+    index = _qdrant_index_over(
+        [
+            ([_FakePoint({key: "t1"})], "stuck"),
+            ([_FakePoint({key: "t2"})], "stuck"),
+        ]
+    )
+
+    counts = index.team_counts("planning")
+
+    assert counts == {"t1": 1, "t2": 1}
+    assert index._client.scrolls == [None, "stuck"]  # noqa: SLF001 - asserting on the fake
+
+
 def test_qdrant_points_with_no_team_payload_are_never_attributed() -> None:
     """Matches Weaviate: an unattributable row is never anyone's orphan."""
     key = qdrant_team_id_key()

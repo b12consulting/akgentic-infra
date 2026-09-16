@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from akgentic.infra.maintenance.models import ResourceKind, SweepReport
+from akgentic.infra.maintenance.models import ReaperReport, ResourceKind, SweepReport
 from akgentic.infra.maintenance.reapers import (
     TeamResourceReaper,
     VectorStoreReaper,
@@ -213,11 +213,12 @@ def _render(report: SweepReport) -> str:
             "workspace claims; the protected set is incomplete."
         )
     for entry in report.reports:
+        header = _entry_header(entry)
         if not entry.available:
-            lines.append(f"  {entry.kind}: UNAVAILABLE — {entry.unavailable_reason}")
+            lines.append(f"  {header}: UNAVAILABLE — {entry.unavailable_reason}")
             continue
         lines.append(
-            f"  {entry.kind}: scanned {entry.scanned}, orphaned {len(entry.orphans)}, "
+            f"  {header}: scanned {entry.scanned}, orphaned {len(entry.orphans)}, "
             f"held back (too young) {entry.skipped_young}, purged {entry.purged}"
         )
         lines.extend(
@@ -226,6 +227,24 @@ def _render(report: SweepReport) -> str:
         )
         lines.extend(f"    ! {failure}" for failure in entry.failures)
     return "\n".join(lines)
+
+
+def _entry_header(entry: ReaperReport) -> str:
+    """Name the backend a report line is about.
+
+    Two configured vector stores report under the same kind, and an
+    ``UNAVAILABLE`` line carries no orphans to name the cluster in — so without
+    the backend here the one line an operator must act on cannot say which
+    cluster is down.
+
+    Args:
+        entry: One reaper's report.
+
+    Returns:
+        ``"vector (weaviate)"`` when the kind has more than one backend, else
+        the kind alone.
+    """
+    return f"{entry.kind} ({entry.backend})" if entry.backend else str(entry.kind)
 
 
 def _unit(kind: ResourceKind) -> str:

@@ -116,8 +116,10 @@ class FakeReaper:
         scan_error: Exception | None = None,
         purge_error: Exception | None = None,
         kind: ResourceKind = ResourceKind.WORKSPACE,
+        backend: str | None = None,
     ) -> None:
         self.kind = kind
+        self.backend = backend
         self._refs = refs
         self.journal = journal if journal is not None else []
         self._scan_error = scan_error

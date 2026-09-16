@@ -59,6 +59,13 @@ class TeamResourceReaper(Protocol):
     """
 
     kind: ResourceKind
+    backend: str | None
+    """Which backend of that kind, or ``None`` when the kind has only one.
+
+    A kind with two configured backends reports twice, and the driver has no
+    other way to tell the two reports apart once a scan has failed and carries
+    no orphans.
+    """
 
     def scan(self) -> list[ResourceRef]:
         """Return every team-owned resource currently in the backend.
@@ -121,8 +128,10 @@ class VectorStoreReaper:
         if factory is None:
             msg = f"Vector-store backend '{backend_name}' has no team-id enumerator."
             raise ValueError(msg)
-        self._name = backend_name
-        self._backend: VectorAdminBackend = administrative_backend(backend_name)
+        # str | None, not str: the protocol attribute is mutable and therefore
+        # invariant, so a narrower type here would not satisfy it.
+        self.backend: str | None = backend_name
+        self._admin: VectorAdminBackend = administrative_backend(backend_name)
         self._index: TeamIndex = factory()
 
     def scan(self) -> list[ResourceRef]:
@@ -149,13 +158,13 @@ class VectorStoreReaper:
         from akgentic.tool.vector_store.protocol import collection_is_team_scoped
 
         refs: list[ResourceRef] = []
-        for collection in self._backend.list_collections():
+        for collection in self._admin.list_collections():
             if not collection_is_team_scoped(collection):
                 logger.info(
                     "Skipping '%s' on %s: shared across teams, so no row in it is "
                     "any one team's to reap",
                     collection,
-                    self._name,
+                    self.backend,
                 )
                 continue
             for team_id, count in self._index.team_counts(collection).items():
@@ -164,7 +173,7 @@ class VectorStoreReaper:
                         kind=self.kind,
                         team_id=team_id,
                         detail=collection,
-                        label=f"{self._name}:{collection}/{team_id}",
+                        label=f"{self.backend}:{collection}/{team_id}",
                         size_hint=count,
                     )
                 )
@@ -186,7 +195,7 @@ class VectorStoreReaper:
                 both of which the backend refuses. The driver records it as a
                 failure and reaps the remaining orphans.
         """
-        deleted = self._backend.delete_by_team(ref.detail, ref.team_id)
+        deleted = self._admin.delete_by_team(ref.detail, ref.team_id)
         return ref.size_hint if deleted is None else int(deleted)
 
     def close(self) -> None:
@@ -235,6 +244,8 @@ class WorkspaceReaper:
     """
 
     kind: ResourceKind = ResourceKind.WORKSPACE
+    backend: str | None = None
+    """There is one workspace reaper per sweep, so its kind needs no qualifier."""
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = root if root is not None else default_workspace_root()

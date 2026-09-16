@@ -276,15 +276,21 @@ class QdrantTeamIndex:
         Returns:
             Point count keyed by ``team_id``. Points with a missing or
             non-string team key are excluded, exactly as Weaviate's are.
+
+            A scroll that hands back the offset it was given is stopped rather
+            than followed: this runs unattended, and a cursor that does not
+            advance would hang the sweep silently instead of failing it. The
+            partial count under-reports, which leaks an orphan rather than
+            condemning a live team.
         """
         key = qdrant_team_id_key()
         counts: dict[str, int] = {}
-        offset: PointId | None = None
+        previous: PointId | None = None
         while True:
             points, offset = self._client.scroll(
                 collection_name=collection,
                 limit=_QDRANT_SCROLL_BATCH,
-                offset=offset,
+                offset=previous,
                 with_payload=[key],
                 with_vectors=False,
             )
@@ -294,6 +300,16 @@ class QdrantTeamIndex:
                     counts[value] = counts.get(value, 0) + 1
             if offset is None:
                 return counts
+            if offset == previous:
+                logger.warning(
+                    "Qdrant scroll of '%s' returned the same offset twice (%r); "
+                    "stopping the enumeration at %d team(s) rather than looping",
+                    collection,
+                    offset,
+                    len(counts),
+                )
+                return counts
+            previous = offset
 
     def close(self) -> None:
         """Disconnect this index's own client."""

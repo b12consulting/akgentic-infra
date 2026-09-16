@@ -158,6 +158,32 @@ def test_unreachable_backend_is_reported_not_reported_clean() -> None:
     assert entry.orphans == []
 
 
+def test_a_report_carries_the_backend_it_came_from() -> None:
+    """Two vector backends report under one kind, so the report must say which."""
+    reapers = [
+        FakeReaper([], kind=ResourceKind.VECTOR, backend="weaviate"),
+        FakeReaper([], kind=ResourceKind.VECTOR, backend="qdrant"),
+        FakeReaper([], kind=ResourceKind.WORKSPACE),
+    ]
+
+    report = sweep(reapers, FakeEventStore([]))
+
+    assert [entry.backend for entry in report.reports] == ["weaviate", "qdrant", None]
+
+
+def test_an_unavailable_report_still_names_its_backend() -> None:
+    """The failed-scan path builds its own report, and this is the path that
+    most needs the name: it carries no orphans to identify the cluster with."""
+    reaper = FakeReaper(
+        [], scan_error=OSError("connection refused"), kind=ResourceKind.VECTOR, backend="qdrant"
+    )
+
+    entry = sweep([reaper], FakeEventStore([])).reports[0]
+
+    assert entry.available is False
+    assert entry.backend == "qdrant"
+
+
 def test_one_unreachable_backend_does_not_stop_the_others() -> None:
     """A dead vector cluster must not leave workspace trees leaking too."""
     dead = uuid.uuid4()

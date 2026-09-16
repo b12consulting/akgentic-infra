@@ -259,7 +259,9 @@ def _scan_all(
         try:
             results.append((reaper.scan(), None))
         except Exception as exc:  # noqa: BLE001 - one backend must not stop the rest
-            logger.warning("Reaper %s could not scan: %s", reaper.kind, exc)
+            logger.warning(
+                "Reaper %s could not scan: %s", reaper.backend or reaper.kind, exc
+            )
             results.append(([], str(exc)))
     return results
 
@@ -285,9 +287,14 @@ def _classify(
         The reaper's report, with nothing purged yet.
     """
     if failure is not None:
-        return ReaperReport(kind=reaper.kind, available=False, unavailable_reason=failure)
+        return ReaperReport(
+            kind=reaper.kind,
+            backend=reaper.backend,
+            available=False,
+            unavailable_reason=failure,
+        )
 
-    report = ReaperReport(kind=reaper.kind, scanned=len(refs))
+    report = ReaperReport(kind=reaper.kind, backend=reaper.backend, scanned=len(refs))
     for ref in refs:
         if ref.team_id in protected:
             continue

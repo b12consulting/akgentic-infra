@@ -75,6 +75,13 @@ class ReaperReport(BaseModel):
 
     Attributes:
         kind: The reaper that produced this report.
+        backend: Which backend of that kind, when a kind has more than one —
+            ``"weaviate"`` or ``"qdrant"`` for a vector reaper, ``None`` for a
+            reaper that is the only one of its kind. Two configured vector
+            stores produce two reports of the same ``kind``, and an
+            ``available=False`` report carries no orphans to name the cluster
+            in, so without this the one line an operator must act on cannot say
+            which cluster is down.
         available: Whether the backend could be reached at all. A sweep over an
             unreachable backend reports ``False`` here and leaves ``scanned``
             at zero — it never reports "no orphans", which would read as a
@@ -92,6 +99,7 @@ class ReaperReport(BaseModel):
     """
 
     kind: ResourceKind
+    backend: str | None = None
     available: bool = True
     unavailable_reason: str | None = None
     scanned: int = 0
