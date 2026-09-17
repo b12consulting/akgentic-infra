@@ -94,10 +94,18 @@ class TelegramChannelAdapter:
         thread; on the ``deliver_notice`` path it turns a command that already
         took effect into a 500 and a channel retry loop.
 
+        A blank body is dropped here rather than sent. Telegram rejects an
+        empty ``text`` outright, so posting one buys a 400 and a log line in
+        place of a message nobody could have read — and this is the one place
+        both callers pass through, so neither can reintroduce it.
+
         Args:
             chat_id: The Telegram chat to post to.
-            text: The message body.
+            text: The message body. Blank means nothing to say, so nothing is sent.
         """
+        if not text.strip():
+            logger.debug("Nothing to deliver to Telegram chat %s — blank body", chat_id)
+            return
         try:
             response = self._client.post(
                 "sendMessage",
@@ -127,7 +135,10 @@ class TelegramChannelAdapter:
             binding: The recipient agent's channel binding, naming the chat.
         """
         chat_id = binding.channel_user_id
-        text = getattr(msg.message, "content", None) or str(msg.message)
+        # No ``or str(msg.message)`` fallback: an empty ``content`` is falsy, so
+        # that idiom quietly posted the message model's repr into a human's chat.
+        # An agent with nothing to say produces nothing, and ``_post`` drops it.
+        text = getattr(msg.message, "content", "") or ""
         logger.debug("Delivering message to Telegram chat %s", chat_id)
         self._post(chat_id, text)
 

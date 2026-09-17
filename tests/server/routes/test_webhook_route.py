@@ -248,7 +248,7 @@ class TestWebhookReplyFlow:
                 content="reply msg",
                 channel_user_id="user-1",
                 team_id=team_id,
-                message_id="msg-abc",
+                channel_message_id="msg-abc",
             )
         )
         ingestion = StubIngestion()
@@ -294,7 +294,7 @@ class TestWebhookClaimedTeamVerification:
                 content="inject",
                 channel_user_id="user-x",
                 team_id=claimed_team_id,
-                message_id="msg-x",
+                channel_message_id="msg-x",
             )
         )
         ingestion = StubIngestion()
@@ -409,7 +409,7 @@ class TestWebhookContinuationFlow:
             ChannelMessage(
                 content="continuation msg",
                 channel_user_id="user-2",
-                message_id="msg-cont",
+                channel_message_id="msg-cont",
             )
         )
         ingestion = StubIngestion()
@@ -692,9 +692,14 @@ class TestWebhookUnsupportedContentType:
 
 
 class TestWebhookMalformedPayload:
-    """Parser-raised ValueError should surface as 400, not 500."""
+    """A parser-raised ValueError is acknowledged and dropped, never refused.
 
-    def test_parser_value_error_returns_400(self, tmp_path: Path) -> None:
+    A channel treats any non-2xx as a failed delivery and redelivers with
+    backoff, so answering 4xx to an update the parser can never accept queues it
+    forever. Dropping is the only terminal answer available.
+    """
+
+    def test_parser_value_error_is_acknowledged_not_refused(self, tmp_path: Path) -> None:
         class RaisingParser(StubParser):
             async def parse(self, payload: dict[str, JsonValue]) -> ChannelMessage:
                 del payload
@@ -707,8 +712,10 @@ class TestWebhookMalformedPayload:
 
         resp = client.post("/webhook/test-channel", json={"update_id": 1})
 
-        assert resp.status_code == 400
-        assert "payload missing required field 'message'" in resp.json()["detail"]
+        assert resp.status_code == 204
+        assert resp.content == b""
+        assert ingestion.route_reply_calls == []
+        assert ingestion.initiate_team_calls == []
 
 
 # ---------------------------------------------------------------------------

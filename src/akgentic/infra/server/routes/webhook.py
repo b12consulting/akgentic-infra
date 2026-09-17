@@ -375,7 +375,15 @@ async def webhook(
     try:
         message = await parser.parse(payload)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Acknowledged and dropped, NOT refused. A channel treats any non-2xx as
+        # "delivery failed" and redelivers with backoff, so answering 4xx to an
+        # update the parser will never accept queues it forever: observed on
+        # Telegram as two undeliverable updates retried at 1s, 2s, 7s, 15s, 31s,
+        # 63s … with `pending_update_count` never reaching zero. Nothing a retry
+        # can change is a client error worth reporting — a photo, a sticker or a
+        # service message simply carries no text this parser can route.
+        logger.warning("Dropping unparseable %s update: %s", channel, exc)
+        return
 
     if await _dispatch_command(
         parser_registry=parser_registry,
@@ -392,7 +400,7 @@ async def webhook(
         # Reply flow — the claimed team is verified before anything is delivered.
         await _verify_claimed_team(channel_registry, channel, message)
         logger.debug("Webhook reply: channel=%s, team_id=%s", channel, message.team_id)
-        await ingestion.route_reply(message.team_id, message.content, message.message_id)
+        await ingestion.route_reply(message.team_id, message.content, message.channel_message_id)
     else:
         existing_team = await channel_registry.find_team(channel, message.channel_user_id)
         if existing_team is not None:
@@ -403,7 +411,7 @@ async def webhook(
                 message.channel_user_id,
                 existing_team,
             )
-            await ingestion.route_reply(existing_team, message.content, message.message_id)
+            await ingestion.route_reply(existing_team, message.content, message.channel_message_id)
         else:
             # Initiation flow — shared with ``new``, which otherwise carries a
             # second, independent copy of "create a team and write its binding".

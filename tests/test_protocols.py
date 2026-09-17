@@ -584,7 +584,11 @@ def test_channel_message_is_pydantic_model() -> None:
     assert "content" in fields
     assert "channel_user_id" in fields
     assert "team_id" in fields
-    assert "message_id" in fields
+    assert "channel_message_id" in fields
+    # The bare name is Telegram's own key for a different thing, and
+    # ``HumanInputRequest.message_id`` is a third. Reintroducing it here puts
+    # three unrelated ids behind one name again.
+    assert "message_id" not in fields
 
 
 def test_channel_message_field_descriptions() -> None:
@@ -601,7 +605,7 @@ def test_channel_message_optional_defaults() -> None:
 
     msg = ChannelMessage(content="hello", channel_user_id="u1")
     assert msg.team_id is None
-    assert msg.message_id is None
+    assert msg.channel_message_id is None
 
 
 def test_channel_message_with_all_fields() -> None:
@@ -613,12 +617,12 @@ def test_channel_message_with_all_fields() -> None:
         content="hello",
         channel_user_id="u1",
         team_id=tid,
-        message_id="msg-123",
+        channel_message_id="msg-123",
     )
     assert msg.content == "hello"
     assert msg.channel_user_id == "u1"
     assert msg.team_id == tid
-    assert msg.message_id == "msg-123"
+    assert msg.channel_message_id == "msg-123"
 
 
 def test_channel_message_metadata_defaults_to_none() -> None:

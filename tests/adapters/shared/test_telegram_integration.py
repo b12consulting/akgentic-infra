@@ -223,12 +223,16 @@ class TestWebhookWithTelegramParser:
         resp = client.post("/webhook/unknown", json={"text": "hello"})
         assert resp.status_code == 404
 
-    def test_invalid_telegram_payload_returns_400(self) -> None:
-        """Payload without 'message' key → parser raises ValueError,
-        surfaced as HTTP 400 (client sent a malformed body — not a 5xx).
+    def test_invalid_telegram_payload_is_acknowledged_not_refused(self) -> None:
+        """Payload without 'message' key → parser raises ValueError → 204.
+
+        Telegram redelivers any non-2xx with backoff, so a 4xx on an update it
+        will re-send unchanged — a photo, a sticker, a service message — never
+        drains from the queue. Acknowledging is what makes the drop terminal.
         """
-        app, _, _ = self._make_app()
+        app, ingestion, _ = self._make_app()
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post("/webhook/telegram", json={"update_id": 1})
-        assert resp.status_code == 400
-        assert "message" in resp.json()["detail"].lower()
+        assert resp.status_code == 204
+        assert resp.content == b""
+        assert ingestion.initiate_team_calls == []
