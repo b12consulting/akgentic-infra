@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+import yaml
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -173,7 +174,7 @@ def _build_app(
 class TestWebhookReplyFlow:
     """AC #3: team_id in parsed message → route_reply."""
 
-    def test_reply_flow_calls_route_reply(self, tmp_path: Path) -> None:
+    async def test_reply_flow_calls_route_reply(self, tmp_path: Path) -> None:
         team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(
@@ -186,6 +187,17 @@ class TestWebhookReplyFlow:
         )
         ingestion = StubIngestion()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        # G2: the claim names the team this conversation is bound to, so the
+        # reply is delivered unchanged. Without the binding the request is the
+        # injection shape the route now refuses.
+        await registry.register(
+            ChannelBinding(
+                channel="test-channel",
+                channel_user_id="user-1",
+                team_id=team_id,
+                agent_name="@HumanProxy_0",
+            )
+        )
         client = TestClient(_build_app(parser, ingestion, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
@@ -196,6 +208,129 @@ class TestWebhookReplyFlow:
         assert call[0] == team_id
         assert call[1] == "reply msg"
         assert call[2] == "msg-abc"
+
+
+class TestWebhookClaimedTeamVerification:
+    """A payload-supplied ``team_id`` is honoured only when the binding names it.
+
+    The webhook is unauthenticated by design, so a team id read out of the body
+    is a claim, not a credential. These guards pin the claim against the binding
+    held for the conversation the request arrived on (ADR-043 §D9).
+    """
+
+    async def test_claiming_another_conversations_team_is_rejected(self, tmp_path: Path) -> None:
+        """G1: a payload naming a team this conversation is not bound to → 403."""
+        bound_team_id = uuid.uuid4()
+        claimed_team_id = uuid.uuid4()
+        parser = StubParser()
+        parser.set_next_message(
+            ChannelMessage(
+                content="inject",
+                channel_user_id="user-x",
+                team_id=claimed_team_id,
+                message_id="msg-x",
+            )
+        )
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        await registry.register(
+            ChannelBinding(
+                channel="test-channel",
+                channel_user_id="user-x",
+                team_id=bound_team_id,
+                agent_name="@HumanProxy_0",
+            )
+        )
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["detail"] == "team_id does not belong to this conversation"
+        # The 403 takes FastAPI's own HTTPException handler, which emits no
+        # ``code`` key — unlike the ServerError handler this app also installs.
+        assert "code" not in body
+
+    async def test_rejected_claim_never_reaches_the_ingestion(self, tmp_path: Path) -> None:
+        """G1b: the rejected request delivers nothing.
+
+        The status code alone cannot tell "rejected" from "delivered, then
+        rejected" — a route that answered 403 *after* calling ``route_reply``
+        would satisfy the status assertion and still inject the message. This
+        spec is the security assertion proper.
+        """
+        parser = StubParser()
+        parser.set_next_message(
+            ChannelMessage(
+                content="inject",
+                channel_user_id="user-y",
+                team_id=uuid.uuid4(),
+            )
+        )
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        await registry.register(
+            ChannelBinding(
+                channel="test-channel",
+                channel_user_id="user-y",
+                team_id=uuid.uuid4(),
+                agent_name="@HumanProxy_0",
+            )
+        )
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 403
+        assert ingestion.route_reply_calls == []
+        assert ingestion.initiate_team_calls == []
+
+    def test_a_claim_with_no_binding_at_all_is_rejected(self, tmp_path: Path) -> None:
+        """G3: an empty registry answers 403 — not 500, and not delivered."""
+        parser = StubParser()
+        parser.set_next_message(
+            ChannelMessage(
+                content="inject",
+                channel_user_id="user-z",
+                team_id=uuid.uuid4(),
+            )
+        )
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 403
+        assert ingestion.route_reply_calls == []
+        assert ingestion.initiate_team_calls == []
+
+    def test_a_corrupt_channel_section_rejects_rather_than_500s(self, tmp_path: Path) -> None:
+        """G5: a scalar channel section reads as absent, so the check still answers.
+
+        A hand-edit that leaves a scalar where the per-user mapping belongs used
+        to raise out of ``find_binding`` — a 500 on the very branch the security
+        check lives on, which is the one place the check must not be skippable.
+        """
+        registry_path = tmp_path / "registry.yaml"
+        registry_path.write_text(yaml.safe_dump({"test-channel": "oops"}), encoding="utf-8")
+        parser = StubParser()
+        parser.set_next_message(
+            ChannelMessage(
+                content="inject",
+                channel_user_id="user-corrupt",
+                team_id=uuid.uuid4(),
+            )
+        )
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(registry_path)
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 403
+        assert ingestion.route_reply_calls == []
 
 
 class TestWebhookContinuationFlow:
@@ -326,17 +461,26 @@ class TestWebhookUnknownChannel:
 class TestWebhookStatusCode:
     """AC: all successful flows return 204 No Content."""
 
-    def test_reply_returns_204(self, tmp_path: Path) -> None:
+    async def test_reply_returns_204(self, tmp_path: Path) -> None:
+        team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(
             ChannelMessage(
                 content="msg",
                 channel_user_id="u",
-                team_id=uuid.uuid4(),
+                team_id=team_id,
             )
         )
         ingestion = StubIngestion()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        await registry.register(
+            ChannelBinding(
+                channel="test-channel",
+                channel_user_id="u",
+                team_id=team_id,
+                agent_name="@HumanProxy_0",
+            )
+        )
         client = TestClient(_build_app(parser, ingestion, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
@@ -397,18 +541,27 @@ class TestWebhookContentTypeEdgeCases:
 
         assert resp.status_code == 415
 
-    def test_json_with_charset_param(self, tmp_path: Path) -> None:
+    async def test_json_with_charset_param(self, tmp_path: Path) -> None:
         """application/json; charset=utf-8 is handled as JSON."""
+        team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(
             ChannelMessage(
                 content="charset msg",
                 channel_user_id="u-charset",
-                team_id=uuid.uuid4(),
+                team_id=team_id,
             )
         )
         ingestion = StubIngestion()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        await registry.register(
+            ChannelBinding(
+                channel="test-channel",
+                channel_user_id="u-charset",
+                team_id=team_id,
+                agent_name="@HumanProxy_0",
+            )
+        )
         client = TestClient(_build_app(parser, ingestion, registry))
 
         resp = client.post(
@@ -500,19 +653,28 @@ class TestWebhookMetadataForwarding:
         assert resp.status_code == 204
         assert ingestion.initiate_team_calls[0][3] is None
 
-    def test_reply_flow_forwards_no_metadata(self, tmp_path: Path) -> None:
+    async def test_reply_flow_forwards_no_metadata(self, tmp_path: Path) -> None:
         """A reply addresses a team whose metadata was fixed at creation."""
+        team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(
             ChannelMessage(
                 content="reply msg",
                 channel_user_id="user-m3",
-                team_id=uuid.uuid4(),
+                team_id=team_id,
                 metadata={"tenant": "acme"},
             )
         )
         ingestion = StubIngestion()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        await registry.register(
+            ChannelBinding(
+                channel="test-channel",
+                channel_user_id="user-m3",
+                team_id=team_id,
+                agent_name="@HumanProxy_0",
+            )
+        )
         client = TestClient(_build_app(parser, ingestion, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})

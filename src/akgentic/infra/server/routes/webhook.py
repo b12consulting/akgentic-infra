@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.channels import (
     ChannelBinding,
+    ChannelMessage,
     ChannelRegistry,
     InteractionChannelIngestion,
     JsonValue,
@@ -42,6 +43,36 @@ def get_ingestion(request: Request) -> InteractionChannelIngestion:
     return INGESTION.require(request)
 
 
+async def _verify_claimed_team(
+    channel_registry: ChannelRegistry,
+    channel: str,
+    message: ChannelMessage,
+) -> None:
+    """Reject a payload-supplied ``team_id`` that this conversation is not bound to.
+
+    The webhook is unauthenticated by design: signature verification, where a
+    tier has one, proves the payload came from the platform — not that whoever
+    sent it owns the team named inside it. So ``message.team_id`` is a claim,
+    and the binding held for ``(channel, channel_user_id)`` is what the claim is
+    checked against (ADR-043 §D9).
+
+    **403, not 404**: the team exists and this caller may not reach it. A 404
+    would additionally answer whether an arbitrary team id is real.
+
+    Raises:
+        HTTPException: 403 when no binding exists for this conversation, or when
+            the binding names a different team.
+    """
+    binding = await channel_registry.find_binding(channel, message.channel_user_id)
+    if binding is None or binding.team_id != message.team_id:
+        logger.warning(
+            "Webhook reply rejected: channel=%s, user=%s — claimed team is not the bound one",
+            channel,
+            message.channel_user_id,
+        )
+        raise HTTPException(status_code=403, detail="team_id does not belong to this conversation")
+
+
 @router.post("/{channel}", status_code=204)
 async def webhook(
     channel: str,
@@ -53,7 +84,8 @@ async def webhook(
     """Process an inbound webhook from an external interaction channel.
 
     Three routing flows based on parsed ChannelMessage:
-    1. Reply: team_id is set → route_reply
+    1. Reply: team_id is set → verified against the conversation's binding
+       (403 if it names another team), then route_reply
     2. Continuation: no team_id but existing team found → route_reply
     3. Initiation: no existing team → initiate_team + register
     """
@@ -79,7 +111,8 @@ async def webhook(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if message.team_id is not None:
-        # Reply flow
+        # Reply flow — the claimed team is verified before anything is delivered.
+        await _verify_claimed_team(channel_registry, channel, message)
         logger.debug("Webhook reply: channel=%s, team_id=%s", channel, message.team_id)
         await ingestion.route_reply(message.team_id, message.content, message.message_id)
     else:
