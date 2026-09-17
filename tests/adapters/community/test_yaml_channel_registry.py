@@ -81,6 +81,43 @@ async def test_register_persists_the_dumped_binding_in_full(
     assert data["telegram"]["987654321"] == binding.model_dump(mode="json")
 
 
+class _BindingWithExtraField(ChannelBinding):
+    """A binding carrying a field the write path has never heard of.
+
+    Golden Rule 12's prescribed guard shape. The whole-record comparison above
+    cannot catch a hand-enumerated write: it compares only the fields that exist
+    *today*, so an enumerated dict naming all of them passes it green — verified
+    by mutation, not argued. Only a field the writer cannot know about
+    discriminates, because an enumerated write has nowhere to have listed it.
+    """
+
+    extra_field: str = "sentinel"
+
+
+async def test_register_persists_a_field_the_write_path_never_heard_of(
+    registry: YamlChannelRegistry, registry_path: Path
+) -> None:
+    """A field added to ``ChannelBinding`` later is persisted with no code change.
+
+    This is the spec that goes red when ``register`` enumerates fields instead
+    of dumping the model — the failure mode that otherwise arrives silently, on
+    the day the model grows a fifth field and nobody remembers this line.
+    """
+    binding = _BindingWithExtraField(
+        channel="telegram",
+        channel_user_id="987654321",
+        team_id=uuid.uuid4(),
+        agent_name="@HumanProxy_0",
+    )
+
+    await registry.register(binding)
+
+    data = yaml.safe_load(registry_path.read_text())  # noqa: ASYNC240
+    record = data["telegram"]["987654321"]
+    assert record["extra_field"] == "sentinel"
+    assert record == binding.model_dump(mode="json")
+
+
 async def test_register_creates_mapping(registry: YamlChannelRegistry, registry_path: Path) -> None:
     """register() persists a binding under channel → channel_user_id."""
     binding = _binding(channel="whatsapp", channel_user_id="+1234567890")
@@ -683,6 +720,84 @@ async def test_deregister_team_still_prunes_readable_sections_beside_a_corrupt_o
     assert await reg.find_binding("slack", "U222") is None
     stored = registry_path.read_text(encoding="utf-8")  # noqa: ASYNC240
     assert yaml.safe_load(stored) == {"telegram": "not-a-mapping"}
+
+
+async def test_register_against_a_corrupt_channel_section_writes_the_binding(
+    registry_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``register`` was the third reader of a scalar section, and the last to be guarded.
+
+    ``channel in data`` is True for a scalar section, so the initialiser is
+    skipped and the item assignment raises ``TypeError``. It is the worst of the
+    three to leave unguarded: it runs on the initiation branch *after* the team
+    has been created, so the raise leaks one orphan team per delivery retry —
+    and a channel retries with backoff.
+
+    The section is replaced rather than left alone, unlike every other reader:
+    the binding is the only record of a team that now exists, so it must be
+    writable. Other channels' sections are untouched.
+    """
+    survivor = _binding(channel="slack", channel_user_id="U111")
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump(
+            {"telegram": "not-a-mapping", "slack": {"U111": survivor.model_dump(mode="json")}}
+        ),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+    binding = _binding(channel="telegram", channel_user_id="987654321")
+
+    with caplog.at_level(logging.WARNING):
+        await reg.register(binding)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+    assert all("telegram" in message for message in warnings)
+    assert await reg.find_binding("telegram", "987654321") == binding
+    assert reg.find_binding_sync(binding.team_id, binding.agent_name) == binding
+    assert await reg.find_binding("slack", "U111") == survivor
+
+
+# ---------------------------------------------------------------------------
+# A non-mapping file root reads as empty — the server still boots
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("root", ["oops", "- a\n- b\n", "42\n"])
+async def test_a_non_mapping_root_reads_as_empty(
+    registry_path: Path, caplog: pytest.LogCaptureFixture, root: str
+) -> None:
+    """A scalar or list at the file root is ignored, and construction completes.
+
+    ``dict(data)`` raises ``ValueError`` for either shape. Before the index was
+    primed at construction that cost one request; priming put the same read on
+    the path the server starts from, so the identical hand-edit stopped the
+    server from booting at all — for a registry file on a tier where channels
+    are opt-in.
+    """
+    registry_path.write_text(root, encoding="utf-8")  # noqa: ASYNC240
+
+    with caplog.at_level(logging.WARNING):
+        reg = YamlChannelRegistry(registry_path)
+        assert await reg.find_binding("telegram", "987654321") is None
+
+    assert reg.find_binding_sync(uuid.uuid4(), "@HumanProxy_0") is None
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+
+
+async def test_a_binding_registered_over_a_non_mapping_root_is_readable(
+    registry_path: Path,
+) -> None:
+    """The next inbound message rewrites the file, exactly as for a bad record."""
+    registry_path.write_text("oops", encoding="utf-8")  # noqa: ASYNC240
+    reg = YamlChannelRegistry(registry_path)
+
+    binding = _binding(channel="telegram", channel_user_id="987654321")
+    await reg.register(binding)
+
+    assert await reg.find_binding("telegram", "987654321") == binding
+    assert reg.find_binding_sync(binding.team_id, binding.agent_name) == binding
 
 
 async def test_deregister_leaves_a_readable_section_beside_a_corrupt_one(
