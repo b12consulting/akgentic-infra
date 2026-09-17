@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.channels import (
+    ChannelBinding,
     ChannelRegistry,
     InteractionChannelIngestion,
     JsonValue,
@@ -96,16 +97,27 @@ async def webhook(
             # Initiation flow
             # Metadata rides the initiation branch only: it is fixed at team
             # creation, and only creation validates it against the card.
-            new_team_id = await ingestion.initiate_team(
+            initiated = await ingestion.initiate_team(
                 message.content,
                 message.channel_user_id,
                 message.catalog_entry or parser.default_catalog_entry,
                 metadata=message.metadata,
             )
             logger.debug(
-                "Webhook initiation: channel=%s, user=%s, new_team=%s",
+                "Webhook initiation: channel=%s, user=%s, new_team=%s, entry_point=%s",
                 channel,
                 message.channel_user_id,
-                new_team_id,
+                initiated.team_id,
+                initiated.entry_point_name,
             )
-            await channel_registry.register(channel, message.channel_user_id, new_team_id)
+            # The binding is written here rather than inside the ingestion
+            # because ``channel`` is the route's path parameter — this is the
+            # only component that knows which channel the message arrived on.
+            await channel_registry.register(
+                ChannelBinding(
+                    channel=channel,
+                    channel_user_id=message.channel_user_id,
+                    team_id=initiated.team_id,
+                    agent_name=initiated.entry_point_name,
+                )
+            )
