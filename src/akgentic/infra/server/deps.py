@@ -59,7 +59,7 @@ class TierServices(BaseModel):
         description="Inbound channel message ingestion handler"
     )
     channel_registry: ChannelRegistry = Field(
-        description="Registry mapping channel IDs to team IDs"
+        description="Registry binding a channel conversation to a team and its entry-point agent"
     )
     catalog: Catalog = Field(description="v2 unified catalog service")
     team_service: TeamService | None = Field(

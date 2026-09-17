@@ -45,14 +45,19 @@ def _binding(
 # ---------------------------------------------------------------------------
 
 
-async def test_satisfies_channel_registry_protocol() -> None:
-    """YamlChannelRegistry satisfies the ChannelRegistry protocol."""
-    assert isinstance(YamlChannelRegistry(Path("/tmp/fake.yaml")), ChannelRegistry)
+async def test_satisfies_channel_registry_protocol(registry_path: Path) -> None:
+    """YamlChannelRegistry satisfies the ChannelRegistry protocol.
+
+    Built over ``tmp_path`` rather than a fixed ``/tmp`` name: construction
+    reads and parses the file as of this story, so a shared path would make
+    these two specs depend on whatever else happens to be on the machine.
+    """
+    assert isinstance(YamlChannelRegistry(registry_path), ChannelRegistry)
 
 
-async def test_satisfies_channel_registry_read_sync_protocol() -> None:
+async def test_satisfies_channel_registry_read_sync_protocol(registry_path: Path) -> None:
     """YamlChannelRegistry also satisfies the synchronous read face."""
-    assert isinstance(YamlChannelRegistry(Path("/tmp/fake.yaml")), ChannelRegistryReadSync)
+    assert isinstance(YamlChannelRegistry(registry_path), ChannelRegistryReadSync)
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +399,91 @@ async def test_a_legacy_record_does_not_block_a_fresh_binding(registry_path: Pat
     """The next inbound message self-heals the record in place."""
     registry_path.write_text(  # noqa: ASYNC240
         yaml.safe_dump({"telegram": {"987654321": str(uuid.uuid4())}}),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+
+    binding = _binding(channel="telegram", channel_user_id="987654321")
+    await reg.register(binding)
+
+    assert await reg.find_binding("telegram", "987654321") == binding
+    assert reg.find_binding_sync(binding.team_id, binding.agent_name) == binding
+
+
+# ---------------------------------------------------------------------------
+# An unreadable record is absent, whatever shape it is unreadable in
+# ---------------------------------------------------------------------------
+
+
+async def test_a_mapping_record_that_does_not_validate_reads_as_absent(
+    registry_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A mapping that is not a valid binding is absent too, not a 500.
+
+    AC 9 names the pre-binding *string* record, but the binding format's own
+    failure mode is a mapping with a field missing or misspelled — a hand-edit,
+    or a file half-written when the process died. The async surface is
+    deliberately disk-backed so a registry edited out of band is still
+    honoured, which makes a malformed edit a reachable input rather than a
+    corruption that cannot happen. The inbound path can act on neither shape,
+    so both take the same self-healing initiation branch.
+    """
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump({"telegram": {"987654321": {"team_id": str(uuid.uuid4())}}}),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+
+    with caplog.at_level(logging.WARNING):
+        assert await reg.find_binding("telegram", "987654321") is None
+        assert await reg.find_team("telegram", "987654321") is None
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+    assert all("telegram" in message and "987654321" in message for message in warnings)
+
+
+async def test_a_malformed_record_does_not_break_construction(registry_path: Path) -> None:
+    """Priming walks the whole file, so one bad record must not fail the constructor.
+
+    ``__init__`` reads the file as of this story; before it, construction did
+    no I/O and a bad record cost exactly one lookup. Priming puts every record
+    on the path ``wire_community`` runs at startup, so raising here takes the
+    server down instead of degrading one conversation.
+    """
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump({"telegram": {"987654321": {"team_id": str(uuid.uuid4())}}}),
+        encoding="utf-8",
+    )
+
+    reg = YamlChannelRegistry(registry_path)
+
+    assert reg.find_binding_sync(uuid.uuid4(), "@HumanProxy_0") is None
+
+
+async def test_a_corrupt_channel_section_does_not_break_construction(
+    registry_path: Path,
+) -> None:
+    """A channel section that is not a mapping of users is skipped, not fatal.
+
+    Same reasoning one level up: priming iterates the sections too, so a
+    hand-edit that leaves a scalar where a mapping belongs would otherwise
+    raise out of the constructor.
+    """
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump({"telegram": "not-a-mapping"}),
+        encoding="utf-8",
+    )
+
+    reg = YamlChannelRegistry(registry_path)
+
+    assert reg.find_binding_sync(uuid.uuid4(), "@HumanProxy_0") is None
+
+
+async def test_a_malformed_record_does_not_block_a_fresh_binding(registry_path: Path) -> None:
+    """The next inbound message overwrites it, exactly as for a legacy record."""
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump({"telegram": {"987654321": {"team_id": str(uuid.uuid4())}}}),
         encoding="utf-8",
     )
     reg = YamlChannelRegistry(registry_path)

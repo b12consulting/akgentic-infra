@@ -7,6 +7,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 import yaml
+from pydantic import ValidationError
 
 from akgentic.infra.protocols.channels import ChannelBinding
 
@@ -26,10 +27,14 @@ class YamlChannelRegistry:
 
         telegram:
           "987654321":
+            __model__: akgentic.infra.protocols.channels.ChannelBinding
             channel: telegram
             channel_user_id: "987654321"
             team_id: 550e8400-e29b-41d4-a716-446655440000
             agent_name: "@HumanProxy_0"
+
+    ``__model__`` is written by ``SerializableBaseModel``'s serializer, not by
+    this class; it is listed here because it is in the file an operator opens.
 
     Satisfies the ``ChannelRegistry`` protocol, including its inherited
     synchronous read.
@@ -93,10 +98,23 @@ class YamlChannelRegistry:
 
     @staticmethod
     def _binding_from_record(record: JsonValue) -> ChannelBinding | None:
-        """Parse one stored record, or return None for the pre-binding string form."""
+        """Parse one stored record, or return None if it is not a readable binding.
+
+        Two shapes read as absent rather than raising: the pre-binding string
+        form, and a mapping that does not validate — a field missing or
+        misspelled by a hand-edit, or a file half-written when the process
+        died. The async surface is deliberately disk-backed so a registry
+        edited out of band is still honoured, which makes a malformed edit a
+        reachable input rather than a corruption that cannot happen. The
+        inbound path can act on neither shape, so both take the same
+        self-healing initiation branch.
+        """
         if not isinstance(record, dict):
             return None
-        return ChannelBinding.model_validate(record)
+        try:
+            return ChannelBinding.model_validate(record)
+        except ValidationError:
+            return None
 
     @classmethod
     def _index_from_data(
@@ -105,6 +123,11 @@ class YamlChannelRegistry:
         """Build the ``(team_id, agent_name)`` index, skipping unreadable records."""
         index: dict[tuple[uuid.UUID, str], ChannelBinding] = {}
         for channel_data in data.values():
+            # Priming runs at construction, on the path the server starts from,
+            # so it must be total: a section left as a scalar by a hand-edit is
+            # skipped rather than raising out of __init__.
+            if not isinstance(channel_data, dict):
+                continue
             for record in channel_data.values():
                 binding = cls._binding_from_record(record)
                 if binding is not None:
