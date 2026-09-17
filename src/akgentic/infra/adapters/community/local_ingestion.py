@@ -16,6 +16,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_blank(content: str | Message) -> bool:
+    """True when there is nothing for a team to act on.
+
+    A channel delivers empty and whitespace-only bodies for reasons of its own —
+    a caption-less photo, an edited message reduced to nothing, a stray newline.
+    Handing one to a team is not harmless: the entry point forwards it, the
+    supervisor spends an LLM call answering nothing, and the reply that comes
+    back is an agent guessing at an empty prompt.
+
+    A pre-formed ``Message`` is judged by its ``content`` when it has one, and
+    kept otherwise — a typed message with no text field may carry its payload
+    somewhere this function cannot see, and dropping it would lose more than an
+    empty string.
+    """
+    text = content if isinstance(content, str) else getattr(content, "content", None)
+    if text is None:
+        return False
+    return not str(text).strip()
+
+
 class LocalIngestion:
     """Routes inbound channel messages directly to TeamManager in-process.
 
@@ -78,6 +98,9 @@ class LocalIngestion:
                 community tier has nowhere to put it.
         """
         logger.info("Inbound reply: team_id=%s", team_id)
+        if _is_blank(content):
+            logger.info("Dropping blank inbound reply for team %s", team_id)
+            return
         self._require_team_service().send_message(team_id, content)
 
     async def initiate_team(
@@ -108,7 +131,9 @@ class LocalIngestion:
         logger.debug("Initiation user: %s", channel_user_id)
         ts = self._require_team_service()
         process = ts.create_team(catalog_entry_id, user_id=channel_user_id, metadata=metadata)
-        ts.send_message(process.team_id, content)
+        if not _is_blank(content):
+            ts.send_message(process.team_id, content)
+
         logger.debug(
             "Team initiated: team_id=%s, entry_point=%s",
             process.team_id,

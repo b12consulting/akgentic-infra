@@ -94,7 +94,7 @@ class TestParseValidTextMessage:
     async def test_extracts_message_id(self) -> None:
         parser = TelegramChannelParser()
         result = await parser.parse(VALID_TEXT_UPDATE)
-        assert result.message_id == "42"
+        assert result.channel_message_id == "42"
 
     @pytest.mark.asyncio
     async def test_team_id_is_none(self) -> None:

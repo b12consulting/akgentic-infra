@@ -61,7 +61,7 @@ class StubChannelParser:
             content=content,
             channel_user_id=channel_user_id,
             team_id=team_id,
-            message_id=message_id,
+            channel_message_id=message_id,
         )
 
 

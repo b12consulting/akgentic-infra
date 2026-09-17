@@ -121,6 +121,9 @@ class TelegramChannelParser:
         Raises:
             ValueError: If the payload does not contain a text message.
         """
+
+        logger.debug("Telegram parser payload: %s", payload)
+
         message = payload.get("message")
         if not isinstance(message, dict):
             msg = "Telegram Update does not contain a 'message' field"
@@ -150,6 +153,6 @@ class TelegramChannelParser:
         return ChannelMessage(
             content=text,
             channel_user_id=str(chat_id),
-            message_id=str(message_id) if message_id is not None else None,
+            channel_message_id=str(message_id) if message_id is not None else None,
             command=_parse_command(text, message.get("entities")),
         )
