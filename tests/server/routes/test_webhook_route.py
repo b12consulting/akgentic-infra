@@ -13,7 +13,12 @@ from fastapi.testclient import TestClient
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.errors import MetadataValidationError
-from akgentic.infra.protocols.channels import ChannelMessage, JsonValue
+from akgentic.infra.protocols.channels import (
+    ChannelBinding,
+    ChannelMessage,
+    InitiatedTeam,
+    JsonValue,
+)
 from akgentic.infra.server.errors import add_server_exception_handlers
 from akgentic.infra.server.routes.webhook import router as webhook_router
 
@@ -69,9 +74,18 @@ class StubIngestion:
         self.route_reply_extra_kwargs: list[dict[str, object]] = []
         self.initiate_team_calls: list[tuple[str, str, str, dict[str, JsonValue] | None]] = []
         self._next_team_id: uuid.UUID = uuid.uuid4()
+        self._next_entry_point_name: str = "@HumanProxy_0"
 
     def set_next_team_id(self, team_id: uuid.UUID) -> None:
         self._next_team_id = team_id
+
+    def set_next_entry_point_name(self, entry_point_name: str) -> None:
+        """Configure the entry-point name the next initiation reports.
+
+        The route copies this into the binding it writes, so a spec that wants
+        to assert *which* value reached ``agent_name`` needs a seam to set it.
+        """
+        self._next_entry_point_name = entry_point_name
 
     async def route_reply(
         self,
@@ -89,9 +103,12 @@ class StubIngestion:
         channel_user_id: str,
         catalog_entry_id: str,
         metadata: dict[str, JsonValue] | None = None,
-    ) -> uuid.UUID:
+    ) -> InitiatedTeam:
         self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id, metadata))
-        return self._next_team_id
+        return InitiatedTeam(
+            team_id=self._next_team_id,
+            entry_point_name=self._next_entry_point_name,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +214,14 @@ class TestWebhookContinuationFlow:
         ingestion = StubIngestion()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         # Pre-register a team for this user
-        await registry.register("test-channel", "user-2", existing_team_id)
+        await registry.register(
+            ChannelBinding(
+                channel="test-channel",
+                channel_user_id="user-2",
+                team_id=existing_team_id,
+                agent_name="@HumanProxy_0",
+            )
+        )
         client = TestClient(_build_app(parser, ingestion, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
@@ -252,6 +276,36 @@ class TestWebhookInitiationFlow:
         # Verify registration happened
         found = await registry.find_team("test-channel", "user-4")
         assert found == new_team_id
+
+    async def test_initiation_binds_the_channel_to_the_entry_point_agent(
+        self, tmp_path: Path
+    ) -> None:
+        """AC 12: the persisted record carries the ingestion's entry-point name.
+
+        ``agent_name`` must be what ``initiate_team`` reported, not the channel
+        user or anything else the route has to hand — the outbound lookup starts
+        from an agent, and a wrong name there is a silent delivery failure.
+        ``channel`` must be the path segment: the route is the only component
+        that knows which channel the message arrived on.
+        """
+        parser = StubParser()
+        parser.set_next_message(ChannelMessage(content="hello", channel_user_id="user-6"))
+        new_team_id = uuid.uuid4()
+        ingestion = StubIngestion()
+        ingestion.set_next_team_id(new_team_id)
+        ingestion.set_next_entry_point_name("@HumanProxy_0")
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        client.post("/webhook/test-channel", json={"text": "hi"})
+
+        binding = await registry.find_binding("test-channel", "user-6")
+        assert binding == ChannelBinding(
+            channel="test-channel",
+            channel_user_id="user-6",
+            team_id=new_team_id,
+            agent_name="@HumanProxy_0",
+        )
 
 
 class TestWebhookUnknownChannel:
@@ -479,7 +533,14 @@ class TestWebhookMetadataForwarding:
         )
         ingestion = StubIngestion()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        await registry.register("test-channel", "user-m4", uuid.uuid4())
+        await registry.register(
+            ChannelBinding(
+                channel="test-channel",
+                channel_user_id="user-m4",
+                team_id=uuid.uuid4(),
+                agent_name="@HumanProxy_0",
+            )
+        )
         client = TestClient(_build_app(parser, ingestion, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
@@ -502,7 +563,7 @@ class TestWebhookMetadataRejection:
                 channel_user_id: str,
                 catalog_entry_id: str,
                 metadata: dict[str, JsonValue] | None = None,
-            ) -> uuid.UUID:
+            ) -> InitiatedTeam:
                 raise MetadataValidationError(detail)
 
         parser = StubParser()

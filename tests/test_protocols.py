@@ -226,19 +226,24 @@ def test_interaction_channel_ingestion_route_reply_content_accepts_message() -> 
     assert set(get_args(hints["content"])) == {str, Message}
 
 
-def test_interaction_channel_ingestion_initiate_team_returns_uuid() -> None:
-    """InteractionChannelIngestion.initiate_team returns UUID."""
-    from akgentic.infra.protocols import InteractionChannelIngestion
+def test_interaction_channel_ingestion_initiate_team_returns_initiated_team() -> None:
+    """InteractionChannelIngestion.initiate_team returns InitiatedTeam, not a bare UUID.
+
+    A bare id cannot answer an outbound lookup, which starts from an agent: the
+    caller needs the entry point's spawned name in the same breath to write a
+    ``ChannelBinding``.
+    """
+    from akgentic.infra.protocols import InitiatedTeam, InteractionChannelIngestion
 
     hints = get_type_hints(InteractionChannelIngestion.initiate_team)
-    assert hints["return"] is uuid.UUID
+    assert hints["return"] is InitiatedTeam
 
 
 def test_interaction_channel_ingestion_structural_subtyping() -> None:
     """A concrete class satisfying InteractionChannelIngestion is recognized."""
     from akgentic.core.messages.message import Message
 
-    from akgentic.infra.protocols import InteractionChannelIngestion
+    from akgentic.infra.protocols import InitiatedTeam, InteractionChannelIngestion
     from akgentic.infra.protocols.channels import JsonValue
 
     class FakeIngestion:
@@ -256,8 +261,8 @@ def test_interaction_channel_ingestion_structural_subtyping() -> None:
             channel_user_id: str,
             catalog_entry_id: str,
             metadata: dict[str, JsonValue] | None = None,
-        ) -> uuid.UUID:
-            return uuid.uuid4()
+        ) -> InitiatedTeam:
+            return InitiatedTeam(team_id=uuid.uuid4(), entry_point_name="@HumanProxy_0")
 
     assert isinstance(FakeIngestion(), InteractionChannelIngestion)
 
@@ -334,15 +339,22 @@ def test_channel_registry_is_protocol() -> None:
 
 
 def test_channel_registry_has_register() -> None:
-    """ChannelRegistry defines async register with channel, channel_user_id, team_id."""
-    from akgentic.infra.protocols import ChannelRegistry
+    """ChannelRegistry defines async register taking the whole binding.
+
+    The three positional values are gone, not joined by a fourth: passing the
+    record whole is what lets a field added to ``ChannelBinding`` later reach
+    storage without every call site being revisited.
+    """
+    from akgentic.infra.protocols import ChannelBinding, ChannelRegistry
 
     assert hasattr(ChannelRegistry, "register")
     sig = inspect.signature(ChannelRegistry.register)
-    assert "channel" in sig.parameters
-    assert "channel_user_id" in sig.parameters
-    assert "team_id" in sig.parameters
+    assert "binding" in sig.parameters
+    assert set(sig.parameters) == {"self", "binding"}
     assert inspect.iscoroutinefunction(ChannelRegistry.register)
+
+    hints = get_type_hints(ChannelRegistry.register)
+    assert hints["binding"] is ChannelBinding
 
 
 def test_channel_registry_has_find_team() -> None:
@@ -391,21 +403,119 @@ def test_channel_registry_deregister_returns_none() -> None:
     assert hints["return"] is type(None)
 
 
-def test_channel_registry_structural_subtyping() -> None:
-    """A concrete class satisfying ChannelRegistry is recognized."""
+def test_channel_registry_has_find_binding() -> None:
+    """ChannelRegistry defines async find_binding returning ChannelBinding | None."""
+    from akgentic.infra.protocols import ChannelBinding, ChannelRegistry
+
+    assert hasattr(ChannelRegistry, "find_binding")
+    sig = inspect.signature(ChannelRegistry.find_binding)
+    assert "channel" in sig.parameters
+    assert "channel_user_id" in sig.parameters
+    assert inspect.iscoroutinefunction(ChannelRegistry.find_binding)
+
+    hints = get_type_hints(ChannelRegistry.find_binding)
+    assert hints["return"] == ChannelBinding | None
+
+
+def test_channel_registry_has_deregister_team() -> None:
+    """ChannelRegistry defines async deregister_team taking a team_id."""
     from akgentic.infra.protocols import ChannelRegistry
 
+    assert hasattr(ChannelRegistry, "deregister_team")
+    sig = inspect.signature(ChannelRegistry.deregister_team)
+    assert set(sig.parameters) == {"self", "team_id"}
+    assert inspect.iscoroutinefunction(ChannelRegistry.deregister_team)
+
+    hints = get_type_hints(ChannelRegistry.deregister_team)
+    assert hints["team_id"] is uuid.UUID
+    assert hints["return"] is type(None)
+
+
+def test_channel_registry_structural_subtyping() -> None:
+    """A concrete class satisfying ChannelRegistry is recognized.
+
+    ``@runtime_checkable`` checks method *presence*, so this fake must carry
+    every method the Protocol declares — including ``find_binding_sync``,
+    inherited from ``ChannelRegistryReadSync``.
+    """
+    from akgentic.infra.protocols import ChannelBinding, ChannelRegistry
+
     class FakeRegistry:
-        async def register(self, channel: str, channel_user_id: str, team_id: uuid.UUID) -> None:
+        async def register(self, binding: ChannelBinding) -> None:
             pass
 
         async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
             return None
 
+        async def find_binding(self, channel: str, channel_user_id: str) -> ChannelBinding | None:
+            return None
+
         async def deregister(self, channel: str, channel_user_id: str) -> None:
             pass
 
+        async def deregister_team(self, team_id: uuid.UUID) -> None:
+            pass
+
+        def find_binding_sync(self, team_id: uuid.UUID, agent_name: str) -> ChannelBinding | None:
+            return None
+
     assert isinstance(FakeRegistry(), ChannelRegistry)
+
+
+# --- ChannelRegistryReadSync ---
+
+
+def test_channel_registry_read_sync_is_protocol() -> None:
+    """ChannelRegistryReadSync uses typing.Protocol base."""
+    from akgentic.infra.protocols import ChannelRegistryReadSync
+
+    assert Protocol in inspect.getmro(ChannelRegistryReadSync)
+
+
+def test_channel_registry_read_sync_find_binding_sync_is_not_a_coroutine() -> None:
+    """find_binding_sync is declared ``def``, not ``async def``.
+
+    It is called from ``EventSubscriber.on_message``, which runs in a Pykka
+    actor thread with no event loop: a coroutine here could not be awaited and
+    would have to be bridged, which is the blocking this Protocol exists to
+    avoid.
+    """
+    from akgentic.infra.protocols import ChannelBinding, ChannelRegistryReadSync
+
+    assert hasattr(ChannelRegistryReadSync, "find_binding_sync")
+    assert not inspect.iscoroutinefunction(ChannelRegistryReadSync.find_binding_sync)
+
+    sig = inspect.signature(ChannelRegistryReadSync.find_binding_sync)
+    assert set(sig.parameters) == {"self", "team_id", "agent_name"}
+
+    hints = get_type_hints(ChannelRegistryReadSync.find_binding_sync)
+    assert hints["team_id"] is uuid.UUID
+    assert hints["agent_name"] is str
+    assert hints["return"] == ChannelBinding | None
+
+
+def test_channel_registry_inherits_the_sync_read() -> None:
+    """ChannelRegistry is a ChannelRegistryReadSync, so no cast is needed anywhere.
+
+    The narrow reading — the two Protocols merely declared side by side — leaves
+    a dispatcher typed on the sync face unable to accept
+    ``TierServices.channel_registry`` without a cast or a third union Protocol.
+    """
+    from akgentic.infra.protocols import ChannelRegistry, ChannelRegistryReadSync
+
+    assert ChannelRegistryReadSync in inspect.getmro(ChannelRegistry)
+    assert hasattr(ChannelRegistry, "find_binding_sync")
+
+
+def test_channel_registry_read_sync_structural_subtyping() -> None:
+    """A class with only the sync read satisfies ChannelRegistryReadSync."""
+    from akgentic.infra.protocols import ChannelBinding, ChannelRegistryReadSync
+
+    class FakeSyncReader:
+        def find_binding_sync(self, team_id: uuid.UUID, agent_name: str) -> ChannelBinding | None:
+            return None
+
+    assert isinstance(FakeSyncReader(), ChannelRegistryReadSync)
 
 
 # --- ChannelMessage ---
@@ -485,6 +595,110 @@ def test_channel_message_nested_metadata_survives_round_trip() -> None:
     assert restored.metadata == metadata
     assert restored.metadata is not None
     assert restored.metadata["case"] == {"id": 7, "tags": ["a"]}
+
+
+# --- ChannelBinding ---
+
+
+def test_channel_binding_is_pydantic_model_with_four_fields() -> None:
+    """ChannelBinding is a Pydantic model carrying exactly the four bound values."""
+    from pydantic import BaseModel
+
+    from akgentic.infra.protocols import ChannelBinding
+
+    assert issubclass(ChannelBinding, BaseModel)
+    assert set(ChannelBinding.model_fields) == {
+        "channel",
+        "channel_user_id",
+        "team_id",
+        "agent_name",
+    }
+
+
+def test_channel_binding_field_descriptions() -> None:
+    """Every ChannelBinding field has a description."""
+    from akgentic.infra.protocols import ChannelBinding
+
+    for name, field_info in ChannelBinding.model_fields.items():
+        assert field_info.description is not None, f"Field {name} missing description"
+
+
+def test_channel_binding_adds_no_config_and_no_private_state() -> None:
+    """ChannelBinding stays serializable by construction (Golden Rule #1b).
+
+    All four types are serializable, so this model declares no ``ConfigDict`` of
+    its own and holds no ``PrivateAttr``. It is persisted by dumping the model
+    whole, so anything unserializable — or any runtime state smuggled into a
+    field — would break the write path silently.
+
+    The comparison is against the base's config rather than against a literal:
+    ``SerializableBaseModel`` sets ``arbitrary_types_allowed`` for the whole
+    framework, so an absolute assertion would either be false today or would
+    pin a decision that is not this model's to make. What is this model's to
+    make is whether it *adds* anything — and it must not.
+    """
+    from akgentic.core.utils.serializer import SerializableBaseModel
+
+    from akgentic.infra.protocols import ChannelBinding
+
+    assert ChannelBinding.model_config == SerializableBaseModel.model_config
+    assert ChannelBinding.__private_attributes__ == {}
+
+
+def test_channel_binding_round_trips_through_json_mode() -> None:
+    """A dumped binding validates back to an equal model, team_id still a UUID."""
+    from akgentic.infra.protocols import ChannelBinding
+
+    team_id = uuid.UUID("550e8400-e29b-41d4-a716-446655440000")
+    binding = ChannelBinding(
+        channel="telegram",
+        channel_user_id="987654321",
+        team_id=team_id,
+        agent_name="@HumanProxy_0",
+    )
+
+    dumped = binding.model_dump(mode="json")
+    assert dumped["team_id"] == str(team_id)
+
+    restored = ChannelBinding.model_validate(dumped)
+    assert restored == binding
+    assert isinstance(restored.team_id, uuid.UUID)
+
+
+# --- InitiatedTeam ---
+
+
+def test_initiated_team_is_pydantic_model_with_two_fields() -> None:
+    """InitiatedTeam names the team and the agent that speaks for it."""
+    from pydantic import BaseModel
+
+    from akgentic.infra.protocols import InitiatedTeam
+
+    assert issubclass(InitiatedTeam, BaseModel)
+    assert set(InitiatedTeam.model_fields) == {"team_id", "entry_point_name"}
+
+
+def test_initiated_team_field_descriptions_name_the_spawned_name() -> None:
+    """Every field has a description, and entry_point_name says it is not a role."""
+    from akgentic.infra.protocols import InitiatedTeam
+
+    for name, field_info in InitiatedTeam.model_fields.items():
+        assert field_info.description is not None, f"Field {name} missing description"
+
+    description = InitiatedTeam.model_fields["entry_point_name"].description
+    assert description is not None
+    assert "role" in description.lower()
+
+
+def test_initiated_team_round_trips_through_json_mode() -> None:
+    """A dumped InitiatedTeam validates back to an equal model."""
+    from akgentic.infra.protocols import InitiatedTeam
+
+    initiated = InitiatedTeam(team_id=uuid.uuid4(), entry_point_name="@HumanProxy_0")
+
+    restored = InitiatedTeam.model_validate(initiated.model_dump(mode="json"))
+    assert restored == initiated
+    assert isinstance(restored.team_id, uuid.UUID)
 
 
 # --- TeamHandle ---

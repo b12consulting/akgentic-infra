@@ -20,7 +20,9 @@ from akgentic.infra.adapters.shared.channel_parser_registry import (
 )
 from akgentic.infra.adapters.shared.telegram_parser import TelegramChannelParser
 from akgentic.infra.protocols.channels import (
+    ChannelBinding,
     ChannelParser,
+    InitiatedTeam,
     InteractionChannelAdapter,
     JsonValue,
 )
@@ -101,25 +103,24 @@ class _StubIngestion:
         channel_user_id: str,
         catalog_entry_id: str,
         metadata: dict[str, JsonValue] | None = None,
-    ) -> uuid.UUID:
-        new_id = uuid.uuid4()
+    ) -> InitiatedTeam:
         self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id, metadata))
-        return new_id
+        return InitiatedTeam(team_id=uuid.uuid4(), entry_point_name="@HumanProxy_0")
 
 
 class _StubChannelRegistry:
-    """Stub ChannelRegistry that returns None (no existing team)."""
+    """Stub ChannelRegistry that returns None (no existing team).
+
+    The webhook route resolves this straight off ``app.state``, so nothing
+    isinstance-checks it — but every method the route or a later flow calls
+    still has to land, which is why the full surface is here.
+    """
 
     def __init__(self) -> None:
-        self.registrations: list[tuple] = []
+        self.registrations: list[ChannelBinding] = []
 
-    async def register(
-        self,
-        channel: str,
-        channel_user_id: str,
-        team_id: uuid.UUID,
-    ) -> None:
-        self.registrations.append((channel, channel_user_id, team_id))
+    async def register(self, binding: ChannelBinding) -> None:
+        self.registrations.append(binding)
 
     async def find_team(
         self,
@@ -128,8 +129,21 @@ class _StubChannelRegistry:
     ) -> uuid.UUID | None:
         return None
 
+    async def find_binding(
+        self,
+        channel: str,
+        channel_user_id: str,
+    ) -> ChannelBinding | None:
+        return None
+
     async def deregister(self, channel: str, channel_user_id: str) -> None:
         pass
+
+    async def deregister_team(self, team_id: uuid.UUID) -> None:
+        pass
+
+    def find_binding_sync(self, team_id: uuid.UUID, agent_name: str) -> ChannelBinding | None:
+        return None
 
 
 class TestWebhookWithTelegramParser:
@@ -184,9 +198,10 @@ class TestWebhookWithTelegramParser:
         assert metadata is None
 
         assert len(channel_registry.registrations) == 1
-        channel, user_id, _team_id = channel_registry.registrations[0]
-        assert channel == "telegram"
-        assert user_id == "987654321"
+        binding = channel_registry.registrations[0]
+        assert binding.channel == "telegram"
+        assert binding.channel_user_id == "987654321"
+        assert binding.agent_name == "@HumanProxy_0"
 
     def test_unknown_channel_returns_404(self) -> None:
         app, _, _ = self._make_app()

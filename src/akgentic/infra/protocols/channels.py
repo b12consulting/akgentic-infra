@@ -39,6 +39,50 @@ class ChannelMessage(SerializableBaseModel):
     )
 
 
+class ChannelBinding(SerializableBaseModel):
+    """Binds one channel conversation to one agent of one team.
+
+    Stored **once** per ``(channel, channel_user_id)`` and read by two keys:
+
+    - ``(channel, channel_user_id)`` on the **inbound** path — a message arrived
+      from this chat, which team owns it?
+    - ``(team_id, agent_name)`` on the **outbound** path — this agent produced a
+      message, which chat answers it?
+
+    Both questions are answerable from these four values, which is why there is
+    one record rather than two stores kept in step (ADR-043 §D8).
+
+    The bound agent is the team's **entry point** and only the entry point. Any
+    other user-proxy member is a different human whose channel id does not exist
+    until that human has messaged the bot, so binding one to the initiator's
+    chat would deliver one person's questions to another.
+    """
+
+    channel: str = Field(description="Channel name (e.g., 'telegram', 'slack')")
+    channel_user_id: str = Field(description="Channel-specific user identifier (the chat)")
+    team_id: uuid.UUID = Field(description="The team this channel conversation belongs to")
+    agent_name: str = Field(
+        description=(
+            "Spawned name of the bound agent — the key into the team's address "
+            "table, already headcount-expanded (e.g. '@HumanProxy_0'). Not a role."
+        ),
+    )
+
+
+class InitiatedTeam(SerializableBaseModel):
+    """What ``initiate_team`` created: a team, and the agent that speaks for it."""
+
+    team_id: uuid.UUID = Field(description="The newly created team's ID")
+    entry_point_name: str = Field(
+        description=(
+            "Spawned name of the team's entry-point agent — the key into the "
+            "team's address table, unique within the team and already "
+            "headcount-expanded (e.g. '@HumanProxy_0'). This is a name, not a "
+            "role: a role is shared by every member hired from the same card."
+        ),
+    )
+
+
 @runtime_checkable
 class InteractionChannelAdapter(Protocol):
     """Delivers outbound messages to humans via an external channel.
@@ -149,7 +193,7 @@ class InteractionChannelIngestion(Protocol):
         channel_user_id: str,
         catalog_entry_id: str,
         metadata: dict[str, JsonValue] | None = None,
-    ) -> uuid.UUID:
+    ) -> InitiatedTeam:
         """Create a new team and send the initial message.
 
         Args:
@@ -163,7 +207,10 @@ class InteractionChannelIngestion(Protocol):
                 like one created from ``POST /teams`` (ADR-24 §metadata).
 
         Returns:
-            The newly created team's ID.
+            The created team's ID together with the spawned name of its
+            entry-point agent. The caller needs both to write a
+            ``ChannelBinding``: the id alone cannot answer an outbound lookup,
+            which starts from an agent (ADR-043 §D4).
 
         Raises:
             EntryNotFoundError: If catalog_entry_id is not found in catalog.
@@ -217,10 +264,42 @@ class ChannelParser(Protocol):
 
 
 @runtime_checkable
-class ChannelRegistry(Protocol):
-    """Maps external channel users to active teams.
+class ChannelRegistryReadSync(Protocol):
+    """Synchronous read face of the channel registry, keyed by agent.
 
-    Runs in FastAPI async context — uses async signatures.
+    Declares the one read the **outbound** delivery path performs.
+    ``EventSubscriber.on_message`` is synchronous and runs in a Pykka actor
+    thread with no event loop, so that path cannot await the registry; it needs
+    an answer from memory, or none (ADR-043 §D5).
+
+    Implementations answer from an in-process index and must not perform I/O:
+    a missed delivery is recoverable, a stalled actor thread is not. The
+    precedent is ``akgentic-infra-department``'s ``ServiceRegistryReadSync``.
+    """
+
+    def find_binding_sync(self, team_id: uuid.UUID, agent_name: str) -> ChannelBinding | None:
+        """Return the binding for one agent of one team, without blocking.
+
+        Args:
+            team_id: The team the agent belongs to.
+            agent_name: The agent's spawned name (``ChannelBinding.agent_name``).
+
+        Returns:
+            The binding if the agent is bound to a channel conversation, None
+            otherwise — including when the registry is disabled or the index has
+            not yet seen the binding.
+        """
+        ...
+
+
+@runtime_checkable
+class ChannelRegistry(ChannelRegistryReadSync, Protocol):
+    """Stores the binding between a channel conversation and a team's agent.
+
+    The async surface runs in FastAPI context and serves the **inbound** path;
+    the inherited ``find_binding_sync`` serves the **outbound** one. One stored
+    ``ChannelBinding`` answers both (ADR-043 §D8) — every registry owes the sync
+    read, which is why it is inherited rather than merely implemented.
 
     Implementations:
 
@@ -230,13 +309,14 @@ class ChannelRegistry(Protocol):
     - **Enterprise** (``DaprChannelRegistry``): Dapr state store.
     """
 
-    async def register(self, channel: str, channel_user_id: str, team_id: uuid.UUID) -> None:
-        """Register a mapping from a channel user to a team.
+    async def register(self, binding: ChannelBinding) -> None:
+        """Store a binding, replacing any existing one for the same channel user.
 
         Args:
-            channel: Channel name (e.g., "whatsapp", "slack").
-            channel_user_id: Channel-specific user identifier.
-            team_id: The team ID to associate.
+            binding: The complete record — channel, channel user, team and the
+                bound agent's spawned name. It is passed whole rather than as
+                separate values so a field added later reaches storage without
+                every call site being revisited.
         """
         ...
 
@@ -248,15 +328,38 @@ class ChannelRegistry(Protocol):
             channel_user_id: Channel-specific user identifier.
 
         Returns:
-            Team ID if a mapping exists, None otherwise.
+            Team ID if a binding exists, None otherwise.
         """
         ...
 
-    async def deregister(self, channel: str, channel_user_id: str) -> None:
-        """Remove the mapping for a channel user.
+    async def find_binding(self, channel: str, channel_user_id: str) -> ChannelBinding | None:
+        """Find the whole binding for a channel user.
 
         Args:
             channel: Channel name (e.g., "whatsapp", "slack").
             channel_user_id: Channel-specific user identifier.
+
+        Returns:
+            The binding if one exists, None otherwise.
+        """
+        ...
+
+    async def deregister(self, channel: str, channel_user_id: str) -> None:
+        """Remove the binding for a channel user.
+
+        Args:
+            channel: Channel name (e.g., "whatsapp", "slack").
+            channel_user_id: Channel-specific user identifier.
+        """
+        ...
+
+    async def deregister_team(self, team_id: uuid.UUID) -> None:
+        """Remove every binding for a team, across all channels.
+
+        Called when a team stops: the conversation it answered is over, and a
+        binding that outlives its team can only misroute.
+
+        Args:
+            team_id: The team whose bindings are released.
         """
         ...

@@ -6,6 +6,8 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from akgentic.infra.protocols.channels import InitiatedTeam
+
 if TYPE_CHECKING:
     from akgentic.core.messages.message import Message
     from akgentic.infra.protocols.channels import JsonValue
@@ -84,7 +86,7 @@ class LocalIngestion:
         channel_user_id: str,
         catalog_entry_id: str,
         metadata: dict[str, JsonValue] | None = None,
-    ) -> uuid.UUID:
+    ) -> InitiatedTeam:
         """Create a new team and send the initial message.
 
         Args:
@@ -98,12 +100,18 @@ class LocalIngestion:
                 here.
 
         Returns:
-            The newly created team's ID.
+            The created team's ID and its entry point's spawned name, both read
+            off the ``Process`` ``create_team`` already returned — no second
+            service call and no lookup.
         """
         logger.info("Inbound initiation: catalog=%s", catalog_entry_id)
         logger.debug("Initiation user: %s", channel_user_id)
         ts = self._require_team_service()
         process = ts.create_team(catalog_entry_id, user_id=channel_user_id, metadata=metadata)
         ts.send_message(process.team_id, content)
-        logger.debug("Team initiated: team_id=%s", process.team_id)
-        return process.team_id
+        logger.debug(
+            "Team initiated: team_id=%s, entry_point=%s",
+            process.team_id,
+            process.entry_point.name,
+        )
+        return InitiatedTeam(team_id=process.team_id, entry_point_name=process.entry_point.name)
