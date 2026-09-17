@@ -43,6 +43,9 @@ class StubWhatsAppAdapter:
     def deliver(self, msg: object, binding: object) -> None:
         pass
 
+    def deliver_notice(self, address: object, text: str) -> None:
+        pass
+
     def on_stop(self, team_id: uuid.UUID) -> None:
         pass
 
@@ -72,6 +75,9 @@ class StubSlackAdapter:
         return False
 
     def deliver(self, msg: object, binding: object) -> None:
+        pass
+
+    def deliver_notice(self, address: object, text: str) -> None:
         pass
 
     def on_stop(self, team_id: uuid.UUID) -> None:
@@ -268,6 +274,9 @@ class StubConfigAdapter:
     def deliver(self, msg: object, binding: object) -> None:
         pass
 
+    def deliver_notice(self, address: object, text: str) -> None:
+        pass
+
     def on_stop(self, team_id: uuid.UUID) -> None:
         pass
 
@@ -361,6 +370,9 @@ class _StubAdapterWithConfig:
         return True  # pragma: no cover
 
     def deliver(self, msg: object, binding: object) -> None:
+        pass  # pragma: no cover
+
+    def deliver_notice(self, address: object, text: str) -> None:
         pass  # pragma: no cover
 
     def on_stop(self, team_id: uuid.UUID) -> None:

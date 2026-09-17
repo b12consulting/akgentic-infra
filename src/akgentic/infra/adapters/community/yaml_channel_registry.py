@@ -212,6 +212,18 @@ class YamlChannelRegistry:
         channel_data = data.get(channel)
         if channel_data is None:
             return
+        if not isinstance(channel_data, dict):
+            # A hand-edit leaving a scalar where the per-user mapping belongs.
+            # Popping straight off it raises ``AttributeError``; this read is
+            # skipped instead, and the section is left on disk — filtering it
+            # out at load time would erase the operator's edit on the next
+            # ``register``, which writes back what it read.
+            logger.warning(
+                "Channel registry: ignoring section for %s on deregister — "
+                "not a mapping of channel users",
+                channel,
+            )
+            return
         channel_data.pop(channel_user_id, None)
         if not channel_data:
             del data[channel]
@@ -234,6 +246,17 @@ class YamlChannelRegistry:
         removed = False
         for channel in list(data):
             channel_data = data[channel]
+            if not isinstance(channel_data, dict):
+                # Iterating a scalar yields its *characters*, and indexing a str
+                # with one raises ``TypeError``. This runs on team teardown, via
+                # ``asyncio.run`` on the orchestrator thread, where a raise lands
+                # far from its cause — so the section is skipped and left alone.
+                logger.warning(
+                    "Channel registry: ignoring section for %s while pruning a team — "
+                    "not a mapping of channel users",
+                    channel,
+                )
+                continue
             emptied = False
             for channel_user_id in list(channel_data):
                 binding = cls._binding_from_record(channel_data[channel_user_id])

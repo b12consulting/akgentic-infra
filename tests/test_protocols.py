@@ -93,26 +93,48 @@ def test_interaction_channel_adapter_is_protocol() -> None:
 
 
 def test_interaction_channel_adapter_has_matches() -> None:
-    """InteractionChannelAdapter defines matches with msg and binding parameters."""
+    """InteractionChannelAdapter defines matches taking exactly msg and binding.
+
+    The binding names the destination chat, which the address cannot. An
+    ``isinstance`` check compares method *names* only, so this signature
+    assertion is the only thing that notices a one-argument adapter — and a
+    membership check would survive an extra parameter being appended, so the
+    whole list is compared.
+    """
     from akgentic.infra.protocols import InteractionChannelAdapter
 
     assert hasattr(InteractionChannelAdapter, "matches")
     sig = inspect.signature(InteractionChannelAdapter.matches)
-    assert "msg" in sig.parameters
-    # The binding names the destination chat, which the address cannot. An
-    # ``isinstance`` check compares method names only, so this signature
-    # assertion is the only thing that notices a one-argument adapter.
-    assert "binding" in sig.parameters
+    assert list(sig.parameters) == ["self", "msg", "binding"]
 
 
 def test_interaction_channel_adapter_has_deliver() -> None:
-    """InteractionChannelAdapter defines deliver with msg and binding parameters."""
+    """InteractionChannelAdapter defines deliver taking exactly msg and binding."""
     from akgentic.infra.protocols import InteractionChannelAdapter
 
     assert hasattr(InteractionChannelAdapter, "deliver")
     sig = inspect.signature(InteractionChannelAdapter.deliver)
-    assert "msg" in sig.parameters
-    assert "binding" in sig.parameters
+    assert list(sig.parameters) == ["self", "msg", "binding"]
+
+
+def test_interaction_channel_adapter_has_deliver_notice() -> None:
+    """deliver_notice takes an address, not a binding.
+
+    A binding requires a ``team_id`` and an ``agent_name``; ``status`` may find
+    no binding and ``unregister`` has just destroyed one, so a binding-typed
+    parameter could only be satisfied by fabricating a team id. The type is the
+    guard: an unbound path literally cannot name a team.
+    """
+    from akgentic.infra.protocols import ChannelAddress, InteractionChannelAdapter
+
+    assert hasattr(InteractionChannelAdapter, "deliver_notice")
+    sig = inspect.signature(InteractionChannelAdapter.deliver_notice)
+    assert list(sig.parameters) == ["self", "address", "text"]
+
+    hints = get_type_hints(InteractionChannelAdapter.deliver_notice)
+    assert hints["address"] is ChannelAddress
+    assert hints["text"] is str
+    assert hints["return"] is type(None)
 
 
 def test_interaction_channel_adapter_has_on_stop() -> None:
@@ -159,10 +181,35 @@ def test_interaction_channel_adapter_structural_subtyping() -> None:
         def deliver(self, msg: object, binding: object) -> None:
             pass
 
+        def deliver_notice(self, address: object, text: str) -> None:
+            pass
+
         def on_stop(self, team_id: uuid.UUID) -> None:
             pass
 
     assert isinstance(FakeAdapter(), InteractionChannelAdapter)
+
+
+def test_an_adapter_without_deliver_notice_is_not_an_adapter() -> None:
+    """The negative case: dropping ``deliver_notice`` must fail the check.
+
+    The positive assertion above cannot notice the member being removed from the
+    Protocol — every fake would simply carry one method more than required. This
+    is what pins ``deliver_notice`` as a *requirement* rather than a convention.
+    """
+    from akgentic.infra.protocols import InteractionChannelAdapter
+
+    class AdapterMissingDeliverNotice:
+        def matches(self, msg: object, binding: object) -> bool:
+            return True
+
+        def deliver(self, msg: object, binding: object) -> None:
+            pass
+
+        def on_stop(self, team_id: uuid.UUID) -> None:
+            pass
+
+    assert not isinstance(AdapterMissingDeliverNotice(), InteractionChannelAdapter)
 
 
 # --- InteractionChannelIngestion ---
@@ -602,6 +649,58 @@ def test_channel_message_nested_metadata_survives_round_trip() -> None:
     assert restored.metadata["case"] == {"id": 7, "tags": ["a"]}
 
 
+# --- ChannelCommand ---
+
+
+def test_channel_command_rest_defaults_to_empty() -> None:
+    """``/new`` with nothing after it is a command with an empty ``rest``."""
+    from akgentic.infra.protocols import ChannelCommand
+
+    command = ChannelCommand(name="new")
+
+    assert command.name == "new"
+    assert command.rest == ""
+
+
+def test_channel_command_name_is_a_plain_string() -> None:
+    """An unrecognised command must be a *value*, not a validation error.
+
+    The channel layer consumes three names and passes every other one through
+    as text. An enum here would turn ``/shrug`` into a 400 at parse time, which
+    is precisely the fall-through the design forbids breaking.
+    """
+    from akgentic.infra.protocols import ChannelCommand
+
+    command = ChannelCommand(name="shrug", rest="whatever")
+
+    assert command.name == "shrug"
+    assert ChannelCommand.model_fields["name"].annotation is str
+
+
+def test_channel_message_command_defaults_to_none() -> None:
+    """A message built without a command carries none — no parser is obliged to."""
+    from akgentic.infra.protocols import ChannelMessage
+
+    msg = ChannelMessage(content="hello", channel_user_id="u1")
+
+    assert msg.command is None
+
+
+def test_channel_message_command_round_trips() -> None:
+    """The command survives a dump/validate cycle as a model, not a dict."""
+    from akgentic.infra.protocols import ChannelCommand, ChannelMessage
+
+    msg = ChannelMessage(
+        content="/new Fix the invoice",
+        channel_user_id="u1",
+        command=ChannelCommand(name="new", rest="Fix the invoice"),
+    )
+
+    restored = ChannelMessage.model_validate(msg.model_dump(mode="json"))
+
+    assert restored.command == ChannelCommand(name="new", rest="Fix the invoice")
+
+
 # --- ChannelBinding ---
 
 
@@ -618,6 +717,49 @@ def test_channel_binding_is_pydantic_model_with_four_fields() -> None:
         "team_id",
         "agent_name",
     }
+
+
+def test_channel_binding_is_a_channel_address_in_declaration_order() -> None:
+    """The split names a concept the design already had, and moves no field.
+
+    Pydantic orders base-class fields first, so the inherited pair must still
+    come out ``channel, channel_user_id, team_id, agent_name`` — the order the
+    persisted YAML record is written in. ``issubclass`` alone would stay green
+    through a field re-declared on the subclass, which silently reorders the
+    record; the field-order comparison is what notices.
+    """
+    from akgentic.infra.protocols import ChannelAddress, ChannelBinding
+
+    assert issubclass(ChannelBinding, ChannelAddress)
+    assert list(ChannelBinding.model_fields) == [
+        "channel",
+        "channel_user_id",
+        "team_id",
+        "agent_name",
+    ]
+    assert list(ChannelAddress.model_fields) == ["channel", "channel_user_id"]
+
+    # The declaration order above is only a proxy for what actually ships: the
+    # key order of the dumped record, which is what the YAML registry writes.
+    binding = ChannelBinding(
+        channel="telegram",
+        channel_user_id="987654321",
+        team_id=uuid.uuid4(),
+        agent_name="@HumanProxy_0",
+    )
+    dumped = [key for key in binding.model_dump(mode="json") if not key.startswith("__")]
+    assert dumped == ["channel", "channel_user_id", "team_id", "agent_name"]
+
+
+def test_channel_address_carries_no_team() -> None:
+    """A bare address is constructible without a team — the whole point of it."""
+    from akgentic.infra.protocols import ChannelAddress
+
+    address = ChannelAddress(channel="telegram", channel_user_id="987654321")
+
+    assert address.channel == "telegram"
+    assert address.channel_user_id == "987654321"
+    assert not hasattr(address, "team_id")
 
 
 def test_channel_binding_field_descriptions() -> None:

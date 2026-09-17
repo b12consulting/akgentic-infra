@@ -24,7 +24,9 @@ from akgentic.infra.adapters import (
 from akgentic.infra.errors import PlacementConsistencyError, ServerError
 from akgentic.infra.protocols import (
     AuthStrategy,
+    ChannelAddress,
     ChannelBinding,
+    ChannelCommand,
     ChannelMessage,
     ChannelParser,
     ChannelRegistry,
@@ -70,7 +72,9 @@ __path__ = extend_path(__path__, __name__)
 __all__ = [
     # Protocols
     "AuthStrategy",
+    "ChannelAddress",
     "ChannelBinding",
+    "ChannelCommand",
     "ChannelMessage",
     "ChannelParser",
     "ChannelRegistry",

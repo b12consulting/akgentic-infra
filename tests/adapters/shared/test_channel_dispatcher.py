@@ -13,7 +13,7 @@ from akgentic.core.orchestrator import EventSubscriber
 
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
-from akgentic.infra.protocols.channels import ChannelBinding
+from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
 
 # ---------------------------------------------------------------------------
 # Stub adapters satisfying InteractionChannelAdapter protocol (structural)
@@ -32,6 +32,7 @@ class _MatchingAdapter:
         self.deliver_msg: SentMessage | None = None
         self.matches_binding: ChannelBinding | None = None
         self.deliver_binding: ChannelBinding | None = None
+        self.notices: list[tuple[ChannelAddress, str]] = []
 
     def matches(self, msg: SentMessage, binding: ChannelBinding) -> bool:
         self.matches_called = True
@@ -43,6 +44,9 @@ class _MatchingAdapter:
         self.deliver_called = True
         self.deliver_msg = msg
         self.deliver_binding = binding
+
+    def deliver_notice(self, address: ChannelAddress, text: str) -> None:
+        self.notices.append((address, text))
 
     def on_stop(self, team_id: uuid.UUID) -> None:
         self.stop_called = True
@@ -64,6 +68,9 @@ class _NonMatchingAdapter:
 
     def deliver(self, msg: SentMessage, binding: ChannelBinding) -> None:
         self.deliver_called = True
+
+    def deliver_notice(self, address: ChannelAddress, text: str) -> None:
+        pass
 
     def on_stop(self, team_id: uuid.UUID) -> None:
         self.stop_called = True
