@@ -12,6 +12,7 @@ from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
@@ -56,7 +57,7 @@ def wire_community(
     auth = load_auth_strategy(settings.auth_strategy)
     ingestion = LocalIngestion()
     channel_registry = YamlChannelRegistry(registry_path=settings.channel_registry_path)
-    channel_parser_registry = ChannelParserRegistry(channels_config={})
+    channel_parser_registry = ChannelParserRegistry(channels_config=settings.channels)
     catalog = Catalog(repository=YamlEntryRepository(root=settings.catalog_path))
 
     # Shared backends — persistence and the event bus, used by server and worker alike.
@@ -66,9 +67,17 @@ def wire_community(
 
     # Worker runtime — the in-process actor layer that runs the teams.
     actor_system = ActorSystem()
+    # One dispatcher for every team: it reads the team off each message and off
+    # the lifecycle hooks, so a revived team keeps its channel by construction.
+    # With no channel configured the adapter list is empty and the registry
+    # answers None, so nothing is delivered and behaviour is unchanged.
     shared_subscribers: list[EventSubscriber] = [
         TelemetrySubscriber(),
         EventStreamSubscriber(event_stream=event_stream),
+        InteractionChannelDispatcher(
+            adapters=channel_parser_registry.get_adapters(),
+            registry=channel_registry,
+        ),
     ]
     team_manager = TeamManager(
         actor_system=actor_system,

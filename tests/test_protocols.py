@@ -93,21 +93,26 @@ def test_interaction_channel_adapter_is_protocol() -> None:
 
 
 def test_interaction_channel_adapter_has_matches() -> None:
-    """InteractionChannelAdapter defines matches with msg parameter."""
+    """InteractionChannelAdapter defines matches with msg and binding parameters."""
     from akgentic.infra.protocols import InteractionChannelAdapter
 
     assert hasattr(InteractionChannelAdapter, "matches")
     sig = inspect.signature(InteractionChannelAdapter.matches)
     assert "msg" in sig.parameters
+    # The binding names the destination chat, which the address cannot. An
+    # ``isinstance`` check compares method names only, so this signature
+    # assertion is the only thing that notices a one-argument adapter.
+    assert "binding" in sig.parameters
 
 
 def test_interaction_channel_adapter_has_deliver() -> None:
-    """InteractionChannelAdapter defines deliver with msg parameter."""
+    """InteractionChannelAdapter defines deliver with msg and binding parameters."""
     from akgentic.infra.protocols import InteractionChannelAdapter
 
     assert hasattr(InteractionChannelAdapter, "deliver")
     sig = inspect.signature(InteractionChannelAdapter.deliver)
     assert "msg" in sig.parameters
+    assert "binding" in sig.parameters
 
 
 def test_interaction_channel_adapter_has_on_stop() -> None:
@@ -148,10 +153,10 @@ def test_interaction_channel_adapter_structural_subtyping() -> None:
     from akgentic.infra.protocols import InteractionChannelAdapter
 
     class FakeAdapter:
-        def matches(self, msg: object) -> bool:
+        def matches(self, msg: object, binding: object) -> bool:
             return True
 
-        def deliver(self, msg: object) -> None:
+        def deliver(self, msg: object, binding: object) -> None:
             pass
 
         def on_stop(self, team_id: uuid.UUID) -> None:

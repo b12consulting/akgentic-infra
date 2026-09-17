@@ -92,6 +92,18 @@ class InteractionChannelAdapter(Protocol):
     the same concrete adapter is reused by the community, department, and
     enterprise profiles.
 
+    Lifetime:
+        An adapter is **process-scoped**. ``ChannelParserRegistry`` constructs
+        one per configured channel at wiring time, and that single instance
+        outlives every team the process ever runs. Anything an adapter holds —
+        an HTTP client, a socket, a token — is shared by all of them.
+
+    Addressing:
+        Every call carries a ``ChannelBinding`` naming the destination chat.
+        The message's own recipient address cannot: ``ActorAddress.name`` is
+        the TeamCard's agent name (``human_support``, ``@HumanProxy_0``), never
+        a channel identifier (ADR-043 §D4).
+
     Threading constraint:
         ``deliver()`` runs inside a Pykka actor thread (called from
         ``InteractionChannelDispatcher.on_message``). Implementations
@@ -100,27 +112,41 @@ class InteractionChannelAdapter(Protocol):
         enqueue to a ``queue.Queue`` consumed by an asyncio task).
     """
 
-    def matches(self, msg: SentMessage) -> bool:
+    def matches(self, msg: SentMessage, binding: ChannelBinding) -> bool:
         """Check if this adapter handles the given message.
 
         Args:
             msg: The outbound message to check.
+            binding: The recipient agent's channel binding. An implementation
+                must compare ``binding.channel`` against the channel it serves:
+                with two channels configured, a recipient-only check accepts
+                another channel's binding and posts its user id to the wrong
+                service.
 
         Returns:
             True if this adapter should deliver the message.
         """
         ...
 
-    def deliver(self, msg: SentMessage) -> None:
+    def deliver(self, msg: SentMessage, binding: ChannelBinding) -> None:
         """Deliver an outbound message via this channel.
 
         Args:
             msg: The message to deliver.
+            binding: The recipient agent's channel binding. Its
+                ``channel_user_id`` names the destination chat — the only place
+                that value exists on the outbound path.
         """
         ...
 
     def on_stop(self, team_id: uuid.UUID) -> None:
         """Clean up resources when a team stops.
+
+        An implementation may release state it holds **for that team** and MUST
+        NOT release process-scoped resources: the adapter is constructed once
+        per process and serves every team, so anything closed here is closed
+        for all the others too — silently, since ``deliver()`` swallows its own
+        errors and the symptom is messages that simply stop arriving.
 
         Args:
             team_id: The team being stopped.
