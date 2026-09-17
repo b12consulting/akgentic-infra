@@ -39,6 +39,17 @@ class InteractionChannelDispatcher:
         recoverable; a stalled actor thread is not. ``on_stop`` runs during
         teardown, which is not latency-critical, and may block for the length of
         one registry write (ADR-043 §D5).
+
+    Concurrency:
+        Sharing the instance also means sharing it across threads. Every team
+        has its own orchestrator actor thread, so ``set_restoring`` for one team
+        can run while ``on_message`` for another reads ``_restoring`` and a
+        third calls ``on_stop``. ``set`` membership, ``add`` and ``discard`` are
+        each a single atomic operation under CPython, and ``_adapters`` and
+        ``_registry`` are never reassigned after construction, so no lock is
+        needed **as this class stands**. Anything added here that mutates state
+        across more than one operation — a read-modify-write, a dict built up
+        over two statements — does need one.
     """
 
     def __init__(
