@@ -508,6 +508,38 @@ class TestWebhookInitiationFlow:
             agent_name="@HumanProxy_0",
         )
 
+    async def test_a_corrupt_channel_section_leaves_no_orphan_team(self, tmp_path: Path) -> None:
+        """Every team this branch creates is bound, corrupt store included.
+
+        Guarding ``find_binding`` alone moved the failure *past the point of no
+        return*: pre-epic a scalar section raised in ``find_team``, before any
+        team existed; guarded, the read answers None, the branch creates a team,
+        and an unguarded ``register`` raised only then — leaking one orphan team
+        per delivery retry, and a channel retries with backoff.
+
+        The invariant is stated as this branch never creating a team it cannot
+        bind. Reordering is not available — the binding carries the team id, so
+        it cannot be written first — so the guarantee is bought by making the
+        registry write total for the input class that breaks it.
+        """
+        registry_path = tmp_path / "registry.yaml"
+        registry_path.write_text(yaml.safe_dump({"test-channel": "oops"}), encoding="utf-8")
+        parser = StubParser()
+        parser.set_next_message(ChannelMessage(content="hello", channel_user_id="user-corrupt"))
+        new_team_id = uuid.uuid4()
+        ingestion = StubIngestion()
+        ingestion.set_next_team_id(new_team_id)
+        registry = YamlChannelRegistry(registry_path)
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 204
+        assert len(ingestion.initiate_team_calls) == 1
+        binding = await registry.find_binding("test-channel", "user-corrupt")
+        assert binding is not None
+        assert binding.team_id == new_team_id
+
 
 class TestWebhookUnknownChannel:
     """AC #2: unknown channel → 404."""

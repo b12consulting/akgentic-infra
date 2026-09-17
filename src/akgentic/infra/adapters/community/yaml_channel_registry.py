@@ -77,6 +77,20 @@ class YamlChannelRegistry:
         data = yaml.safe_load(text)
         if data is None:
             return {}
+        if not isinstance(data, dict):
+            # A hand-edit that left the whole file as a scalar or a list. This
+            # runs at construction, so raising here is a server that will not
+            # boot — for an opt-in registry file on a tier where channels are
+            # optional. Reading it as empty degrades the channel path instead.
+            # The file is left on disk: only a mutation writes, and a mutation
+            # writing back a mapping is the operator's own next inbound message
+            # self-healing the file, not this read erasing it.
+            logger.warning(
+                "Channel registry: ignoring %s — its root is not a mapping of channels; "
+                "the registry reads as empty until it is repaired",
+                self._path,
+            )
+            return {}
         return dict(data)
 
     def _save(self, data: dict[str, dict[str, JsonValue]]) -> None:
@@ -142,11 +156,32 @@ class YamlChannelRegistry:
         The record is written as ``binding.model_dump(mode="json")`` in full, so
         a field added to ``ChannelBinding`` later is persisted without anybody
         remembering to add it here.
+
+        This is the one reader that *replaces* a corrupt section rather than
+        leaving it: every other reader is a read, and the section is the
+        operator's data. Here the caller has just created a team for this chat
+        and the binding is the only record of it, so an unwritable section must
+        not cost the team — writing a fresh mapping is the same self-healing the
+        unreadable-record case already performs one level down.
         """
         if self._path is None:
             return
         data = self._load()
         if binding.channel not in data:
+            data[binding.channel] = {}
+        elif not isinstance(data[binding.channel], dict):
+            # A hand-edit leaving a scalar where the per-user mapping belongs.
+            # ``channel in data`` is True, so the initialiser above is skipped
+            # and the item assignment below raises ``TypeError`` — after the
+            # initiation branch has already created the team, leaking one
+            # orphan per delivery retry. Checked here rather than filtered in
+            # ``_load``: a filtered load would erase the section on the next
+            # write to *any other* channel, which this path never intends.
+            logger.warning(
+                "Channel registry: replacing the section for %s — it is not a mapping of "
+                "channel users; the binding just created would otherwise be unwritable",
+                binding.channel,
+            )
             data[binding.channel] = {}
         data[binding.channel][binding.channel_user_id] = binding.model_dump(mode="json")
         self._commit(data)
