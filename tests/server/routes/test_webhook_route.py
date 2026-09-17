@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from fastapi import FastAPI
@@ -11,8 +12,13 @@ from fastapi.testclient import TestClient
 
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.errors import MetadataValidationError
 from akgentic.infra.protocols.channels import ChannelMessage, JsonValue
+from akgentic.infra.server.errors import add_server_exception_handlers
 from akgentic.infra.server.routes.webhook import router as webhook_router
+
+if TYPE_CHECKING:
+    from akgentic.core.messages.message import Message
 
 # ---------------------------------------------------------------------------
 # Stub classes satisfying protocols via structural subtyping
@@ -56,8 +62,12 @@ class StubIngestion:
     """Stub InteractionChannelIngestion that tracks calls."""
 
     def __init__(self) -> None:
-        self.route_reply_calls: list[tuple[uuid.UUID, str, str | None]] = []
-        self.initiate_team_calls: list[tuple[str, str, str]] = []
+        self.route_reply_calls: list[tuple[uuid.UUID, str | Message, str | None]] = []
+        # Anything the route passes to route_reply beyond the three declared
+        # parameters lands here, so "the reply path forwards no metadata" is an
+        # assertion about recorded evidence rather than about a TypeError.
+        self.route_reply_extra_kwargs: list[dict[str, object]] = []
+        self.initiate_team_calls: list[tuple[str, str, str, dict[str, JsonValue] | None]] = []
         self._next_team_id: uuid.UUID = uuid.uuid4()
 
     def set_next_team_id(self, team_id: uuid.UUID) -> None:
@@ -66,18 +76,21 @@ class StubIngestion:
     async def route_reply(
         self,
         team_id: uuid.UUID,
-        content: str,
+        content: str | Message,
         original_message_id: str | None = None,
+        **extra: object,
     ) -> None:
         self.route_reply_calls.append((team_id, content, original_message_id))
+        self.route_reply_extra_kwargs.append(extra)
 
     async def initiate_team(
         self,
         content: str,
         channel_user_id: str,
         catalog_entry_id: str,
+        metadata: dict[str, JsonValue] | None = None,
     ) -> uuid.UUID:
-        self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id))
+        self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id, metadata))
         return self._next_team_id
 
 
@@ -118,13 +131,20 @@ def _build_app(
     ingestion: StubIngestion,
     channel_registry: YamlChannelRegistry,
 ) -> FastAPI:
-    """Build a minimal FastAPI app with the webhook router wired."""
+    """Build a minimal FastAPI app with the webhook router wired.
+
+    ``add_server_exception_handlers`` is the same registration the real assembly
+    installs, so a ``ServerError`` raised by the ingestion layer is mapped here
+    exactly as it is in production — a status assertion against a bare
+    ``FastAPI()`` would only prove the TestClient re-raises.
+    """
     app = FastAPI()
     parser_registry = _build_parser_registry(parser)
     app.state.channel_parser_registry = parser_registry
     app.state.channel_registry = channel_registry
     app.state.ingestion = ingestion
     app.include_router(webhook_router)
+    add_server_exception_handlers(app)
     return app
 
 
@@ -384,3 +404,122 @@ class TestWebhookMalformedPayload:
 
         assert resp.status_code == 400
         assert "payload missing required field 'message'" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Business metadata on the initiation branch
+# ---------------------------------------------------------------------------
+
+
+class TestWebhookMetadataForwarding:
+    """The metadata the parser lifted reaches team creation, and only there."""
+
+    def test_initiation_forwards_parsed_metadata(self, tmp_path: Path) -> None:
+        metadata: dict[str, JsonValue] = {"tenant": "acme", "case": {"id": 7, "tags": ["a"]}}
+        parser = StubParser(default_entry="my-catalog-entry")
+        parser.set_next_message(
+            ChannelMessage(
+                content="new convo",
+                channel_user_id="user-m1",
+                metadata=metadata,
+            )
+        )
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 204
+        assert len(ingestion.initiate_team_calls) == 1
+        assert ingestion.initiate_team_calls[0][3] == metadata
+
+    def test_initiation_without_metadata_forwards_none(self, tmp_path: Path) -> None:
+        parser = StubParser(default_entry="my-catalog-entry")
+        parser.set_next_message(ChannelMessage(content="new convo", channel_user_id="user-m2"))
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 204
+        assert ingestion.initiate_team_calls[0][3] is None
+
+    def test_reply_flow_forwards_no_metadata(self, tmp_path: Path) -> None:
+        """A reply addresses a team whose metadata was fixed at creation."""
+        parser = StubParser()
+        parser.set_next_message(
+            ChannelMessage(
+                content="reply msg",
+                channel_user_id="user-m3",
+                team_id=uuid.uuid4(),
+                metadata={"tenant": "acme"},
+            )
+        )
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 204
+        assert ingestion.initiate_team_calls == []
+        assert ingestion.route_reply_extra_kwargs == [{}]
+
+    async def test_continuation_flow_forwards_no_metadata(self, tmp_path: Path) -> None:
+        """A continuation addresses an existing team — same reasoning as a reply."""
+        parser = StubParser()
+        parser.set_next_message(
+            ChannelMessage(
+                content="continuation msg",
+                channel_user_id="user-m4",
+                metadata={"tenant": "acme"},
+            )
+        )
+        ingestion = StubIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        await registry.register("test-channel", "user-m4", uuid.uuid4())
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 204
+        assert ingestion.initiate_team_calls == []
+        assert ingestion.route_reply_extra_kwargs == [{}]
+
+
+class TestWebhookMetadataRejection:
+    """A metadata body the card refuses answers 422, with the validator's words."""
+
+    def test_invalid_metadata_returns_422_with_validator_message(self, tmp_path: Path) -> None:
+        detail = "metadata field 'case.id' must be an integer"
+
+        class RefusingIngestion(StubIngestion):
+            async def initiate_team(
+                self,
+                content: str,
+                channel_user_id: str,
+                catalog_entry_id: str,
+                metadata: dict[str, JsonValue] | None = None,
+            ) -> uuid.UUID:
+                raise MetadataValidationError(detail)
+
+        parser = StubParser()
+        parser.set_next_message(
+            ChannelMessage(
+                content="new convo",
+                channel_user_id="user-m5",
+                metadata={"case": {"id": "seven"}},
+            )
+        )
+        ingestion = RefusingIngestion()
+        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+        client = TestClient(_build_app(parser, ingestion, registry))
+
+        resp = client.post("/webhook/test-channel", json={"text": "hi"})
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["detail"] == detail
+        assert body["code"] == "invalid_metadata"

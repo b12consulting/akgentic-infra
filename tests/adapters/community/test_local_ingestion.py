@@ -7,9 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
+from akgentic.core.messages.message import UserMessage
 
 from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
-from akgentic.infra.protocols.channels import InteractionChannelIngestion
+from akgentic.infra.errors import MetadataValidationError
+from akgentic.infra.protocols.channels import InteractionChannelIngestion, JsonValue
 from akgentic.infra.server.services.team_service import TeamService
 
 
@@ -64,7 +66,9 @@ async def test_initiate_team_creates_and_sends() -> None:
 
     result = await ingestion.initiate_team("first message", "user-42", "catalog-entry-1")
 
-    mock_service.create_team.assert_called_once_with("catalog-entry-1", user_id="user-42")
+    mock_service.create_team.assert_called_once_with(
+        "catalog-entry-1", user_id="user-42", metadata=None
+    )
     mock_service.send_message.assert_called_once_with(new_team_id, "first message")
     assert result == new_team_id
 
@@ -80,6 +84,53 @@ async def test_initiate_team_returns_correct_uuid() -> None:
 
     assert result == expected_id
     assert isinstance(result, uuid.UUID)
+
+
+async def test_initiate_team_forwards_metadata() -> None:
+    """initiate_team() hands the metadata mapping to create_team untouched."""
+    mock_service = _make_mock_service()
+    mock_service.create_team.return_value = _make_process_stub(uuid.uuid4())
+    ingestion = LocalIngestion(mock_service)
+    metadata: dict[str, JsonValue] = {"tenant": "acme", "case": {"id": 7, "tags": ["a"]}}
+
+    await ingestion.initiate_team("first message", "user-42", "catalog-entry-1", metadata)
+
+    mock_service.create_team.assert_called_once_with(
+        "catalog-entry-1", user_id="user-42", metadata=metadata
+    )
+
+
+async def test_initiate_team_propagates_metadata_validation_error() -> None:
+    """A refused metadata body leaves initiate_team uncaught.
+
+    ``MetadataValidationError`` is a ``ServerError`` carrying its own 422; a
+    local ``except`` here would replace that answer with whatever this layer
+    invented, on the channel surface only.
+    """
+    mock_service = _make_mock_service()
+    mock_service.create_team.side_effect = MetadataValidationError("case.id must be an integer")
+    ingestion = LocalIngestion(mock_service)
+
+    with pytest.raises(MetadataValidationError, match="case.id must be an integer"):
+        await ingestion.initiate_team("msg", "user-1", "entry-1", {"case": {"id": "seven"}})
+
+
+async def test_route_reply_passes_a_preformed_message_through_unchanged() -> None:
+    """A pre-formed Message reaches send_message as the same object.
+
+    Identity, not equality: a ``str(content)`` coercion would still produce an
+    argument that compares equal to nothing useful, and any re-construction
+    would silently drop what the typed message carries.
+    """
+    mock_service = _make_mock_service()
+    ingestion = LocalIngestion(mock_service)
+    team_id = uuid.uuid4()
+    message = UserMessage(content="typed reply")
+
+    await ingestion.route_reply(team_id, message)
+
+    sent = mock_service.send_message.call_args.args[1]
+    assert sent is message
 
 
 async def test_route_reply_propagates_value_error() -> None:
