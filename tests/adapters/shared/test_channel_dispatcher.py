@@ -248,6 +248,13 @@ class TestRestoreMode:
     """AC 2: restore suppression is scoped to the replaying team."""
 
     def test_restoring_team_a_suppresses_team_a(self) -> None:
+        """A replaying team is dropped before the registry is consulted.
+
+        The lookup assertion is what pins the *order* AC 3 states. Without it
+        the replay check can sink below ``find_binding_sync`` and every spec in
+        this file stays green — verified by mutation, which is the only way to
+        tell a guarded ordering from an asserted one.
+        """
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A), _binding(TEAM_B))
         dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
@@ -255,6 +262,7 @@ class TestRestoreMode:
         dispatcher.set_restoring(TEAM_A, True)
         dispatcher.on_message(_make_sent_message(TEAM_A))
 
+        assert registry.sync_lookups == []
         assert not adapter.matches_called
         assert not adapter.deliver_called
 
