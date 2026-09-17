@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import warnings
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
 from pydantic import ValidationError
 
+from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 
@@ -154,6 +156,7 @@ class TestSettingsHierarchy:
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "ws_reader_pool_size",
+            "channels",
             "admin_list_all_teams",
             "catalog_model_type_prefixes",
         }
@@ -538,3 +541,45 @@ class TestCatalogModelTypePrefixesSetting:
         assert field_name in ServerSettings.model_fields
         derived = ServerSettings.model_config["env_prefix"] + field_name.upper()
         assert derived == CATALOG_PREFIXES_ENV_VAR
+
+
+class TestServerSettingsChannels:
+    """``channels`` is a typed map, not a nested dict of strings."""
+
+    def test_defaults_to_empty(self) -> None:
+        """No channel configured means the dispatcher wires zero adapters."""
+        assert ServerSettings().channels == {}
+
+    def test_json_env_var_parses_into_channel_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """AKGENTIC_CHANNELS yields ``ChannelConfig`` instances, not dicts.
+
+        ``parser_fqcn`` is read as an attribute below on purpose: a plain
+        ``dict[str, dict[str, str]]`` field would accept the same JSON and fail
+        only here.
+        """
+        monkeypatch.setenv(
+            "AKGENTIC_CHANNELS",
+            json.dumps(
+                {
+                    "telegram": {
+                        "parser_fqcn": (
+                            "akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser"
+                        ),
+                        "adapter_fqcn": (
+                            "akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter"
+                        ),
+                        "config": {"bot_token": "test-token"},
+                    }
+                }
+            ),
+        )
+
+        settings = ServerSettings()
+
+        assert isinstance(settings.channels["telegram"], ChannelConfig)
+        assert settings.channels["telegram"].parser_fqcn.endswith("TelegramChannelParser")
+        assert settings.channels["telegram"].config == {"bot_token": "test-token"}
+
+    def test_community_settings_inherits_channels(self) -> None:
+        """The field is tier-agnostic — it lives on ServerSettings."""
+        assert "channels" in CommunitySettings.model_fields

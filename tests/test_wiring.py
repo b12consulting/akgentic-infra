@@ -16,8 +16,11 @@ from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
+from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
@@ -256,5 +259,99 @@ class TestWireCommunityDropsTelemetryField:
                 isinstance(s, TelemetrySubscriber)
                 for s in services.team_manager._shared_subscribers
             )
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+
+class TestWireCommunityChannelDispatcher:
+    """The outbound leg: one shared dispatcher, fed by the configured channels."""
+
+    def test_dispatcher_is_a_shared_subscriber_exactly_once(self, tmp_path: Path) -> None:
+        """Constructing it is not enough — it has to join ``shared_subscribers``.
+
+        One instance, not one per team: the dispatcher reads the team off each
+        message and off the lifecycle hooks.
+        """
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
+        services = wire_community(settings)
+        try:
+            dispatchers = [
+                s
+                for s in services.team_manager._shared_subscribers
+                if isinstance(s, InteractionChannelDispatcher)
+            ]
+            assert len(dispatchers) == 1
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_no_channel_configured_means_no_adapters(self, tmp_path: Path) -> None:
+        """The default is empty, so an unconfigured deployment behaves as before."""
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
+        services = wire_community(settings)
+        try:
+            dispatcher = next(
+                s
+                for s in services.team_manager._shared_subscribers
+                if isinstance(s, InteractionChannelDispatcher)
+            )
+            assert dispatcher._adapters == []
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_configured_channel_reaches_the_dispatchers_adapter_list(self, tmp_path: Path) -> None:
+        """``settings.channels`` reaches the parser registry, and its adapters the
+        dispatcher — this is ``get_adapters()``'s first caller in ``src/``."""
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+            channels={
+                "telegram": ChannelConfig(
+                    parser_fqcn=(
+                        "akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser"
+                    ),
+                    adapter_fqcn=(
+                        "akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter"
+                    ),
+                    config={"bot_token": "test-token"},
+                )
+            },
+        )
+        services = wire_community(settings)
+        try:
+            dispatcher = next(
+                s
+                for s in services.team_manager._shared_subscribers
+                if isinstance(s, InteractionChannelDispatcher)
+            )
+            assert len(dispatcher._adapters) == 1
+            assert isinstance(dispatcher._adapters[0], TelegramChannelAdapter)
+            assert dispatcher._adapters == services.channel_parser_registry.get_adapters()
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_dispatcher_holds_the_containers_channel_registry(self, tmp_path: Path) -> None:
+        """A second registry instance would answer from an index nothing writes to."""
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+        )
+        services = wire_community(settings)
+        try:
+            dispatcher = next(
+                s
+                for s in services.team_manager._shared_subscribers
+                if isinstance(s, InteractionChannelDispatcher)
+            )
+            assert dispatcher._registry is services.channel_registry
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)

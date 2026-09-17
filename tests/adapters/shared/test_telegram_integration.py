@@ -19,7 +19,13 @@ from akgentic.infra.adapters.shared.channel_parser_registry import (
     ChannelParserRegistry,
 )
 from akgentic.infra.adapters.shared.telegram_parser import TelegramChannelParser
-from akgentic.infra.protocols.channels import ChannelParser, InteractionChannelAdapter
+from akgentic.infra.protocols.channels import (
+    ChannelBinding,
+    ChannelParser,
+    InitiatedTeam,
+    InteractionChannelAdapter,
+    JsonValue,
+)
 
 # ---------------------------------------------------------------------------
 # AC 7: ChannelParserRegistry resolves Telegram classes from FQCN config
@@ -96,25 +102,25 @@ class _StubIngestion:
         content: str,
         channel_user_id: str,
         catalog_entry_id: str,
-    ) -> uuid.UUID:
-        new_id = uuid.uuid4()
-        self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id))
-        return new_id
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> InitiatedTeam:
+        self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id, metadata))
+        return InitiatedTeam(team_id=uuid.uuid4(), entry_point_name="@HumanProxy_0")
 
 
 class _StubChannelRegistry:
-    """Stub ChannelRegistry that returns None (no existing team)."""
+    """Stub ChannelRegistry that returns None (no existing team).
+
+    The webhook route resolves this straight off ``app.state``, so nothing
+    isinstance-checks it — but every method the route or a later flow calls
+    still has to land, which is why the full surface is here.
+    """
 
     def __init__(self) -> None:
-        self.registrations: list[tuple] = []
+        self.registrations: list[ChannelBinding] = []
 
-    async def register(
-        self,
-        channel: str,
-        channel_user_id: str,
-        team_id: uuid.UUID,
-    ) -> None:
-        self.registrations.append((channel, channel_user_id, team_id))
+    async def register(self, binding: ChannelBinding) -> None:
+        self.registrations.append(binding)
 
     async def find_team(
         self,
@@ -123,8 +129,34 @@ class _StubChannelRegistry:
     ) -> uuid.UUID | None:
         return None
 
+    async def find_binding(
+        self,
+        channel: str,
+        channel_user_id: str,
+    ) -> ChannelBinding | None:
+        return None
+
     async def deregister(self, channel: str, channel_user_id: str) -> None:
         pass
+
+    async def deregister_team(self, team_id: uuid.UUID) -> None:
+        pass
+
+    def find_binding_sync(self, team_id: uuid.UUID, agent_name: str) -> ChannelBinding | None:
+        return None
+
+
+class _StubTeamService:
+    """Stub TeamService — the route requires one on ``app.state`` for ``status``.
+
+    The dependency is resolved before the handler body runs, so an app that
+    omits the slot answers 500 on *every* request to this route, including the
+    404 and 400 paths. None of the flows here is a ``status`` command, so
+    answering ``None`` is enough.
+    """
+
+    def get_team(self, team_id: uuid.UUID) -> None:
+        return None
 
 
 class TestWebhookWithTelegramParser:
@@ -148,6 +180,7 @@ class TestWebhookWithTelegramParser:
         app.state.channel_parser_registry = registry
         app.state.ingestion = ingestion
         app.state.channel_registry = channel_registry
+        app.state.team_service = _StubTeamService()
 
         return app, ingestion, channel_registry
 
@@ -170,15 +203,19 @@ class TestWebhookWithTelegramParser:
         assert resp.status_code == 204
 
         assert len(ingestion.initiate_team_calls) == 1
-        content, channel_user_id, catalog_entry = ingestion.initiate_team_calls[0]
+        content, channel_user_id, catalog_entry, metadata = ingestion.initiate_team_calls[0]
         assert content == "Hello bot!"
         assert channel_user_id == "987654321"
         assert catalog_entry == "test-team"
+        # A Telegram Update carries no business metadata, and metadata is
+        # per-message rather than per-channel, so nothing may invent one here.
+        assert metadata is None
 
         assert len(channel_registry.registrations) == 1
-        channel, user_id, _team_id = channel_registry.registrations[0]
-        assert channel == "telegram"
-        assert user_id == "987654321"
+        binding = channel_registry.registrations[0]
+        assert binding.channel == "telegram"
+        assert binding.channel_user_id == "987654321"
+        assert binding.agent_name == "@HumanProxy_0"
 
     def test_unknown_channel_returns_404(self) -> None:
         app, _, _ = self._make_app()
@@ -186,12 +223,16 @@ class TestWebhookWithTelegramParser:
         resp = client.post("/webhook/unknown", json={"text": "hello"})
         assert resp.status_code == 404
 
-    def test_invalid_telegram_payload_returns_400(self) -> None:
-        """Payload without 'message' key → parser raises ValueError,
-        surfaced as HTTP 400 (client sent a malformed body — not a 5xx).
+    def test_invalid_telegram_payload_is_acknowledged_not_refused(self) -> None:
+        """Payload without 'message' key → parser raises ValueError → 204.
+
+        Telegram redelivers any non-2xx with backoff, so a 4xx on an update it
+        will re-send unchanged — a photo, a sticker, a service message — never
+        drains from the queue. Acknowledging is what makes the drop terminal.
         """
-        app, _, _ = self._make_app()
+        app, ingestion, _ = self._make_app()
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post("/webhook/telegram", json={"update_id": 1})
-        assert resp.status_code == 400
-        assert "message" in resp.json()["detail"].lower()
+        assert resp.status_code == 204
+        assert resp.content == b""
+        assert ingestion.initiate_team_calls == []
