@@ -10,7 +10,7 @@ import httpx
 
 if TYPE_CHECKING:
     from akgentic.core.messages import SentMessage
-    from akgentic.infra.protocols.channels import ChannelBinding
+    from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,9 @@ class TelegramChannelAdapter:
     ``deliver()`` sends a synchronous POST to the Telegram ``sendMessage``
     endpoint, addressing ``binding.channel_user_id`` — the chat the inbound
     message arrived from, and the only place that value exists on the outbound
-    path.
+    path. ``deliver_notice()`` posts a channel-layer acknowledgement to an
+    address, which a binding also satisfies. Both go through one ``_post``, so
+    they cannot drift apart in how they send or how they handle failure.
 
     This adapter is process-scoped: one instance serves every team, and its
     httpx client is never closed on a single team's stop.
@@ -78,24 +80,24 @@ class TelegramChannelAdapter:
         except Exception:  # noqa: BLE001
             return False
 
-    def deliver(self, msg: SentMessage, binding: ChannelBinding) -> None:
-        """Deliver an outbound message to a Telegram chat.
+    def _post(self, chat_id: str, text: str) -> None:
+        """POST one ``sendMessage`` call, logging every failure rather than raising.
 
-        Posts to the Telegram ``sendMessage`` API. The ``chat_id`` comes from
-        ``binding.channel_user_id``; the recipient's ``name`` is the TeamCard's
-        agent name and posting it yields a Telegram 400.
+        The single place this adapter talks to Telegram, so a message and a
+        notice cannot drift apart in how they are sent or how failures are
+        handled.
 
-        Logs errors without raising — delivery failures must not crash
-        the caller.
+        ``RuntimeError`` is caught alongside ``httpx.HTTPError`` because a closed
+        or otherwise unusable client raises ``RuntimeError("Cannot send a
+        request, as the client has been closed.")``, which is **not** an
+        ``httpx.HTTPError``. On the ``deliver`` path that escape crashes an actor
+        thread; on the ``deliver_notice`` path it turns a command that already
+        took effect into a 500 and a channel retry loop.
 
         Args:
-            msg: The message to deliver.
-            binding: The recipient agent's channel binding, naming the chat.
+            chat_id: The Telegram chat to post to.
+            text: The message body.
         """
-        chat_id = binding.channel_user_id
-        text = getattr(msg.message, "content", None) or str(msg.message)
-        logger.debug("Delivering message to Telegram chat %s", chat_id)
-
         try:
             response = self._client.post(
                 "sendMessage",
@@ -107,8 +109,49 @@ class TelegramChannelAdapter:
                     response.status_code,
                     response.text,
                 )
-        except httpx.HTTPError:
-            logger.exception("Failed to deliver message to Telegram chat %s", chat_id)
+        except (httpx.HTTPError, RuntimeError):
+            logger.exception("Failed to post to Telegram chat %s", chat_id)
+
+    def deliver(self, msg: SentMessage, binding: ChannelBinding) -> None:
+        """Deliver an outbound message to a Telegram chat.
+
+        Posts to the Telegram ``sendMessage`` API. The ``chat_id`` comes from
+        ``binding.channel_user_id``; the recipient's ``name`` is the TeamCard's
+        agent name and posting it yields a Telegram 400.
+
+        Logs transport errors and a closed client without raising — delivery
+        failures must not crash the caller, which here is a Pykka actor thread.
+
+        Args:
+            msg: The message to deliver.
+            binding: The recipient agent's channel binding, naming the chat.
+        """
+        chat_id = binding.channel_user_id
+        text = getattr(msg.message, "content", None) or str(msg.message)
+        logger.debug("Delivering message to Telegram chat %s", chat_id)
+        self._post(chat_id, text)
+
+    def deliver_notice(self, address: ChannelAddress, text: str) -> None:
+        """Deliver a channel-layer acknowledgement to a Telegram chat.
+
+        Called from the FastAPI route, not an actor thread, and needing no
+        ``matches()``: the address names the destination outright. Notices are
+        fanned out to every configured adapter, so the channel comparison is
+        what stops a Slack chat id being posted here — the same check
+        ``matches()`` performs on a binding.
+
+        Logs transport errors and a closed client without raising: the command
+        has already taken effect, and a raise here would turn it into a 500 the
+        channel retries.
+
+        Args:
+            address: The chat to answer. A ``ChannelBinding`` satisfies this.
+            text: The acknowledgement text.
+        """
+        if address.channel != TELEGRAM_CHANNEL:
+            return
+        logger.debug("Delivering notice to Telegram chat %s", address.channel_user_id)
+        self._post(address.channel_user_id, text)
 
     def on_stop(self, team_id: uuid.UUID) -> None:
         """Note that a team stopped; release nothing.

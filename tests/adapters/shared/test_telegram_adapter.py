@@ -11,7 +11,7 @@ from akgentic.core.actor_address_impl import ActorAddressProxy
 from akgentic.core.messages.orchestrator import SentMessage
 
 from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
-from akgentic.infra.protocols.channels import ChannelBinding
+from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
 
 TEAM_ID = uuid.uuid4()
 
@@ -315,3 +315,75 @@ class TestOnStop:
         assert len(transport.requests) == 1
         body = json.loads(transport.requests[0].content)
         assert body["chat_id"] == "555"
+
+
+# ---------------------------------------------------------------------------
+# deliver_notice() answers one chat, named by an address
+# ---------------------------------------------------------------------------
+
+
+class TestDeliverNotice:
+    """A channel-layer acknowledgement reaches the chat the address names."""
+
+    def test_notice_addressed_by_a_bare_address_posts_to_that_chat(self) -> None:
+        """The unbound paths have no team, and must still be able to answer."""
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+
+        adapter.deliver_notice(
+            ChannelAddress(channel="telegram", channel_user_id="12345"),
+            "no active session",
+        )
+
+        assert len(transport.requests) == 1
+        body = json.loads(transport.requests[0].content)
+        assert body["chat_id"] == "12345"
+        assert body["text"] == "no active session"
+
+    def test_notice_addressed_by_a_binding_posts_to_the_same_chat(self) -> None:
+        """A binding *is* an address — every bound caller passes its own record."""
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+
+        adapter.deliver_notice(_binding(channel_user_id="777"), "released")
+
+        assert len(transport.requests) == 1
+        body = json.loads(transport.requests[0].content)
+        assert body["chat_id"] == "777"
+
+    def test_notice_for_another_channel_posts_nothing(self) -> None:
+        """G7: notices fan out to every adapter, so each one filters by channel.
+
+        Without the comparison this adapter posts a Slack chat id to Telegram —
+        the wrong-POST defect one channel over.
+        """
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+
+        adapter.deliver_notice(
+            ChannelAddress(channel="slack", channel_user_id="U123"),
+            "released",
+        )
+
+        assert transport.requests == []
+
+    def test_a_closed_client_does_not_raise_out_of_a_notice(self) -> None:
+        """A closed client raises RuntimeError, which is not an httpx.HTTPError.
+
+        On this path the command has already taken effect, so an escaping error
+        would turn a success into a 500 and a channel retry loop.
+        """
+        adapter = _make_adapter(transport=_CaptureTransport())
+        adapter._client.close()
+
+        adapter.deliver_notice(
+            ChannelAddress(channel="telegram", channel_user_id="12345"),
+            "released",
+        )
+
+    def test_a_closed_client_does_not_raise_out_of_deliver_either(self) -> None:
+        """The same guard protects the actor thread ``deliver`` runs on."""
+        adapter = _make_adapter(transport=_CaptureTransport())
+        adapter._client.close()
+
+        adapter.deliver(_make_sent_message(content="hi"), _binding())

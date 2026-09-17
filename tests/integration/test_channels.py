@@ -12,7 +12,12 @@ from fastapi.testclient import TestClient
 from akgentic.infra.adapters.community.yaml_channel_registry import (
     YamlChannelRegistry,
 )
-from akgentic.infra.protocols.channels import ChannelBinding, ChannelMessage, JsonValue
+from akgentic.infra.protocols.channels import (
+    ChannelAddress,
+    ChannelBinding,
+    ChannelMessage,
+    JsonValue,
+)
 
 from ._helpers import (
     POLL_INTERVAL_S,
@@ -65,12 +70,16 @@ class StubChannelAdapter:
 
     def __init__(self) -> None:
         self.delivered: list[SentMessage] = []
+        self.notices: list[tuple[ChannelAddress, str]] = []
 
     def matches(self, msg: SentMessage, binding: ChannelBinding) -> bool:  # noqa: ARG002
         return True
 
     def deliver(self, msg: SentMessage, binding: ChannelBinding) -> None:  # noqa: ARG002
         self.delivered.append(msg)
+
+    def deliver_notice(self, address: ChannelAddress, text: str) -> None:
+        self.notices.append((address, text))
 
     def on_stop(self, team_id: uuid.UUID) -> None:  # noqa: ARG002
         pass

@@ -606,3 +606,98 @@ async def test_disabled_registry_deregister_team_is_noop() -> None:
     """deregister_team() is a no-op when the registry is disabled."""
     reg = YamlChannelRegistry()
     await reg.deregister_team(uuid.uuid4())
+
+
+# ---------------------------------------------------------------------------
+# The mutations are total too — a scalar section breaks neither write path
+# ---------------------------------------------------------------------------
+
+
+async def test_deregister_against_a_corrupt_channel_section_is_a_no_op(
+    registry_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """G10: ``deregister`` popped straight off the section and raised AttributeError.
+
+    It had no caller anywhere until the session commands gave it one, so the
+    crash was latent. The section is left on disk: filtering it out inside
+    ``_load`` would erase the operator's edit on the next ``register``, turning
+    a merely-unreadable hand-edit into a deleted one.
+    """
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump({"telegram": "not-a-mapping"}),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+
+    with caplog.at_level(logging.WARNING):
+        await reg.deregister("telegram", "987654321")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+    assert all("telegram" in message for message in warnings)
+    # The operator's section survives, unchanged.
+    stored = registry_path.read_text(encoding="utf-8")  # noqa: ASYNC240
+    assert yaml.safe_load(stored) == {"telegram": "not-a-mapping"}
+
+
+async def test_deregister_team_against_a_corrupt_channel_section_is_a_no_op(
+    registry_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """G10: ``_prune_team`` iterated the scalar's *characters* and indexed a str.
+
+    This one is not latent: ``deregister_team`` runs on team teardown, on the
+    orchestrator thread through ``asyncio.run``, where a raise lands far from
+    its cause.
+    """
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump({"telegram": "not-a-mapping"}),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+
+    with caplog.at_level(logging.WARNING):
+        await reg.deregister_team(uuid.uuid4())
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+    assert all("telegram" in message for message in warnings)
+    stored = registry_path.read_text(encoding="utf-8")  # noqa: ASYNC240
+    assert yaml.safe_load(stored) == {"telegram": "not-a-mapping"}
+
+
+async def test_deregister_team_still_prunes_readable_sections_beside_a_corrupt_one(
+    registry_path: Path,
+) -> None:
+    """The bad section is skipped, not taken as the whole sweep failing."""
+    doomed = _binding(channel="slack", channel_user_id="U222")
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump(
+            {"telegram": "not-a-mapping", "slack": {"U222": doomed.model_dump(mode="json")}}
+        ),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+
+    await reg.deregister_team(doomed.team_id)
+
+    assert await reg.find_binding("slack", "U222") is None
+    stored = registry_path.read_text(encoding="utf-8")  # noqa: ASYNC240
+    assert yaml.safe_load(stored) == {"telegram": "not-a-mapping"}
+
+
+async def test_deregister_leaves_a_readable_section_beside_a_corrupt_one(
+    registry_path: Path,
+) -> None:
+    """A deregister on one channel does not disturb another's records."""
+    survivor = _binding(channel="slack", channel_user_id="U333")
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump(
+            {"telegram": "not-a-mapping", "slack": {"U333": survivor.model_dump(mode="json")}}
+        ),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+
+    await reg.deregister("telegram", "987654321")
+
+    assert await reg.find_binding("slack", "U333") == survivor

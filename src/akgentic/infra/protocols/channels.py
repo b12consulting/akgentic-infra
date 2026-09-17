@@ -21,6 +21,19 @@ if TYPE_CHECKING:
 type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 
 
+class ChannelCommand(SerializableBaseModel):
+    """A slash command the channel's own markup identified in an inbound message.
+
+    ``name`` is a plain ``str`` rather than an enum on purpose: the channel layer
+    consumes three names and passes every other one through as ordinary text, so
+    an unrecognised command must be a *value*, not a validation error at parse
+    time (ADR-043 §D10).
+    """
+
+    name: str = Field(description="Command word, lowercased, without its leading slash")
+    rest: str = Field(default="", description="Everything after the command word, verbatim")
+
+
 class ChannelMessage(SerializableBaseModel):
     """Normalized message from an external interaction channel."""
 
@@ -37,9 +50,24 @@ class ChannelMessage(SerializableBaseModel):
             "declared contract."
         ),
     )
+    command: ChannelCommand | None = Field(
+        default=None,
+        description=(
+            "The slash command the channel's own markup identified, or None. "
+            "``content`` is unaffected: a command the channel layer does not "
+            "consume must reach the team looking exactly as the user typed it."
+        ),
+    )
 
 
-class ChannelBinding(SerializableBaseModel):
+class ChannelAddress(SerializableBaseModel):
+    """Names one chat on one channel — where a message goes, with no team attached."""
+
+    channel: str = Field(description="Channel name (e.g., 'telegram', 'slack')")
+    channel_user_id: str = Field(description="Channel-specific user identifier (the chat)")
+
+
+class ChannelBinding(ChannelAddress):
     """Binds one channel conversation to one agent of one team.
 
     Stored **once** per ``(channel, channel_user_id)`` and read by two keys:
@@ -58,8 +86,6 @@ class ChannelBinding(SerializableBaseModel):
     chat would deliver one person's questions to another.
     """
 
-    channel: str = Field(description="Channel name (e.g., 'telegram', 'slack')")
-    channel_user_id: str = Field(description="Channel-specific user identifier (the chat)")
     team_id: uuid.UUID = Field(description="The team this channel conversation belongs to")
     agent_name: str = Field(
         description=(
@@ -99,10 +125,12 @@ class InteractionChannelAdapter(Protocol):
         an HTTP client, a socket, a token — is shared by all of them.
 
     Addressing:
-        Every call carries a ``ChannelBinding`` naming the destination chat.
-        The message's own recipient address cannot: ``ActorAddress.name`` is
-        the TeamCard's agent name (``human_support``, ``@HumanProxy_0``), never
-        a channel identifier (ADR-043 §D4).
+        Every call carries the destination chat explicitly — a
+        ``ChannelBinding`` on the message path, a bare ``ChannelAddress`` on the
+        notice path, which a binding also satisfies. The message's own recipient
+        address cannot name it: ``ActorAddress.name`` is the TeamCard's agent
+        name (``human_support``, ``@HumanProxy_0``), never a channel identifier
+        (ADR-043 §D4).
 
     Threading constraint:
         ``deliver()`` runs inside a Pykka actor thread (called from
@@ -136,6 +164,32 @@ class InteractionChannelAdapter(Protocol):
             binding: The recipient agent's channel binding. Its
                 ``channel_user_id`` names the destination chat — the only place
                 that value exists on the outbound path.
+        """
+        ...
+
+    def deliver_notice(self, address: ChannelAddress, text: str) -> None:
+        """Deliver a channel-layer acknowledgement to one chat.
+
+        Unlike ``deliver``, this is called from the FastAPI route rather than a
+        Pykka actor thread, and it needs no ``matches()``: the address names the
+        destination outright, so there is no message to inspect and no recipient
+        to classify.
+
+        The parameter is a ``ChannelAddress`` and not a ``ChannelBinding``
+        because the paths that need it may have no team — ``status`` can find no
+        binding, and ``unregister`` has just destroyed one. A binding-typed
+        parameter could only be satisfied by fabricating a team id (ADR-043
+        §D10, as corrected in its revision log).
+
+        An implementation MUST compare ``address.channel`` against the channel
+        it serves and return silently otherwise, exactly as ``matches()``
+        already compares ``binding.channel``: notices are fanned out to every
+        configured adapter, so an unguarded implementation posts one channel's
+        chat id to another's service.
+
+        Args:
+            address: The chat to answer — channel and channel user id.
+            text: The acknowledgement text.
         """
         ...
 

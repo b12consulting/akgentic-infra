@@ -146,6 +146,19 @@ class _StubChannelRegistry:
         return None
 
 
+class _StubTeamService:
+    """Stub TeamService — the route requires one on ``app.state`` for ``status``.
+
+    The dependency is resolved before the handler body runs, so an app that
+    omits the slot answers 500 on *every* request to this route, including the
+    404 and 400 paths. None of the flows here is a ``status`` command, so
+    answering ``None`` is enough.
+    """
+
+    def get_team(self, team_id: uuid.UUID) -> None:
+        return None
+
+
 class TestWebhookWithTelegramParser:
     """AC 8 (unit-level): Telegram Update flows through webhook route."""
 
@@ -167,6 +180,7 @@ class TestWebhookWithTelegramParser:
         app.state.channel_parser_registry = registry
         app.state.ingestion = ingestion
         app.state.channel_registry = channel_registry
+        app.state.team_service = _StubTeamService()
 
         return app, ingestion, channel_registry
 
