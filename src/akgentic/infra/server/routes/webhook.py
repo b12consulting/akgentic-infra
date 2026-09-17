@@ -66,9 +66,11 @@ async def _verify_claimed_team(
     binding = await channel_registry.find_binding(channel, message.channel_user_id)
     if binding is None or binding.team_id != message.team_id:
         logger.warning(
-            "Webhook reply rejected: channel=%s, user=%s — claimed team is not the bound one",
+            "Webhook reply rejected: channel=%s, user=%s, claimed_team_id=%s — "
+            "the claim is not the team this conversation is bound to",
             channel,
             message.channel_user_id,
+            message.team_id,
         )
         raise HTTPException(status_code=403, detail="team_id does not belong to this conversation")
 
