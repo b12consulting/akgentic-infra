@@ -71,6 +71,9 @@ class LocalIngestion:
                 already accepts both, so inspecting the type here would only add
                 a branch that can lose what a typed message carries.
             original_message_id: Optional ID of the message being replied to.
+                Accepted for Protocol conformance and not threaded any further:
+                ``TeamService.send_message`` has no reply-to parameter, so the
+                community tier has nowhere to put it.
         """
         logger.info("Inbound reply: team_id=%s", team_id)
         self._require_team_service().send_message(team_id, content)
