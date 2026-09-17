@@ -480,6 +480,50 @@ async def test_a_corrupt_channel_section_does_not_break_construction(
     assert reg.find_binding_sync(uuid.uuid4(), "@HumanProxy_0") is None
 
 
+async def test_a_corrupt_channel_section_reads_as_absent(
+    registry_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A scalar channel section makes ``find_binding`` answer None, not raise.
+
+    Construction already skips such a section; the inbound read did not, so a
+    single hand-edit turned every lookup on that channel into a 500. The reply
+    branch performs its binding check through this read, and a check that cannot
+    run is worse than one that says no — so the read is made total here. The
+    section is left on disk untouched: filtering it out at load time would erase
+    the operator's edit on the next write.
+    """
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump({"telegram": "not-a-mapping"}),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+
+    with caplog.at_level(logging.WARNING):
+        assert await reg.find_binding("telegram", "987654321") is None
+        assert await reg.find_team("telegram", "987654321") is None
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings
+    assert all("telegram" in message for message in warnings)
+
+
+async def test_a_corrupt_channel_section_leaves_other_channels_readable(
+    registry_path: Path,
+) -> None:
+    """The unreadable section is skipped, not taken as the whole file failing."""
+    survivor = _binding(channel="slack", channel_user_id="U111")
+    registry_path.write_text(  # noqa: ASYNC240
+        yaml.safe_dump(
+            {"telegram": "not-a-mapping", "slack": {"U111": survivor.model_dump(mode="json")}}
+        ),
+        encoding="utf-8",
+    )
+    reg = YamlChannelRegistry(registry_path)
+
+    assert await reg.find_binding("telegram", "987654321") is None
+    assert await reg.find_binding("slack", "U111") == survivor
+
+
 async def test_a_malformed_record_does_not_block_a_fresh_binding(registry_path: Path) -> None:
     """The next inbound message overwrites it, exactly as for a legacy record."""
     registry_path.write_text(  # noqa: ASYNC240

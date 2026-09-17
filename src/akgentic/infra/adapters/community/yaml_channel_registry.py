@@ -160,7 +160,21 @@ class YamlChannelRegistry:
 
     async def find_binding(self, channel: str, channel_user_id: str) -> ChannelBinding | None:
         """Look up the whole binding for a channel user, or return None."""
-        record = self._load().get(channel, {}).get(channel_user_id)
+        channel_data = self._load().get(channel, {})
+        if not isinstance(channel_data, dict):
+            # A hand-edit leaving a scalar where the per-user mapping belongs.
+            # Construction already skips it; this read must too, because the
+            # reply branch performs its security check through here and a check
+            # that raises cannot be performed at all. The section is left on
+            # disk: filtering it out at load time would erase the operator's
+            # edit on the next mutation, which writes back what it read.
+            logger.warning(
+                "Channel registry: ignoring section for %s — not a mapping of channel users; "
+                "the next inbound message will start a new team",
+                channel,
+            )
+            return None
+        record = channel_data.get(channel_user_id)
         if record is None:
             logger.debug("Channel registry: lookup %s/%s → None", channel, channel_user_id)
             return None

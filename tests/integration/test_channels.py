@@ -133,32 +133,86 @@ class TestChannelInitiation:
 
 
 class TestChannelReply:
-    """AC #2: Webhook with team_id routes to the correct team."""
+    """AC #2: Webhook with team_id routes to the correct team.
+
+    The team is created **through the channel**, because that is what writes the
+    binding the reply branch verifies the claimed id against. A team created via
+    ``POST /teams/`` has no binding, so naming its id on the webhook is the
+    injection the route now answers 403 — which is the point of the check, not a
+    gap in this spec.
+    """
 
     def test_reply_routes_to_existing_team(
         self,
         channel_client: TestClient,
+        channel_registry_instance: YamlChannelRegistry,
     ) -> None:
-        create_resp = channel_client.post(
-            "/teams/",
-            json={"catalog_namespace": "test-team"},
+        resp = channel_client.post(
+            "/webhook/test-channel",
+            json={
+                "content": "Respond with one word.",
+                "channel_user_id": "ext-user-2",
+            },
         )
-        assert create_resp.status_code == 201
-        team_id = create_resp.json()["team_id"]
+        assert resp.status_code == 204
+
+        team_id = _find_team_via_registry(
+            channel_registry_instance,
+            "test-channel",
+            "ext-user-2",
+        )
+        assert team_id is not None, "Channel registry should map ext-user-2 after initiation"
+
+        try:
+            wait_for_llm_response(channel_client, str(team_id))
+
+            resp = channel_client.post(
+                "/webhook/test-channel",
+                json={
+                    "content": "What is 3 + 3? Answer with the number.",
+                    "channel_user_id": "ext-user-2",
+                    "team_id": str(team_id),
+                },
+            )
+            assert resp.status_code == 204
+
+            events = wait_for_llm_response(channel_client, str(team_id))
+            assert has_llm_content(events)
+        finally:
+            channel_client.post(f"/teams/{team_id}/stop")
+
+    def test_a_team_this_conversation_is_not_bound_to_is_refused(
+        self,
+        channel_client: TestClient,
+        channel_registry_instance: YamlChannelRegistry,
+    ) -> None:
+        """A second channel user cannot address the first one's team by naming it."""
+        resp = channel_client.post(
+            "/webhook/test-channel",
+            json={
+                "content": "Respond with one word.",
+                "channel_user_id": "ext-user-2a",
+            },
+        )
+        assert resp.status_code == 204
+
+        team_id = _find_team_via_registry(
+            channel_registry_instance,
+            "test-channel",
+            "ext-user-2a",
+        )
+        assert team_id is not None
 
         try:
             resp = channel_client.post(
                 "/webhook/test-channel",
                 json={
                     "content": "What is 3 + 3? Answer with the number.",
-                    "channel_user_id": "ext-user-2",
-                    "team_id": team_id,
+                    "channel_user_id": "ext-user-2b",
+                    "team_id": str(team_id),
                 },
             )
-            assert resp.status_code == 204
-
-            events = wait_for_llm_response(channel_client, team_id)
-            assert has_llm_content(events)
+            assert resp.status_code == 403
         finally:
             channel_client.post(f"/teams/{team_id}/stop")
 
