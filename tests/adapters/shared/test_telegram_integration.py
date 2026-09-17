@@ -19,7 +19,11 @@ from akgentic.infra.adapters.shared.channel_parser_registry import (
     ChannelParserRegistry,
 )
 from akgentic.infra.adapters.shared.telegram_parser import TelegramChannelParser
-from akgentic.infra.protocols.channels import ChannelParser, InteractionChannelAdapter
+from akgentic.infra.protocols.channels import (
+    ChannelParser,
+    InteractionChannelAdapter,
+    JsonValue,
+)
 
 # ---------------------------------------------------------------------------
 # AC 7: ChannelParserRegistry resolves Telegram classes from FQCN config
@@ -96,9 +100,10 @@ class _StubIngestion:
         content: str,
         channel_user_id: str,
         catalog_entry_id: str,
+        metadata: dict[str, JsonValue] | None = None,
     ) -> uuid.UUID:
         new_id = uuid.uuid4()
-        self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id))
+        self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id, metadata))
         return new_id
 
 
@@ -170,10 +175,13 @@ class TestWebhookWithTelegramParser:
         assert resp.status_code == 204
 
         assert len(ingestion.initiate_team_calls) == 1
-        content, channel_user_id, catalog_entry = ingestion.initiate_team_calls[0]
+        content, channel_user_id, catalog_entry, metadata = ingestion.initiate_team_calls[0]
         assert content == "Hello bot!"
         assert channel_user_id == "987654321"
         assert catalog_entry == "test-team"
+        # A Telegram Update carries no business metadata, and metadata is
+        # per-message rather than per-channel, so nothing may invent one here.
+        assert metadata is None
 
         assert len(channel_registry.registrations) == 1
         channel, user_id, _team_id = channel_registry.registrations[0]

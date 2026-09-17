@@ -11,9 +11,14 @@ from akgentic.core.utils.serializer import SerializableBaseModel
 
 if TYPE_CHECKING:
     from akgentic.core.messages import SentMessage
+    from akgentic.core.messages.message import Message
 
 # Recursive JSON-safe type for webhook payloads — replaces dict[str, Any].
-JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+# PEP 695 (``type`` statement) rather than a plain assignment: the alias is
+# recursive, and once it annotates a Pydantic *field* (``ChannelMessage.metadata``)
+# the implicit form makes schema generation recurse until it blows the stack.
+# A named alias gives Pydantic a definition reference to close the cycle with.
+type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
 
 
 class ChannelMessage(SerializableBaseModel):
@@ -24,6 +29,14 @@ class ChannelMessage(SerializableBaseModel):
     message_id: str | None = Field(default=None, description="Channel-specific message ID")
     team_id: uuid.UUID | None = Field(default=None, description="Associated team ID")
     catalog_entry: str | None = Field(default=None, description="Catalog entry for the new team")
+    metadata: dict[str, JsonValue] | None = Field(
+        default=None,
+        description=(
+            "Plain-JSON business metadata the parser lifted from the channel payload. "
+            "Carried to team creation only; validated there against the resolved card's "
+            "declared contract."
+        ),
+    )
 
 
 @runtime_checkable
@@ -92,6 +105,11 @@ class InteractionChannelIngestion(Protocol):
           exception family, which the app registers handlers for, so letting
           them propagate produces those two answers for free; a local catch that
           reports every failure as 404 discards the diagnosis.
+        - ``initiate_team()`` also raises ``MetadataValidationError`` → HTTP 422
+          for a ``metadata`` body that fails the resolved card's declared
+          contract. **Catch it nowhere**, exactly as the catalog exceptions
+          above: it is a ``ServerError``, so the app-level handler already
+          answers 422 carrying the validator's own message.
         - ``route_reply()`` raises ``ValueError`` if ``team_id`` does not
           correspond to a running team — ``TeamNotFoundError`` when the team is
           unknown, ``TeamStateConflictError`` when it exists in a state the
@@ -107,14 +125,17 @@ class InteractionChannelIngestion(Protocol):
     async def route_reply(
         self,
         team_id: uuid.UUID,
-        content: str,
+        content: str | Message,
         original_message_id: str | None = None,
     ) -> None:
         """Route an inbound reply to an existing team.
 
         Args:
             team_id: Target team ID.
-            content: Message content from the human.
+            content: Message content from the human — either bare text or a
+                pre-formed ``Message``, which the team service already accepts.
+                Implementations pass it through untouched; coercing to ``str``
+                here would discard everything a typed message carries.
             original_message_id: Optional ID of the message being replied to.
 
         Raises:
@@ -127,6 +148,7 @@ class InteractionChannelIngestion(Protocol):
         content: str,
         channel_user_id: str,
         catalog_entry_id: str,
+        metadata: dict[str, JsonValue] | None = None,
     ) -> uuid.UUID:
         """Create a new team and send the initial message.
 
@@ -134,12 +156,19 @@ class InteractionChannelIngestion(Protocol):
             content: Initial message content.
             channel_user_id: Channel-specific user identifier.
             catalog_entry_id: Catalog entry to use for team creation.
+            metadata: Optional plain-JSON business metadata carried by the
+                inbound message. Validated by ``TeamService`` against the
+                ``metadata_type`` the resolved card declares — the client never
+                names the type — so a channel-created team is filterable exactly
+                like one created from ``POST /teams`` (ADR-24 §metadata).
 
         Returns:
             The newly created team's ID.
 
         Raises:
             EntryNotFoundError: If catalog_entry_id is not found in catalog.
+            MetadataValidationError: If ``metadata`` fails the card's declared
+                contract.
         """
         ...
 

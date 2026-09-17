@@ -94,10 +94,13 @@ async def webhook(
             await ingestion.route_reply(existing_team, message.content, message.message_id)
         else:
             # Initiation flow
+            # Metadata rides the initiation branch only: it is fixed at team
+            # creation, and only creation validates it against the card.
             new_team_id = await ingestion.initiate_team(
                 message.content,
                 message.channel_user_id,
                 message.catalog_entry or parser.default_catalog_entry,
+                metadata=message.metadata,
             )
             logger.debug(
                 "Webhook initiation: channel=%s, user=%s, new_team=%s",

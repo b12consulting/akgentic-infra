@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import uuid
-from typing import Protocol, get_type_hints
+from typing import Protocol, get_args, get_type_hints
 
 
 def test_placement_strategy_is_protocol() -> None:
@@ -193,13 +193,37 @@ def test_interaction_channel_ingestion_has_initiate_team() -> None:
     assert "catalog_entry_id" in sig.parameters
     assert inspect.iscoroutinefunction(InteractionChannelIngestion.initiate_team)
 
+    # Business metadata rides the initiation call. Membership alone would leave
+    # the arity contract unstated, so assert what callers actually rely on: the
+    # parameter is passable by keyword and defaults to None, which is what keeps
+    # every tier implementation and fake working unchanged.
+    assert "metadata" in sig.parameters
+    metadata_param = sig.parameters["metadata"]
+    assert metadata_param.kind in (
+        inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    assert metadata_param.default is None
+
 
 def test_interaction_channel_ingestion_route_reply_returns_none() -> None:
     """InteractionChannelIngestion.route_reply returns None."""
+    from akgentic.core.messages.message import Message
+
     from akgentic.infra.protocols import InteractionChannelIngestion
 
-    hints = get_type_hints(InteractionChannelIngestion.route_reply)
+    hints = get_type_hints(InteractionChannelIngestion.route_reply, localns={"Message": Message})
     assert hints["return"] is type(None)
+
+
+def test_interaction_channel_ingestion_route_reply_content_accepts_message() -> None:
+    """route_reply's content accepts a pre-formed Message, not just text."""
+    from akgentic.core.messages.message import Message
+
+    from akgentic.infra.protocols import InteractionChannelIngestion
+
+    hints = get_type_hints(InteractionChannelIngestion.route_reply, localns={"Message": Message})
+    assert set(get_args(hints["content"])) == {str, Message}
 
 
 def test_interaction_channel_ingestion_initiate_team_returns_uuid() -> None:
@@ -212,13 +236,16 @@ def test_interaction_channel_ingestion_initiate_team_returns_uuid() -> None:
 
 def test_interaction_channel_ingestion_structural_subtyping() -> None:
     """A concrete class satisfying InteractionChannelIngestion is recognized."""
+    from akgentic.core.messages.message import Message
+
     from akgentic.infra.protocols import InteractionChannelIngestion
+    from akgentic.infra.protocols.channels import JsonValue
 
     class FakeIngestion:
         async def route_reply(
             self,
             team_id: uuid.UUID,
-            content: str,
+            content: str | Message,
             original_message_id: str | None = None,
         ) -> None:
             pass
@@ -228,6 +255,7 @@ def test_interaction_channel_ingestion_structural_subtyping() -> None:
             content: str,
             channel_user_id: str,
             catalog_entry_id: str,
+            metadata: dict[str, JsonValue] | None = None,
         ) -> uuid.UUID:
             return uuid.uuid4()
 
@@ -429,6 +457,34 @@ def test_channel_message_with_all_fields() -> None:
     assert msg.channel_user_id == "u1"
     assert msg.team_id == tid
     assert msg.message_id == "msg-123"
+
+
+def test_channel_message_metadata_defaults_to_none() -> None:
+    """Omitting metadata leaves it None — no parser is obliged to supply it."""
+    from akgentic.infra.protocols import ChannelMessage
+
+    msg = ChannelMessage(content="hello", channel_user_id="u1")
+    assert msg.metadata is None
+
+
+def test_channel_message_nested_metadata_survives_round_trip() -> None:
+    """Nested metadata validates and round-trips unchanged.
+
+    The field is annotated with the recursive ``JsonValue`` alias, so it has to
+    build a real Pydantic schema — an annotation that never validates would pass
+    construction and lose the nesting on the way back in.
+    """
+    from akgentic.infra.protocols import ChannelMessage
+
+    metadata = {"case": {"id": 7, "tags": ["a"]}, "tenant": "acme"}
+    msg = ChannelMessage(content="hello", channel_user_id="u1", metadata=metadata)
+
+    assert msg.metadata == metadata
+
+    restored = ChannelMessage.model_validate(msg.model_dump())
+    assert restored.metadata == metadata
+    assert restored.metadata is not None
+    assert restored.metadata["case"] == {"id": 7, "tags": ["a"]}
 
 
 # --- TeamHandle ---

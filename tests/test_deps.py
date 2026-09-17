@@ -11,7 +11,13 @@ from unittest.mock import MagicMock
 import pytest
 from akgentic.catalog import Catalog
 from akgentic.core.agent_card import AgentCard
-from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
+from akgentic.team.models import (
+    AgentCardEntry,
+    AgentStateSnapshot,
+    PersistedEvent,
+    Process,
+    TeamStatus,
+)
 from akgentic.team.ports import EventStore
 
 from akgentic.infra.protocols.auth import AuthStrategy
@@ -76,6 +82,10 @@ class FakeEventStore:
     def load_agent_cards(self, hashes: list[str]) -> dict[str, AgentCard]:
         """Return empty mapping."""
         return {}
+
+    def list_agent_card_entries(self) -> list[AgentCardEntry]:
+        """Return empty list."""
+        return []
 
 
 class TestTierServicesEventStoreProtocol:

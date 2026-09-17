@@ -7,6 +7,8 @@ import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from akgentic.core.messages.message import Message
+    from akgentic.infra.protocols.channels import JsonValue
     from akgentic.infra.server.services.team_service import TeamService
 
 logger = logging.getLogger(__name__)
@@ -57,14 +59,17 @@ class LocalIngestion:
     async def route_reply(
         self,
         team_id: uuid.UUID,
-        content: str,
+        content: str | Message,
         original_message_id: str | None = None,
     ) -> None:
         """Route an inbound reply to an existing team.
 
         Args:
             team_id: Target team ID.
-            content: Message content from the human.
+            content: Message content from the human — bare text or a pre-formed
+                ``Message``. Passed straight through: ``TeamService.send_message``
+                already accepts both, so inspecting the type here would only add
+                a branch that can lose what a typed message carries.
             original_message_id: Optional ID of the message being replied to.
         """
         logger.info("Inbound reply: team_id=%s", team_id)
@@ -75,6 +80,7 @@ class LocalIngestion:
         content: str,
         channel_user_id: str,
         catalog_entry_id: str,
+        metadata: dict[str, JsonValue] | None = None,
     ) -> uuid.UUID:
         """Create a new team and send the initial message.
 
@@ -82,6 +88,11 @@ class LocalIngestion:
             content: Initial message content.
             channel_user_id: Channel-specific user identifier.
             catalog_entry_id: Catalog entry to use for team creation.
+            metadata: Optional plain-JSON business metadata, forwarded
+                unconditionally — including when ``None``. ``TeamService``
+                validates it against the resolved card's declared contract and
+                raises ``MetadataValidationError`` (422), which is not caught
+                here.
 
         Returns:
             The newly created team's ID.
@@ -89,7 +100,7 @@ class LocalIngestion:
         logger.info("Inbound initiation: catalog=%s", catalog_entry_id)
         logger.debug("Initiation user: %s", channel_user_id)
         ts = self._require_team_service()
-        process = ts.create_team(catalog_entry_id, user_id=channel_user_id)
+        process = ts.create_team(catalog_entry_id, user_id=channel_user_id, metadata=metadata)
         ts.send_message(process.team_id, content)
         logger.debug("Team initiated: team_id=%s", process.team_id)
         return process.team_id
