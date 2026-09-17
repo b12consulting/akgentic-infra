@@ -11,13 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 from akgentic.catalog import Catalog
 from akgentic.core.agent_card import AgentCard
-from akgentic.team.models import (
-    AgentCardEntry,
-    AgentStateSnapshot,
-    PersistedEvent,
-    Process,
-    TeamStatus,
-)
+from akgentic.team import ports as team_ports
+from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamStatus
 from akgentic.team.ports import EventStore
 
 from akgentic.infra.protocols.auth import AuthStrategy
@@ -83,8 +78,17 @@ class FakeEventStore:
         """Return empty mapping."""
         return {}
 
-    def list_agent_card_entries(self) -> list[AgentCardEntry]:
-        """Return empty list."""
+    def list_agent_card_entries(self) -> list[team_ports.AgentCardEntry]:
+        """Return empty list.
+
+        The return type is named through the ``ports`` module rather than
+        imported: ``AgentCardEntry`` reached ``akgentic-team`` after the floor
+        this package declares, and a direct import would make the whole module
+        unimportable against a published wheel that predates it. Annotations are
+        strings here, so this one resolves only when ``get_type_hints`` asks —
+        which the parametrized guard below does only for methods the *installed*
+        protocol actually declares.
+        """
         return []
 
 
