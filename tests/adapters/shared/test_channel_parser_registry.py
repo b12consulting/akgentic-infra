@@ -37,10 +37,10 @@ class StubWhatsAppParser:
 class StubWhatsAppAdapter:
     """Test stub satisfying InteractionChannelAdapter protocol."""
 
-    def matches(self, msg: object) -> bool:
+    def matches(self, msg: object, binding: object) -> bool:
         return False
 
-    def deliver(self, msg: object) -> None:
+    def deliver(self, msg: object, binding: object) -> None:
         pass
 
     def on_stop(self, team_id: uuid.UUID) -> None:
@@ -68,10 +68,10 @@ class StubSlackParser:
 class StubSlackAdapter:
     """Test stub for a second channel adapter."""
 
-    def matches(self, msg: object) -> bool:
+    def matches(self, msg: object, binding: object) -> bool:
         return False
 
-    def deliver(self, msg: object) -> None:
+    def deliver(self, msg: object, binding: object) -> None:
         pass
 
     def on_stop(self, team_id: uuid.UUID) -> None:
@@ -262,10 +262,10 @@ class StubConfigAdapter:
     def __init__(self, api_key: str = "") -> None:
         self.api_key = api_key
 
-    def matches(self, msg: object) -> bool:
+    def matches(self, msg: object, binding: object) -> bool:
         return False
 
-    def deliver(self, msg: object) -> None:
+    def deliver(self, msg: object, binding: object) -> None:
         pass
 
     def on_stop(self, team_id: uuid.UUID) -> None:
@@ -357,10 +357,10 @@ class _StubAdapterWithConfig:
     def __init__(self, **kwargs: str) -> None:
         _StubAdapterWithConfig.received_config = dict(kwargs)
 
-    def matches(self, msg: object) -> bool:
+    def matches(self, msg: object, binding: object) -> bool:
         return True  # pragma: no cover
 
-    def deliver(self, msg: object) -> None:
+    def deliver(self, msg: object, binding: object) -> None:
         pass  # pragma: no cover
 
     def on_stop(self, team_id: uuid.UUID) -> None:

@@ -12,6 +12,13 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from akgentic.catalog import parse_prefixes
 
+# Deep module path deliberately. ``settings`` is reachable mid-initialisation of
+# ``akgentic.infra`` (adapters → community.no_auth → server.auth → server.app →
+# server.settings), at which point ``akgentic.infra.adapters`` is in
+# ``sys.modules`` but only partially executed. Importing the submodule resolves;
+# reading ``ChannelConfig`` off the half-built parent package would not.
+from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
+
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 
@@ -87,6 +94,10 @@ class ServerSettings(BaseSettings):
             "cycles. Isolated from the default executor to prevent "
             "cross-subsystem starvation."
         ),
+    )
+    channels: dict[str, ChannelConfig] = Field(
+        default_factory=dict,
+        description="Interaction channels to wire, keyed by channel name",
     )
     admin_list_all_teams: bool = Field(
         default=False,
