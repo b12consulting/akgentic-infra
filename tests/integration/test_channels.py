@@ -54,13 +54,10 @@ class StubChannelParser:
         """Parse test payload into ChannelMessage."""
         content = str(payload.get("content", ""))
         channel_user_id = str(payload.get("channel_user_id", ""))
-        raw_team_id = payload.get("team_id")
-        team_id = uuid.UUID(str(raw_team_id)) if raw_team_id is not None else None
         message_id = str(payload["message_id"]) if payload.get("message_id") else None
         return ChannelMessage(
             content=content,
             channel_user_id=channel_user_id,
-            team_id=team_id,
             channel_message_id=message_id,
         )
 
@@ -98,7 +95,10 @@ def _find_team_via_registry(
     """Synchronously look up a team from the YAML channel registry."""
     import asyncio
 
-    return asyncio.run(registry.find_team(channel, channel_user_id))
+    binding = asyncio.run(
+        registry.find_binding(ChannelAddress(channel=channel, channel_user_id=channel_user_id))
+    )
+    return None if binding is None else binding.team_id
 
 
 # ---------------------------------------------------------------------------
@@ -142,13 +142,11 @@ class TestChannelInitiation:
 
 
 class TestChannelReply:
-    """AC #2: Webhook with team_id routes to the correct team.
+    """A bound conversation's reply reaches its team; a payload cannot name another.
 
-    The team is created **through the channel**, because that is what writes the
-    binding the reply branch verifies the claimed id against. A team created via
-    ``POST /teams/`` has no binding, so naming its id on the webhook is the
-    injection the route now answers 403 — which is the point of the check, not a
-    gap in this spec.
+    The team is resolved from the conversation's binding only. A ``team_id`` in
+    the payload is not a field any parser can carry, so it cannot address a
+    team the conversation is not bound to.
     """
 
     def test_reply_routes_to_existing_team(
@@ -180,7 +178,6 @@ class TestChannelReply:
                 json={
                     "content": "What is 3 + 3? Answer with the number.",
                     "channel_user_id": "ext-user-2",
-                    "team_id": str(team_id),
                 },
             )
             assert resp.status_code == 204
@@ -190,12 +187,12 @@ class TestChannelReply:
         finally:
             channel_client.post(f"/teams/{team_id}/stop")
 
-    def test_a_team_this_conversation_is_not_bound_to_is_refused(
+    def test_naming_another_conversations_team_starts_your_own(
         self,
         channel_client: TestClient,
         channel_registry_instance: YamlChannelRegistry,
     ) -> None:
-        """A second channel user cannot address the first one's team by naming it."""
+        """A second channel user naming the first one's team gets a team of its own."""
         resp = channel_client.post(
             "/webhook/test-channel",
             json={
@@ -212,6 +209,7 @@ class TestChannelReply:
         )
         assert team_id is not None
 
+        other_team: uuid.UUID | None = None
         try:
             resp = channel_client.post(
                 "/webhook/test-channel",
@@ -221,9 +219,16 @@ class TestChannelReply:
                     "team_id": str(team_id),
                 },
             )
-            assert resp.status_code == 403
+            assert resp.status_code == 204
+            other_team = _find_team_via_registry(
+                channel_registry_instance, "test-channel", "ext-user-2b"
+            )
+            assert other_team is not None
+            assert other_team != team_id
         finally:
             channel_client.post(f"/teams/{team_id}/stop")
+            if other_team is not None:
+                channel_client.post(f"/teams/{other_team}/stop")
 
 
 class TestChannelContinuation:

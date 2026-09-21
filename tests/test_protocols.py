@@ -222,64 +222,64 @@ def test_interaction_channel_ingestion_is_protocol() -> None:
     assert Protocol in inspect.getmro(InteractionChannelIngestion)
 
 
-def test_interaction_channel_ingestion_has_route_reply() -> None:
-    """InteractionChannelIngestion defines async route_reply."""
+def test_interaction_channel_ingestion_has_send_message() -> None:
+    """InteractionChannelIngestion defines async send_message."""
     from akgentic.infra.protocols import InteractionChannelIngestion
 
-    assert hasattr(InteractionChannelIngestion, "route_reply")
-    sig = inspect.signature(InteractionChannelIngestion.route_reply)
-    assert "team_id" in sig.parameters
-    assert "content" in sig.parameters
-    assert "original_message_id" in sig.parameters
-    assert inspect.iscoroutinefunction(InteractionChannelIngestion.route_reply)
+    sig = inspect.signature(InteractionChannelIngestion.send_message)
+    assert list(sig.parameters) == ["self", "team_id", "content", "original_message_id"]
+    assert sig.parameters["original_message_id"].default is None
+    assert inspect.iscoroutinefunction(InteractionChannelIngestion.send_message)
 
 
-def test_interaction_channel_ingestion_has_initiate_team() -> None:
-    """InteractionChannelIngestion defines async initiate_team."""
+def test_interaction_channel_ingestion_has_create_team() -> None:
+    """InteractionChannelIngestion defines async create_team, which takes no content.
+
+    Creation and the first message are two calls so the caller can write the
+    binding between them; a ``content`` parameter coming back would re-open the
+    window where a reply is produced before the chat can be found.
+    """
     from akgentic.infra.protocols import InteractionChannelIngestion
 
-    assert hasattr(InteractionChannelIngestion, "initiate_team")
-    sig = inspect.signature(InteractionChannelIngestion.initiate_team)
-    assert "content" in sig.parameters
-    assert "channel_user_id" in sig.parameters
-    assert "catalog_entry_id" in sig.parameters
-    assert inspect.iscoroutinefunction(InteractionChannelIngestion.initiate_team)
-
-    # Business metadata rides the initiation call. Membership alone would leave
-    # the arity contract unstated, so assert what callers actually rely on: the
-    # parameter is passable by keyword and defaults to None, which is what keeps
-    # every tier implementation and fake working unchanged.
-    assert "metadata" in sig.parameters
+    sig = inspect.signature(InteractionChannelIngestion.create_team)
+    assert list(sig.parameters) == ["self", "channel_user_id", "catalog_entry_id", "metadata"]
+    assert inspect.iscoroutinefunction(InteractionChannelIngestion.create_team)
+    # Keyword-passable with a None default, which keeps every caller unchanged.
     metadata_param = sig.parameters["metadata"]
-    assert metadata_param.kind in (
-        inspect.Parameter.KEYWORD_ONLY,
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-    )
+    assert metadata_param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert metadata_param.default is None
 
 
-def test_interaction_channel_ingestion_route_reply_returns_none() -> None:
-    """InteractionChannelIngestion.route_reply returns None."""
+def test_interaction_channel_ingestion_has_no_initiate_team() -> None:
+    """The combined create-and-send call is gone, not kept alongside the split."""
+    from akgentic.infra.protocols import InteractionChannelIngestion
+
+    assert not hasattr(InteractionChannelIngestion, "initiate_team")
+    assert not hasattr(InteractionChannelIngestion, "route_reply")
+
+
+def test_interaction_channel_ingestion_send_message_returns_none() -> None:
+    """InteractionChannelIngestion.send_message returns None."""
     from akgentic.core.messages.message import Message
 
     from akgentic.infra.protocols import InteractionChannelIngestion
 
-    hints = get_type_hints(InteractionChannelIngestion.route_reply, localns={"Message": Message})
+    hints = get_type_hints(InteractionChannelIngestion.send_message, localns={"Message": Message})
     assert hints["return"] is type(None)
 
 
-def test_interaction_channel_ingestion_route_reply_content_accepts_message() -> None:
-    """route_reply's content accepts a pre-formed Message, not just text."""
+def test_interaction_channel_ingestion_send_message_content_accepts_message() -> None:
+    """send_message's content accepts a pre-formed Message, not just text."""
     from akgentic.core.messages.message import Message
 
     from akgentic.infra.protocols import InteractionChannelIngestion
 
-    hints = get_type_hints(InteractionChannelIngestion.route_reply, localns={"Message": Message})
+    hints = get_type_hints(InteractionChannelIngestion.send_message, localns={"Message": Message})
     assert set(get_args(hints["content"])) == {str, Message}
 
 
-def test_interaction_channel_ingestion_initiate_team_returns_initiated_team() -> None:
-    """InteractionChannelIngestion.initiate_team returns InitiatedTeam, not a bare UUID.
+def test_interaction_channel_ingestion_create_team_returns_initiated_team() -> None:
+    """InteractionChannelIngestion.create_team returns InitiatedTeam, not a bare UUID.
 
     A bare id cannot answer an outbound lookup, which starts from an agent: the
     caller needs the entry point's spawned name in the same breath to write a
@@ -287,7 +287,7 @@ def test_interaction_channel_ingestion_initiate_team_returns_initiated_team() ->
     """
     from akgentic.infra.protocols import InitiatedTeam, InteractionChannelIngestion
 
-    hints = get_type_hints(InteractionChannelIngestion.initiate_team)
+    hints = get_type_hints(InteractionChannelIngestion.create_team)
     assert hints["return"] is InitiatedTeam
 
 
@@ -299,7 +299,7 @@ def test_interaction_channel_ingestion_structural_subtyping() -> None:
     from akgentic.infra.protocols.channels import JsonValue
 
     class FakeIngestion:
-        async def route_reply(
+        async def send_message(
             self,
             team_id: uuid.UUID,
             content: str | Message,
@@ -307,9 +307,8 @@ def test_interaction_channel_ingestion_structural_subtyping() -> None:
         ) -> None:
             pass
 
-        async def initiate_team(
+        async def create_team(
             self,
-            content: str,
             channel_user_id: str,
             catalog_entry_id: str,
             metadata: dict[str, JsonValue] | None = None,
@@ -409,34 +408,21 @@ def test_channel_registry_has_register() -> None:
     assert hints["binding"] is ChannelBinding
 
 
-def test_channel_registry_has_find_team() -> None:
-    """ChannelRegistry defines async find_team with channel and channel_user_id."""
+def test_channel_registry_has_no_find_team() -> None:
+    """The team is read off ``find_binding``; a second lookup is not owed by any tier."""
     from akgentic.infra.protocols import ChannelRegistry
 
-    assert hasattr(ChannelRegistry, "find_team")
-    sig = inspect.signature(ChannelRegistry.find_team)
-    assert "channel" in sig.parameters
-    assert "channel_user_id" in sig.parameters
-    assert inspect.iscoroutinefunction(ChannelRegistry.find_team)
+    assert not hasattr(ChannelRegistry, "find_team")
 
 
 def test_channel_registry_has_deregister() -> None:
-    """ChannelRegistry defines async deregister with channel and channel_user_id."""
-    from akgentic.infra.protocols import ChannelRegistry
+    """ChannelRegistry defines async deregister(address)."""
+    from akgentic.infra.protocols import ChannelAddress, ChannelRegistry
 
-    assert hasattr(ChannelRegistry, "deregister")
     sig = inspect.signature(ChannelRegistry.deregister)
-    assert "channel" in sig.parameters
-    assert "channel_user_id" in sig.parameters
+    assert list(sig.parameters) == ["self", "address"]
+    assert get_type_hints(ChannelRegistry.deregister)["address"] is ChannelAddress
     assert inspect.iscoroutinefunction(ChannelRegistry.deregister)
-
-
-def test_channel_registry_find_team_return_type() -> None:
-    """ChannelRegistry.find_team returns uuid.UUID | None."""
-    from akgentic.infra.protocols import ChannelRegistry
-
-    hints = get_type_hints(ChannelRegistry.find_team)
-    assert hints["return"] == uuid.UUID | None
 
 
 def test_channel_registry_register_returns_none() -> None:
@@ -456,16 +442,16 @@ def test_channel_registry_deregister_returns_none() -> None:
 
 
 def test_channel_registry_has_find_binding() -> None:
-    """ChannelRegistry defines async find_binding returning ChannelBinding | None."""
-    from akgentic.infra.protocols import ChannelBinding, ChannelRegistry
+    """ChannelRegistry defines async find_binding(address) returning ChannelBinding | None."""
+    from akgentic.infra.protocols import ChannelAddress, ChannelBinding, ChannelRegistry
 
     assert hasattr(ChannelRegistry, "find_binding")
     sig = inspect.signature(ChannelRegistry.find_binding)
-    assert "channel" in sig.parameters
-    assert "channel_user_id" in sig.parameters
+    assert list(sig.parameters) == ["self", "address"]
     assert inspect.iscoroutinefunction(ChannelRegistry.find_binding)
 
     hints = get_type_hints(ChannelRegistry.find_binding)
+    assert hints["address"] is ChannelAddress
     assert hints["return"] == ChannelBinding | None
 
 
@@ -490,19 +476,16 @@ def test_channel_registry_structural_subtyping() -> None:
     every method the Protocol declares — including ``find_binding_sync``,
     inherited from ``ChannelRegistryReadSync``.
     """
-    from akgentic.infra.protocols import ChannelBinding, ChannelRegistry
+    from akgentic.infra.protocols import ChannelAddress, ChannelBinding, ChannelRegistry
 
     class FakeRegistry:
         async def register(self, binding: ChannelBinding) -> None:
             pass
 
-        async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
+        async def find_binding(self, address: ChannelAddress) -> ChannelBinding | None:
             return None
 
-        async def find_binding(self, channel: str, channel_user_id: str) -> ChannelBinding | None:
-            return None
-
-        async def deregister(self, channel: str, channel_user_id: str) -> None:
+        async def deregister(self, address: ChannelAddress) -> None:
             pass
 
         async def deregister_team(self, team_id: uuid.UUID) -> None:
@@ -583,8 +566,10 @@ def test_channel_message_is_pydantic_model() -> None:
     fields = ChannelMessage.model_fields
     assert "content" in fields
     assert "channel_user_id" in fields
-    assert "team_id" in fields
     assert "channel_message_id" in fields
+    # A payload-named team is a claim nothing may trust; routing resolves the
+    # team from the conversation's binding, so the field must not come back.
+    assert "team_id" not in fields
     # The bare name is Telegram's own key for a different thing, and
     # ``HumanInputRequest.message_id`` is a third. Reintroducing it here puts
     # three unrelated ids behind one name again.
@@ -600,11 +585,10 @@ def test_channel_message_field_descriptions() -> None:
 
 
 def test_channel_message_optional_defaults() -> None:
-    """ChannelMessage team_id and message_id default to None."""
+    """ChannelMessage channel_message_id defaults to None."""
     from akgentic.infra.protocols import ChannelMessage
 
     msg = ChannelMessage(content="hello", channel_user_id="u1")
-    assert msg.team_id is None
     assert msg.channel_message_id is None
 
 
@@ -612,16 +596,13 @@ def test_channel_message_with_all_fields() -> None:
     """ChannelMessage can be created with all fields."""
     from akgentic.infra.protocols import ChannelMessage
 
-    tid = uuid.uuid4()
     msg = ChannelMessage(
         content="hello",
         channel_user_id="u1",
-        team_id=tid,
         channel_message_id="msg-123",
     )
     assert msg.content == "hello"
     assert msg.channel_user_id == "u1"
-    assert msg.team_id == tid
     assert msg.channel_message_id == "msg-123"
 
 
@@ -708,8 +689,8 @@ def test_channel_message_command_round_trips() -> None:
 # --- ChannelBinding ---
 
 
-def test_channel_binding_is_pydantic_model_with_four_fields() -> None:
-    """ChannelBinding is a Pydantic model carrying exactly the four bound values."""
+def test_channel_binding_is_pydantic_model_with_its_fields() -> None:
+    """ChannelBinding carries the four bound values plus router-owned metadata."""
     from pydantic import BaseModel
 
     from akgentic.infra.protocols import ChannelBinding
@@ -720,6 +701,7 @@ def test_channel_binding_is_pydantic_model_with_four_fields() -> None:
         "channel_user_id",
         "team_id",
         "agent_name",
+        "metadata",
     }
 
 
@@ -740,6 +722,7 @@ def test_channel_binding_is_a_channel_address_in_declaration_order() -> None:
         "channel_user_id",
         "team_id",
         "agent_name",
+        "metadata",
     ]
     assert list(ChannelAddress.model_fields) == ["channel", "channel_user_id"]
 
@@ -752,7 +735,7 @@ def test_channel_binding_is_a_channel_address_in_declaration_order() -> None:
         agent_name="@HumanProxy_0",
     )
     dumped = [key for key in binding.model_dump(mode="json") if not key.startswith("__")]
-    assert dumped == ["channel", "channel_user_id", "team_id", "agent_name"]
+    assert dumped == ["channel", "channel_user_id", "team_id", "agent_name", "metadata"]
 
 
 def test_channel_address_carries_no_team() -> None:

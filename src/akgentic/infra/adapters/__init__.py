@@ -19,6 +19,8 @@ from akgentic.infra.adapters.community import (
 from akgentic.infra.adapters.shared import (
     ChannelConfig,
     ChannelParserRegistry,
+    ChannelRouteContext,
+    DefaultChannelRouter,
     InteractionChannelDispatcher,
     NullEventStream,
     NullStreamReader,
@@ -30,6 +32,8 @@ from akgentic.infra.adapters.shared import (
 __all__ = [
     "ChannelConfig",
     "ChannelParserRegistry",
+    "ChannelRouteContext",
+    "DefaultChannelRouter",
     "InteractionChannelDispatcher",
     "LocalIngestion",
     "LocalPlacement",

@@ -117,15 +117,11 @@ class _StubChannelRegistry:
     async def register(self, binding: ChannelBinding) -> None:
         self._record_await("register")
 
-    async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
-        self._record_await("find_team")
-        return None
-
-    async def find_binding(self, channel: str, channel_user_id: str) -> ChannelBinding | None:
+    async def find_binding(self, address: ChannelAddress) -> ChannelBinding | None:
         self._record_await("find_binding")
         return None
 
-    async def deregister(self, channel: str, channel_user_id: str) -> None:
+    async def deregister(self, address: ChannelAddress) -> None:
         self._record_await("deregister")
 
     async def deregister_team(self, team_id: uuid.UUID) -> None:
@@ -594,7 +590,14 @@ class TestOnStopAgainstARealRegistry:
         dispatcher.on_stop(TEAM_A)
 
         assert registry.find_binding_sync(TEAM_A, AGENT_A) is None
-        assert asyncio.run(registry.find_binding("telegram", "987654321")) is None
+        assert (
+            asyncio.run(
+                registry.find_binding(
+                    ChannelAddress(channel="telegram", channel_user_id="987654321")
+                )
+            )
+            is None
+        )
 
 
 # ---------------------------------------------------------------------------

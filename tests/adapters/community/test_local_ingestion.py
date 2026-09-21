@@ -51,69 +51,69 @@ async def test_local_ingestion_satisfies_protocol() -> None:
     assert isinstance(ingestion, InteractionChannelIngestion)
 
 
-async def test_route_reply_calls_send_message() -> None:
-    """route_reply() delegates to team_service.send_message()."""
+async def test_send_message_calls_send_message() -> None:
+    """send_message() delegates to team_service.send_message()."""
     mock_service = _make_mock_service()
     ingestion = LocalIngestion(mock_service)
     team_id = uuid.uuid4()
 
-    await ingestion.route_reply(team_id, "hello team")
+    await ingestion.send_message(team_id, "hello team")
 
     mock_service.send_message.assert_called_once_with(team_id, "hello team")
 
 
-async def test_route_reply_with_original_message_id() -> None:
-    """route_reply() with original_message_id still calls send_message."""
+async def test_send_message_with_original_message_id() -> None:
+    """send_message() with original_message_id still calls send_message."""
     mock_service = _make_mock_service()
     ingestion = LocalIngestion(mock_service)
     team_id = uuid.uuid4()
 
-    await ingestion.route_reply(team_id, "threaded reply", original_message_id="msg-123")
+    await ingestion.send_message(team_id, "threaded reply", original_message_id="msg-123")
 
     mock_service.send_message.assert_called_once_with(team_id, "threaded reply")
 
 
-async def test_initiate_team_creates_and_sends() -> None:
-    """initiate_team() calls create_team then send_message, returns new team_id."""
+async def test_create_team_creates_and_sends_nothing() -> None:
+    """create_team() creates the team and sends it nothing — the caller binds first."""
     mock_service = _make_mock_service()
     new_team_id = uuid.uuid4()
     mock_service.create_team.return_value = _make_process_stub(new_team_id)
     ingestion = LocalIngestion(mock_service)
 
-    result = await ingestion.initiate_team("first message", "user-42", "catalog-entry-1")
+    result = await ingestion.create_team("user-42", "catalog-entry-1")
 
     mock_service.create_team.assert_called_once_with(
         "catalog-entry-1", user_id="user-42", metadata=None
     )
-    mock_service.send_message.assert_called_once_with(new_team_id, "first message")
+    mock_service.send_message.assert_not_called()
     assert result.team_id == new_team_id
 
 
-async def test_initiate_team_returns_correct_uuid() -> None:
-    """initiate_team() returns the UUID from the created process."""
+async def test_create_team_returns_correct_uuid() -> None:
+    """create_team() returns the UUID from the created process."""
     mock_service = _make_mock_service()
     expected_id = uuid.uuid4()
     mock_service.create_team.return_value = _make_process_stub(expected_id)
     ingestion = LocalIngestion(mock_service)
 
-    result = await ingestion.initiate_team("msg", "user-1", "entry-1")
+    result = await ingestion.create_team("user-1", "entry-1")
 
     assert result.team_id == expected_id
     assert isinstance(result.team_id, uuid.UUID)
 
 
-async def test_initiate_team_returns_an_initiated_team() -> None:
-    """initiate_team() answers with the model, not a bare id."""
+async def test_create_team_returns_an_initiated_team() -> None:
+    """create_team() answers with the model, not a bare id."""
     mock_service = _make_mock_service()
     mock_service.create_team.return_value = _make_process_stub(uuid.uuid4())
     ingestion = LocalIngestion(mock_service)
 
-    result = await ingestion.initiate_team("msg", "user-1", "entry-1")
+    result = await ingestion.create_team("user-1", "entry-1")
 
     assert isinstance(result, InitiatedTeam)
 
 
-async def test_initiate_team_reports_the_entry_point_name_not_its_role() -> None:
+async def test_create_team_reports_the_entry_point_name_not_its_role() -> None:
     """entry_point_name is the spawned name — the key into the team's addresses.
 
     A role is shared by every member hired from the same card, so binding a
@@ -129,39 +129,39 @@ async def test_initiate_team_reports_the_entry_point_name_not_its_role() -> None
     )
     ingestion = LocalIngestion(mock_service)
 
-    result = await ingestion.initiate_team("msg", "user-1", "entry-1")
+    result = await ingestion.create_team("user-1", "entry-1")
 
     assert result.entry_point_name == "@HumanProxy_0"
 
 
-async def test_initiate_team_reads_the_entry_point_off_the_process_it_already_has() -> None:
+async def test_create_team_reads_the_entry_point_off_the_process_it_already_has() -> None:
     """No second service call: create_team and send_message are the whole of it."""
     mock_service = _make_mock_service()
     mock_service.create_team.return_value = _make_process_stub(uuid.uuid4())
     ingestion = LocalIngestion(mock_service)
 
-    await ingestion.initiate_team("msg", "user-1", "entry-1")
+    await ingestion.create_team("user-1", "entry-1")
 
     called = [name for name, _args, _kwargs in mock_service.method_calls]
-    assert called == ["create_team", "send_message"]
+    assert called == ["create_team"]
 
 
-async def test_initiate_team_forwards_metadata() -> None:
-    """initiate_team() hands the metadata mapping to create_team untouched."""
+async def test_create_team_forwards_metadata() -> None:
+    """create_team() hands the metadata mapping to create_team untouched."""
     mock_service = _make_mock_service()
     mock_service.create_team.return_value = _make_process_stub(uuid.uuid4())
     ingestion = LocalIngestion(mock_service)
     metadata: dict[str, JsonValue] = {"tenant": "acme", "case": {"id": 7, "tags": ["a"]}}
 
-    await ingestion.initiate_team("first message", "user-42", "catalog-entry-1", metadata)
+    await ingestion.create_team("user-42", "catalog-entry-1", metadata)
 
     mock_service.create_team.assert_called_once_with(
         "catalog-entry-1", user_id="user-42", metadata=metadata
     )
 
 
-async def test_initiate_team_propagates_metadata_validation_error() -> None:
-    """A refused metadata body leaves initiate_team uncaught.
+async def test_create_team_propagates_metadata_validation_error() -> None:
+    """A refused metadata body leaves create_team uncaught.
 
     ``MetadataValidationError`` is a ``ServerError`` carrying its own 422; a
     local ``except`` here would replace that answer with whatever this layer
@@ -172,10 +172,10 @@ async def test_initiate_team_propagates_metadata_validation_error() -> None:
     ingestion = LocalIngestion(mock_service)
 
     with pytest.raises(MetadataValidationError, match="case.id must be an integer"):
-        await ingestion.initiate_team("msg", "user-1", "entry-1", {"case": {"id": "seven"}})
+        await ingestion.create_team("user-1", "entry-1", {"case": {"id": "seven"}})
 
 
-async def test_route_reply_passes_a_preformed_message_through_unchanged() -> None:
+async def test_send_message_passes_a_preformed_message_through_unchanged() -> None:
     """A pre-formed Message reaches send_message as the same object.
 
     Identity, not equality: a ``str(content)`` coercion would still produce an
@@ -187,29 +187,29 @@ async def test_route_reply_passes_a_preformed_message_through_unchanged() -> Non
     team_id = uuid.uuid4()
     message = UserMessage(content="typed reply")
 
-    await ingestion.route_reply(team_id, message)
+    await ingestion.send_message(team_id, message)
 
     sent = mock_service.send_message.call_args.args[1]
     assert sent is message
 
 
-async def test_route_reply_propagates_value_error() -> None:
-    """route_reply() propagates ValueError from team_service.send_message()."""
+async def test_send_message_propagates_value_error() -> None:
+    """send_message() propagates ValueError from team_service.send_message()."""
     mock_service = _make_mock_service()
     mock_service.send_message.side_effect = ValueError("Team not found")
     ingestion = LocalIngestion(mock_service)
     team_id = uuid.uuid4()
 
     with pytest.raises(ValueError, match="Team not found"):
-        await ingestion.route_reply(team_id, "hello")
+        await ingestion.send_message(team_id, "hello")
 
 
-async def test_initiate_team_lets_the_catalog_diagnosis_through(
+async def test_create_team_lets_the_catalog_diagnosis_through(
     team_service: TeamService,
 ) -> None:
     """An invalid stored namespace reaches the app-level handler, message intact.
 
-    ``initiate_team`` catches nothing and the webhook route catches nothing
+    ``create_team`` catches nothing and the webhook route catches nothing
     either, so this path answers 409 with the catalog's own text where it used
     to answer 404 — a free improvement from the create_team split, and one no
     other test holds. Add a local ``except`` here and the diagnosis is destroyed
@@ -222,10 +222,10 @@ async def test_initiate_team_lets_the_catalog_diagnosis_through(
     ingestion = LocalIngestion(team_service)
 
     with pytest.raises(CatalogValidationError, match="ref marker"):
-        await ingestion.initiate_team("first message", "user-42", "broken-team")
+        await ingestion.create_team("user-42", "broken-team")
 
 
-async def test_initiate_team_on_a_teamless_namespace_stays_a_not_found(
+async def test_create_team_on_a_teamless_namespace_stays_a_not_found(
     team_service: TeamService,
 ) -> None:
     """A namespace with no team entry stays in the 404 family on this path too.
@@ -237,4 +237,4 @@ async def test_initiate_team_on_a_teamless_namespace_stays_a_not_found(
     ingestion = LocalIngestion(team_service)
 
     with pytest.raises(EntryNotFoundError, match="has no team entry"):
-        await ingestion.initiate_team("first message", "user-42", "teamless")
+        await ingestion.create_team("user-42", "teamless")

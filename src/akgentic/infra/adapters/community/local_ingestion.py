@@ -78,13 +78,13 @@ class LocalIngestion:
             raise RuntimeError(msg)
         return self._team_service
 
-    async def route_reply(
+    async def send_message(
         self,
         team_id: uuid.UUID,
         content: str | Message,
         original_message_id: str | None = None,
     ) -> None:
-        """Route an inbound reply to an existing team.
+        """Send an inbound human message to an existing team; blank text is dropped.
 
         Args:
             team_id: Target team ID.
@@ -97,23 +97,21 @@ class LocalIngestion:
                 ``TeamService.send_message`` has no reply-to parameter, so the
                 community tier has nowhere to put it.
         """
-        logger.info("Inbound reply: team_id=%s", team_id)
+        logger.info("Inbound message: team_id=%s", team_id)
         if _is_blank(content):
-            logger.info("Dropping blank inbound reply for team %s", team_id)
+            logger.info("Dropping blank inbound message for team %s", team_id)
             return
         self._require_team_service().send_message(team_id, content)
 
-    async def initiate_team(
+    async def create_team(
         self,
-        content: str,
         channel_user_id: str,
         catalog_entry_id: str,
         metadata: dict[str, JsonValue] | None = None,
     ) -> InitiatedTeam:
-        """Create a new team and send the initial message.
+        """Create a new team, and send it nothing.
 
         Args:
-            content: Initial message content.
             channel_user_id: Channel-specific user identifier.
             catalog_entry_id: Catalog entry to use for team creation.
             metadata: Optional plain-JSON business metadata, forwarded
@@ -129,10 +127,9 @@ class LocalIngestion:
         """
         logger.info("Inbound initiation: catalog=%s", catalog_entry_id)
         logger.debug("Initiation user: %s", channel_user_id)
-        ts = self._require_team_service()
-        process = ts.create_team(catalog_entry_id, user_id=channel_user_id, metadata=metadata)
-        if not _is_blank(content):
-            ts.send_message(process.team_id, content)
+        process = self._require_team_service().create_team(
+            catalog_entry_id, user_id=channel_user_id, metadata=metadata
+        )
 
         logger.debug(
             "Team initiated: team_id=%s, entry_point=%s",

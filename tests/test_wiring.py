@@ -22,6 +22,7 @@ from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSu
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
+from akgentic.infra.protocols.channels import ChannelAddress
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
@@ -155,7 +156,12 @@ class TestWireCommunity:
         """When channel_registry_path is None (default), the YAML registry is disabled."""
         assert isinstance(services.channel_registry, YamlChannelRegistry)
         # Disabled: lookups return None (no file I/O).
-        assert await services.channel_registry.find_team("telegram", "user-1") is None
+        assert (
+            await services.channel_registry.find_binding(
+                ChannelAddress(channel="telegram", channel_user_id="user-1")
+            )
+            is None
+        )
 
     def test_channel_registry_path_uses_yaml(self, tmp_path: Path) -> None:
         """When channel_registry_path is set, uses YamlChannelRegistry."""

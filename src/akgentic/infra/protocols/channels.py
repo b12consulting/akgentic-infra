@@ -12,6 +12,7 @@ from akgentic.core.utils.serializer import SerializableBaseModel
 if TYPE_CHECKING:
     from akgentic.core.messages import SentMessage
     from akgentic.core.messages.message import Message
+    from akgentic.infra.adapters.shared.channel_router import ChannelRouteContext
 
 # Recursive JSON-safe type for webhook payloads — replaces dict[str, Any].
 # PEP 695 (``type`` statement) rather than a plain assignment: the alias is
@@ -40,7 +41,6 @@ class ChannelMessage(SerializableBaseModel):
     content: str = Field(description="Message content")
     channel_user_id: str = Field(description="Channel-specific user identifier")
     channel_message_id: str | None = Field(default=None, description="Channel-specific message ID")
-    team_id: uuid.UUID | None = Field(default=None, description="Associated team ID")
     catalog_entry: str | None = Field(default=None, description="Catalog entry for the new team")
     metadata: dict[str, JsonValue] | None = Field(
         default=None,
@@ -93,10 +93,19 @@ class ChannelBinding(ChannelAddress):
             "table, already headcount-expanded (e.g. '@HumanProxy_0'). Not a role."
         ),
     )
+    metadata: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description=(
+            "Plain-JSON data a channel router attaches to the binding for its own "
+            "later use — on the inbound path through ``find_binding`` and on the "
+            "outbound one through ``find_binding_sync``. Opaque to the framework: "
+            "its shape is whatever the router that wrote it defines."
+        ),
+    )
 
 
 class InitiatedTeam(SerializableBaseModel):
-    """What ``initiate_team`` created: a team, and the agent that speaks for it."""
+    """What ``create_team`` created: a team, and the agent that speaks for it."""
 
     team_id: uuid.UUID = Field(description="The newly created team's ID")
     entry_point_name: str = Field(
@@ -220,7 +229,7 @@ class InteractionChannelIngestion(Protocol):
       service invocation.
 
     Error contract:
-        - ``initiate_team()`` raises, for a ``catalog_entry_id`` that does not
+        - ``create_team()`` raises, for a ``catalog_entry_id`` that does not
           yield a team, either ``EntryNotFoundError`` (the namespace holds
           nothing, or — as ``CatalogTeamEntryMissingError`` — holds no team
           entry) → HTTP 404, or ``CatalogValidationError`` (the namespace is
@@ -229,12 +238,12 @@ class InteractionChannelIngestion(Protocol):
           exception family, which the app registers handlers for, so letting
           them propagate produces those two answers for free; a local catch that
           reports every failure as 404 discards the diagnosis.
-        - ``initiate_team()`` also raises ``MetadataValidationError`` → HTTP 422
+        - ``create_team()`` also raises ``MetadataValidationError`` → HTTP 422
           for a ``metadata`` body that fails the resolved card's declared
           contract. **Catch it nowhere**, exactly as the catalog exceptions
           above: it is a ``ServerError``, so the app-level handler already
           answers 422 carrying the validator's own message.
-        - ``route_reply()`` raises ``ValueError`` if ``team_id`` does not
+        - ``send_message()`` raises ``ValueError`` if ``team_id`` does not
           correspond to a running team — ``TeamNotFoundError`` when the team is
           unknown, ``TeamStateConflictError`` when it exists in a state the
           operation forbids. Both are ``ValueError`` subclasses, so a caller
@@ -244,15 +253,23 @@ class InteractionChannelIngestion(Protocol):
           so a caller that lets them propagate gets a 500 — not a 404 or a 409.
           A caller that wants those answers must map by type itself, the way
           ``server/routes/teams.py`` does.
+
+    Creation and the first message are two calls on purpose. The caller writes
+    the ``ChannelBinding`` between them: a first message sent before the binding
+    exists can be answered before outbound delivery can find the chat, and that
+    reply is lost.
     """
 
-    async def route_reply(
+    async def send_message(
         self,
         team_id: uuid.UUID,
         content: str | Message,
         original_message_id: str | None = None,
     ) -> None:
-        """Route an inbound reply to an existing team.
+        """Send an inbound human message to an existing team.
+
+        Blank text is dropped, not sent: a team handed an empty prompt spends an
+        LLM call answering nothing.
 
         Args:
             team_id: Target team ID.
@@ -267,17 +284,15 @@ class InteractionChannelIngestion(Protocol):
         """
         ...
 
-    async def initiate_team(
+    async def create_team(
         self,
-        content: str,
         channel_user_id: str,
         catalog_entry_id: str,
         metadata: dict[str, JsonValue] | None = None,
     ) -> InitiatedTeam:
-        """Create a new team and send the initial message.
+        """Create a new team, and send it nothing.
 
         Args:
-            content: Initial message content.
             channel_user_id: Channel-specific user identifier.
             catalog_entry_id: Catalog entry to use for team creation.
             metadata: Optional plain-JSON business metadata carried by the
@@ -324,10 +339,10 @@ class ChannelParser(Protocol):
     def default_catalog_entry(self) -> str:
         """Default catalog entry ID to use when initiating a new team.
 
-        Used when ``ChannelRegistry.find_team()`` returns ``None`` (no
-        existing team for this channel user). The ingestion layer passes
-        this value to ``initiate_team(catalog_entry_id=...)`` to create
-        a new team from the channel's default template.
+        Used when the conversation has no binding and the router starts a
+        team without naming a catalog entry of its own: it is passed to
+        ``create_team(catalog_entry_id=...)`` to create a new team from the
+        channel's default template.
         """
         ...
 
@@ -339,6 +354,43 @@ class ChannelParser(Protocol):
 
         Returns:
             Parsed ChannelMessage with normalized fields.
+        """
+        ...
+
+
+@runtime_checkable
+class InteractionChannelRouter(Protocol):
+    """Decides what one parsed inbound message does: reply, start a team, or nothing.
+
+    The webhook route only parses and routes; every rule about *what happens
+    next* lives here, so a channel can replace them through
+    ``ChannelConfig.router_fqcn``. A channel that names no router gets
+    ``DefaultChannelRouter`` (in ``akgentic.infra.adapters.shared``), which
+    consumes the ``new`` / ``unregister`` / ``status`` commands, replies to the
+    bound team, and otherwise starts one.
+
+    Runs in FastAPI async context. A router is **process-scoped** like the
+    parser and adapter: one instance per configured channel, constructed with
+    the channel's ``config`` kwargs, so it must hold no per-request state.
+
+    Obligation — the binding is the authorization:
+        The webhook is unauthenticated, so the payload is untrusted. A router
+        MUST address only the team bound to the conversation the message came
+        from (``ctx.find_binding()``), never a team id read out of the payload.
+        ``ctx.ingestion.send_message`` accepts any team id; this rule is what
+        keeps one chat from reaching another's team.
+
+    Errors propagate: the route maps the ingestion's and catalog's exceptions
+    exactly as it did before routers existed.
+    """
+
+    async def route(self, message: ChannelMessage, ctx: ChannelRouteContext) -> None:
+        """Act on one inbound message.
+
+        Args:
+            message: The parsed, channel-agnostic message.
+            ctx: This request's view of the channel services, already scoped to
+                the conversation the message came from.
         """
         ...
 
@@ -400,36 +452,22 @@ class ChannelRegistry(ChannelRegistryReadSync, Protocol):
         """
         ...
 
-    async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
-        """Find the team associated with a channel user.
+    async def find_binding(self, address: ChannelAddress) -> ChannelBinding | None:
+        """Find the whole binding for a channel conversation.
 
         Args:
-            channel: Channel name (e.g., "whatsapp", "slack").
-            channel_user_id: Channel-specific user identifier.
-
-        Returns:
-            Team ID if a binding exists, None otherwise.
-        """
-        ...
-
-    async def find_binding(self, channel: str, channel_user_id: str) -> ChannelBinding | None:
-        """Find the whole binding for a channel user.
-
-        Args:
-            channel: Channel name (e.g., "whatsapp", "slack").
-            channel_user_id: Channel-specific user identifier.
+            address: The conversation — channel and channel user id.
 
         Returns:
             The binding if one exists, None otherwise.
         """
         ...
 
-    async def deregister(self, channel: str, channel_user_id: str) -> None:
-        """Remove the binding for a channel user.
+    async def deregister(self, address: ChannelAddress) -> None:
+        """Remove the binding for a channel conversation.
 
         Args:
-            channel: Channel name (e.g., "whatsapp", "slack").
-            channel_user_id: Channel-specific user identifier.
+            address: The conversation — channel and channel user id.
         """
         ...
 

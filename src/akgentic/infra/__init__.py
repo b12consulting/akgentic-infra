@@ -7,6 +7,8 @@ from pkgutil import extend_path
 from akgentic.infra.adapters import (
     ChannelConfig,
     ChannelParserRegistry,
+    ChannelRouteContext,
+    DefaultChannelRouter,
     InteractionChannelDispatcher,
     LocalIngestion,
     LocalPlacement,
@@ -36,6 +38,7 @@ from akgentic.infra.protocols import (
     InitiatedTeam,
     InteractionChannelAdapter,
     InteractionChannelIngestion,
+    InteractionChannelRouter,
     JsonValue,
     NoCapacityError,
     NoSandboxCapacityError,
@@ -84,6 +87,7 @@ __all__ = [
     "InitiatedTeam",
     "InteractionChannelAdapter",
     "InteractionChannelIngestion",
+    "InteractionChannelRouter",
     "JsonValue",
     "NoCapacityError",
     "NoSandboxCapacityError",
@@ -101,6 +105,8 @@ __all__ = [
     # Adapters
     "ChannelConfig",
     "ChannelParserRegistry",
+    "ChannelRouteContext",
+    "DefaultChannelRouter",
     "InteractionChannelDispatcher",
     "LocalIngestion",
     "LocalPlacement",

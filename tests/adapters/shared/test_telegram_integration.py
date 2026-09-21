@@ -20,6 +20,7 @@ from akgentic.infra.adapters.shared.channel_parser_registry import (
 )
 from akgentic.infra.adapters.shared.telegram_parser import TelegramChannelParser
 from akgentic.infra.protocols.channels import (
+    ChannelAddress,
     ChannelBinding,
     ChannelParser,
     InitiatedTeam,
@@ -86,25 +87,24 @@ class _StubIngestion:
     """Captures ingestion calls for verification."""
 
     def __init__(self) -> None:
-        self.route_reply_calls: list[tuple] = []
-        self.initiate_team_calls: list[tuple] = []
+        self.send_message_calls: list[tuple] = []
+        self.create_team_calls: list[tuple] = []
 
-    async def route_reply(
+    async def send_message(
         self,
         team_id: uuid.UUID,
         content: str,
         original_message_id: str | None = None,
     ) -> None:
-        self.route_reply_calls.append((team_id, content, original_message_id))
+        self.send_message_calls.append((team_id, content, original_message_id))
 
-    async def initiate_team(
+    async def create_team(
         self,
-        content: str,
         channel_user_id: str,
         catalog_entry_id: str,
         metadata: dict[str, JsonValue] | None = None,
     ) -> InitiatedTeam:
-        self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id, metadata))
+        self.create_team_calls.append((channel_user_id, catalog_entry_id, metadata))
         return InitiatedTeam(team_id=uuid.uuid4(), entry_point_name="@HumanProxy_0")
 
 
@@ -122,21 +122,11 @@ class _StubChannelRegistry:
     async def register(self, binding: ChannelBinding) -> None:
         self.registrations.append(binding)
 
-    async def find_team(
-        self,
-        channel: str,
-        channel_user_id: str,
-    ) -> uuid.UUID | None:
+
+    async def find_binding(self, address: ChannelAddress) -> ChannelBinding | None:
         return None
 
-    async def find_binding(
-        self,
-        channel: str,
-        channel_user_id: str,
-    ) -> ChannelBinding | None:
-        return None
-
-    async def deregister(self, channel: str, channel_user_id: str) -> None:
+    async def deregister(self, address: ChannelAddress) -> None:
         pass
 
     async def deregister_team(self, team_id: uuid.UUID) -> None:
@@ -202,9 +192,9 @@ class TestWebhookWithTelegramParser:
         resp = client.post("/webhook/telegram", json=payload)
         assert resp.status_code == 204
 
-        assert len(ingestion.initiate_team_calls) == 1
-        content, channel_user_id, catalog_entry, metadata = ingestion.initiate_team_calls[0]
-        assert content == "Hello bot!"
+        assert len(ingestion.create_team_calls) == 1
+        channel_user_id, catalog_entry, metadata = ingestion.create_team_calls[0]
+        assert [call[1] for call in ingestion.send_message_calls] == ["Hello bot!"]
         assert channel_user_id == "987654321"
         assert catalog_entry == "test-team"
         # A Telegram Update carries no business metadata, and metadata is
@@ -235,4 +225,4 @@ class TestWebhookWithTelegramParser:
         resp = client.post("/webhook/telegram", json={"update_id": 1})
         assert resp.status_code == 204
         assert resp.content == b""
-        assert ingestion.initiate_team_calls == []
+        assert ingestion.create_team_calls == []

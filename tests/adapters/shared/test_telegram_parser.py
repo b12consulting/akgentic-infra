@@ -97,10 +97,11 @@ class TestParseValidTextMessage:
         assert result.channel_message_id == "42"
 
     @pytest.mark.asyncio
-    async def test_team_id_is_none(self) -> None:
+    async def test_carries_no_team_claim(self) -> None:
+        """The team is resolved from the binding, never read off the payload."""
         parser = TelegramChannelParser()
         result = await parser.parse(VALID_TEXT_UPDATE)
-        assert result.team_id is None
+        assert "team_id" not in result.model_dump()
 
 
 # ---------------------------------------------------------------------------

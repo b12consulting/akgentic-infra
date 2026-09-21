@@ -10,7 +10,25 @@ import pytest
 import yaml
 
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.protocols import ChannelBinding, ChannelRegistry, ChannelRegistryReadSync
+from akgentic.infra.protocols import (
+    ChannelAddress,
+    ChannelBinding,
+    ChannelRegistry,
+    ChannelRegistryReadSync,
+)
+
+
+def _at(channel: str, channel_user_id: str) -> ChannelAddress:
+    """The conversation ``find_binding`` is asked about."""
+    return ChannelAddress(channel=channel, channel_user_id=channel_user_id)
+
+
+async def _team_at(
+    registry: YamlChannelRegistry, channel: str, channel_user_id: str
+) -> uuid.UUID | None:
+    """The team bound to a conversation, read the way every caller reads it."""
+    binding = await registry.find_binding(_at(channel, channel_user_id))
+    return None if binding is None else binding.team_id
 
 
 @pytest.fixture()
@@ -133,38 +151,40 @@ async def test_find_binding_returns_the_whole_record(registry: YamlChannelRegist
     binding = _binding(channel="slack", channel_user_id="U12345", agent_name="@Assistant_0")
     await registry.register(binding)
 
-    assert await registry.find_binding("slack", "U12345") == binding
+    assert await registry.find_binding(_at("slack", "U12345")) == binding
 
 
 async def test_find_binding_returns_none_for_unknown_user(registry: YamlChannelRegistry) -> None:
     """find_binding() returns None when nothing is stored for that user."""
-    assert await registry.find_binding("slack", "U99999") is None
+    assert await registry.find_binding(_at("slack", "U99999")) is None
 
 
 # ---------------------------------------------------------------------------
-# find_team — unchanged signature, derived from the binding
+# team lookup — read off the binding
 # ---------------------------------------------------------------------------
 
 
-async def test_find_team_returns_uuid(registry: YamlChannelRegistry) -> None:
-    """find_team() returns the UUID for a registered channel user."""
+async def test_binding_names_the_registered_team(registry: YamlChannelRegistry) -> None:
+    """The binding names the team registered for a channel user."""
     binding = _binding(channel="slack", channel_user_id="U12345")
     await registry.register(binding)
 
-    result = await registry.find_team("slack", "U12345")
+    result = await _team_at(registry, "slack", "U12345")
     assert result == binding.team_id
 
 
-async def test_find_team_returns_none_for_unknown_channel(registry: YamlChannelRegistry) -> None:
-    """find_team() returns None for an unregistered channel."""
-    assert await registry.find_team("whatsapp", "+9999999999") is None
+async def test_find_binding_returns_none_for_unknown_channel(registry: YamlChannelRegistry) -> None:
+    """find_binding() returns None for an unregistered channel."""
+    assert await registry.find_binding(_at("whatsapp", "+9999999999")) is None
 
 
-async def test_find_team_returns_none_for_unknown_user(registry: YamlChannelRegistry) -> None:
-    """find_team() returns None when channel exists but user doesn't."""
+async def test_find_binding_returns_none_for_unknown_user_in_a_known_channel(
+    registry: YamlChannelRegistry,
+) -> None:
+    """find_binding() returns None when channel exists but user doesn't."""
     await registry.register(_binding(channel="slack", channel_user_id="U11111"))
 
-    assert await registry.find_team("slack", "U99999") is None
+    assert await registry.find_binding(_at("slack", "U99999")) is None
 
 
 async def test_uuid_serialization_roundtrip(registry: YamlChannelRegistry) -> None:
@@ -172,7 +192,7 @@ async def test_uuid_serialization_roundtrip(registry: YamlChannelRegistry) -> No
     team_id = uuid.UUID("550e8400-e29b-41d4-a716-446655440000")
     await registry.register(_binding(channel="whatsapp", channel_user_id="+1", team_id=team_id))
 
-    result = await registry.find_team("whatsapp", "+1")
+    result = await _team_at(registry, "whatsapp", "+1")
     assert result == team_id
     assert isinstance(result, uuid.UUID)
 
@@ -184,8 +204,8 @@ async def test_multiple_channels(registry: YamlChannelRegistry) -> None:
     await registry.register(b1)
     await registry.register(b2)
 
-    assert await registry.find_team("whatsapp", "+111") == b1.team_id
-    assert await registry.find_team("slack", "U222") == b2.team_id
+    assert await _team_at(registry, "whatsapp", "+111") == b1.team_id
+    assert await _team_at(registry, "slack", "U222") == b2.team_id
 
 
 async def test_multiple_users_same_channel(registry: YamlChannelRegistry) -> None:
@@ -195,8 +215,8 @@ async def test_multiple_users_same_channel(registry: YamlChannelRegistry) -> Non
     await registry.register(b1)
     await registry.register(b2)
 
-    assert await registry.find_team("slack", "U111") == b1.team_id
-    assert await registry.find_team("slack", "U222") == b2.team_id
+    assert await _team_at(registry, "slack", "U111") == b1.team_id
+    assert await _team_at(registry, "slack", "U222") == b2.team_id
 
 
 async def test_register_overwrites_existing(registry: YamlChannelRegistry) -> None:
@@ -206,7 +226,7 @@ async def test_register_overwrites_existing(registry: YamlChannelRegistry) -> No
     await registry.register(first)
     await registry.register(second)
 
-    assert await registry.find_binding("slack", "U111") == second
+    assert await registry.find_binding(_at("slack", "U111")) == second
 
 
 async def test_register_overwrite_releases_the_stale_sync_entry(
@@ -235,29 +255,29 @@ async def test_register_overwrite_releases_the_stale_sync_entry(
 async def test_deregister_removes_mapping(registry: YamlChannelRegistry) -> None:
     """deregister() removes the binding for a channel user."""
     await registry.register(_binding(channel="whatsapp", channel_user_id="+1234567890"))
-    await registry.deregister("whatsapp", "+1234567890")
+    await registry.deregister(_at("whatsapp", "+1234567890"))
 
-    assert await registry.find_team("whatsapp", "+1234567890") is None
+    assert await registry.find_binding(_at("whatsapp", "+1234567890")) is None
 
 
 async def test_deregister_clears_the_sync_index_too(registry: YamlChannelRegistry) -> None:
     """A deregistered binding stops answering the sync read as well."""
     binding = _binding(channel="whatsapp", channel_user_id="+1234567890")
     await registry.register(binding)
-    await registry.deregister("whatsapp", "+1234567890")
+    await registry.deregister(_at("whatsapp", "+1234567890"))
 
     assert registry.find_binding_sync(binding.team_id, binding.agent_name) is None
 
 
 async def test_deregister_unknown_channel_is_noop(registry: YamlChannelRegistry) -> None:
     """deregister() on an unknown channel does not raise."""
-    await registry.deregister("nonexistent", "nobody")
+    await registry.deregister(_at("nonexistent", "nobody"))
 
 
 async def test_deregister_unknown_user_is_noop(registry: YamlChannelRegistry) -> None:
     """deregister() for unknown user in existing channel does not raise."""
     await registry.register(_binding(channel="slack", channel_user_id="U11111"))
-    await registry.deregister("slack", "U99999")
+    await registry.deregister(_at("slack", "U99999"))
 
 
 async def test_deregister_removes_empty_channel_section(
@@ -265,7 +285,7 @@ async def test_deregister_removes_empty_channel_section(
 ) -> None:
     """Deregistering the last user in a channel removes the channel section."""
     await registry.register(_binding(channel="whatsapp", channel_user_id="+111"))
-    await registry.deregister("whatsapp", "+111")
+    await registry.deregister(_at("whatsapp", "+111"))
 
     data = yaml.safe_load(registry_path.read_text())  # noqa: ASYNC240
     assert data is None or "whatsapp" not in (data or {})
@@ -288,7 +308,7 @@ async def test_deregister_team_clears_both_indexes(registry: YamlChannelRegistry
 
     await registry.deregister_team(binding.team_id)
 
-    assert await registry.find_team("telegram", "987654321") is None
+    assert await registry.find_binding(_at("telegram", "987654321")) is None
     assert registry.find_binding_sync(binding.team_id, binding.agent_name) is None
 
 
@@ -302,9 +322,9 @@ async def test_deregister_team_removes_every_channel(registry: YamlChannelRegist
 
     await registry.deregister_team(team_id)
 
-    assert await registry.find_team("telegram", "111") is None
-    assert await registry.find_team("slack", "U222") is None
-    assert await registry.find_binding("slack", "U333") == survivor
+    assert await registry.find_binding(_at("telegram", "111")) is None
+    assert await registry.find_binding(_at("slack", "U222")) is None
+    assert await registry.find_binding(_at("slack", "U333")) == survivor
 
 
 async def test_deregister_team_drops_emptied_channel_sections(
@@ -327,7 +347,7 @@ async def test_deregister_team_unknown_team_is_noop(registry: YamlChannelRegistr
 
     await registry.deregister_team(uuid.uuid4())
 
-    assert await registry.find_binding("slack", "U111") == survivor
+    assert await registry.find_binding(_at("slack", "U111")) == survivor
 
 
 # ---------------------------------------------------------------------------
@@ -411,8 +431,8 @@ async def test_legacy_string_record_reads_as_absent(
     reg = YamlChannelRegistry(registry_path)
 
     with caplog.at_level(logging.WARNING):
-        assert await reg.find_team("telegram", "987654321") is None
-        assert await reg.find_binding("telegram", "987654321") is None
+        assert await reg.find_binding(_at("telegram", "987654321")) is None
+        assert await reg.find_binding(_at("telegram", "987654321")) is None
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert warnings
@@ -443,7 +463,7 @@ async def test_a_legacy_record_does_not_block_a_fresh_binding(registry_path: Pat
     binding = _binding(channel="telegram", channel_user_id="987654321")
     await reg.register(binding)
 
-    assert await reg.find_binding("telegram", "987654321") == binding
+    assert await reg.find_binding(_at("telegram", "987654321")) == binding
     assert reg.find_binding_sync(binding.team_id, binding.agent_name) == binding
 
 
@@ -472,8 +492,8 @@ async def test_a_mapping_record_that_does_not_validate_reads_as_absent(
     reg = YamlChannelRegistry(registry_path)
 
     with caplog.at_level(logging.WARNING):
-        assert await reg.find_binding("telegram", "987654321") is None
-        assert await reg.find_team("telegram", "987654321") is None
+        assert await reg.find_binding(_at("telegram", "987654321")) is None
+        assert await reg.find_binding(_at("telegram", "987654321")) is None
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert warnings
@@ -536,8 +556,8 @@ async def test_a_corrupt_channel_section_reads_as_absent(
     reg = YamlChannelRegistry(registry_path)
 
     with caplog.at_level(logging.WARNING):
-        assert await reg.find_binding("telegram", "987654321") is None
-        assert await reg.find_team("telegram", "987654321") is None
+        assert await reg.find_binding(_at("telegram", "987654321")) is None
+        assert await reg.find_binding(_at("telegram", "987654321")) is None
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert warnings
@@ -557,8 +577,8 @@ async def test_a_corrupt_channel_section_leaves_other_channels_readable(
     )
     reg = YamlChannelRegistry(registry_path)
 
-    assert await reg.find_binding("telegram", "987654321") is None
-    assert await reg.find_binding("slack", "U111") == survivor
+    assert await reg.find_binding(_at("telegram", "987654321")) is None
+    assert await reg.find_binding(_at("slack", "U111")) == survivor
 
 
 async def test_a_malformed_record_does_not_block_a_fresh_binding(registry_path: Path) -> None:
@@ -572,7 +592,7 @@ async def test_a_malformed_record_does_not_block_a_fresh_binding(registry_path: 
     binding = _binding(channel="telegram", channel_user_id="987654321")
     await reg.register(binding)
 
-    assert await reg.find_binding("telegram", "987654321") == binding
+    assert await reg.find_binding(_at("telegram", "987654321")) == binding
     assert reg.find_binding_sync(binding.team_id, binding.agent_name) == binding
 
 
@@ -584,14 +604,14 @@ async def test_a_malformed_record_does_not_block_a_fresh_binding(registry_path: 
 async def test_missing_file_treated_as_empty(registry_path: Path) -> None:
     """A non-existent YAML file is treated as an empty registry."""
     reg = YamlChannelRegistry(registry_path)
-    assert await reg.find_team("whatsapp", "+1234567890") is None
+    assert await reg.find_binding(_at("whatsapp", "+1234567890")) is None
 
 
 async def test_empty_file_treated_as_empty(registry_path: Path) -> None:
     """An empty YAML file is treated as an empty registry."""
     registry_path.write_text("")  # noqa: ASYNC240
     reg = YamlChannelRegistry(registry_path)
-    assert await reg.find_team("whatsapp", "+1234567890") is None
+    assert await reg.find_binding(_at("whatsapp", "+1234567890")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -599,23 +619,17 @@ async def test_empty_file_treated_as_empty(registry_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_disabled_registry_find_team_returns_none() -> None:
-    """With no path configured the registry is disabled: find_team returns None."""
-    reg = YamlChannelRegistry()
-    assert await reg.find_team("whatsapp", "+1234567890") is None
-
-
 async def test_disabled_registry_find_binding_returns_none() -> None:
     """find_binding() returns None when the registry is disabled."""
     reg = YamlChannelRegistry()
-    assert await reg.find_binding("whatsapp", "+1234567890") is None
+    assert await reg.find_binding(_at("whatsapp", "+1234567890")) is None
 
 
 async def test_disabled_registry_register_is_noop() -> None:
     """register() is a no-op when the registry is disabled (no file I/O, no error)."""
     reg = YamlChannelRegistry()
     await reg.register(_binding(channel="slack", channel_user_id="U111"))
-    assert await reg.find_team("slack", "U111") is None
+    assert await reg.find_binding(_at("slack", "U111")) is None
 
 
 async def test_disabled_registry_find_binding_sync_returns_none() -> None:
@@ -636,7 +650,7 @@ async def test_disabled_registry_find_binding_sync_returns_none() -> None:
 async def test_disabled_registry_deregister_is_noop() -> None:
     """deregister() is a no-op when the registry is disabled."""
     reg = YamlChannelRegistry()
-    await reg.deregister("slack", "U111")
+    await reg.deregister(_at("slack", "U111"))
 
 
 async def test_disabled_registry_deregister_team_is_noop() -> None:
@@ -667,7 +681,7 @@ async def test_deregister_against_a_corrupt_channel_section_is_a_no_op(
     reg = YamlChannelRegistry(registry_path)
 
     with caplog.at_level(logging.WARNING):
-        await reg.deregister("telegram", "987654321")
+        await reg.deregister(_at("telegram", "987654321"))
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert warnings
@@ -717,7 +731,7 @@ async def test_deregister_team_still_prunes_readable_sections_beside_a_corrupt_o
 
     await reg.deregister_team(doomed.team_id)
 
-    assert await reg.find_binding("slack", "U222") is None
+    assert await reg.find_binding(_at("slack", "U222")) is None
     stored = registry_path.read_text(encoding="utf-8")  # noqa: ASYNC240
     assert yaml.safe_load(stored) == {"telegram": "not-a-mapping"}
 
@@ -753,9 +767,9 @@ async def test_register_against_a_corrupt_channel_section_writes_the_binding(
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert warnings
     assert all("telegram" in message for message in warnings)
-    assert await reg.find_binding("telegram", "987654321") == binding
+    assert await reg.find_binding(_at("telegram", "987654321")) == binding
     assert reg.find_binding_sync(binding.team_id, binding.agent_name) == binding
-    assert await reg.find_binding("slack", "U111") == survivor
+    assert await reg.find_binding(_at("slack", "U111")) == survivor
 
 
 # ---------------------------------------------------------------------------
@@ -779,7 +793,7 @@ async def test_a_non_mapping_root_reads_as_empty(
 
     with caplog.at_level(logging.WARNING):
         reg = YamlChannelRegistry(registry_path)
-        assert await reg.find_binding("telegram", "987654321") is None
+        assert await reg.find_binding(_at("telegram", "987654321")) is None
 
     assert reg.find_binding_sync(uuid.uuid4(), "@HumanProxy_0") is None
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
@@ -796,7 +810,7 @@ async def test_a_binding_registered_over_a_non_mapping_root_is_readable(
     binding = _binding(channel="telegram", channel_user_id="987654321")
     await reg.register(binding)
 
-    assert await reg.find_binding("telegram", "987654321") == binding
+    assert await reg.find_binding(_at("telegram", "987654321")) == binding
     assert reg.find_binding_sync(binding.team_id, binding.agent_name) == binding
 
 
@@ -813,6 +827,6 @@ async def test_deregister_leaves_a_readable_section_beside_a_corrupt_one(
     )
     reg = YamlChannelRegistry(registry_path)
 
-    await reg.deregister("telegram", "987654321")
+    await reg.deregister(_at("telegram", "987654321"))
 
-    assert await reg.find_binding("slack", "U333") == survivor
+    assert await reg.find_binding(_at("slack", "U333")) == survivor

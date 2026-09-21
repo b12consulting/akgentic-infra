@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import yaml
 from pydantic import ValidationError
 
-from akgentic.infra.protocols.channels import ChannelBinding
+from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -193,8 +193,9 @@ class YamlChannelRegistry:
             binding.agent_name,
         )
 
-    async def find_binding(self, channel: str, channel_user_id: str) -> ChannelBinding | None:
-        """Look up the whole binding for a channel user, or return None."""
+    async def find_binding(self, address: ChannelAddress) -> ChannelBinding | None:
+        """Look up the whole binding for a channel conversation, or return None."""
+        channel, channel_user_id = address.channel, address.channel_user_id
         channel_data = self._load().get(channel, {})
         if not isinstance(channel_data, dict):
             # A hand-edit leaving a scalar where the per-user mapping belongs.
@@ -230,19 +231,11 @@ class YamlChannelRegistry:
         )
         return binding
 
-    async def find_team(self, channel: str, channel_user_id: str) -> uuid.UUID | None:
-        """Look up the team for a channel user, or return None.
-
-        Derived from the binding rather than parsed here, so one record shape is
-        read in exactly one place.
-        """
-        binding = await self.find_binding(channel, channel_user_id)
-        return None if binding is None else binding.team_id
-
-    async def deregister(self, channel: str, channel_user_id: str) -> None:
-        """Remove a channel user's binding if it exists (no-op when disabled)."""
+    async def deregister(self, address: ChannelAddress) -> None:
+        """Remove a channel conversation's binding if it exists (no-op when disabled)."""
         if self._path is None:
             return
+        channel, channel_user_id = address.channel, address.channel_user_id
         data = self._load()
         channel_data = data.get(channel)
         if channel_data is None:

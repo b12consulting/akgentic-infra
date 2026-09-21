@@ -1,4 +1,4 @@
-"""Tests for the webhook route — POST /webhook/{channel} with 3 routing flows."""
+"""Tests for the webhook route — POST /webhook/{channel} through the default channel router."""
 
 from __future__ import annotations
 
@@ -72,12 +72,12 @@ class StubIngestion:
     """Stub InteractionChannelIngestion that tracks calls."""
 
     def __init__(self) -> None:
-        self.route_reply_calls: list[tuple[uuid.UUID, str | Message, str | None]] = []
-        # Anything the route passes to route_reply beyond the three declared
+        self.send_message_calls: list[tuple[uuid.UUID, str | Message, str | None]] = []
+        # Anything the route passes to send_message beyond the three declared
         # parameters lands here, so "the reply path forwards no metadata" is an
         # assertion about recorded evidence rather than about a TypeError.
-        self.route_reply_extra_kwargs: list[dict[str, object]] = []
-        self.initiate_team_calls: list[tuple[str, str, str, dict[str, JsonValue] | None]] = []
+        self.send_message_extra_kwargs: list[dict[str, object]] = []
+        self.create_team_calls: list[tuple[str, str, dict[str, JsonValue] | None]] = []
         self._next_team_id: uuid.UUID = uuid.uuid4()
         self._next_entry_point_name: str = "@HumanProxy_0"
 
@@ -92,24 +92,23 @@ class StubIngestion:
         """
         self._next_entry_point_name = entry_point_name
 
-    async def route_reply(
+    async def send_message(
         self,
         team_id: uuid.UUID,
         content: str | Message,
         original_message_id: str | None = None,
         **extra: object,
     ) -> None:
-        self.route_reply_calls.append((team_id, content, original_message_id))
-        self.route_reply_extra_kwargs.append(extra)
+        self.send_message_calls.append((team_id, content, original_message_id))
+        self.send_message_extra_kwargs.append(extra)
 
-    async def initiate_team(
+    async def create_team(
         self,
-        content: str,
         channel_user_id: str,
         catalog_entry_id: str,
         metadata: dict[str, JsonValue] | None = None,
     ) -> InitiatedTeam:
-        self.initiate_team_calls.append((content, channel_user_id, catalog_entry_id, metadata))
+        self.create_team_calls.append((channel_user_id, catalog_entry_id, metadata))
         return InitiatedTeam(
             team_id=self._next_team_id,
             entry_point_name=self._next_entry_point_name,
@@ -238,24 +237,20 @@ def _build_app(
 
 
 class TestWebhookReplyFlow:
-    """AC #3: team_id in parsed message → route_reply."""
+    """A bound conversation's message → send_message to the bound team, verbatim."""
 
-    async def test_reply_flow_calls_route_reply(self, tmp_path: Path) -> None:
+    async def test_reply_flow_calls_send_message(self, tmp_path: Path) -> None:
         team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(
             ChannelMessage(
                 content="reply msg",
                 channel_user_id="user-1",
-                team_id=team_id,
                 channel_message_id="msg-abc",
             )
         )
         ingestion = StubIngestion()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        # G2: the claim names the team this conversation is bound to, so the
-        # reply is delivered unchanged. Without the binding the request is the
-        # injection shape the route now refuses.
         await registry.register(
             ChannelBinding(
                 channel="test-channel",
@@ -269,140 +264,17 @@ class TestWebhookReplyFlow:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.route_reply_calls) == 1
-        call = ingestion.route_reply_calls[0]
+        assert len(ingestion.send_message_calls) == 1
+        call = ingestion.send_message_calls[0]
         assert call[0] == team_id
         assert call[1] == "reply msg"
         assert call[2] == "msg-abc"
 
 
-class TestWebhookClaimedTeamVerification:
-    """A payload-supplied ``team_id`` is honoured only when the binding names it.
-
-    The webhook is unauthenticated by design, so a team id read out of the body
-    is a claim, not a credential. These guards pin the claim against the binding
-    held for the conversation the request arrived on (ADR-043 §D9).
-    """
-
-    async def test_claiming_another_conversations_team_is_rejected(self, tmp_path: Path) -> None:
-        """G1: a payload naming a team this conversation is not bound to → 403."""
-        bound_team_id = uuid.uuid4()
-        claimed_team_id = uuid.uuid4()
-        parser = StubParser()
-        parser.set_next_message(
-            ChannelMessage(
-                content="inject",
-                channel_user_id="user-x",
-                team_id=claimed_team_id,
-                channel_message_id="msg-x",
-            )
-        )
-        ingestion = StubIngestion()
-        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        await registry.register(
-            ChannelBinding(
-                channel="test-channel",
-                channel_user_id="user-x",
-                team_id=bound_team_id,
-                agent_name="@HumanProxy_0",
-            )
-        )
-        client = TestClient(_build_app(parser, ingestion, registry))
-
-        resp = client.post("/webhook/test-channel", json={"text": "hi"})
-
-        assert resp.status_code == 403
-        body = resp.json()
-        assert body["detail"] == "team_id does not belong to this conversation"
-        # The 403 takes FastAPI's own HTTPException handler, which emits no
-        # ``code`` key — unlike the ServerError handler this app also installs.
-        assert "code" not in body
-
-    async def test_rejected_claim_never_reaches_the_ingestion(self, tmp_path: Path) -> None:
-        """G1b: the rejected request delivers nothing.
-
-        The status code alone cannot tell "rejected" from "delivered, then
-        rejected" — a route that answered 403 *after* calling ``route_reply``
-        would satisfy the status assertion and still inject the message. This
-        spec is the security assertion proper.
-        """
-        parser = StubParser()
-        parser.set_next_message(
-            ChannelMessage(
-                content="inject",
-                channel_user_id="user-y",
-                team_id=uuid.uuid4(),
-            )
-        )
-        ingestion = StubIngestion()
-        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        await registry.register(
-            ChannelBinding(
-                channel="test-channel",
-                channel_user_id="user-y",
-                team_id=uuid.uuid4(),
-                agent_name="@HumanProxy_0",
-            )
-        )
-        client = TestClient(_build_app(parser, ingestion, registry))
-
-        resp = client.post("/webhook/test-channel", json={"text": "hi"})
-
-        assert resp.status_code == 403
-        assert ingestion.route_reply_calls == []
-        assert ingestion.initiate_team_calls == []
-
-    def test_a_claim_with_no_binding_at_all_is_rejected(self, tmp_path: Path) -> None:
-        """G3: an empty registry answers 403 — not 500, and not delivered."""
-        parser = StubParser()
-        parser.set_next_message(
-            ChannelMessage(
-                content="inject",
-                channel_user_id="user-z",
-                team_id=uuid.uuid4(),
-            )
-        )
-        ingestion = StubIngestion()
-        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
-
-        resp = client.post("/webhook/test-channel", json={"text": "hi"})
-
-        assert resp.status_code == 403
-        assert ingestion.route_reply_calls == []
-        assert ingestion.initiate_team_calls == []
-
-    def test_a_corrupt_channel_section_rejects_rather_than_500s(self, tmp_path: Path) -> None:
-        """G5: a scalar channel section reads as absent, so the check still answers.
-
-        A hand-edit that leaves a scalar where the per-user mapping belongs used
-        to raise out of ``find_binding`` — a 500 on the very branch the security
-        check lives on, which is the one place the check must not be skippable.
-        """
-        registry_path = tmp_path / "registry.yaml"
-        registry_path.write_text(yaml.safe_dump({"test-channel": "oops"}), encoding="utf-8")
-        parser = StubParser()
-        parser.set_next_message(
-            ChannelMessage(
-                content="inject",
-                channel_user_id="user-corrupt",
-                team_id=uuid.uuid4(),
-            )
-        )
-        ingestion = StubIngestion()
-        registry = YamlChannelRegistry(registry_path)
-        client = TestClient(_build_app(parser, ingestion, registry))
-
-        resp = client.post("/webhook/test-channel", json={"text": "hi"})
-
-        assert resp.status_code == 403
-        assert ingestion.route_reply_calls == []
-
-
 class TestWebhookContinuationFlow:
-    """AC #4: no team_id but registered team → route_reply (forwarding message_id)."""
+    """AC #4: no team_id but registered team → send_message (forwarding message_id)."""
 
-    async def test_continuation_flow_calls_route_reply(self, tmp_path: Path) -> None:
+    async def test_continuation_flow_calls_send_message(self, tmp_path: Path) -> None:
         existing_team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(
@@ -428,8 +300,8 @@ class TestWebhookContinuationFlow:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.route_reply_calls) == 1
-        call = ingestion.route_reply_calls[0]
+        assert len(ingestion.send_message_calls) == 1
+        call = ingestion.send_message_calls[0]
         assert call[0] == existing_team_id
         assert call[1] == "continuation msg"
         # Story 30.3: the continuation flow forwards the parsed message_id as the
@@ -438,9 +310,9 @@ class TestWebhookContinuationFlow:
 
 
 class TestWebhookInitiationFlow:
-    """AC #5: no team_id and no existing team → initiate_team + register."""
+    """No binding for the conversation → create_team, bind, then send."""
 
-    def test_initiation_flow_calls_initiate_team(self, tmp_path: Path) -> None:
+    def test_initiation_flow_creates_the_team_then_sends(self, tmp_path: Path) -> None:
         parser = StubParser(default_entry="my-catalog-entry")
         parser.set_next_message(
             ChannelMessage(
@@ -457,11 +329,8 @@ class TestWebhookInitiationFlow:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.initiate_team_calls) == 1
-        call = ingestion.initiate_team_calls[0]
-        assert call[0] == "new convo"
-        assert call[1] == "user-3"
-        assert call[2] == "my-catalog-entry"
+        assert ingestion.create_team_calls == [("user-3", "my-catalog-entry", None)]
+        assert ingestion.send_message_calls == [(new_team_id, "new convo", None)]
 
     async def test_initiation_registers_in_channel_registry(self, tmp_path: Path) -> None:
         parser = StubParser()
@@ -475,15 +344,18 @@ class TestWebhookInitiationFlow:
         client.post("/webhook/test-channel", json={"text": "hi"})
 
         # Verify registration happened
-        found = await registry.find_team("test-channel", "user-4")
-        assert found == new_team_id
+        found = await registry.find_binding(
+            ChannelAddress(channel="test-channel", channel_user_id="user-4")
+        )
+        assert found is not None
+        assert found.team_id == new_team_id
 
     async def test_initiation_binds_the_channel_to_the_entry_point_agent(
         self, tmp_path: Path
     ) -> None:
         """AC 12: the persisted record carries the ingestion's entry-point name.
 
-        ``agent_name`` must be what ``initiate_team`` reported, not the channel
+        ``agent_name`` must be what ``create_team`` reported, not the channel
         user or anything else the route has to hand — the outbound lookup starts
         from an agent, and a wrong name there is a silent delivery failure.
         ``channel`` must be the path segment: the route is the only component
@@ -500,7 +372,9 @@ class TestWebhookInitiationFlow:
 
         client.post("/webhook/test-channel", json={"text": "hi"})
 
-        binding = await registry.find_binding("test-channel", "user-6")
+        binding = await registry.find_binding(
+            ChannelAddress(channel="test-channel", channel_user_id="user-6")
+        )
         assert binding == ChannelBinding(
             channel="test-channel",
             channel_user_id="user-6",
@@ -535,8 +409,10 @@ class TestWebhookInitiationFlow:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.initiate_team_calls) == 1
-        binding = await registry.find_binding("test-channel", "user-corrupt")
+        assert len(ingestion.create_team_calls) == 1
+        binding = await registry.find_binding(
+            ChannelAddress(channel="test-channel", channel_user_id="user-corrupt")
+        )
         assert binding is not None
         assert binding.team_id == new_team_id
 
@@ -566,7 +442,6 @@ class TestWebhookStatusCode:
             ChannelMessage(
                 content="msg",
                 channel_user_id="u",
-                team_id=team_id,
             )
         )
         ingestion = StubIngestion()
@@ -615,10 +490,9 @@ class TestWebhookFormData:
         )
 
         assert resp.status_code == 204
-        assert len(ingestion.initiate_team_calls) == 1
-        call = ingestion.initiate_team_calls[0]
-        assert call[0] == "form hello"
-        assert call[1] == "form-user"
+        assert len(ingestion.create_team_calls) == 1
+        assert ingestion.create_team_calls[0][0] == "form-user"
+        assert ingestion.send_message_calls[0][1] == "form hello"
 
 
 class TestWebhookContentTypeEdgeCases:
@@ -647,7 +521,6 @@ class TestWebhookContentTypeEdgeCases:
             ChannelMessage(
                 content="charset msg",
                 channel_user_id="u-charset",
-                team_id=team_id,
             )
         )
         ingestion = StubIngestion()
@@ -669,7 +542,7 @@ class TestWebhookContentTypeEdgeCases:
         )
 
         assert resp.status_code == 204
-        assert len(ingestion.route_reply_calls) == 1
+        assert len(ingestion.send_message_calls) == 1
 
 
 class TestWebhookUnsupportedContentType:
@@ -714,8 +587,8 @@ class TestWebhookMalformedPayload:
 
         assert resp.status_code == 204
         assert resp.content == b""
-        assert ingestion.route_reply_calls == []
-        assert ingestion.initiate_team_calls == []
+        assert ingestion.send_message_calls == []
+        assert ingestion.create_team_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -743,8 +616,8 @@ class TestWebhookMetadataForwarding:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.initiate_team_calls) == 1
-        assert ingestion.initiate_team_calls[0][3] == metadata
+        assert len(ingestion.create_team_calls) == 1
+        assert ingestion.create_team_calls[0][2] == metadata
 
     def test_initiation_without_metadata_forwards_none(self, tmp_path: Path) -> None:
         parser = StubParser(default_entry="my-catalog-entry")
@@ -756,7 +629,7 @@ class TestWebhookMetadataForwarding:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.initiate_team_calls[0][3] is None
+        assert ingestion.create_team_calls[0][2] is None
 
     async def test_reply_flow_forwards_no_metadata(self, tmp_path: Path) -> None:
         """A reply addresses a team whose metadata was fixed at creation."""
@@ -766,7 +639,6 @@ class TestWebhookMetadataForwarding:
             ChannelMessage(
                 content="reply msg",
                 channel_user_id="user-m3",
-                team_id=team_id,
                 metadata={"tenant": "acme"},
             )
         )
@@ -785,8 +657,8 @@ class TestWebhookMetadataForwarding:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.initiate_team_calls == []
-        assert ingestion.route_reply_extra_kwargs == [{}]
+        assert ingestion.create_team_calls == []
+        assert ingestion.send_message_extra_kwargs == [{}]
 
     async def test_continuation_flow_forwards_no_metadata(self, tmp_path: Path) -> None:
         """A continuation addresses an existing team — same reasoning as a reply."""
@@ -813,8 +685,8 @@ class TestWebhookMetadataForwarding:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.initiate_team_calls == []
-        assert ingestion.route_reply_extra_kwargs == [{}]
+        assert ingestion.create_team_calls == []
+        assert ingestion.send_message_extra_kwargs == [{}]
 
 
 class TestWebhookMetadataRejection:
@@ -824,9 +696,8 @@ class TestWebhookMetadataRejection:
         detail = "metadata field 'case.id' must be an integer"
 
         class RefusingIngestion(StubIngestion):
-            async def initiate_team(
+            async def create_team(
                 self,
-                content: str,
                 channel_user_id: str,
                 catalog_entry_id: str,
                 metadata: dict[str, JsonValue] | None = None,
@@ -862,7 +733,6 @@ def _command_message(
     name: str,
     rest: str = "",
     channel_user_id: str = "user-cmd",
-    team_id: uuid.UUID | None = None,
 ) -> ChannelMessage:
     """A parsed message carrying a command, with ``content`` left whole.
 
@@ -873,7 +743,6 @@ def _command_message(
     return ChannelMessage(
         content=text,
         channel_user_id=channel_user_id,
-        team_id=team_id,
         command=ChannelCommand(name=name, rest=rest),
     )
 
@@ -902,8 +771,8 @@ class TestUnrecognisedCommandFallsThrough:
 
         assert resp.status_code == 204
         # The whole text, command word included — not the rest, and not nothing.
-        assert len(ingestion.route_reply_calls) == 1
-        assert ingestion.route_reply_calls[0][1] == "/roster please"
+        assert len(ingestion.send_message_calls) == 1
+        assert ingestion.send_message_calls[0][1] == "/roster please"
         assert adapter.notices == []
 
 
@@ -929,12 +798,17 @@ class TestCommandUnregister:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert await registry.find_binding("test-channel", "user-u1") is None
+        assert (
+            await registry.find_binding(
+                ChannelAddress(channel="test-channel", channel_user_id="user-u1")
+            )
+            is None
+        )
         assert len(adapter.notices) == 1
         address, _text = adapter.notices[0]
         assert address.channel == "test-channel"
         assert address.channel_user_id == "user-u1"
-        assert ingestion.route_reply_calls == []
+        assert ingestion.send_message_calls == []
 
     async def test_unregister_with_no_binding_still_acknowledges(self, tmp_path: Path) -> None:
         """G3c: silence is indistinguishable from a command that did nothing."""
@@ -949,21 +823,19 @@ class TestCommandUnregister:
 
         assert resp.status_code == 204
         assert len(adapter.notices) == 1
-        assert ingestion.route_reply_calls == []
-        assert ingestion.initiate_team_calls == []
+        assert ingestion.send_message_calls == []
+        assert ingestion.create_team_calls == []
 
     async def test_unregister_releases_only_the_callers_own_binding(self, tmp_path: Path) -> None:
-        """G6: the payload's ``team_id`` claim is never read by a command.
+        """G6: a command acts on the caller's own conversation and nothing else.
 
         A status code alone cannot tell "acted on my own session" from "acted on
-        the session the payload named" — so this asserts on the *other*
-        conversation's record, which must survive untouched.
+        another" — so this asserts on the *other* conversation's record, which
+        must survive untouched.
         """
         other_team = uuid.uuid4()
         parser = StubParser()
-        parser.set_next_message(
-            _command_message("unregister", channel_user_id="user-attacker", team_id=other_team)
-        )
+        parser.set_next_message(_command_message("unregister", channel_user_id="user-attacker"))
         ingestion = StubIngestion()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
@@ -980,12 +852,13 @@ class TestCommandUnregister:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        victim = await registry.find_binding("test-channel", "user-victim")
+        victim = await registry.find_binding(
+            ChannelAddress(channel="test-channel", channel_user_id="user-victim")
+        )
         assert victim is not None
         assert victim.team_id == other_team
-        # G9: consumed as a command, so neither the reply branch nor its 403
-        # check was ever reached.
-        assert ingestion.route_reply_calls == []
+        # Consumed as a command, so the reply branch was never reached.
+        assert ingestion.send_message_calls == []
 
 
 class TestCommandNew:
@@ -1015,15 +888,14 @@ class TestCommandNew:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        binding = await registry.find_binding("test-channel", "user-n1")
+        binding = await registry.find_binding(
+            ChannelAddress(channel="test-channel", channel_user_id="user-n1")
+        )
         assert binding is not None
         assert binding.team_id == new_team
         # G5: the first message is the command's rest, not the whole text.
-        assert len(ingestion.initiate_team_calls) == 1
-        content, channel_user_id, catalog_entry, _metadata = ingestion.initiate_team_calls[0]
-        assert content == "hello"
-        assert channel_user_id == "user-n1"
-        assert catalog_entry == "my-catalog-entry"
+        assert ingestion.create_team_calls == [("user-n1", "my-catalog-entry", None)]
+        assert ingestion.send_message_calls == [(new_team, "hello", None)]
         assert len(adapter.notices) == 1
         assert str(new_team) in adapter.notices[0][1]
 
@@ -1069,13 +941,15 @@ class TestCommandNew:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        binding = await registry.find_binding("test-channel", "user-n3")
+        binding = await registry.find_binding(
+            ChannelAddress(channel="test-channel", channel_user_id="user-n3")
+        )
         assert binding is not None
         assert binding.team_id == new_team
-        assert ingestion.initiate_team_calls[0][0] == "start here"
+        assert ingestion.send_message_calls == [(new_team, "start here", None)]
 
-    async def test_new_sends_an_empty_first_message_verbatim(self, tmp_path: Path) -> None:
-        """``/new`` alone produces no team reply, which is why it acknowledges."""
+    async def test_new_alone_creates_the_team_and_sends_nothing(self, tmp_path: Path) -> None:
+        """``/new`` alone sends no first message, which is why it acknowledges."""
         parser = StubParser()
         parser.set_next_message(_command_message("new", channel_user_id="user-n4"))
         ingestion = StubIngestion()
@@ -1086,7 +960,8 @@ class TestCommandNew:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.initiate_team_calls[0][0] == ""
+        assert len(ingestion.create_team_calls) == 1
+        assert ingestion.send_message_calls == []
         assert len(adapter.notices) == 1
 
     async def test_new_honours_a_catalog_entry_the_parser_set(self, tmp_path: Path) -> None:
@@ -1102,7 +977,7 @@ class TestCommandNew:
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.initiate_team_calls[0][2] == "chosen-entry"
+        assert ingestion.create_team_calls[0][1] == "chosen-entry"
 
 
 class TestCommandStatus:
@@ -1180,40 +1055,3 @@ class TestCommandStatus:
         address, text = adapter.notices[0]
         assert address == ChannelAddress(channel="test-channel", channel_user_id="user-s3")
         assert "No active session" in text
-
-
-class TestCommandsDispatchAboveTheRoutingBranches:
-    """G9: a command carrying a team_id is a command, not a reply."""
-
-    async def test_status_claiming_a_team_is_never_routed_as_a_reply(self, tmp_path: Path) -> None:
-        bound_team = uuid.uuid4()
-        parser = StubParser()
-        parser.set_next_message(
-            _command_message("status", channel_user_id="user-s4", team_id=uuid.uuid4())
-        )
-        ingestion = StubIngestion()
-        adapter = StubNoticeAdapter()
-        registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        await registry.register(
-            ChannelBinding(
-                channel="test-channel",
-                channel_user_id="user-s4",
-                team_id=bound_team,
-                agent_name="@HumanProxy_0",
-            )
-        )
-        team_service = StubTeamService()
-        team_service.add_running_team(bound_team)
-        client = TestClient(
-            _build_app(parser, ingestion, registry, adapter=adapter, team_service=team_service)
-        )
-
-        resp = client.post("/webhook/test-channel", json={"text": "hi"})
-
-        # Not the 403 the reply branch would have answered for a mismatched
-        # claim: the command never reaches that check, because it reads nothing
-        # from the claim.
-        assert resp.status_code == 204
-        assert ingestion.route_reply_calls == []
-        # The command reports the *bound* team, never the claimed one.
-        assert str(bound_team) in adapter.notices[0][1]

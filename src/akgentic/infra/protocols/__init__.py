@@ -14,6 +14,7 @@ from akgentic.infra.protocols.channels import (
     InitiatedTeam,
     InteractionChannelAdapter,
     InteractionChannelIngestion,
+    InteractionChannelRouter,
     JsonValue,
 )
 from akgentic.infra.protocols.event_stream import EventStream, StreamClosed, StreamReader
@@ -44,6 +45,7 @@ __all__ = [
     "InitiatedTeam",
     "InteractionChannelAdapter",
     "InteractionChannelIngestion",
+    "InteractionChannelRouter",
     "JsonValue",
     "NoCapacityError",
     "NoSandboxCapacityError",
