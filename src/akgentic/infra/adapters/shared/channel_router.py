@@ -89,15 +89,16 @@ class ChannelRouteContext:
     refuses one naming a team that already exists, so the method can start a
     team but can never reach one.
 
-    **``bind_existing_team`` is the one real exception, and it is deliberate.**
-    It binds this conversation to a team named by id, which is precisely what
-    the rest of the class prevents — there is no ownership check available,
-    because the channel layer has no verified identity for the chat user. It
-    exists so a user can re-attach a chat to a team they already know about,
-    and a router that exposes it to users must gate it: ``DefaultChannelRouter``
-    ships it off, behind ``allow_register`` on the channel config. It is one
-    method, named for what it does, so a review of a custom router has exactly
-    one call to look for rather than a class of them.
+    **``bind_team`` is the one real exception, and it is deliberate.** It binds
+    this conversation to a team named by id, which is precisely what the rest
+    of the class prevents — there is no ownership check available, because the
+    channel layer has no verified identity for the chat user. It exists so a
+    user can re-attach a chat to a team they already know about, and a router
+    that exposes it to users must gate it: ``DefaultChannelRouter`` ships it
+    off, behind ``allow_register`` on the channel config. It is one method,
+    named for what it does, so a review of a custom router has exactly one call
+    to look for rather than a class of them. It verifies neither name, which is
+    what keeps it from becoming an existence oracle.
 
     There is no ingestion layer between this context and ``TeamService``.
     ``TeamService`` is already the tier-agnostic seam — creation goes through
@@ -242,75 +243,48 @@ class ChannelRouteContext:
         await asyncio.to_thread(self._team_service.send_message, binding.team_id, content)
         return True
 
-    async def bind_existing_team(
-        self, team_id: uuid.UUID, agent_name: str | None = None
-    ) -> Process | None:
-        """Bind this conversation to a team that already exists.
+    async def bind_team(self, team_id: uuid.UUID, agent_name: str) -> None:
+        """Bind this conversation to a team, taking both names as given.
 
-        **This is the one method on the context that reaches a team by id, and
-        it is a deliberate hole in the rule the rest of the class keeps.** A
-        webhook payload is unauthenticated, so a chat calling this can name any
-        team whose id it knows and will then receive that team's messages. There
-        is no ownership check to make: the channel layer has no verified
-        identity for the chat user to compare against ``Process.user_id``. Any
-        router exposing it to users must gate it — ``DefaultChannelRouter``
-        requires ``allow_register`` on the channel config, off by default.
+        **Nothing is verified — deliberately, and it is the safer of the two
+        designs.** Looking the team up would make this an oracle: a chat could
+        ask "does this id exist?" and read the answer off the reply, and the
+        same for an agent name. Since nothing can be checked anyway — the
+        payload is unauthenticated, so there is no identity to compare against
+        ``Process.user_id`` — the lookup would buy a better error message at
+        the cost of confirming what exists. It also keeps this method free of
+        the team service entirely: it writes a binding, and that is all.
+
+        A binding naming a team that does not exist is inert rather than
+        harmful: the next message fails to reach it, and the outbound path
+        never matches it. The cost of a mistyped id is the user's own
+        conversation, which is the only thing they could have broken anyway.
 
         The binding replaces any existing one for this conversation, exactly as
         ``initiate_team``'s does, so a chat can move between teams but never
         hold two.
 
         Args:
-            team_id: The team to bind to.
-            agent_name: The agent to bind, or None for the team's entry point.
-                Only the entry point and the first-layer supervisors are
-                accepted: every other name is either unaddressable or a
-                different human's proxy.
-
-        Returns:
-            The team's ``Process``, or None when the team service does not know
-            it — deleted, purged, or never existed.
-
-        Raises:
-            ValueError: The team is known but ``agent_name`` names no agent of
-                it. The message names the entry point, which is what the caller
-                should have asked for.
+            team_id: The team to bind to, unverified.
+            agent_name: The agent's spawned name, unverified. There is no
+                default: the entry point's name could only be learned by
+                looking the team up, which is what this method does not do.
         """
-        process = await asyncio.to_thread(self._team_service.get_team, team_id)
-        if process is None:
-            return None
-        bound_name = self._resolve_agent_name(process, agent_name)
         await self._registry.register(
             ChannelBinding(
                 channel=self.address.channel,
                 channel_user_id=self.address.channel_user_id,
-                team_id=process.team_id,
-                agent_name=bound_name,
+                team_id=team_id,
+                agent_name=agent_name,
             )
         )
         logger.info(
-            "Channel bound to an existing team: channel=%s, user=%s, team_id=%s, agent=%s",
+            "Channel bound to a named team: channel=%s, user=%s, team_id=%s, agent=%s",
             self.address.channel,
             self.address.channel_user_id,
-            process.team_id,
-            bound_name,
+            team_id,
+            agent_name,
         )
-        return process
-
-    @staticmethod
-    def _resolve_agent_name(process: Process, agent_name: str | None) -> str:
-        """Return the spawned name to bind, defaulting to the entry point.
-
-        Raises:
-            ValueError: ``agent_name`` names no agent of this team.
-        """
-        if agent_name is None:
-            return process.entry_point.name
-        addressable = {process.entry_point.name} | {ref.name for ref in process.supervisors}
-        if agent_name not in addressable:
-            msg = f"{agent_name} is not an agent of team {process.team_id}"
-            raise ValueError(msg)
-        return agent_name
 
     async def bound_process(self) -> Process | None:
         """Return the bound team's ``Process``, or None when unbound or unknown.
@@ -469,20 +443,22 @@ class DefaultChannelRouter(InteractionChannelRouter):
     async def _command_register(
         self, message: ChannelMessage, rest: str, ctx: ChannelRouteContext
     ) -> None:
-        """Bind this conversation to a team that already exists.
+        """Bind this conversation to the team and agent the message names.
 
-        Two ways to name the team, in this order: the command's own text, and
-        failing that the message it replies to. The second is what makes the
-        command usable — the bot's notices carry a team id back to the chat, so
-        replying to one with ``/register`` needs no copying.
+        Both names are read out of free text, from the command's own words or —
+        when those carry no team id — from the message being replied to. The
+        second is what makes the command usable: the bot's own messages name
+        the team and the agent, so answering one needs no copying.
 
-        Every outcome answers the user. A command that silently does nothing is
-        indistinguishable from one that worked, and this one changes which team
-        the next message reaches.
+        Neither name is verified (``ChannelRouteContext.bind_team``). The reply
+        therefore says what was bound, never whether it exists: a user who
+        mistypes finds out when their next message goes unanswered, and a chat
+        probing for live team ids learns nothing from the difference.
 
-        Disabled unless the channel config sets ``allow_register``: the id comes
-        from an unauthenticated payload and is checked against nothing (see
-        ``ChannelRouteContext.bind_existing_team``).
+        Every outcome answers the user, because this decides where their next
+        message goes.
+
+        Disabled unless the channel config sets ``allow_register``.
         """
         if not self._allow_register:
             logger.warning(
@@ -494,26 +470,17 @@ class DefaultChannelRouter(InteractionChannelRouter):
             return
         source = rest if _TEAM_ID_RE.search(rest) else (message.quoted_text or "")
         team_id_match = _TEAM_ID_RE.search(source)
-        if team_id_match is None:
+        agent_match = _AGENT_NAME_RE.search(source)
+        if team_id_match is None or agent_match is None:
             ctx.notify(
-                "No team id found. Send '/register <team-id> [@Agent]', "
-                "or reply to a message naming the team with '/register'."
+                "Send '/register <team-id> @Agent', or reply to a message naming both "
+                "with '/register'. The agent is its spawned name, e.g. @HumanProxy_0."
             )
             return
         team_id = uuid.UUID(team_id_match.group())
-        agent_match = _AGENT_NAME_RE.search(source)
-        agent_name = agent_match.group() if agent_match is not None else None
-        try:
-            process = await ctx.bind_existing_team(team_id, agent_name)
-        except ValueError as exc:
-            logger.info("Rejected /register naming an unknown agent: %s", exc)
-            ctx.notify(f"{agent_name} is not an agent of team {team_id}.")
-            return
-        if process is None:
-            ctx.notify(f"Team {team_id} is not known.")
-            return
-        bound_name = agent_name or process.entry_point.name
-        ctx.notify(f"Bound to team {process.team_id} as {bound_name} — {process.status.value}.")
+        agent_name = agent_match.group()
+        await ctx.bind_team(team_id, agent_name)
+        ctx.notify(f"Bound to team {team_id} as {agent_name}.")
 
     async def _command_status(self, ctx: ChannelRouteContext) -> None:
         """Report the bound team and its lifecycle state.

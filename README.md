@@ -904,7 +904,7 @@ A channel is configured in `settings.channels` as a `ChannelConfig`: `parser_fqc
 
 **The route parses and routes, nothing else.** What a message *does* is the router's decision. A channel that names no router gets `DefaultChannelRouter`:
 
-1. `/new [text]` releases the binding and starts a fresh team; `/unregister` releases it; `/status` reports the bound team and its state. `/register <team-id> [@Agent]` binds the chat to a team that already exists — see below. Any other command reaches the team as ordinary text.
+1. `/new [text]` releases the binding and starts a fresh team; `/unregister` releases it; `/status` reports the bound team and its state. `/register <team-id> @Agent` binds the chat to a team the message names — see below. Any other command reaches the team as ordinary text.
 2. A bound conversation's message is sent to its team.
 3. An unbound conversation's message starts a team from `message.catalog_entry` (else the parser's `default_catalog_entry`) and binds the conversation to it.
 
@@ -922,7 +922,7 @@ Subclass it and override one hook (`on_command`, `on_bound`, `on_unbound`) to ch
 
 So a key can start a team but never reach one. `None` (Telegram's parser sets none) means a fresh id and no collapsing. Community enforces this in `LocalPlacement` with an in-process future per key; a multi-replica tier needs an atomic claim in a shared store.
 
-**`/register` is off by default, and is the one hole in the rule above.** It binds a chat to a team named by the payload, through the context's single team-id-taking method, `bind_existing_team`. The channel layer has no verified identity for a chat user, so there is no ownership check to make: anyone who can message the bot and knows a team id can bind to it. Enable it per channel, only where chat users are trusted:
+**`/register` is off by default, and is the one hole in the rule above.** It binds a chat to the team and agent the message names, through the context's single team-id-taking method, `bind_team`. Enable it per channel, only where chat users are trusted:
 
 ```python
 ChannelConfig(
@@ -932,7 +932,9 @@ ChannelConfig(
 )
 ```
 
-It reads the team id from the command text, or — when the text has none — from the message being replied to (`ChannelMessage.quoted_text`), which is how the bot's own notices hand an id back to the chat. An `@Agent` binds that agent instead of the entry point, and is accepted only if the team actually has it. Every outcome answers the user: bound, team unknown, agent unknown, nothing found, or not enabled.
+`/register <team-id> @Agent`, or a bare `/register` **replying** to a message that names both — the bot's own messages do, so answering one needs no copying. What the user typed wins over what they replied to. Both names are required: there is no entry-point default, because learning the entry point's name would mean looking the team up.
+
+**Neither name is verified, deliberately.** A lookup would make the command an existence oracle — a chat could ask "is this id live?" and read the answer off the reply — while checking nothing that matters, since the payload carries no identity to compare against `Process.user_id`. A binding naming a team that does not exist is inert: the next message finds no team, and the outbound path never matches it. The cost of a mistyped id is the user's own conversation. It also means `bind_team` touches the registry only, never the team service, and an agent deeper than the first layer (`@Expert_1`) binds fine — `Process` could never have confirmed it anyway.
 
 **Metadata has two destinations.** `team_metadata` goes to team creation and is validated against the card's declared contract. `binding_metadata` is stored verbatim on the `ChannelBinding` for the router's own later use — unvalidated, from an unauthenticated payload, never proof of identity.
 
