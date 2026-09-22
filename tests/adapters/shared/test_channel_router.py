@@ -1160,3 +1160,84 @@ def _team_with_supervisor(team_id: uuid.UUID) -> Process:
             AgentCardRef(role="manager", card_hash="stub-hash-manager"),
         ],
     )
+
+
+# --- Every creation announces its team and agent ---
+
+
+async def test_a_first_message_announces_the_team_it_started(tmp_path: Path) -> None:
+    """An unbound chat learns its team id the moment one is created for it.
+
+    The notice is the only place a chat ever sees that id, and ``register``
+    reads it back out of a replied-to message — so without this, re-attaching
+    a chat means fetching the id from the web UI.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    adapter = StubAdapter()
+
+    await DefaultChannelRouter().route(
+        _inbound("hello there"), _ctx(registry, team_service, adapter)
+    )
+
+    assert len(adapter.notices) == 1
+    assert str(team_service.next_team_id) in adapter.notices[0][1]
+
+
+async def test_the_announcement_names_the_bound_agent_too(tmp_path: Path) -> None:
+    """``register`` needs both names, so the notice a user replies to carries both."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    adapter = StubAdapter()
+
+    await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service, adapter))
+
+    assert "@HumanProxy_0" in adapter.notices[0][1]
+
+
+async def test_new_and_a_first_message_announce_the_same_way(tmp_path: Path) -> None:
+    """One creation path, one notice: the two must not drift apart."""
+    first_adapter = StubAdapter()
+    first_service = StubTeamService()
+    shared_team_id = first_service.next_team_id
+    await DefaultChannelRouter().route(
+        _inbound("hello"),
+        _ctx(YamlChannelRegistry(tmp_path / "a.yaml"), first_service, first_adapter),
+    )
+
+    new_adapter = StubAdapter()
+    new_service = StubTeamService()
+    new_service.next_team_id = shared_team_id
+    await DefaultChannelRouter().route(
+        ChannelMessage(
+            content="/new hello",
+            channel_user_id="user-1",
+            command=ChannelCommand(name="new", rest="hello"),
+        ),
+        _ctx(YamlChannelRegistry(tmp_path / "b.yaml"), new_service, new_adapter),
+    )
+
+    assert first_adapter.notices[0][1] == new_adapter.notices[0][1]
+
+
+async def test_a_registered_chat_can_be_rebound_from_the_announcement(tmp_path: Path) -> None:
+    """End to end: the notice a chat received is enough to bind another chat.
+
+    This is the round trip the two features exist for — the announcement
+    carries a team id and an agent name, and ``register`` reads both back out
+    of a reply.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    adapter = StubAdapter()
+    ctx = _ctx(registry, team_service, adapter)
+    await DefaultChannelRouter().route(_inbound("hello"), ctx)
+    announcement = adapter.notices[0][1]
+    await ctx.release()
+
+    await _enabled_router().route(_register(quoted=announcement), ctx)
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == team_service.next_team_id
+    assert binding.agent_name == "@HumanProxy_0"

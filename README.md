@@ -906,7 +906,7 @@ A channel is configured in `settings.channels` as a `ChannelConfig`: `parser_fqc
 
 1. `/new [text]` releases the binding and starts a fresh team; `/unregister` releases it; `/status` reports the bound team and its state. `/register <team-id> @Agent` binds the chat to a team the message names — see below. Any other command reaches the team as ordinary text.
 2. A bound conversation's message is sent **as the bound agent** — the binding says which agent this chat is — to the first `@Name` in the message, else the first in the message it replies to, else the team's first supervisor. The text is passed verbatim; an `@Name` is the user's sentence, not markup.
-3. An unbound conversation's message starts a team from `message.catalog_entry` (else the parser's `default_catalog_entry`) and binds the conversation to it.
+3. An unbound conversation's message starts a team from `message.catalog_entry` (else the parser's `default_catalog_entry`), binds the conversation to it, and announces it: *"Started a new session — team `<id>` as `<agent>`."* `/new` announces the same way, through the same helper. That notice is the only place a chat learns those two names, and `/register` reads them back out of a reply.
 
 Subclass it and override one hook (`on_command`, `on_bound`, `on_unbound`) to change one rule.
 

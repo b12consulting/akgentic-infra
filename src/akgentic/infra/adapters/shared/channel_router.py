@@ -488,13 +488,7 @@ class DefaultChannelRouter(InteractionChannelRouter):
 
     async def on_unbound(self, message: ChannelMessage, ctx: ChannelRouteContext) -> None:
         """Start a team for this conversation, with the message as its first."""
-        await ctx.initiate_team(
-            message.content,
-            catalog_entry=message.catalog_entry,
-            team_id=message.team_id,
-            team_metadata=message.team_metadata,
-            binding_metadata=message.binding_metadata,
-        )
+        await self._start_session(message, message.content, ctx)
 
     async def _command_new(
         self, message: ChannelMessage, rest: str, ctx: ChannelRouteContext
@@ -510,17 +504,43 @@ class DefaultChannelRouter(InteractionChannelRouter):
         as ``on_unbound`` honours it.
         """
         await ctx.release()
+        await self._start_session(message, rest or None, ctx)
+
+    async def _start_session(
+        self, message: ChannelMessage, content: str | None, ctx: ChannelRouteContext
+    ) -> Process:
+        """Create the team, bind the chat to it, and tell the user which team it is.
+
+        Every creation announces itself, whether the user asked for one with
+        ``new`` or simply spoke to an unbound chat. Two reasons, and the second
+        is why this is not merely a nicety:
+
+        - ``new`` with no text produces no team reply at all, so the user who
+          just abandoned a conversation would otherwise see nothing happen;
+        - the notice is the only place the chat ever learns its team id and
+          bound agent. ``register`` reads both out of a replied-to message, so
+          this is what makes re-attaching a chat possible without going to the
+          web UI for the id.
+
+        Both callers go through here so the two notices cannot drift apart.
+
+        Args:
+            message: The inbound message, for the creation parameters it carries.
+            content: The team's first message, or None to create it silently.
+            ctx: This request's context.
+
+        Returns:
+            The created team's ``Process``.
+        """
         process = await ctx.initiate_team(
-            rest or None,
+            content,
             catalog_entry=message.catalog_entry,
             team_id=message.team_id,
             team_metadata=message.team_metadata,
             binding_metadata=message.binding_metadata,
         )
-        # ``new`` acknowledges even though the team usually answers for itself:
-        # ``/new`` with no text produces no team reply at all, so without this
-        # the user who just abandoned a conversation would see nothing.
-        ctx.notify(f"Started a new session — team {process.team_id}.")
+        ctx.notify(f"Started a new session — team {process.team_id} as {process.entry_point.name}.")
+        return process
 
     async def _command_unregister(self, ctx: ChannelRouteContext) -> None:
         """Release this conversation's binding, acknowledging either way.
