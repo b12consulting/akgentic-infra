@@ -87,7 +87,7 @@ def wire_community(
     placement = LocalPlacement(team_manager, service_registry)
     worker_handle = LocalWorkerHandle(team_manager, service_registry, actor_system)
     runtime_cache = LocalRuntimeCache()
-    runtime_cache.warm(worker_handle, event_store)
+    runtime_cache.warm(worker_handle, event_store, placement)
 
     resolved_team_access_policy = (
         team_access_policy

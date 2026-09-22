@@ -133,12 +133,16 @@ class TestWorkerHandleLifecycle:
         finally:
             integration_client.post(f"/teams/{team_id_str}/stop")
 
-    def test_resume_team_via_worker_handle(
+    def test_resume_team_via_placement(
         self,
         integration_client: TestClient,
         integration_app: FastAPI,
     ) -> None:
-        """AC #1: Stop then restore repopulates cache; status is running."""
+        """AC #1: Stop then restore repopulates cache; status is running.
+
+        The restore now runs through ``PlacementStrategy.resume_team`` — the
+        HTTP-level contract asserted here is unchanged by that move.
+        """
         team_id_str = create_team(integration_client)
         try:
             team_id = uuid.UUID(team_id_str)

@@ -24,6 +24,29 @@ def test_placement_strategy_has_create_team() -> None:
     assert "user_id" in sig.parameters
 
 
+def test_placement_strategy_has_resume_team() -> None:
+    """PlacementStrategy defines resume_team with team_id parameter."""
+    from akgentic.infra.protocols import PlacementStrategy
+
+    assert hasattr(PlacementStrategy, "resume_team")
+    sig = inspect.signature(PlacementStrategy.resume_team)
+    assert "team_id" in sig.parameters
+
+
+def test_resume_team_lives_on_placement_not_on_the_worker_handle() -> None:
+    """Where a returning team runs is a placement decision, not a handle's.
+
+    Stated negatively as well as positively: a handle already names a worker,
+    so a ``resume_team`` left on ``WorkerHandle`` would let a tier grow a second
+    worker selector inside it and bring a stopped team back wherever its last
+    handle happens to point.
+    """
+    from akgentic.infra.protocols import PlacementStrategy, WorkerHandle
+
+    assert not hasattr(WorkerHandle, "resume_team")
+    assert hasattr(PlacementStrategy, "resume_team")
+
+
 def test_auth_strategy_is_protocol() -> None:
     """AuthStrategy uses typing.Protocol base."""
     from akgentic.infra.protocols import AuthStrategy
@@ -971,6 +994,17 @@ def test_placement_strategy_return_type() -> None:
     assert hints["metadata"] == SerializableBaseModel | None
 
 
+def test_placement_strategy_resume_team_returns_team_handle() -> None:
+    """PlacementStrategy.resume_team returns TeamHandle."""
+    from akgentic.infra.protocols import PlacementStrategy, TeamHandle
+
+    hints = get_type_hints(
+        PlacementStrategy.resume_team,
+        localns={"TeamHandle": TeamHandle},
+    )
+    assert hints["return"] is TeamHandle
+
+
 def test_recovery_policy_return_type() -> None:
     """RecoveryPolicy.recover returns None."""
     from akgentic.infra.protocols import RecoveryPolicy
@@ -1008,9 +1042,6 @@ def test_worker_handle_is_runtime_checkable() -> None:
         def delete_team(self, team_id: uuid.UUID) -> None:
             pass
 
-        def resume_team(self, team_id: uuid.UUID) -> object:
-            return None
-
         def get_team(self, team_id: uuid.UUID) -> object:
             return None
 
@@ -1041,15 +1072,6 @@ def test_worker_handle_has_delete_team() -> None:
     assert "team_id" in sig.parameters
 
 
-def test_worker_handle_has_resume_team() -> None:
-    """WorkerHandle defines resume_team with team_id parameter."""
-    from akgentic.infra.protocols import WorkerHandle
-
-    assert hasattr(WorkerHandle, "resume_team")
-    sig = inspect.signature(WorkerHandle.resume_team)
-    assert "team_id" in sig.parameters
-
-
 def test_worker_handle_has_get_team() -> None:
     """WorkerHandle defines get_team with team_id parameter."""
     from akgentic.infra.protocols import WorkerHandle
@@ -1073,19 +1095,6 @@ def test_worker_handle_delete_team_returns_none() -> None:
 
     hints = get_type_hints(WorkerHandle.delete_team)
     assert hints["return"] is type(None)
-
-
-def test_worker_handle_resume_team_returns_team_handle() -> None:
-    """WorkerHandle.resume_team returns TeamHandle."""
-    from akgentic.team.models import Process
-
-    from akgentic.infra.protocols import TeamHandle, WorkerHandle
-
-    hints = get_type_hints(
-        WorkerHandle.resume_team,
-        localns={"TeamHandle": TeamHandle, "Process": Process},
-    )
-    assert hints["return"] is TeamHandle
 
 
 def test_worker_handle_get_team_returns_process_or_none() -> None:
@@ -1149,15 +1158,16 @@ def test_worker_handle_stop_all_returns_none() -> None:
 
 
 def test_worker_handle_method_count() -> None:
-    """WorkerHandle has exactly 6 public methods.
+    """WorkerHandle has exactly 5 public methods.
 
     A count rather than a set, so widening the Protocol is a deliberate act:
     every tier implementation and every test fake has to grow the method too,
-    and this failing is the reminder to sweep them.
+    and this failing is the reminder to sweep them. It was 6 until ``resume_team``
+    moved to ``PlacementStrategy``.
     """
     from akgentic.infra.protocols import WorkerHandle
 
     public_methods = [
         m for m in dir(WorkerHandle) if not m.startswith("_") and callable(getattr(WorkerHandle, m))
     ]
-    assert len(public_methods) == 6
+    assert len(public_methods) == 5

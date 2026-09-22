@@ -21,9 +21,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How long a duplicate creation waits for the one it is parked on. Team creation
-# spawns actors and takes about a second; a creation still unfinished after this
-# is stuck, and parking on it forever would stack blocked threads behind it.
+# How long a duplicate waits for the claim it is parked on — a creation or a
+# resume alike. Both spawn actors and take about a second; one still unfinished
+# after this is stuck, and parking on it forever would stack blocked threads
+# behind it.
 _PARKED_CREATION_TIMEOUT_S = 120.0
 
 
@@ -33,11 +34,11 @@ def _team_id_conflict(detail: str) -> PlacementError:
 
 
 class LocalPlacement:
-    """Creates teams in the current process instance.
+    """Places teams in the current process instance — new ones and returning ones.
 
     Satisfies the PlacementStrategy protocol via structural subtyping.
-    Delegates team creation to ``TeamManager`` and wraps the result
-    in a ``LocalTeamHandle``.
+    Delegates team creation and resumption to ``TeamManager`` and wraps the
+    result in a ``LocalTeamHandle``.
 
     A caller-supplied ``team_id`` is a **creation key, never an address**, and
     this is where community enforces that contract — every creation passes
@@ -53,8 +54,14 @@ class LocalPlacement:
       it can name; recreating it would overwrite a live team, because
       ``TeamManager.create_team`` performs no duplicate check of its own.
 
+    **One table serves both operations.** A resume claims the same ``team_id``
+    key the same way, so two concurrent resumes of one stopped team start one
+    runtime and share a handle (ADR-045 §D4). There is deliberately no second
+    table and no second park helper — see the invariant recorded at
+    ``_in_flight`` for why creations and resumes cannot collide over a key.
+
     The in-flight table is guarded by a ``threading.Lock``, not an asyncio one:
-    creations arrive on threadpool threads (``POST /teams`` runs through
+    claims arrive on threadpool threads (``POST /teams`` runs through
     ``asyncio.to_thread``), so the guard must hold across threads. It lives in
     the placement rather than the server, which must keep no cross-request
     state — community is a single process, and the table is exactly as
@@ -69,8 +76,20 @@ class LocalPlacement:
         self._instance_id = uuid.uuid4()
         self._team_manager = team_manager
         self._service_registry = service_registry
-        # team_id → (owner user_id, future of the handle). Present only while
-        # the creation runs; removed the moment it resolves either way.
+        # team_id → (owner user_id, future of the handle). Present only while a
+        # claim on that key runs; removed the moment it resolves either way.
+        #
+        # Creations and resumes share this one table, and a create and a resume
+        # can never contend for the same key — by construction, not by luck:
+        # ``create_team`` refuses outright any key naming a team that already
+        # exists, and a resume only ever reaches this placement for a team that
+        # *does* exist and is stopped (``TeamService.restore_team`` reads the
+        # persisted status first, and ``LocalRuntimeCache.warm()`` resumes teams
+        # the event store just returned). So the create↔resume branch is
+        # unreachable, which is what makes one table safe. If a later change
+        # makes it reachable — a create that no longer refuses an existing team,
+        # or a resume that can reach placement for a team that does not exist —
+        # this analysis has to be redone before the table can stay shared.
         self._in_flight: dict[uuid.UUID, tuple[str, Future[TeamHandle]]] = {}
         self._in_flight_lock = threading.Lock()
 
@@ -106,12 +125,19 @@ class LocalPlacement:
             )
 
         with self._in_flight_lock:
+            # Checked under the lock, and before the in-flight lookup: a
+            # creation finishing between this check and the insert below would
+            # otherwise be recreated, and a key naming an existing team must be
+            # refused whatever else holds it — including an in-flight resume of
+            # that very team, which a same-owner create would otherwise park on
+            # and be handed the resumed team's handle. A creation in flight is
+            # invisible here, because ``TeamManager.create_team`` persists the
+            # ``Process`` only once the build has succeeded; duplicates still
+            # park for the whole of it.
+            if self._team_manager.get_team(team_id) is not None:
+                raise _team_id_conflict(f"Team {team_id} already exists")
             pending = self._in_flight.get(team_id)
             if pending is None:
-                # Checked under the lock: a creation finishing between this
-                # check and the insert below would otherwise be recreated.
-                if self._team_manager.get_team(team_id) is not None:
-                    raise _team_id_conflict(f"Team {team_id} already exists")
                 future: Future[TeamHandle] = Future()
                 self._in_flight[team_id] = (user_id, future)
                 is_creator = True
@@ -136,17 +162,72 @@ class LocalPlacement:
             with self._in_flight_lock:
                 self._in_flight.pop(team_id, None)
 
+    def resume_team(self, team_id: uuid.UUID) -> TeamHandle:
+        """Resume a stopped team in the local process, collapsing concurrent attempts.
+
+        Placement decides where a returning team runs, exactly as it does for a
+        new one (ADR-045 §D3); community always answers "here". Concurrent
+        resumes of one team park on the same in-flight table creations use, so
+        one runtime starts and both callers get the same handle.
+
+        A resume has no *requesting* user, so the entry records the team's own
+        persisted owner: the resumer and every duplicate parked behind it then
+        present the same value, ``_park`` stays a single helper, and creation's
+        refusal of a key in flight for a different user is untouched.
+
+        Failures are **not** translated into ``PlacementError``. ``TeamService``
+        and the worker route classify a resume failure by its message — "not
+        found" / "deleted" → 404, anything else → 409 — and a ``PlacementError``
+        is a ``ServerError`` the single infra handler would answer 503 to
+        instead. The move is a relocation, not a redesign of the error path.
+
+        Raises:
+            ValueError: Propagated unchanged from ``TeamManager.resume_team``
+                when the team is unknown, already running, or deleted.
+            PlacementError: 503 only, when a parked duplicate outlives
+                ``_PARKED_CREATION_TIMEOUT_S``.
+        """
+        process = self._team_manager.get_team(team_id)
+        owner = process.user_id if process is not None else ""
+
+        with self._in_flight_lock:
+            pending = self._in_flight.get(team_id)
+            if pending is None:
+                future: Future[TeamHandle] = Future()
+                self._in_flight[team_id] = (owner, future)
+                is_resumer = True
+            else:
+                is_resumer = False
+
+        if not is_resumer:
+            assert pending is not None
+            return self._park(team_id, owner, *pending)
+
+        logger.debug("LocalPlacement resuming team: team_id=%s", team_id)
+        try:
+            runtime = self._team_manager.resume_team(team_id)
+        except BaseException as exc:
+            future.set_exception(exc)
+            raise
+        else:
+            handle = LocalTeamHandle(runtime)
+            future.set_result(handle)
+            return handle
+        finally:
+            with self._in_flight_lock:
+                self._in_flight.pop(team_id, None)
+
     def _park(
         self, team_id: uuid.UUID, user_id: str, owner: str, future: Future[TeamHandle]
     ) -> TeamHandle:
-        """Wait for the in-flight creation of ``team_id`` and return its handle.
+        """Wait for the in-flight claim on ``team_id`` and return its handle.
 
-        Refused outright when the creation belongs to another user: collapsing
-        into it would hand one user's team to another.
+        Refused outright when the claim belongs to another user: collapsing into
+        it would hand one user's team to another.
         """
         if owner != user_id:
             raise _team_id_conflict(f"Team {team_id} is being created for another user")
-        logger.debug("Parking duplicate creation of team %s", team_id)
+        logger.debug("Parking duplicate claim on team %s", team_id)
         try:
             return future.result(timeout=_PARKED_CREATION_TIMEOUT_S)
         except TimeoutError as exc:

@@ -241,16 +241,75 @@ def test_worker_resume_response_carries_the_catalog_namespace() -> None:
     process = _build_process(team_id, team_card, catalog_namespace="acme-cases")
     cache = LocalRuntimeCache()
     services = SimpleNamespace(
-        worker_handle=SimpleNamespace(
-            resume_team=lambda _tid: LocalTeamHandle(runtime),
-            get_team=lambda _tid: process,
-        ),
+        team_manager=SimpleNamespace(resume_team=lambda _tid: runtime),
+        worker_handle=SimpleNamespace(get_team=lambda _tid: process),
         runtime_cache=cache,
     )
 
     response = resume_team(team_id, services)  # type: ignore[arg-type]
 
     assert response.catalog_namespace == "acme-cases"
+
+
+def test_worker_resume_reaches_the_team_manager_not_a_handle() -> None:
+    """The worker carries the resume out on itself; placement already chose it.
+
+    Reaching for a handle here would route the call back out through placement
+    and, on a distributed tier, select a worker all over again — the create
+    route calls ``team_manager`` directly for exactly this reason. The handle
+    stub raises rather than answering, so a route that reached for it fails
+    loudly instead of quietly working in a single-process test.
+    """
+    team_id = uuid.uuid4()
+    runtime = _FakeRuntime(team_id)
+    process = _build_process(team_id, _build_team_card())
+    cache = LocalRuntimeCache()
+
+    def _forbidden(_tid: uuid.UUID) -> object:
+        raise AssertionError("the worker must not resume through a handle")
+
+    services = SimpleNamespace(
+        team_manager=SimpleNamespace(resume_team=lambda _tid: runtime),
+        worker_handle=SimpleNamespace(resume_team=_forbidden, get_team=lambda _tid: process),
+        runtime_cache=cache,
+    )
+
+    response = resume_team(team_id, services)  # type: ignore[arg-type]
+
+    assert response.team_id == team_id
+    # The TeamRuntime is wrapped before it is cached — the cache holds handles.
+    cached = cache.get(team_id)
+    assert isinstance(cached, LocalTeamHandle)
+    assert cached.team_id == team_id
+
+
+def test_worker_resume_maps_a_value_error_to_the_action_status() -> None:
+    """The 404 / 409 mapping stays at the route, on the ValueError's message."""
+    team_id = uuid.uuid4()
+
+    def _raise(_tid: uuid.UUID) -> object:
+        raise ValueError(f"Team {_tid} not found")
+
+    services = SimpleNamespace(
+        team_manager=SimpleNamespace(resume_team=_raise),
+        worker_handle=SimpleNamespace(get_team=lambda _tid: None),
+        runtime_cache=LocalRuntimeCache(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        resume_team(team_id, services)  # type: ignore[arg-type]
+
+    assert exc_info.value.status_code == 404
+
+    def _conflict(_tid: uuid.UUID) -> object:
+        raise ValueError(f"Team {_tid} is currently running")
+
+    services.team_manager = SimpleNamespace(resume_team=_conflict)
+
+    with pytest.raises(HTTPException) as conflict_info:
+        resume_team(team_id, services)  # type: ignore[arg-type]
+
+    assert conflict_info.value.status_code == 409
 
 
 def test_worker_response_reports_null_for_a_team_without_a_namespace() -> None:

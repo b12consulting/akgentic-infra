@@ -6,7 +6,6 @@ import inspect
 import uuid
 from unittest.mock import MagicMock
 
-from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.protocols.worker_handle import WorkerHandle
 
@@ -37,7 +36,6 @@ class TestLocalWorkerHandleProtocolCompliance:
         for method in (
             "stop_team",
             "delete_team",
-            "resume_team",
             "get_team",
             "update_team_metadata",
             "stop_all",
@@ -52,11 +50,6 @@ class TestLocalWorkerHandleProtocolCompliance:
     def test_delete_team_signature(self) -> None:
         """delete_team has team_id parameter."""
         sig = inspect.signature(LocalWorkerHandle.delete_team)
-        assert "team_id" in sig.parameters
-
-    def test_resume_team_signature(self) -> None:
-        """resume_team has team_id parameter."""
-        sig = inspect.signature(LocalWorkerHandle.resume_team)
         assert "team_id" in sig.parameters
 
     def test_get_team_signature(self) -> None:
@@ -93,19 +86,6 @@ class TestLocalWorkerHandleBehavior:
         tid = uuid.uuid4()
         adapter.delete_team(tid)
         tm.delete_team.assert_called_once_with(tid)
-
-    def test_resume_team_delegates_to_team_manager(self) -> None:
-        """resume_team calls TeamManager.resume_team with correct team_id."""
-        adapter, tm, _ = _make_adapter()
-        tid = uuid.uuid4()
-        adapter.resume_team(tid)
-        tm.resume_team.assert_called_once_with(tid)
-
-    def test_resume_team_returns_local_team_handle(self) -> None:
-        """resume_team wraps TeamManager result in LocalTeamHandle."""
-        adapter, _, _ = _make_adapter()
-        result = adapter.resume_team(uuid.uuid4())
-        assert isinstance(result, LocalTeamHandle)
 
     def test_get_team_delegates_to_team_manager(self) -> None:
         """get_team calls TeamManager.get_team with correct team_id."""

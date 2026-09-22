@@ -769,7 +769,7 @@ class TeamService:
         if process.status == TeamStatus.DELETED:
             msg = f"Team {team_id} has been deleted"
             raise ValueError(msg)
-        handle = self._services.worker_handle.resume_team(team_id)
+        handle = self._services.placement.resume_team(team_id)
         self._cache.store(handle.team_id, handle)
         updated = self._services.worker_handle.get_team(team_id)
         if updated is None:  # pragma: no cover

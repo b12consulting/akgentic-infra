@@ -145,22 +145,42 @@ class TestLocalRuntimeCacheWarm:
     """warm() auto-restores running teams on startup."""
 
     def test_warm_restores_running_teams(self) -> None:
-        """Running teams are stopped then resumed, handle stored in cache."""
+        """Running teams are stopped on the handle then resumed on the placement."""
         cache = LocalRuntimeCache()
         team_id = uuid.uuid4()
         handle = MagicMock()
 
         worker = MagicMock()
-        worker.resume_team.return_value = handle
+        placement = MagicMock()
+        placement.resume_team.return_value = handle
 
         event_store = MagicMock()
         event_store.list_teams.return_value = [_make_process(team_id, TeamStatus.RUNNING)]
 
-        cache.warm(worker, event_store)
+        cache.warm(worker, event_store, placement)
 
         worker.stop_team.assert_called_once_with(team_id)
-        worker.resume_team.assert_called_once_with(team_id)
+        placement.resume_team.assert_called_once_with(team_id)
         assert cache.get(team_id) is handle
+
+    def test_warm_resumes_through_the_placement_not_the_worker_handle(self) -> None:
+        """Boot takes the placement decision, it does not reach past it.
+
+        A ``MagicMock`` worker answers ``resume_team`` happily, so a warm that
+        still went through the handle would restore teams and look green. Only
+        this assertion tells the two apart.
+        """
+        cache = LocalRuntimeCache()
+        team_id = uuid.uuid4()
+
+        worker = MagicMock()
+        placement = MagicMock()
+        event_store = _filtering_store(_make_process(team_id, TeamStatus.RUNNING))
+
+        cache.warm(worker, event_store, placement)
+
+        worker.resume_team.assert_not_called()
+        assert cache.get(team_id) is placement.resume_team.return_value
 
     def test_warm_pushes_running_filter_to_store(self) -> None:
         """The RUNNING filter is asked of the store, not applied in memory."""
@@ -170,7 +190,7 @@ class TestLocalRuntimeCacheWarm:
         event_store = MagicMock()
         event_store.list_teams.return_value = []
 
-        cache.warm(worker, event_store)
+        cache.warm(worker, event_store, MagicMock())
 
         event_store.list_teams.assert_called_once_with(status=TeamStatus.RUNNING)
 
@@ -180,12 +200,13 @@ class TestLocalRuntimeCacheWarm:
         team_id = uuid.uuid4()
 
         worker = MagicMock()
+        placement = MagicMock()
         event_store = _filtering_store(_make_process(team_id, TeamStatus.STOPPED))
 
-        cache.warm(worker, event_store)
+        cache.warm(worker, event_store, placement)
 
         worker.stop_team.assert_not_called()
-        worker.resume_team.assert_not_called()
+        placement.resume_team.assert_not_called()
         assert cache.get(team_id) is None
 
     def test_warm_skips_on_failure(self) -> None:
@@ -194,12 +215,13 @@ class TestLocalRuntimeCacheWarm:
         team_id = uuid.uuid4()
 
         worker = MagicMock()
-        worker.resume_team.side_effect = ValueError("broken")
+        placement = MagicMock()
+        placement.resume_team.side_effect = ValueError("broken")
 
         event_store = MagicMock()
         event_store.list_teams.return_value = [_make_process(team_id, TeamStatus.RUNNING)]
 
-        cache.warm(worker, event_store)  # should not raise
+        cache.warm(worker, event_store, placement)  # should not raise
 
         assert cache.get(team_id) is None
 
@@ -210,7 +232,8 @@ class TestLocalRuntimeCacheWarm:
         handle = MagicMock()
 
         worker = MagicMock()
-        worker.resume_team.side_effect = [ValueError("broken"), handle]
+        placement = MagicMock()
+        placement.resume_team.side_effect = [ValueError("broken"), handle]
 
         event_store = _filtering_store(
             _make_process(broken_id, TeamStatus.RUNNING),
@@ -218,7 +241,7 @@ class TestLocalRuntimeCacheWarm:
         )
 
         with caplog.at_level(logging.WARNING):
-            cache.warm(worker, event_store)  # should not raise
+            cache.warm(worker, event_store, placement)  # should not raise
 
         assert cache.get(broken_id) is None
         assert cache.get(healthy_id) is handle
@@ -237,13 +260,14 @@ class TestLocalRuntimeCacheWarm:
         cache = LocalRuntimeCache()
 
         worker = MagicMock()
+        placement = MagicMock()
         event_store = MagicMock()
         event_store.list_teams.return_value = []
 
-        cache.warm(worker, event_store)
+        cache.warm(worker, event_store, placement)
 
         worker.stop_team.assert_not_called()
-        worker.resume_team.assert_not_called()
+        placement.resume_team.assert_not_called()
 
     def test_warm_logs_restore_count(self, caplog: pytest.LogCaptureFixture) -> None:
         """The restore count is logged once, before the restore loop."""
@@ -257,7 +281,7 @@ class TestLocalRuntimeCacheWarm:
         )
 
         with caplog.at_level(logging.INFO):
-            cache.warm(worker, event_store)
+            cache.warm(worker, event_store, MagicMock())
 
         announcements = [
             i
@@ -277,6 +301,6 @@ class TestLocalRuntimeCacheWarm:
         event_store = _filtering_store()
 
         with caplog.at_level(logging.INFO):
-            cache.warm(worker, event_store)
+            cache.warm(worker, event_store, MagicMock())
 
         assert not [m for m in caplog.messages if m.startswith("Warming cache")]

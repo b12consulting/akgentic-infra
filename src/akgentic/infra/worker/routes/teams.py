@@ -377,12 +377,21 @@ def resume_team(
     team_id: uuid.UUID,
     services: WorkerServices = Depends(get_services),
 ) -> TeamResponse:
-    """Resume a stopped team and return its metadata."""
+    """Resume a stopped team and return its metadata.
+
+    The resume goes to ``team_manager``, never to a handle: placement has
+    already chosen this worker, and reaching back out through a handle would
+    send the call around the loop and select a worker all over again (ADR-045
+    §D3). This mirrors the create route, which calls ``team_manager`` directly
+    for the same reason — and, like it, wraps the returned ``TeamRuntime`` in a
+    ``LocalTeamHandle`` so the cache holds a handle rather than a runtime.
+    """
     logger.info("POST /teams/%s/resume", team_id)
     try:
-        handle = services.worker_handle.resume_team(team_id)
+        runtime = services.team_manager.resume_team(team_id)
     except ValueError as exc:
         _raise_action_error(exc)
+    handle = LocalTeamHandle(runtime)
     services.runtime_cache.store(team_id, handle)
     process = services.worker_handle.get_team(team_id)
     if process is None:
