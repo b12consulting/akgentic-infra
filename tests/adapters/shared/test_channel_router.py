@@ -60,6 +60,14 @@ class StubParser:
         return ChannelMessage(content=str(payload.get("text", "")), channel_user_id="user-1")
 
 
+class OtherStubParser(StubParser):
+    """A second channel, so per-channel wiring can be told from shared wiring."""
+
+    @property
+    def channel_name(self) -> str:
+        return "other"
+
+
 class StubAdapter:
     """InteractionChannelAdapter recording its notices."""
 
@@ -735,6 +743,64 @@ async def test_register_is_refused_unless_the_channel_enables_it(tmp_path: Path)
 
     assert await registry.find_binding(_ADDRESS) is None
     assert "not enabled" in adapter.notices[0][1]
+
+
+def test_a_channel_naming_no_router_still_gets_its_own_config() -> None:
+    """The default router is built per channel, with that channel's config.
+
+    One shared config-less instance would silently drop every key a channel
+    set for the router — ``allow_register`` among them, so the command answers
+    "not enabled" on a channel whose config enables it, with nothing in the
+    logs to say why.
+    """
+    config = _config()
+    config["routed"].config["allow_register"] = "true"
+    registry = ChannelParserRegistry(config)
+
+    router = registry.get_router("routed")
+
+    assert isinstance(router, DefaultChannelRouter)
+    assert router._allow_register is True
+
+
+def test_two_channels_do_not_share_one_default_router() -> None:
+    """Enabling the command on one channel must not enable it on another."""
+    config = _config()
+    config["routed"].config["allow_register"] = "true"
+    config["other"] = ChannelConfig(
+        parser_fqcn=f"{_THIS_MODULE}.OtherStubParser",
+        adapter_fqcn=f"{_THIS_MODULE}.StubAdapter",
+        config={},
+    )
+    registry = ChannelParserRegistry(config)
+
+    assert registry.get_router("routed")._allow_register is True  # type: ignore[union-attr]
+    assert registry.get_router("other")._allow_register is False  # type: ignore[union-attr]
+
+
+async def test_register_is_enabled_through_the_channel_config_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """The whole path: settings config -> registry -> router -> binding.
+
+    The unit specs build the router directly, so every one of them passed while
+    the wiring dropped the flag.
+    """
+    config = _config()
+    config["routed"].config["allow_register"] = "true"
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    adapter = StubAdapter()
+    parser_registry = ChannelParserRegistry(config)
+    StubParser.next_message = _register(f"{_ANOTHER_TEAM} {_ANOTHER_AGENT}")
+
+    await parser_registry.get_router("routed").route(
+        _register(f"{_ANOTHER_TEAM} {_ANOTHER_AGENT}"), _ctx(registry, team_service, adapter)
+    )
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == _ANOTHER_TEAM
 
 
 async def test_register_binds_the_team_and_agent_named_in_the_command(tmp_path: Path) -> None:

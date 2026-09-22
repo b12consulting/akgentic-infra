@@ -136,7 +136,14 @@ class TestMatchesUserProxy:
 
 
 class TestMatchesNonUserProxy:
-    """AC 2: recipient is not a user proxy → matches() returns False."""
+    """A recipient that is not a user proxy does not match — this adapter's rule.
+
+    The dispatcher stopped filtering by recipient, so these are the specs that
+    keep a Telegram chat out of the team's internal traffic. A binding naming
+    an ordinary member is honoured by the lookup and then carries nothing
+    here, which is what makes ``/register <team-id> @Expert`` inert rather
+    than a way to watch a team work.
+    """
 
     def test_agent_role_does_not_match(self) -> None:
         adapter = _make_adapter()
@@ -182,7 +189,11 @@ class _RaisingMessage:
 
 
 class TestMatchesGuard:
-    """AC 3: a raising recipient yields False rather than propagating."""
+    """AC 3: a raising recipient yields False rather than propagating.
+
+    ``matches`` runs in a Pykka actor thread, so an exception escaping here
+    would take the dispatch with it.
+    """
 
     def test_raising_recipient_access_returns_false(self) -> None:
         adapter = _make_adapter()

@@ -32,6 +32,9 @@ class TelegramChannelAdapter:
     ``HumanProxy`` — **and** the binding names this adapter's own channel.
     Without the second half, a deployment configuring two channels would have
     this adapter accept a Slack binding and post a Slack user id to Telegram.
+    Without the first, a chat bound to an ordinary member would receive the
+    team's internal traffic: the dispatcher stopped filtering by recipient, so
+    this adapter is where that rule lives.
 
     ``deliver()`` sends a synchronous POST to the Telegram ``sendMessage``
     endpoint, addressing ``binding.channel_user_id`` — the chat the inbound
@@ -60,11 +63,24 @@ class TelegramChannelAdapter:
         """Check if this adapter should deliver the message.
 
         Returns True when the recipient actor is a ``UserProxy``, or a
-        subclass such as ``HumanProxy``, indicating the message is headed
-        to a human participant — and the binding belongs to Telegram. The
-        recipient check is structural rather than a comparison against the
-        recipient's ``role`` string, so a team is free to name its
-        human-in-the-loop member anything.
+        subclass such as ``HumanProxy``, indicating the message is headed to a
+        human participant — and the binding belongs to Telegram. The recipient
+        check is structural rather than a comparison against the recipient's
+        ``role`` string, so a team is free to name its human-in-the-loop
+        member anything.
+
+        **This adapter is now the only thing enforcing that rule.** The
+        dispatcher no longer drops a message whose recipient is not a user
+        proxy: it finds the binding and offers the message to every adapter,
+        leaving each to say what it will carry. A chat is a place for humans,
+        so Telegram carries a message to a human's seat and not the team's
+        internal traffic — even where a binding names an ordinary member,
+        which ``/register`` permits. Another channel may decide otherwise
+        without changing the dispatcher.
+
+        The channel comparison is not optional either: messages are offered to
+        every configured adapter, so without it a deployment running two
+        channels would post a Slack chat id to Telegram.
 
         Args:
             msg: The outbound message to check.
@@ -139,8 +155,10 @@ class TelegramChannelAdapter:
         # that idiom quietly posted the message model's repr into a human's chat.
         # An agent with nothing to say produces nothing, and ``_post`` drops it.
         text = getattr(msg.message, "content", "") or ""
+        sender_name = msg.sender.name if msg.sender else  "Unknows sender"
+        post_message = f"You recieved a message from {sender_name}: \n\n{text}"
         logger.debug("Delivering message to Telegram chat %s", chat_id)
-        self._post(chat_id, text)
+        self._post(chat_id, post_message)
 
     def deliver_notice(self, address: ChannelAddress, text: str) -> None:
         """Deliver a channel-layer acknowledgement to a Telegram chat.
