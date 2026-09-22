@@ -1,4 +1,4 @@
-"""Webhook route — inbound message ingestion from external interaction channels."""
+"""Webhook route — inbound messages from external interaction channels, parsed and routed."""
 
 from __future__ import annotations
 

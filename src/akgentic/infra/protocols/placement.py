@@ -134,7 +134,7 @@ class PlacementStrategy(Protocol):
             team_card: Team configuration card.
             user_id: ID of the user creating the team.
             user_email: Email of the user creating the team.
-            team_id: Optional **creation key** — see below. When omitted, a
+            team_id: Optional **creation key** — see above. When omitted, a
                 fresh UUID is generated and nothing is collapsed.
             catalog_namespace: Opaque tag identifying the catalog namespace
                 the team was instantiated from. Forwarded through to

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 # Recursive JSON-safe type for webhook payloads — replaces dict[str, Any].
 # PEP 695 (``type`` statement) rather than a plain assignment: the alias is
-# recursive, and once it annotates a Pydantic *field* (``ChannelMessage.metadata``)
+# recursive, and once it annotates a Pydantic *field* (``ChannelMessage.team_metadata``)
 # the implicit form makes schema generation recurse until it blows the stack.
 # A named alias gives Pydantic a definition reference to close the cycle with.
 type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
@@ -251,9 +251,10 @@ class ChannelParser(Protocol):
         """Default catalog entry ID to use when initiating a new team.
 
         Used when the conversation has no binding and the router starts a
-        team without naming a catalog entry of its own: it is passed to
-        ``create_team(catalog_entry_id=...)`` to create a new team from the
-        channel's default template.
+        team without naming a catalog entry of its own, i.e. when
+        ``ChannelMessage.catalog_entry`` is None. ``initiate_team`` then passes
+        it to ``TeamService.create_team`` as the catalog namespace to create
+        from.
         """
         ...
 

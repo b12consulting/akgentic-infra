@@ -285,8 +285,12 @@ class TeamService:
                 ``kind="team"`` entry.
             user_id: Identifier of the user creating the team.
             user_email: Email of the user creating the team.
-            team_id: Optional caller-supplied team identifier; the placement
-                layer auto-generates a UUID when None.
+            team_id: Optional **creation key**, never the address of an
+                existing team. Concurrent creations with the same key for the
+                same user yield one team; a key naming an existing team, or one
+                being created for another user, is refused. The contract is the
+                placement's — see ``PlacementStrategy.create_team``. A fresh
+                UUID is generated when None.
             metadata: Optional plain-JSON business metadata. Validated against
                 the ``metadata_type`` the resolved card declares — the client
                 never names the type — and forwarded down the create path so it
@@ -314,6 +318,9 @@ class TeamService:
                 is supplied for a card declaring no contract, or fails the
                 declared schema. Raised before placement runs, so a rejected
                 body never leaves a half-created team behind.
+            PlacementError: With ``status_code=409`` and
+                ``code="team_id_conflict"`` when ``team_id`` names an existing
+                team or one being created for another user.
         """
         logger.debug("Resolving team for catalog namespace: %s", catalog_namespace)
         resolved = self.resolve_team_metadata(catalog_namespace, metadata)
