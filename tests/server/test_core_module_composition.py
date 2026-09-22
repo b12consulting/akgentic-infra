@@ -32,7 +32,6 @@ from akgentic.infra.server.state_keys import (
     CHANNEL_PARSERS,
     CHANNEL_REGISTRY,
     CONNECTION_MANAGER,
-    INGESTION,
     SERVICES,
     SETTINGS,
     TEAM_SERVICE,
@@ -122,7 +121,6 @@ class TestDepartmentShapedComposition:
         assert CONNECTION_MANAGER.require(app) is not None
         assert CHANNEL_PARSERS.require(app) is community_services.channel_parser_registry
         assert CHANNEL_REGISTRY.require(app) is community_services.channel_registry
-        assert INGESTION.require(app) is community_services.ingestion
         assert _TIER_FLAG.require(app) == "fake-tier-value"
 
     def test_core_module_only_manifest_equals_create_app_manifest(

@@ -12,7 +12,6 @@ from akgentic.infra.adapters.community.local_event_stream import (
     LocalEventStream,
     LocalStreamReader,
 )
-from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
@@ -23,7 +22,6 @@ from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelR
 __all__ = [
     "LocalEventStream",
     "LocalStreamReader",
-    "LocalIngestion",
     "LocalPlacement",
     "LocalRuntimeCache",
     "LocalTeamHandle",

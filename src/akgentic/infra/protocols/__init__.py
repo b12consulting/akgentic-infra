@@ -13,7 +13,6 @@ from akgentic.infra.protocols.channels import (
     ChannelRegistryReadSync,
     InitiatedTeam,
     InteractionChannelAdapter,
-    InteractionChannelIngestion,
     InteractionChannelRouter,
     JsonValue,
 )
@@ -44,7 +43,6 @@ __all__ = [
     "HealthMonitor",
     "InitiatedTeam",
     "InteractionChannelAdapter",
-    "InteractionChannelIngestion",
     "InteractionChannelRouter",
     "JsonValue",
     "NoCapacityError",

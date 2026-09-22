@@ -11,7 +11,6 @@ from akgentic.core.utils.serializer import SerializableBaseModel
 
 if TYPE_CHECKING:
     from akgentic.core.messages import SentMessage
-    from akgentic.core.messages.message import Message
     from akgentic.infra.adapters.shared.channel_router import ChannelRouteContext
 
 # Recursive JSON-safe type for webhook payloads — replaces dict[str, Any].
@@ -42,12 +41,36 @@ class ChannelMessage(SerializableBaseModel):
     channel_user_id: str = Field(description="Channel-specific user identifier")
     channel_message_id: str | None = Field(default=None, description="Channel-specific message ID")
     catalog_entry: str | None = Field(default=None, description="Catalog entry for the new team")
-    metadata: dict[str, JsonValue] | None = Field(
+    team_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "Creation key for a team this message may START — never the address of "
+            "an existing team. Used only when the conversation is unbound: concurrent "
+            "creations carrying the same key for the same user collapse into one team, "
+            "and a key naming a team that already exists, or one being created for a "
+            "different user, is refused with 409. A parser that sets it must derive it "
+            "so that racing deliveries of one initiation agree on it while a new "
+            "session gets a fresh one; the framework supplies no such derivation. "
+            "None means no collapsing: every creation gets a fresh id."
+        ),
+    )
+    team_metadata: dict[str, JsonValue] | None = Field(
         default=None,
         description=(
             "Plain-JSON business metadata the parser lifted from the channel payload. "
             "Carried to team creation only; validated there against the resolved card's "
             "declared contract."
+        ),
+    )
+    binding_metadata: dict[str, JsonValue] | None = Field(
+        default=None,
+        description=(
+            "Plain-JSON data the parser lifted from the channel payload for the "
+            "router's own use, stored verbatim on the binding when a team is started. "
+            "Router-owned and UNVALIDATED: unlike ``team_metadata`` it is checked "
+            "against no contract, and it comes from an unauthenticated payload, so a "
+            "router reading it back must treat it as untrusted input — never as proof "
+            "of identity or entitlement. Nothing in the framework reads it."
         ),
     )
     command: ChannelCommand | None = Field(
@@ -218,104 +241,6 @@ class InteractionChannelAdapter(Protocol):
 
 
 @runtime_checkable
-class InteractionChannelIngestion(Protocol):
-    """Routes inbound human replies from external channels to the correct team's UserProxy.
-
-    Implementations:
-
-    - **Community** (``LocalIngestion``): in-process routing to the local TeamService.
-    - **Department** (``HttpIngestion``): routes to the owning worker over HTTP.
-    - **Enterprise** (``DaprIngestion``): routes to the owning worker via Dapr
-      service invocation.
-
-    Error contract:
-        - ``create_team()`` raises, for a ``catalog_entry_id`` that does not
-          yield a team, either ``EntryNotFoundError`` (the namespace holds
-          nothing, or — as ``CatalogTeamEntryMissingError`` — holds no team
-          entry) → HTTP 404, or ``CatalogValidationError`` (the namespace is
-          present and its stored entries are invalid) → HTTP 409 carrying the
-          catalog's own message. **Catch neither.** Both belong to the catalog's
-          exception family, which the app registers handlers for, so letting
-          them propagate produces those two answers for free; a local catch that
-          reports every failure as 404 discards the diagnosis.
-        - ``create_team()`` also raises ``MetadataValidationError`` → HTTP 422
-          for a ``metadata`` body that fails the resolved card's declared
-          contract. **Catch it nowhere**, exactly as the catalog exceptions
-          above: it is a ``ServerError``, so the app-level handler already
-          answers 422 carrying the validator's own message.
-        - ``send_message()`` raises ``ValueError`` if ``team_id`` does not
-          correspond to a running team — ``TeamNotFoundError`` when the team is
-          unknown, ``TeamStateConflictError`` when it exists in a state the
-          operation forbids. Both are ``ValueError`` subclasses, so a caller
-          that does not need the distinction is unaffected.
-          **These two have no app-level handler.** They subclass ``ValueError``,
-          not ``ServerError``, and nothing registers a ``ValueError`` handler,
-          so a caller that lets them propagate gets a 500 — not a 404 or a 409.
-          A caller that wants those answers must map by type itself, the way
-          ``server/routes/teams.py`` does.
-
-    Creation and the first message are two calls on purpose. The caller writes
-    the ``ChannelBinding`` between them: a first message sent before the binding
-    exists can be answered before outbound delivery can find the chat, and that
-    reply is lost.
-    """
-
-    async def send_message(
-        self,
-        team_id: uuid.UUID,
-        content: str | Message,
-        original_message_id: str | None = None,
-    ) -> None:
-        """Send an inbound human message to an existing team.
-
-        Blank text is dropped, not sent: a team handed an empty prompt spends an
-        LLM call answering nothing.
-
-        Args:
-            team_id: Target team ID.
-            content: Message content from the human — either bare text or a
-                pre-formed ``Message``, which the team service already accepts.
-                Implementations pass it through untouched; coercing to ``str``
-                here would discard everything a typed message carries.
-            original_message_id: Optional ID of the message being replied to.
-
-        Raises:
-            ValueError: If team_id does not correspond to a running team.
-        """
-        ...
-
-    async def create_team(
-        self,
-        channel_user_id: str,
-        catalog_entry_id: str,
-        metadata: dict[str, JsonValue] | None = None,
-    ) -> InitiatedTeam:
-        """Create a new team, and send it nothing.
-
-        Args:
-            channel_user_id: Channel-specific user identifier.
-            catalog_entry_id: Catalog entry to use for team creation.
-            metadata: Optional plain-JSON business metadata carried by the
-                inbound message. Validated by ``TeamService`` against the
-                ``metadata_type`` the resolved card declares — the client never
-                names the type — so a channel-created team is filterable exactly
-                like one created from ``POST /teams`` (ADR-24 §metadata).
-
-        Returns:
-            The created team's ID together with the spawned name of its
-            entry-point agent. The caller needs both to write a
-            ``ChannelBinding``: the id alone cannot answer an outbound lookup,
-            which starts from an agent (ADR-043 §D4).
-
-        Raises:
-            EntryNotFoundError: If catalog_entry_id is not found in catalog.
-            MetadataValidationError: If ``metadata`` fails the card's declared
-                contract.
-        """
-        ...
-
-
-@runtime_checkable
 class ChannelParser(Protocol):
     """Parses channel-specific webhook payloads into a common ChannelMessage.
 
@@ -373,14 +298,17 @@ class InteractionChannelRouter(Protocol):
     parser and adapter: one instance per configured channel, constructed with
     the channel's ``config`` kwargs, so it must hold no per-request state.
 
-    Obligation — the binding is the authorization:
-        The webhook is unauthenticated, so the payload is untrusted. A router
-        MUST address only the team bound to the conversation the message came
-        from (``ctx.find_binding()``), never a team id read out of the payload.
-        ``ctx.ingestion.send_message`` accepts any team id; this rule is what
-        keeps one chat from reaching another's team.
+    The binding is the authorization — and it holds by construction:
+        The webhook is unauthenticated, so the payload is untrusted. The context
+        a router receives exposes no service that addresses a team by id: it can
+        send to, release, notify and report on **this** conversation's team
+        only. The one method that accepts a team id, ``initiate_team``, takes it
+        as a *creation key* — the placement contract refuses a key naming an
+        existing team, so it can start a team but never reach one. A router
+        therefore cannot reach another chat's team however it is written, and
+        no reviewer has to check that it does not try.
 
-    Errors propagate: the route maps the ingestion's and catalog's exceptions
+    Errors propagate: the route maps the team service's and catalog's exceptions
     exactly as it did before routers existed.
     """
 

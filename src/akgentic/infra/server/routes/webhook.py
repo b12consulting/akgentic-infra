@@ -11,14 +11,12 @@ from akgentic.infra.adapters.shared.channel_router import ChannelRouteContext
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelRegistry,
-    InteractionChannelIngestion,
     JsonValue,
 )
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.state_keys import (
     CHANNEL_PARSERS,
     CHANNEL_REGISTRY,
-    INGESTION,
     TEAM_SERVICE,
 )
 
@@ -44,20 +42,13 @@ def get_channel_registry(request: Request) -> ChannelRegistry:
     return CHANNEL_REGISTRY.require(request)
 
 
-def get_ingestion(request: Request) -> InteractionChannelIngestion:
-    """FastAPI dependency: extract InteractionChannelIngestion from app.state."""
-    return INGESTION.require(request)
-
-
 def get_team_service(request: Request) -> TeamService:
     """FastAPI dependency: extract TeamService from app.state.
 
-    Handed to the channel router: the default router's ``status`` reports the
-    bound team *and its lifecycle state*, and the state lives with the team,
-    not with the binding. This is not a new tier coupling:
-    ``team_service`` is a required slot on every tier, and ``get_team``
-    delegates to ``worker_handle.get_team``, a Protocol each tier already
-    implements.
+    The channel router creates, messages and reports on teams through it, held
+    privately by ``ChannelRouteContext``. It is the tier-agnostic seam already —
+    creation goes through the tier's placement, delivery through the tier's team
+    handle — and ``team_service`` is a required slot on every tier.
     """
     return TEAM_SERVICE.require(request)
 
@@ -68,7 +59,6 @@ async def webhook(
     request: Request,
     parser_registry: ChannelParserRegistry = Depends(get_channel_parser_registry),
     channel_registry: ChannelRegistry = Depends(get_channel_registry),
-    ingestion: InteractionChannelIngestion = Depends(get_ingestion),
     team_service: TeamService = Depends(get_team_service),
 ) -> None:
     """Process an inbound webhook from an external interaction channel.
@@ -110,7 +100,6 @@ async def webhook(
     ctx = ChannelRouteContext(
         address=ChannelAddress(channel=channel, channel_user_id=message.channel_user_id),
         registry=channel_registry,
-        ingestion=ingestion,
         team_service=team_service,
         adapters=parser_registry.get_adapters(),
         default_catalog_entry=parser.default_catalog_entry,

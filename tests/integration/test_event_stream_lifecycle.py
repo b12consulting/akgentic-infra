@@ -26,7 +26,7 @@ class TestEventStreamLifecycle:
 
     @pytest.fixture()
     def team_service(self, smoke_services: CommunityServices) -> TeamService:
-        """The wired TeamService — wire_community already bound the ingestion backref."""
+        """The wired TeamService, as ``wire_community`` assigned it onto the container."""
         assert smoke_services.team_service is not None
         return smoke_services.team_service
 

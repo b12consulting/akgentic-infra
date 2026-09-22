@@ -24,7 +24,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
 
-from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.server.app import create_app
@@ -184,20 +183,11 @@ def channel_registry_instance(tmp_path: Path) -> YamlChannelRegistry:
 
 
 @pytest.fixture()
-def channel_ingestion(
-    integration_team_service: TeamService,
-) -> LocalIngestion:
-    """LocalIngestion wired to the integration TeamService."""
-    return LocalIngestion(team_service=integration_team_service)
-
-
-@pytest.fixture()
 def channel_app(
     integration_services: CommunityServices,
     integration_settings: CommunitySettings,
     channel_parser_registry: ChannelParserRegistry,
     channel_registry_instance: YamlChannelRegistry,
-    channel_ingestion: LocalIngestion,
 ) -> FastAPI:
     """FastAPI app with webhook wiring for channel integration tests.
 
@@ -208,7 +198,6 @@ def channel_app(
     """
     integration_services.channel_parser_registry = channel_parser_registry
     integration_services.channel_registry = channel_registry_instance
-    integration_services.ingestion = channel_ingestion
     return build_app(
         integration_settings,
         integration_services,

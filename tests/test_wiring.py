@@ -229,12 +229,6 @@ class TestWireCommunityTeamService:
         """The container arrives with a real TeamService — no caller wiring left."""
         assert isinstance(services.team_service, TeamService)
 
-    def test_ingestion_backref_is_same_instance(
-        self, services: CommunityServices
-    ) -> None:
-        """The LocalIngestion backref holds the SAME instance as the container."""
-        assert services.ingestion.team_service is services.team_service
-
     def test_workspaces_root_propagates_from_settings(
         self, services: CommunityServices, settings: CommunitySettings
     ) -> None:

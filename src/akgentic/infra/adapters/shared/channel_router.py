@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 from akgentic.infra.protocols.channels import (
@@ -13,13 +15,14 @@ from akgentic.infra.protocols.channels import (
     ChannelRegistry,
     InitiatedTeam,
     InteractionChannelAdapter,
-    InteractionChannelIngestion,
+    InteractionChannelRouter,
     JsonValue,
 )
 
 if TYPE_CHECKING:
     from akgentic.core.messages.message import Message
     from akgentic.infra.server.services.team_service import TeamService
+    from akgentic.team.models import Process
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,26 @@ _COMMAND_UNREGISTER = "unregister"
 _COMMAND_STATUS = "status"
 
 
+def _is_blank(content: str | Message) -> bool:
+    """True when there is nothing for a team to act on.
+
+    A channel delivers empty and whitespace-only bodies for reasons of its own —
+    a caption-less photo, an edited message reduced to nothing, a stray newline.
+    Handing one to a team is not harmless: the entry point forwards it, the
+    supervisor spends an LLM call answering nothing, and the reply that comes
+    back is an agent guessing at an empty prompt.
+
+    A pre-formed ``Message`` is judged by its ``content`` when it has one, and
+    kept otherwise — a typed message with no text field may carry its payload
+    somewhere this function cannot see, and dropping it would lose more than an
+    empty string.
+    """
+    text = content if isinstance(content, str) else getattr(content, "content", None)
+    if text is None:
+        return False
+    return not str(text).strip()
+
+
 class ChannelRouteContext:
     """One request's view of the channel services, scoped to one conversation.
 
@@ -38,10 +61,33 @@ class ChannelRouteContext:
     It holds runtime services, not data, which is why it is a plain class and
     not a model.
 
-    Every helper acts on ``address`` — the conversation the message came from —
-    so a router using them cannot reach another chat's team by construction.
-    ``ingestion`` stays reachable for ``send_message``; see the router Protocol's
-    authorization obligation before calling it with anything but the bound team.
+    Every method acts on ``address`` — the conversation the message came from —
+    and none addresses a team by id, so a router cannot reach another chat's
+    team by construction. The registry and the team service are held privately
+    for exactly that reason: each has a method taking an arbitrary team id
+    (``register``, ``send_message``, ``get_team``), and exposing either would
+    turn the authorization rule back into a request to be careful.
+
+    ``initiate_team`` does accept a ``team_id``, and is not an exception to the
+    rule: the id is a *creation key*. The placement contract
+    (``PlacementStrategy.create_team``) refuses one naming a team that already
+    exists, so the method can start a team but can never reach one.
+
+    There is no ingestion layer between this context and ``TeamService``.
+    ``TeamService`` is already the tier-agnostic seam — creation goes through
+    the tier's placement, delivery through the tier's team handle — so a
+    further bridge would only forward calls.
+
+    **What is offloaded, and what is not.** Every ``TeamService`` call runs on
+    a worker thread via ``asyncio.to_thread``: they are synchronous and some are
+    slow (creation spawns actors; lookups read the event store), and on the
+    event loop they would stall every other request, WebSocket and background
+    task in the process. Registry calls are awaited directly. The registry
+    Protocol is async, so each implementation decides how to do its I/O, and
+    ``YamlChannelRegistry`` must not be pushed onto threads from here: its
+    read-modify-write is safe only because the loop serialises it, and two
+    threads could each read the old file and the second write would silently
+    discard the first.
     """
 
     def __init__(
@@ -49,21 +95,19 @@ class ChannelRouteContext:
         *,
         address: ChannelAddress,
         registry: ChannelRegistry,
-        ingestion: InteractionChannelIngestion,
         team_service: TeamService,
         adapters: list[InteractionChannelAdapter],
         default_catalog_entry: str,
     ) -> None:
         self.address = address
-        self.registry = registry
-        self.ingestion = ingestion
-        self.team_service = team_service
         self.default_catalog_entry = default_catalog_entry
+        self._registry = registry
+        self._team_service = team_service
         self._adapters = list(adapters)
 
     async def find_binding(self) -> ChannelBinding | None:
         """Return this conversation's binding, or None when it has no team."""
-        return await self.registry.find_binding(self.address)
+        return await self._registry.find_binding(self.address)
 
     async def release(self) -> ChannelBinding | None:
         """Release this conversation's binding, returning what was released.
@@ -73,7 +117,7 @@ class ChannelRouteContext:
         """
         binding = await self.find_binding()
         if binding is not None:
-            await self.registry.deregister(self.address)
+            await self._registry.deregister(self.address)
         return binding
 
     async def initiate_team(
@@ -81,6 +125,7 @@ class ChannelRouteContext:
         content: str | Message | None,
         *,
         catalog_entry: str | None = None,
+        team_id: uuid.UUID | None = None,
         team_metadata: dict[str, JsonValue] | None = None,
         binding_metadata: dict[str, JsonValue] | None = None,
     ) -> InitiatedTeam:
@@ -101,6 +146,12 @@ class ChannelRouteContext:
             content: The first message, or None to create the team silently.
             catalog_entry: Catalog entry to create from; the parser's default
                 when None.
+            team_id: Optional creation key. Concurrent initiations of this
+                conversation carrying the same key yield one team — the losers
+                receive the winner's team, bind to it (an identical binding, so
+                the write is harmless) and send their message to it, so no
+                message is lost. A key naming an existing team is refused with
+                409 by the placement; see ``PlacementStrategy.create_team``.
             team_metadata: Team metadata, validated against the resolved card at
                 creation — the only point it is validated.
             binding_metadata: Router-owned data stored on the binding.
@@ -108,10 +159,15 @@ class ChannelRouteContext:
         Returns:
             The created team and the spawned name of its entry-point agent.
         """
-        initiated = await self.ingestion.create_team(
-            self.address.channel_user_id,
+        process = await asyncio.to_thread(
+            self._team_service.create_team,
             catalog_entry or self.default_catalog_entry,
+            user_id=self.address.channel_user_id,
+            team_id=team_id,
             metadata=team_metadata,
+        )
+        initiated = InitiatedTeam(
+            team_id=process.team_id, entry_point_name=process.entry_point.name
         )
         logger.debug(
             "Channel initiation: channel=%s, user=%s, new_team=%s, entry_point=%s",
@@ -122,7 +178,7 @@ class ChannelRouteContext:
         )
         # Bind BEFORE the first message: a team answering it before the binding
         # exists would find no chat on the outbound path, and that reply is lost.
-        await self.registry.register(
+        await self._registry.register(
             ChannelBinding(
                 channel=self.address.channel,
                 channel_user_id=self.address.channel_user_id,
@@ -131,9 +187,48 @@ class ChannelRouteContext:
                 metadata=binding_metadata or {},
             )
         )
-        if content is not None:
-            await self.ingestion.send_message(initiated.team_id, content)
+        # The team is created and bound even when the first message is blank:
+        # the binding is what lets the next message continue this conversation
+        # rather than start yet another team. Only the empty prompt is withheld.
+        if content is not None and not _is_blank(content):
+            await asyncio.to_thread(self._team_service.send_message, initiated.team_id, content)
         return initiated
+
+    async def send(self, content: str | Message) -> bool:
+        """Send a message to this conversation's team.
+
+        The team is resolved from the binding here, never passed in: that is
+        what makes the authorization rule hold by construction.
+
+        There is no reply-to parameter. A channel's own message id
+        (``ChannelMessage.channel_message_id``) is not an akgentic message id,
+        so it cannot name the message being answered, and
+        ``TeamService.send_message`` has nowhere to put one.
+
+        Returns:
+            True when sent. False when nothing was sent — the conversation has
+            no team, or the content is blank.
+        """
+        if _is_blank(content):
+            logger.info("Dropping blank inbound message for %s", self.address)
+            return False
+        binding = await self.find_binding()
+        if binding is None:
+            return False
+        await asyncio.to_thread(self._team_service.send_message, binding.team_id, content)
+        return True
+
+    async def bound_process(self) -> Process | None:
+        """Return the bound team's ``Process``, or None when unbound or unknown.
+
+        None covers two cases a caller may want to tell apart — no binding, and a
+        binding naming a team the team service no longer knows. Call
+        ``find_binding()`` first to distinguish them.
+        """
+        binding = await self.find_binding()
+        if binding is None:
+            return None
+        return await asyncio.to_thread(self._team_service.get_team, binding.team_id)
 
     def notify(self, text: str) -> None:
         """Send a channel-layer acknowledgement to this conversation.
@@ -145,7 +240,7 @@ class ChannelRouteContext:
             adapter.deliver_notice(self.address, text)
 
 
-class DefaultChannelRouter:
+class DefaultChannelRouter(InteractionChannelRouter):
     """The routing rules a channel gets when its config names no router.
 
     1. A ``new`` / ``unregister`` / ``status`` command is consumed (ADR-043
@@ -214,16 +309,16 @@ class DefaultChannelRouter:
             ctx.address.channel_user_id,
             binding.team_id,
         )
-        await ctx.ingestion.send_message(
-            binding.team_id, message.content, message.channel_message_id
-        )
+        await ctx.send(message.content)
 
     async def on_unbound(self, message: ChannelMessage, ctx: ChannelRouteContext) -> None:
         """Start a team for this conversation, with the message as its first."""
         await ctx.initiate_team(
             message.content,
             catalog_entry=message.catalog_entry,
-            team_metadata=message.metadata,
+            team_id=message.team_id,
+            team_metadata=message.team_metadata,
+            binding_metadata=message.binding_metadata,
         )
 
     async def _command_new(
@@ -243,7 +338,9 @@ class DefaultChannelRouter:
         initiated = await ctx.initiate_team(
             rest or None,
             catalog_entry=message.catalog_entry,
-            team_metadata=message.metadata,
+            team_id=message.team_id,
+            team_metadata=message.team_metadata,
+            binding_metadata=message.binding_metadata,
         )
         # ``new`` acknowledges even though the team usually answers for itself:
         # ``/new`` with no text produces no team reply at all, so without this
@@ -272,7 +369,7 @@ class DefaultChannelRouter:
         if binding is None:
             ctx.notify("No active session.")
             return
-        process = ctx.team_service.get_team(binding.team_id)
+        process = await ctx.bound_process()
         if process is None:
             ctx.notify(f"Bound to team {binding.team_id}, which is no longer known.")
             return

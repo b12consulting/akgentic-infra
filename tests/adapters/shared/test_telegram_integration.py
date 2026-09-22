@@ -10,7 +10,10 @@ unit-level validation without real LLM).
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
+from akgentic.core.messages.message import Message
+from akgentic.team.models import AgentCardRef, AgentRef, Process, TeamStatus
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -23,7 +26,6 @@ from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelBinding,
     ChannelParser,
-    InitiatedTeam,
     InteractionChannelAdapter,
     JsonValue,
 )
@@ -83,29 +85,38 @@ class TestRegistryResolution:
 # ---------------------------------------------------------------------------
 
 
-class _StubIngestion:
-    """Captures ingestion calls for verification."""
+class _StubTeamService:
+    """Captures the TeamService calls the router context makes (on a worker thread)."""
 
     def __init__(self) -> None:
-        self.send_message_calls: list[tuple] = []
-        self.create_team_calls: list[tuple] = []
+        self.send_message_calls: list[tuple[uuid.UUID, str | Message]] = []
+        self.create_team_calls: list[tuple[str, str, dict[str, JsonValue] | None]] = []
 
-    async def send_message(
-        self,
-        team_id: uuid.UUID,
-        content: str,
-        original_message_id: str | None = None,
-    ) -> None:
-        self.send_message_calls.append((team_id, content, original_message_id))
+    def send_message(self, team_id: uuid.UUID, content: str | Message) -> None:
+        self.send_message_calls.append((team_id, content))
 
-    async def create_team(
+    def create_team(
         self,
-        channel_user_id: str,
-        catalog_entry_id: str,
+        catalog_namespace: str,
+        user_id: str,
+        user_email: str = "",
+        team_id: uuid.UUID | None = None,
         metadata: dict[str, JsonValue] | None = None,
-    ) -> InitiatedTeam:
-        self.create_team_calls.append((channel_user_id, catalog_entry_id, metadata))
-        return InitiatedTeam(team_id=uuid.uuid4(), entry_point_name="@HumanProxy_0")
+    ) -> Process:
+        self.create_team_calls.append((user_id, catalog_namespace, metadata))
+        now = datetime.now(UTC)
+        return Process(
+            team_id=uuid.uuid4(),
+            status=TeamStatus.RUNNING,
+            user_id=user_id,
+            created_at=now,
+            updated_at=now,
+            entry_point=AgentRef(name="@HumanProxy_0", role="human_support"),
+            agent_cards=[AgentCardRef(role="human_support", card_hash="stub-hash")],
+        )
+
+    def get_team(self, team_id: uuid.UUID) -> Process | None:
+        return None
 
 
 class _StubChannelRegistry:
@@ -122,7 +133,6 @@ class _StubChannelRegistry:
     async def register(self, binding: ChannelBinding) -> None:
         self.registrations.append(binding)
 
-
     async def find_binding(self, address: ChannelAddress) -> ChannelBinding | None:
         return None
 
@@ -136,23 +146,10 @@ class _StubChannelRegistry:
         return None
 
 
-class _StubTeamService:
-    """Stub TeamService — the route requires one on ``app.state`` for ``status``.
-
-    The dependency is resolved before the handler body runs, so an app that
-    omits the slot answers 500 on *every* request to this route, including the
-    404 and 400 paths. None of the flows here is a ``status`` command, so
-    answering ``None`` is enough.
-    """
-
-    def get_team(self, team_id: uuid.UUID) -> None:
-        return None
-
-
 class TestWebhookWithTelegramParser:
     """AC 8 (unit-level): Telegram Update flows through webhook route."""
 
-    def _make_app(self) -> tuple[FastAPI, _StubIngestion, _StubChannelRegistry]:
+    def _make_app(self) -> tuple[FastAPI, _StubTeamService, _StubChannelRegistry]:
         from akgentic.infra.server.routes.webhook import router
 
         parser = TelegramChannelParser(
@@ -162,21 +159,20 @@ class TestWebhookWithTelegramParser:
         registry = ChannelParserRegistry(channels_config={})
         registry._parsers[parser.channel_name] = parser
 
-        ingestion = _StubIngestion()
+        team_service = _StubTeamService()
         channel_registry = _StubChannelRegistry()
 
         app = FastAPI()
         app.include_router(router)
         app.state.channel_parser_registry = registry
-        app.state.ingestion = ingestion
+        app.state.team_service = team_service
         app.state.channel_registry = channel_registry
-        app.state.team_service = _StubTeamService()
 
-        return app, ingestion, channel_registry
+        return app, team_service, channel_registry
 
     def test_telegram_update_triggers_initiation(self) -> None:
         """POST Telegram Update → parser → initiation flow."""
-        app, ingestion, channel_registry = self._make_app()
+        app, team_service, channel_registry = self._make_app()
         client = TestClient(app)
 
         payload = {
@@ -192,9 +188,9 @@ class TestWebhookWithTelegramParser:
         resp = client.post("/webhook/telegram", json=payload)
         assert resp.status_code == 204
 
-        assert len(ingestion.create_team_calls) == 1
-        channel_user_id, catalog_entry, metadata = ingestion.create_team_calls[0]
-        assert [call[1] for call in ingestion.send_message_calls] == ["Hello bot!"]
+        assert len(team_service.create_team_calls) == 1
+        channel_user_id, catalog_entry, metadata = team_service.create_team_calls[0]
+        assert [call[1] for call in team_service.send_message_calls] == ["Hello bot!"]
         assert channel_user_id == "987654321"
         assert catalog_entry == "test-team"
         # A Telegram Update carries no business metadata, and metadata is
@@ -220,9 +216,9 @@ class TestWebhookWithTelegramParser:
         will re-send unchanged — a photo, a sticker, a service message — never
         drains from the queue. Acknowledging is what makes the drop terminal.
         """
-        app, ingestion, _ = self._make_app()
+        app, team_service, _ = self._make_app()
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post("/webhook/telegram", json={"update_id": 1})
         assert resp.status_code == 204
         assert resp.content == b""
-        assert ingestion.create_team_calls == []
+        assert team_service.create_team_calls == []

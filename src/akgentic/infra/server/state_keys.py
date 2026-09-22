@@ -15,7 +15,7 @@ targets byte-for-byte the same slot.
 from __future__ import annotations
 
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
-from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
+from akgentic.infra.protocols.channels import ChannelRegistry
 from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.routes.ws import ConnectionManager
 from akgentic.infra.server.services.team_service import TeamService
@@ -32,4 +32,3 @@ CHANNEL_REGISTRY: StateKey[ChannelRegistry] = StateKey("channel_registry", requi
 CHANNEL_PARSERS: StateKey[ChannelParserRegistry] = StateKey(
     "channel_parser_registry", required=True
 )
-INGESTION: StateKey[InteractionChannelIngestion] = StateKey("ingestion", required=True)

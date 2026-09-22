@@ -21,7 +21,6 @@ from akgentic.infra.protocols.channels import (
     ChannelBinding,
     ChannelCommand,
     ChannelMessage,
-    InitiatedTeam,
     JsonValue,
 )
 from akgentic.infra.server.errors import add_server_exception_handlers
@@ -65,53 +64,6 @@ class StubParser:
         return ChannelMessage(
             content=str(payload.get("text", "")),
             channel_user_id=str(payload.get("user", "unknown")),
-        )
-
-
-class StubIngestion:
-    """Stub InteractionChannelIngestion that tracks calls."""
-
-    def __init__(self) -> None:
-        self.send_message_calls: list[tuple[uuid.UUID, str | Message, str | None]] = []
-        # Anything the route passes to send_message beyond the three declared
-        # parameters lands here, so "the reply path forwards no metadata" is an
-        # assertion about recorded evidence rather than about a TypeError.
-        self.send_message_extra_kwargs: list[dict[str, object]] = []
-        self.create_team_calls: list[tuple[str, str, dict[str, JsonValue] | None]] = []
-        self._next_team_id: uuid.UUID = uuid.uuid4()
-        self._next_entry_point_name: str = "@HumanProxy_0"
-
-    def set_next_team_id(self, team_id: uuid.UUID) -> None:
-        self._next_team_id = team_id
-
-    def set_next_entry_point_name(self, entry_point_name: str) -> None:
-        """Configure the entry-point name the next initiation reports.
-
-        The route copies this into the binding it writes, so a spec that wants
-        to assert *which* value reached ``agent_name`` needs a seam to set it.
-        """
-        self._next_entry_point_name = entry_point_name
-
-    async def send_message(
-        self,
-        team_id: uuid.UUID,
-        content: str | Message,
-        original_message_id: str | None = None,
-        **extra: object,
-    ) -> None:
-        self.send_message_calls.append((team_id, content, original_message_id))
-        self.send_message_extra_kwargs.append(extra)
-
-    async def create_team(
-        self,
-        channel_user_id: str,
-        catalog_entry_id: str,
-        metadata: dict[str, JsonValue] | None = None,
-    ) -> InitiatedTeam:
-        self.create_team_calls.append((channel_user_id, catalog_entry_id, metadata))
-        return InitiatedTeam(
-            team_id=self._next_team_id,
-            entry_point_name=self._next_entry_point_name,
         )
 
 
@@ -165,6 +117,63 @@ class StubTeamService:
         return self.teams.get(team_id)
 
 
+class RecordingTeamService(StubTeamService):
+    """The TeamService the router context calls, recording every call.
+
+    Synchronous like the real one: ``ChannelRouteContext`` calls it through
+    ``asyncio.to_thread``. ``create_team`` returns a **real** ``Process`` and
+    records it, so a later ``status`` reads back the team that was created.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.send_message_calls: list[tuple[uuid.UUID, str | Message]] = []
+        # Anything passed to send_message beyond the two declared parameters
+        # lands here, so "the reply path forwards no metadata" is an assertion
+        # about recorded evidence rather than about a TypeError.
+        self.send_message_extra_kwargs: list[dict[str, object]] = []
+        self.create_team_calls: list[tuple[str, str, dict[str, JsonValue] | None]] = []
+        self._next_team_id: uuid.UUID = uuid.uuid4()
+        self._next_entry_point_name: str = "@HumanProxy_0"
+
+    def set_next_team_id(self, team_id: uuid.UUID) -> None:
+        self._next_team_id = team_id
+
+    def set_next_entry_point_name(self, entry_point_name: str) -> None:
+        """Configure the entry-point name the next creation reports.
+
+        The router copies it into the binding it writes, so a spec that wants to
+        assert *which* value reached ``agent_name`` needs a seam to set it.
+        """
+        self._next_entry_point_name = entry_point_name
+
+    def send_message(self, team_id: uuid.UUID, content: str | Message, **extra: object) -> None:
+        self.send_message_calls.append((team_id, content))
+        self.send_message_extra_kwargs.append(extra)
+
+    def create_team(
+        self,
+        catalog_namespace: str,
+        user_id: str,
+        user_email: str = "",
+        team_id: uuid.UUID | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+    ) -> Process:
+        self.create_team_calls.append((user_id, catalog_namespace, metadata))
+        now = datetime.now(UTC)
+        process = Process(
+            team_id=self._next_team_id,
+            status=TeamStatus.RUNNING,
+            user_id=user_id,
+            created_at=now,
+            updated_at=now,
+            entry_point=AgentRef(name=self._next_entry_point_name, role="human_support"),
+            agent_cards=[AgentCardRef(role="human_support", card_hash="stub-hash")],
+        )
+        self.teams[process.team_id] = process
+        return process
+
+
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -208,15 +217,14 @@ def _build_parser_registry(
 
 def _build_app(
     parser: StubParser,
-    ingestion: StubIngestion,
+    team_service: RecordingTeamService,
     channel_registry: YamlChannelRegistry,
     adapter: StubNoticeAdapter | None = None,
-    team_service: StubTeamService | None = None,
 ) -> FastAPI:
     """Build a minimal FastAPI app with the webhook router wired.
 
     ``add_server_exception_handlers`` is the same registration the real assembly
-    installs, so a ``ServerError`` raised by the ingestion layer is mapped here
+    installs, so a ``ServerError`` raised by the team service is mapped here
     exactly as it is in production — a status assertion against a bare
     ``FastAPI()`` would only prove the TestClient re-raises.
     """
@@ -224,8 +232,7 @@ def _build_app(
     parser_registry = _build_parser_registry(parser, adapter=adapter)
     app.state.channel_parser_registry = parser_registry
     app.state.channel_registry = channel_registry
-    app.state.ingestion = ingestion
-    app.state.team_service = team_service or StubTeamService()
+    app.state.team_service = team_service
     app.include_router(webhook_router)
     add_server_exception_handlers(app)
     return app
@@ -249,7 +256,7 @@ class TestWebhookReplyFlow:
                 channel_message_id="msg-abc",
             )
         )
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -259,16 +266,15 @@ class TestWebhookReplyFlow:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.send_message_calls) == 1
-        call = ingestion.send_message_calls[0]
+        assert len(team_service.send_message_calls) == 1
+        call = team_service.send_message_calls[0]
         assert call[0] == team_id
         assert call[1] == "reply msg"
-        assert call[2] == "msg-abc"
 
 
 class TestWebhookContinuationFlow:
@@ -284,7 +290,7 @@ class TestWebhookContinuationFlow:
                 channel_message_id="msg-cont",
             )
         )
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         # Pre-register a team for this user
         await registry.register(
@@ -295,18 +301,15 @@ class TestWebhookContinuationFlow:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.send_message_calls) == 1
-        call = ingestion.send_message_calls[0]
+        assert len(team_service.send_message_calls) == 1
+        call = team_service.send_message_calls[0]
         assert call[0] == existing_team_id
         assert call[1] == "continuation msg"
-        # Story 30.3: the continuation flow forwards the parsed message_id as the
-        # third positional arg, in lockstep with the reply flow (TestWebhookReplyFlow).
-        assert call[2] == "msg-cont"
 
 
 class TestWebhookInitiationFlow:
@@ -321,25 +324,25 @@ class TestWebhookInitiationFlow:
             )
         )
         new_team_id = uuid.uuid4()
-        ingestion = StubIngestion()
-        ingestion.set_next_team_id(new_team_id)
+        team_service = RecordingTeamService()
+        team_service.set_next_team_id(new_team_id)
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.create_team_calls == [("user-3", "my-catalog-entry", None)]
-        assert ingestion.send_message_calls == [(new_team_id, "new convo", None)]
+        assert team_service.create_team_calls == [("user-3", "my-catalog-entry", None)]
+        assert team_service.send_message_calls == [(new_team_id, "new convo")]
 
     async def test_initiation_registers_in_channel_registry(self, tmp_path: Path) -> None:
         parser = StubParser()
         parser.set_next_message(ChannelMessage(content="hello", channel_user_id="user-4"))
         new_team_id = uuid.uuid4()
-        ingestion = StubIngestion()
-        ingestion.set_next_team_id(new_team_id)
+        team_service = RecordingTeamService()
+        team_service.set_next_team_id(new_team_id)
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -353,7 +356,7 @@ class TestWebhookInitiationFlow:
     async def test_initiation_binds_the_channel_to_the_entry_point_agent(
         self, tmp_path: Path
     ) -> None:
-        """AC 12: the persisted record carries the ingestion's entry-point name.
+        """AC 12: the persisted record carries the team_service's entry-point name.
 
         ``agent_name`` must be what ``create_team`` reported, not the channel
         user or anything else the route has to hand — the outbound lookup starts
@@ -364,11 +367,11 @@ class TestWebhookInitiationFlow:
         parser = StubParser()
         parser.set_next_message(ChannelMessage(content="hello", channel_user_id="user-6"))
         new_team_id = uuid.uuid4()
-        ingestion = StubIngestion()
-        ingestion.set_next_team_id(new_team_id)
-        ingestion.set_next_entry_point_name("@HumanProxy_0")
+        team_service = RecordingTeamService()
+        team_service.set_next_team_id(new_team_id)
+        team_service.set_next_entry_point_name("@HumanProxy_0")
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -401,15 +404,15 @@ class TestWebhookInitiationFlow:
         parser = StubParser()
         parser.set_next_message(ChannelMessage(content="hello", channel_user_id="user-corrupt"))
         new_team_id = uuid.uuid4()
-        ingestion = StubIngestion()
-        ingestion.set_next_team_id(new_team_id)
+        team_service = RecordingTeamService()
+        team_service.set_next_team_id(new_team_id)
         registry = YamlChannelRegistry(registry_path)
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.create_team_calls) == 1
+        assert len(team_service.create_team_calls) == 1
         binding = await registry.find_binding(
             ChannelAddress(channel="test-channel", channel_user_id="user-corrupt")
         )
@@ -422,9 +425,9 @@ class TestWebhookUnknownChannel:
 
     def test_unknown_channel_returns_404(self, tmp_path: Path) -> None:
         parser = StubParser(channel="known-channel")
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/unknown-channel", json={"text": "hi"})
 
@@ -444,7 +447,7 @@ class TestWebhookStatusCode:
                 channel_user_id="u",
             )
         )
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -454,7 +457,7 @@ class TestWebhookStatusCode:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
         assert resp.status_code == 204
@@ -462,9 +465,9 @@ class TestWebhookStatusCode:
     def test_initiation_returns_204(self, tmp_path: Path) -> None:
         parser = StubParser()
         parser.set_next_message(ChannelMessage(content="msg", channel_user_id="u"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
         assert resp.status_code == 204
@@ -480,9 +483,9 @@ class TestWebhookFormData:
 
     def test_form_data_payload_parsed(self, tmp_path: Path) -> None:
         parser = StubParser()
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post(
             "/webhook/test-channel",
@@ -490,9 +493,9 @@ class TestWebhookFormData:
         )
 
         assert resp.status_code == 204
-        assert len(ingestion.create_team_calls) == 1
-        assert ingestion.create_team_calls[0][0] == "form-user"
-        assert ingestion.send_message_calls[0][1] == "form hello"
+        assert len(team_service.create_team_calls) == 1
+        assert team_service.create_team_calls[0][0] == "form-user"
+        assert team_service.send_message_calls[0][1] == "form hello"
 
 
 class TestWebhookContentTypeEdgeCases:
@@ -501,9 +504,9 @@ class TestWebhookContentTypeEdgeCases:
     def test_missing_content_type_returns_415(self, tmp_path: Path) -> None:
         """Request with no content-type header returns 415."""
         parser = StubParser()
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post(
             "/webhook/test-channel",
@@ -523,7 +526,7 @@ class TestWebhookContentTypeEdgeCases:
                 channel_user_id="u-charset",
             )
         )
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -533,7 +536,7 @@ class TestWebhookContentTypeEdgeCases:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post(
             "/webhook/test-channel",
@@ -542,7 +545,7 @@ class TestWebhookContentTypeEdgeCases:
         )
 
         assert resp.status_code == 204
-        assert len(ingestion.send_message_calls) == 1
+        assert len(team_service.send_message_calls) == 1
 
 
 class TestWebhookUnsupportedContentType:
@@ -550,9 +553,9 @@ class TestWebhookUnsupportedContentType:
 
     def test_unsupported_content_type_returns_415(self, tmp_path: Path) -> None:
         parser = StubParser()
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post(
             "/webhook/test-channel",
@@ -579,16 +582,16 @@ class TestWebhookMalformedPayload:
                 raise ValueError("payload missing required field 'message'")
 
         parser = RaisingParser()
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"update_id": 1})
 
         assert resp.status_code == 204
         assert resp.content == b""
-        assert ingestion.send_message_calls == []
-        assert ingestion.create_team_calls == []
+        assert team_service.send_message_calls == []
+        assert team_service.create_team_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -606,30 +609,30 @@ class TestWebhookMetadataForwarding:
             ChannelMessage(
                 content="new convo",
                 channel_user_id="user-m1",
-                metadata=metadata,
+                team_metadata=metadata,
             )
         )
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.create_team_calls) == 1
-        assert ingestion.create_team_calls[0][2] == metadata
+        assert len(team_service.create_team_calls) == 1
+        assert team_service.create_team_calls[0][2] == metadata
 
     def test_initiation_without_metadata_forwards_none(self, tmp_path: Path) -> None:
         parser = StubParser(default_entry="my-catalog-entry")
         parser.set_next_message(ChannelMessage(content="new convo", channel_user_id="user-m2"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.create_team_calls[0][2] is None
+        assert team_service.create_team_calls[0][2] is None
 
     async def test_reply_flow_forwards_no_metadata(self, tmp_path: Path) -> None:
         """A reply addresses a team whose metadata was fixed at creation."""
@@ -639,10 +642,10 @@ class TestWebhookMetadataForwarding:
             ChannelMessage(
                 content="reply msg",
                 channel_user_id="user-m3",
-                metadata={"tenant": "acme"},
+                team_metadata={"tenant": "acme"},
             )
         )
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -652,13 +655,13 @@ class TestWebhookMetadataForwarding:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.create_team_calls == []
-        assert ingestion.send_message_extra_kwargs == [{}]
+        assert team_service.create_team_calls == []
+        assert team_service.send_message_extra_kwargs == [{}]
 
     async def test_continuation_flow_forwards_no_metadata(self, tmp_path: Path) -> None:
         """A continuation addresses an existing team — same reasoning as a reply."""
@@ -667,10 +670,10 @@ class TestWebhookMetadataForwarding:
             ChannelMessage(
                 content="continuation msg",
                 channel_user_id="user-m4",
-                metadata={"tenant": "acme"},
+                team_metadata={"tenant": "acme"},
             )
         )
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -680,13 +683,13 @@ class TestWebhookMetadataForwarding:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.create_team_calls == []
-        assert ingestion.send_message_extra_kwargs == [{}]
+        assert team_service.create_team_calls == []
+        assert team_service.send_message_extra_kwargs == [{}]
 
 
 class TestWebhookMetadataRejection:
@@ -695,13 +698,15 @@ class TestWebhookMetadataRejection:
     def test_invalid_metadata_returns_422_with_validator_message(self, tmp_path: Path) -> None:
         detail = "metadata field 'case.id' must be an integer"
 
-        class RefusingIngestion(StubIngestion):
-            async def create_team(
+        class RefusingTeamService(RecordingTeamService):
+            def create_team(
                 self,
-                channel_user_id: str,
-                catalog_entry_id: str,
+                catalog_namespace: str,
+                user_id: str,
+                user_email: str = "",
+                team_id: uuid.UUID | None = None,
                 metadata: dict[str, JsonValue] | None = None,
-            ) -> InitiatedTeam:
+            ) -> Process:
                 raise MetadataValidationError(detail)
 
         parser = StubParser()
@@ -709,12 +714,12 @@ class TestWebhookMetadataRejection:
             ChannelMessage(
                 content="new convo",
                 channel_user_id="user-m5",
-                metadata={"case": {"id": "seven"}},
+                team_metadata={"case": {"id": "seven"}},
             )
         )
-        ingestion = RefusingIngestion()
+        team_service = RefusingTeamService()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry))
+        client = TestClient(_build_app(parser, team_service, registry))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -754,7 +759,7 @@ class TestUnrecognisedCommandFallsThrough:
         team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(_command_message("roster", "please", channel_user_id="user-r"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
@@ -765,14 +770,14 @@ class TestUnrecognisedCommandFallsThrough:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
         # The whole text, command word included — not the rest, and not nothing.
-        assert len(ingestion.send_message_calls) == 1
-        assert ingestion.send_message_calls[0][1] == "/roster please"
+        assert len(team_service.send_message_calls) == 1
+        assert team_service.send_message_calls[0][1] == "/roster please"
         assert adapter.notices == []
 
 
@@ -782,7 +787,7 @@ class TestCommandUnregister:
     async def test_unregister_removes_the_binding_and_acknowledges(self, tmp_path: Path) -> None:
         parser = StubParser()
         parser.set_next_message(_command_message("unregister", channel_user_id="user-u1"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
@@ -793,7 +798,7 @@ class TestCommandUnregister:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -808,23 +813,23 @@ class TestCommandUnregister:
         address, _text = adapter.notices[0]
         assert address.channel == "test-channel"
         assert address.channel_user_id == "user-u1"
-        assert ingestion.send_message_calls == []
+        assert team_service.send_message_calls == []
 
     async def test_unregister_with_no_binding_still_acknowledges(self, tmp_path: Path) -> None:
         """G3c: silence is indistinguishable from a command that did nothing."""
         parser = StubParser()
         parser.set_next_message(_command_message("unregister", channel_user_id="user-u2"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
         assert len(adapter.notices) == 1
-        assert ingestion.send_message_calls == []
-        assert ingestion.create_team_calls == []
+        assert team_service.send_message_calls == []
+        assert team_service.create_team_calls == []
 
     async def test_unregister_releases_only_the_callers_own_binding(self, tmp_path: Path) -> None:
         """G6: a command acts on the caller's own conversation and nothing else.
@@ -836,7 +841,7 @@ class TestCommandUnregister:
         other_team = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(_command_message("unregister", channel_user_id="user-attacker"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
@@ -847,7 +852,7 @@ class TestCommandUnregister:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -858,7 +863,7 @@ class TestCommandUnregister:
         assert victim is not None
         assert victim.team_id == other_team
         # Consumed as a command, so the reply branch was never reached.
-        assert ingestion.send_message_calls == []
+        assert team_service.send_message_calls == []
 
 
 class TestCommandNew:
@@ -870,9 +875,9 @@ class TestCommandNew:
         new_team = uuid.uuid4()
         parser = StubParser(default_entry="my-catalog-entry")
         parser.set_next_message(_command_message("new", "hello", channel_user_id="user-n1"))
-        ingestion = StubIngestion()
-        ingestion.set_next_team_id(new_team)
-        ingestion.set_next_entry_point_name("@HumanProxy_0")
+        team_service = RecordingTeamService()
+        team_service.set_next_team_id(new_team)
+        team_service.set_next_entry_point_name("@HumanProxy_0")
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
@@ -883,7 +888,7 @@ class TestCommandNew:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -894,8 +899,8 @@ class TestCommandNew:
         assert binding is not None
         assert binding.team_id == new_team
         # G5: the first message is the command's rest, not the whole text.
-        assert ingestion.create_team_calls == [("user-n1", "my-catalog-entry", None)]
-        assert ingestion.send_message_calls == [(new_team, "hello", None)]
+        assert team_service.create_team_calls == [("user-n1", "my-catalog-entry", None)]
+        assert team_service.send_message_calls == [(new_team, "hello")]
         assert len(adapter.notices) == 1
         assert str(new_team) in adapter.notices[0][1]
 
@@ -904,7 +909,7 @@ class TestCommandNew:
         old_team = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(_command_message("new", channel_user_id="user-n2"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
@@ -915,11 +920,8 @@ class TestCommandNew:
                 agent_name="@HumanProxy_0",
             )
         )
-        team_service = StubTeamService()
         team_service.add_running_team(old_team)
-        client = TestClient(
-            _build_app(parser, ingestion, registry, adapter=adapter, team_service=team_service)
-        )
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -932,11 +934,11 @@ class TestCommandNew:
         new_team = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(_command_message("new", "start here", channel_user_id="user-n3"))
-        ingestion = StubIngestion()
-        ingestion.set_next_team_id(new_team)
+        team_service = RecordingTeamService()
+        team_service.set_next_team_id(new_team)
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -946,22 +948,22 @@ class TestCommandNew:
         )
         assert binding is not None
         assert binding.team_id == new_team
-        assert ingestion.send_message_calls == [(new_team, "start here", None)]
+        assert team_service.send_message_calls == [(new_team, "start here")]
 
     async def test_new_alone_creates_the_team_and_sends_nothing(self, tmp_path: Path) -> None:
         """``/new`` alone sends no first message, which is why it acknowledges."""
         parser = StubParser()
         parser.set_next_message(_command_message("new", channel_user_id="user-n4"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert len(ingestion.create_team_calls) == 1
-        assert ingestion.send_message_calls == []
+        assert len(team_service.create_team_calls) == 1
+        assert team_service.send_message_calls == []
         assert len(adapter.notices) == 1
 
     async def test_new_honours_a_catalog_entry_the_parser_set(self, tmp_path: Path) -> None:
@@ -969,15 +971,15 @@ class TestCommandNew:
         parser = StubParser(default_entry="the-default")
         message = _command_message("new", "hello", channel_user_id="user-n5")
         parser.set_next_message(message.model_copy(update={"catalog_entry": "chosen-entry"}))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
         assert resp.status_code == 204
-        assert ingestion.create_team_calls[0][1] == "chosen-entry"
+        assert team_service.create_team_calls[0][1] == "chosen-entry"
 
 
 class TestCommandStatus:
@@ -988,7 +990,7 @@ class TestCommandStatus:
         team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(_command_message("status", channel_user_id="user-s1"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
@@ -999,11 +1001,8 @@ class TestCommandStatus:
                 agent_name="@HumanProxy_0",
             )
         )
-        team_service = StubTeamService()
         team_service.add_running_team(team_id, TeamStatus.STOPPED)
-        client = TestClient(
-            _build_app(parser, ingestion, registry, adapter=adapter, team_service=team_service)
-        )
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -1019,7 +1018,7 @@ class TestCommandStatus:
         team_id = uuid.uuid4()
         parser = StubParser()
         parser.set_next_message(_command_message("status", channel_user_id="user-s2"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
@@ -1030,7 +1029,7 @@ class TestCommandStatus:
                 agent_name="@HumanProxy_0",
             )
         )
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 
@@ -1043,10 +1042,10 @@ class TestCommandStatus:
         """G8b: the unbound path must answer, not raise on a None binding."""
         parser = StubParser()
         parser.set_next_message(_command_message("status", channel_user_id="user-s3"))
-        ingestion = StubIngestion()
+        team_service = RecordingTeamService()
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-        client = TestClient(_build_app(parser, ingestion, registry, adapter=adapter))
+        client = TestClient(_build_app(parser, team_service, registry, adapter=adapter))
 
         resp = client.post("/webhook/test-channel", json={"text": "hi"})
 

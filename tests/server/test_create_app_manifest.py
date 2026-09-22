@@ -112,7 +112,6 @@ _EXPECTED_STATE_KEYS = {
     "channel_registry",
     "connection_manager",
     "draining",
-    "ingestion",
     "services",
     "settings",
     "team_service",

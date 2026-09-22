@@ -97,11 +97,16 @@ class TestParseValidTextMessage:
         assert result.channel_message_id == "42"
 
     @pytest.mark.asyncio
-    async def test_carries_no_team_claim(self) -> None:
-        """The team is resolved from the binding, never read off the payload."""
+    async def test_supplies_no_creation_key(self) -> None:
+        """Telegram derives no creation key, so each initiation gets a fresh team.
+
+        A key must agree across racing deliveries of one initiation yet change
+        for a new session; nothing in a Telegram Update provides that, so the
+        parser sets none rather than guessing.
+        """
         parser = TelegramChannelParser()
         result = await parser.parse(VALID_TEXT_UPDATE)
-        assert "team_id" not in result.model_dump()
+        assert result.team_id is None
 
 
 # ---------------------------------------------------------------------------

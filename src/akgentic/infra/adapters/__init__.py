@@ -8,7 +8,6 @@ or from their tier-specific sub-package (``shared/`` or ``community/``).
 from __future__ import annotations
 
 from akgentic.infra.adapters.community import (
-    LocalIngestion,
     LocalPlacement,
     LocalRuntimeCache,
     LocalTeamHandle,
@@ -35,7 +34,6 @@ __all__ = [
     "ChannelRouteContext",
     "DefaultChannelRouter",
     "InteractionChannelDispatcher",
-    "LocalIngestion",
     "LocalPlacement",
     "LocalRuntimeCache",
     "LocalTeamHandle",

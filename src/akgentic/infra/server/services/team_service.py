@@ -99,7 +99,7 @@ class CatalogTeamEntryMissingError(EntryNotFoundError):
 
     A subclass of ``EntryNotFoundError`` on purpose: every existing
     ``except EntryNotFoundError``, including the catalog package's app-level 404
-    handler that serves the webhook ingestion path, keeps catching it, so the
+    handler that serves the webhook path, keeps catching it, so the
     split is additive. It lives here rather than in ``akgentic.infra.errors``
     because that module imports nothing but ``__future__`` — a guard
     ``tests/test_errors.py::TestModuleHygiene`` asserts exactly — and this type

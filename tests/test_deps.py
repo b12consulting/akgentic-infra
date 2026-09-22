@@ -16,7 +16,7 @@ from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, Te
 from akgentic.team.ports import EventStore
 
 from akgentic.infra.protocols.auth import AuthStrategy
-from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
+from akgentic.infra.protocols.channels import ChannelRegistry
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
@@ -111,7 +111,6 @@ class TestTierServicesEventStoreProtocol:
             event_store=fake_store,
             runtime_cache=MagicMock(spec=RuntimeCache),
             event_stream=MagicMock(spec=EventStream),
-            ingestion=MagicMock(spec=InteractionChannelIngestion),
             channel_registry=MagicMock(spec=ChannelRegistry),
             catalog=MagicMock(spec=Catalog),
         )

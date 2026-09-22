@@ -72,7 +72,6 @@ from akgentic.infra.server.state_keys import (
     CHANNEL_REGISTRY,
     CONNECTION_MANAGER,
     DRAINING,
-    INGESTION,
     SERVICES,
     SETTINGS,
     TEAM_SERVICE,
@@ -172,7 +171,6 @@ class CoreModule(BaseAppModule):
         if channel_parsers is not None:
             entries.append(CHANNEL_PARSERS.entry(channel_parsers))
         entries.append(CHANNEL_REGISTRY.entry(self._services.channel_registry))
-        entries.append(INGESTION.entry(self._services.ingestion))
         return entries
 
     def contribute_exception_handlers(
