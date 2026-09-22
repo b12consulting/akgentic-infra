@@ -127,20 +127,6 @@ class ChannelBinding(ChannelAddress):
     )
 
 
-class InitiatedTeam(SerializableBaseModel):
-    """What ``create_team`` created: a team, and the agent that speaks for it."""
-
-    team_id: uuid.UUID = Field(description="The newly created team's ID")
-    entry_point_name: str = Field(
-        description=(
-            "Spawned name of the team's entry-point agent — the key into the "
-            "team's address table, unique within the team and already "
-            "headcount-expanded (e.g. '@HumanProxy_0'). This is a name, not a "
-            "role: a role is shared by every member hired from the same card."
-        ),
-    )
-
-
 @runtime_checkable
 class InteractionChannelAdapter(Protocol):
     """Delivers outbound messages to humans via an external channel.

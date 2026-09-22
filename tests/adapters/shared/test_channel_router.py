@@ -262,16 +262,16 @@ async def test_initiate_team_always_binds_the_conversation(tmp_path: Path) -> No
     team_service = StubTeamService()
     ctx = _ctx(registry, team_service)
 
-    initiated = await ctx.initiate_team(None)
+    process = await ctx.initiate_team(None)
 
     binding = await registry.find_binding(
         ChannelAddress(channel="routed", channel_user_id="user-1")
     )
     assert binding is not None
-    assert binding.team_id == initiated.team_id
+    assert binding.team_id == process.team_id
     assert binding.agent_name == "@HumanProxy_0"
     # Outbound delivery reads the same record, so it must be answerable there too.
-    assert registry.find_binding_sync(initiated.team_id, "@HumanProxy_0") == binding
+    assert registry.find_binding_sync(process.team_id, "@HumanProxy_0") == binding
     assert team_service.create_team_calls == [("user-1", "routed-default", None)]
     # None is "create silently": no first message at all, not an empty one.
     assert team_service.send_message_calls == []
@@ -478,7 +478,7 @@ def test_the_context_exposes_no_service_that_takes_a_team_id(tmp_path: Path, ser
 # --- The creation key travels parser → router → team_service ---
 
 
-async def test_an_unbound_message_carries_its_creation_key_to_the_ingestion(
+async def test_an_unbound_message_carries_its_creation_key_to_team_creation(
     tmp_path: Path,
 ) -> None:
     team_service = StubTeamService()
@@ -492,7 +492,7 @@ async def test_an_unbound_message_carries_its_creation_key_to_the_ingestion(
     assert team_service.create_team_keys == [key]
 
 
-async def test_new_carries_its_creation_key_to_the_ingestion(tmp_path: Path) -> None:
+async def test_new_carries_its_creation_key_to_team_creation(tmp_path: Path) -> None:
     team_service = StubTeamService()
     key = uuid.uuid4()
     message = ChannelMessage(
@@ -599,13 +599,13 @@ async def test_a_blank_first_message_still_creates_and_binds_the_team(tmp_path: 
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
 
-    initiated = await _ctx(registry, team_service).initiate_team("   ")
+    process = await _ctx(registry, team_service).initiate_team("   ")
 
     assert team_service.create_team_calls == [("user-1", "routed-default", None)]
     assert team_service.send_message_calls == []
     binding = await registry.find_binding(_ADDRESS)
     assert binding is not None
-    assert binding.team_id == initiated.team_id
+    assert binding.team_id == process.team_id
 
 
 async def test_a_typed_message_is_judged_by_its_content(tmp_path: Path) -> None:
@@ -665,9 +665,9 @@ async def test_status_reads_the_bound_teams_state(tmp_path: Path) -> None:
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
     ctx = _ctx(registry, team_service)
-    initiated = await ctx.initiate_team(None)
+    created = await ctx.initiate_team(None)
 
     process = await ctx.bound_process()
 
     assert process is not None
-    assert process.team_id == initiated.team_id
+    assert process.team_id == created.team_id

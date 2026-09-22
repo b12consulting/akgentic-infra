@@ -13,7 +13,6 @@ from akgentic.infra.protocols.channels import (
     ChannelCommand,
     ChannelMessage,
     ChannelRegistry,
-    InitiatedTeam,
     InteractionChannelAdapter,
     InteractionChannelRouter,
     JsonValue,
@@ -128,7 +127,7 @@ class ChannelRouteContext:
         team_id: uuid.UUID | None = None,
         team_metadata: dict[str, JsonValue] | None = None,
         binding_metadata: dict[str, JsonValue] | None = None,
-    ) -> InitiatedTeam:
+    ) -> Process:
         """Create a team for this conversation and bind the conversation to it.
 
         Three steps, in this order: create, bind, then send the first message.
@@ -157,7 +156,8 @@ class ChannelRouteContext:
             binding_metadata: Router-owned data stored on the binding.
 
         Returns:
-            The created team and the spawned name of its entry-point agent.
+            The created team's ``Process``, which names both the team and the
+            spawned entry-point agent the binding was written for.
         """
         process = await asyncio.to_thread(
             self._team_service.create_team,
@@ -166,15 +166,12 @@ class ChannelRouteContext:
             team_id=team_id,
             metadata=team_metadata,
         )
-        initiated = InitiatedTeam(
-            team_id=process.team_id, entry_point_name=process.entry_point.name
-        )
         logger.debug(
             "Channel initiation: channel=%s, user=%s, new_team=%s, entry_point=%s",
             self.address.channel,
             self.address.channel_user_id,
-            initiated.team_id,
-            initiated.entry_point_name,
+            process.team_id,
+            process.entry_point.name,
         )
         # Bind BEFORE the first message: a team answering it before the binding
         # exists would find no chat on the outbound path, and that reply is lost.
@@ -182,8 +179,8 @@ class ChannelRouteContext:
             ChannelBinding(
                 channel=self.address.channel,
                 channel_user_id=self.address.channel_user_id,
-                team_id=initiated.team_id,
-                agent_name=initiated.entry_point_name,
+                team_id=process.team_id,
+                agent_name=process.entry_point.name,
                 metadata=binding_metadata or {},
             )
         )
@@ -191,8 +188,8 @@ class ChannelRouteContext:
         # the binding is what lets the next message continue this conversation
         # rather than start yet another team. Only the empty prompt is withheld.
         if content is not None and not _is_blank(content):
-            await asyncio.to_thread(self._team_service.send_message, initiated.team_id, content)
-        return initiated
+            await asyncio.to_thread(self._team_service.send_message, process.team_id, content)
+        return process
 
     async def send(self, content: str | Message) -> bool:
         """Send a message to this conversation's team.
@@ -335,7 +332,7 @@ class DefaultChannelRouter(InteractionChannelRouter):
         as ``on_unbound`` honours it.
         """
         await ctx.release()
-        initiated = await ctx.initiate_team(
+        process = await ctx.initiate_team(
             rest or None,
             catalog_entry=message.catalog_entry,
             team_id=message.team_id,
@@ -345,7 +342,7 @@ class DefaultChannelRouter(InteractionChannelRouter):
         # ``new`` acknowledges even though the team usually answers for itself:
         # ``/new`` with no text produces no team reply at all, so without this
         # the user who just abandoned a conversation would see nothing.
-        ctx.notify(f"Started a new session — team {initiated.team_id}.")
+        ctx.notify(f"Started a new session — team {process.team_id}.")
 
     async def _command_unregister(self, ctx: ChannelRouteContext) -> None:
         """Release this conversation's binding, acknowledging either way.

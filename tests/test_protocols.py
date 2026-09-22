@@ -696,42 +696,6 @@ def test_channel_binding_round_trips_through_json_mode() -> None:
     assert isinstance(restored.team_id, uuid.UUID)
 
 
-# --- InitiatedTeam ---
-
-
-def test_initiated_team_is_pydantic_model_with_two_fields() -> None:
-    """InitiatedTeam names the team and the agent that speaks for it."""
-    from pydantic import BaseModel
-
-    from akgentic.infra.protocols import InitiatedTeam
-
-    assert issubclass(InitiatedTeam, BaseModel)
-    assert set(InitiatedTeam.model_fields) == {"team_id", "entry_point_name"}
-
-
-def test_initiated_team_field_descriptions_name_the_spawned_name() -> None:
-    """Every field has a description, and entry_point_name says it is not a role."""
-    from akgentic.infra.protocols import InitiatedTeam
-
-    for name, field_info in InitiatedTeam.model_fields.items():
-        assert field_info.description is not None, f"Field {name} missing description"
-
-    description = InitiatedTeam.model_fields["entry_point_name"].description
-    assert description is not None
-    assert "role" in description.lower()
-
-
-def test_initiated_team_round_trips_through_json_mode() -> None:
-    """A dumped InitiatedTeam validates back to an equal model."""
-    from akgentic.infra.protocols import InitiatedTeam
-
-    initiated = InitiatedTeam(team_id=uuid.uuid4(), entry_point_name="@HumanProxy_0")
-
-    restored = InitiatedTeam.model_validate(initiated.model_dump(mode="json"))
-    assert restored == initiated
-    assert isinstance(restored.team_id, uuid.UUID)
-
-
 # --- TeamHandle ---
 
 
