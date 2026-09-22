@@ -790,7 +790,7 @@ async def test_register_takes_both_names_from_the_replied_to_message(tmp_path: P
 
 
 async def test_register_prefers_the_command_text_over_the_quotation(tmp_path: Path) -> None:
-    """What the user typed now beats what they replied to."""
+    """What the user typed now beats what they replied to — for each name."""
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     ctx = _ctx(registry, StubTeamService(), StubAdapter())
     quoted_team = uuid.uuid4()
@@ -802,6 +802,45 @@ async def test_register_prefers_the_command_text_over_the_quotation(tmp_path: Pa
     binding = await registry.find_binding(_ADDRESS)
     assert binding is not None
     assert binding.team_id == _ANOTHER_TEAM
+    assert binding.agent_name == _ANOTHER_AGENT
+
+
+async def test_register_takes_the_team_from_the_reply_and_the_agent_from_the_message(
+    tmp_path: Path,
+) -> None:
+    """Each name falls back on its own, because they arrive from different places.
+
+    A notice names the team and no agent. Replying to one and typing the agent
+    supplies the missing half by hand — the case the command exists for.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    ctx = _ctx(registry, StubTeamService(), StubAdapter())
+
+    await _enabled_router().route(
+        _register("@Expert_1", quoted=f"Started a new session — team {_ANOTHER_TEAM}."), ctx
+    )
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == _ANOTHER_TEAM
+    assert binding.agent_name == "@Expert_1"
+
+
+async def test_register_takes_the_agent_from_the_reply_and_the_team_from_the_message(
+    tmp_path: Path,
+) -> None:
+    """The mirror case: the quotation names the agent, the user types the team."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    ctx = _ctx(registry, StubTeamService(), StubAdapter())
+
+    await _enabled_router().route(
+        _register(str(_ANOTHER_TEAM), quoted="@Expert_1 here, what would you like?"), ctx
+    )
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == _ANOTHER_TEAM
+    assert binding.agent_name == "@Expert_1"
 
 
 async def test_register_binds_any_agent_name_the_message_carries(tmp_path: Path) -> None:

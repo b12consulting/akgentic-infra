@@ -932,7 +932,7 @@ ChannelConfig(
 )
 ```
 
-`/register <team-id> @Agent`, or a bare `/register` **replying** to a message that names both — the bot's own messages do, so answering one needs no copying. What the user typed wins over what they replied to. Both names are required: there is no entry-point default, because learning the entry point's name would mean looking the team up.
+`/register <team-id> @Agent`, or a `/register` **replying** to a message that names what the command leaves out. Each name falls back on its own — the command's words first, then the quotation — because the two routinely arrive from different places: a notice names the team and no agent, so replying to it with `/register @HumanProxy_0` supplies the missing half by hand. Both names are required: there is no entry-point default, because learning the entry point's name would mean looking the team up.
 
 **Neither name is verified, deliberately.** A lookup would make the command an existence oracle — a chat could ask "is this id live?" and read the answer off the reply — while checking nothing that matters, since the payload carries no identity to compare against `Process.user_id`. A binding naming a team that does not exist is inert: the next message finds no team, and the outbound path never matches it. The cost of a mistyped id is the user's own conversation. It also means `bind_team` touches the registry only, never the team service, and an agent deeper than the first layer (`@Expert_1`) binds fine — `Process` could never have confirmed it anyway.
 

@@ -445,10 +445,13 @@ class DefaultChannelRouter(InteractionChannelRouter):
     ) -> None:
         """Bind this conversation to the team and agent the message names.
 
-        Both names are read out of free text, from the command's own words or —
-        when those carry no team id — from the message being replied to. The
-        second is what makes the command usable: the bot's own messages name
-        the team and the agent, so answering one needs no copying.
+        Both names are read out of free text, and **each falls back on its own**:
+        a name the command's own words do not carry is looked for in the
+        message being replied to. They routinely arrive from different places —
+        a notice names the team but no agent, so replying to one with
+        ``/register @HumanProxy_0`` supplies the missing half by hand. Taking
+        both from whichever text happened to carry the team id would reject
+        that, which is the usable case.
 
         Neither name is verified (``ChannelRouteContext.bind_team``). The reply
         therefore says what was bound, never whether it exists: a user who
@@ -468,9 +471,9 @@ class DefaultChannelRouter(InteractionChannelRouter):
             )
             ctx.notify("Registering to an existing team is not enabled on this channel.")
             return
-        source = rest if _TEAM_ID_RE.search(rest) else (message.quoted_text or "")
-        team_id_match = _TEAM_ID_RE.search(source)
-        agent_match = _AGENT_NAME_RE.search(source)
+        quoted = message.quoted_text or ""
+        team_id_match = _TEAM_ID_RE.search(rest) or _TEAM_ID_RE.search(quoted)
+        agent_match = _AGENT_NAME_RE.search(rest) or _AGENT_NAME_RE.search(quoted)
         if team_id_match is None or agent_match is None:
             ctx.notify(
                 "Send '/register <team-id> @Agent', or reply to a message naming both "
