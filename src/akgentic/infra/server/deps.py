@@ -11,7 +11,7 @@ from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPol
 from akgentic.infra.adapters.shared.team_tree_only_policy import TeamTreeOnlyPolicy
 from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.authz import TeamAccessPolicy
-from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelIngestion
+from akgentic.infra.protocols.channels import ChannelRegistry
 from akgentic.infra.protocols.event_stream import EventStream
 from akgentic.infra.protocols.placement import PlacementStrategy
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
@@ -55,11 +55,8 @@ class TierServices(BaseModel):
     event_stream: EventStream = Field(
         description="Ephemeral event bus for cursor-based replay and fan-out"
     )
-    ingestion: InteractionChannelIngestion = Field(
-        description="Inbound channel message ingestion handler"
-    )
     channel_registry: ChannelRegistry = Field(
-        description="Registry mapping channel IDs to team IDs"
+        description="Registry binding a channel conversation to a team and its entry-point agent"
     )
     catalog: Catalog = Field(description="v2 unified catalog service")
     team_service: TeamService | None = Field(

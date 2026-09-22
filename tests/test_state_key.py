@@ -14,6 +14,8 @@ from typing import Any, assert_type, cast
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI, Request
+
 from akgentic.infra.server import state_keys as server_keys
 from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.state_keys import (
@@ -21,7 +23,6 @@ from akgentic.infra.server.state_keys import (
     CHANNEL_REGISTRY,
     CONNECTION_MANAGER,
     DRAINING,
-    INGESTION,
     SERVICES,
     SETTINGS,
     TEAM_SERVICE,
@@ -29,7 +30,6 @@ from akgentic.infra.server.state_keys import (
 from akgentic.infra.utils import StateKey
 from akgentic.infra.worker import state_keys as worker_keys
 from akgentic.infra.worker.deps import WorkerServices
-from fastapi import FastAPI, Request
 
 
 def _services_stub() -> TierServices:
@@ -212,7 +212,6 @@ def test_server_keys_declare_expected_names_and_flags() -> None:
         (CONNECTION_MANAGER, "connection_manager", True, None),
         (CHANNEL_REGISTRY, "channel_registry", True, None),
         (CHANNEL_PARSERS, "channel_parser_registry", True, None),
-        (INGESTION, "ingestion", True, None),
         (DRAINING, "draining", False, False),
     ]
     for key, name, required, default in expected:
@@ -221,9 +220,9 @@ def test_server_keys_declare_expected_names_and_flags() -> None:
         assert key.default == default
 
 
-def test_server_keys_module_exposes_eight_state_keys() -> None:
+def test_server_keys_module_exposes_seven_state_keys() -> None:
     keys = [v for v in vars(server_keys).values() if isinstance(v, StateKey)]
-    assert len(keys) == 8
+    assert len(keys) == 7
 
 
 # --- AC 9: worker-tier key declaration --------------------------------------

@@ -4,9 +4,55 @@ from __future__ import annotations
 
 import logging
 
-from akgentic.infra.protocols.channels import ChannelMessage, JsonValue
+from akgentic.infra.protocols.channels import ChannelCommand, ChannelMessage, JsonValue
 
 logger = logging.getLogger(__name__)
+
+# Telegram's documented MessageEntity type for a leading ``/command`` token.
+_BOT_COMMAND_ENTITY = "bot_command"
+
+
+def _parse_command(text: str, entities: JsonValue) -> ChannelCommand | None:
+    """Lift the leading ``/command`` token out of ``text``, or return None.
+
+    The marker is channel-specific: Telegram reports the token as a
+    ``bot_command`` MessageEntity rather than leaving the reader to guess from a
+    leading slash. Only an entity that is **first** and at ``offset == 0``
+    counts — a ``/slash`` mid-sentence is text (ADR-043 §D10).
+
+    Entity offsets are UTF-16 code units, which diverge from Python string
+    indices only for text *before* the offset. This offset is always 0 and the
+    command token is always ASCII, so plain slicing is correct here.
+
+    Args:
+        text: The message's full text, returned to the caller untouched.
+        entities: The raw ``message["entities"]`` value, of any shape.
+
+    Returns:
+        The parsed command, or None for any other entity shape — absent, not a
+        list, first entity not a ``bot_command``, a non-zero offset, or a
+        non-integer length.
+    """
+    if not isinstance(entities, list) or not entities:
+        return None
+    first = entities[0]
+    if not isinstance(first, dict) or first.get("type") != _BOT_COMMAND_ENTITY:
+        return None
+    if first.get("offset") != 0:
+        return None
+    length = first.get("length")
+    # ``bool`` is an ``int`` subclass, and a YAML/JSON ``true`` here would slice
+    # one character rather than being rejected.
+    if not isinstance(length, int) or isinstance(length, bool):
+        return None
+
+    token = text[:length]
+    # Telegram includes the ``@botname`` suffix inside the entity's length, so a
+    # group-chat ``/new@some_bot`` would otherwise yield a name matching nothing.
+    name = token.removeprefix("/").split("@", 1)[0].lower()
+    # ``lstrip`` drops the single separating space; the remainder is verbatim —
+    # not lowercased, internal whitespace preserved.
+    return ChannelCommand(name=name, rest=text[length:].lstrip())
 
 
 class TelegramChannelParser:
@@ -49,18 +95,35 @@ class TelegramChannelParser:
                 {
                     "update_id": 123456,
                     "message": {
-                        "message_id": 42,
-                        "chat": {"id": 987654321},
+                        "message_id": 4,
+                        "from": {
+                            "id": 8892740599,
+                            "is_bot": false,
+                            "first_name": "John",
+                            "last_name": "Doe",
+                            "language_code": "en"
+                        },
+                        "chat": {
+                            "id": 8892740599,
+                            "first_name": "John",
+                            "last_name": "Doe",
+                            "type": "private"
+                        },
+                        "date": 1789587220,
                         "text": "Hello"
                     }
                 }
 
         Returns:
-            Parsed ChannelMessage with content, chat ID, and message ID.
+            Parsed ChannelMessage with content, chat ID, message ID, and the
+            leading slash command when the payload's entities name one.
 
         Raises:
             ValueError: If the payload does not contain a text message.
         """
+
+        logger.debug("Telegram parser payload: %s", payload)
+
         message = payload.get("message")
         if not isinstance(message, dict):
             msg = "Telegram Update does not contain a 'message' field"
@@ -84,8 +147,12 @@ class TelegramChannelParser:
         message_id = message.get("message_id")
 
         logger.debug("Parsing Telegram update: chat_id=%s", chat_id)
+        # ``content`` stays the full original text, command word and all: a
+        # command the channel layer does not consume must reach the team looking
+        # exactly as the user typed it.
         return ChannelMessage(
             content=text,
             channel_user_id=str(chat_id),
-            message_id=str(message_id) if message_id is not None else None,
+            channel_message_id=str(message_id) if message_id is not None else None,
+            command=_parse_command(text, message.get("entities")),
         )

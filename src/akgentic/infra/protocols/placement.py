@@ -99,12 +99,43 @@ class PlacementStrategy(Protocol):
     ) -> TeamHandle:
         """Create a team on a worker instance and return a handle.
 
+        **``team_id`` is a creation key, never an address.** It exists so that
+        concurrent creations of one logical team — two deliveries racing to start
+        the same conversation's team, a client retrying a ``POST /teams`` — yield
+        one team instead of several. It can never be used to reach a team that
+        already exists. Every implementation MUST honour this, however it
+        achieves it (community parks duplicates in-process; a distributed tier
+        needs an atomic claim in a shared store):
+
+        - **key unknown** → create the team under that id, owned by ``user_id``;
+        - **key being created right now, for the same** ``user_id`` → wait for
+          that creation and return a handle to the same team; if it fails, fail
+          the same way;
+        - **key being created for a different user, or naming a team that
+          already exists** → raise ``PlacementError`` with ``status_code=409``
+          and ``code="team_id_conflict"``. Never return that team and never
+          recreate it.
+
+        Why the refusals are not optional:
+
+        - Returning an existing team would let any caller who can name an id —
+          including an unauthenticated channel payload — attach itself to a team
+          it does not own.
+        - Recreating it overwrites a live team: ``TeamManager.create_team``
+          performs no duplicate check of its own.
+        - Collapsing into another user's in-flight creation would hand one
+          user's team to another.
+
+        A late duplicate — one arriving after the first creation has finished —
+        is therefore refused, not served; a caller that wants idempotency past
+        completion must resolve the existing team itself, as the owner.
+
         Args:
             team_card: Team configuration card.
             user_id: ID of the user creating the team.
             user_email: Email of the user creating the team.
-            team_id: Optional caller-supplied team identifier. When omitted, the
-                underlying TeamManager generates a fresh UUID.
+            team_id: Optional **creation key** — see above. When omitted, a
+                fresh UUID is generated and nothing is collapsed.
             catalog_namespace: Opaque tag identifying the catalog namespace
                 the team was instantiated from. Forwarded through to
                 ``TeamManager.create_team`` (community tier) or the remote
@@ -120,7 +151,8 @@ class PlacementStrategy(Protocol):
             A TeamHandle for interacting with the newly created team.
 
         Raises:
-            PlacementError: If no worker is available or team creation fails.
+            PlacementError: 409 ``team_id_conflict`` per the creation-key rules
+                above; otherwise if no worker is available or creation fails.
                 A ``ServerError``, and — for backward compatibility — a
                 ``RuntimeError``.
         """

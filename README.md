@@ -48,7 +48,7 @@ graph TB
         ICD["InteractionChannelDispatcher<br/>&lt;EventSubscriber&gt;"]
         ESS["EventStreamSubscriber<br/>&lt;EventSubscriber&gt;"]
         LES["LocalEventStream<br/>&lt;EventStream&gt;"]
-        LI["LocalIngestion<br/>&lt;InteractionChannelIngestion&gt;"]
+        DCR["DefaultChannelRouter<br/>&lt;InteractionChannelRouter&gt;"]
         YCR["YamlChannelRegistry<br/>&lt;ChannelRegistry&gt;"]
     end
 
@@ -63,7 +63,7 @@ graph TB
     API --> NA
     API --> SVC
     API --> CAT
-    API --> LI
+    API -->|/webhook| DCR
     API -->|WS: read stream| LES
     SVC --> LP
     SVC --> LWH
@@ -78,8 +78,8 @@ graph TB
     AS --> ESS
     ESS --> LES
     PS --> YE
-    LI --> SVC
-    LI --> YCR
+    DCR --> SVC
+    DCR --> YCR
 
     style FE fill:#4CAF50,color:white
     style API fill:#2196F3,color:white
@@ -283,7 +283,7 @@ src/akgentic/infra/
     worker_handle.py    WorkerHandle
     team_handle.py      TeamHandle
     runtime_cache.py    RuntimeCache
-    channels.py         InteractionChannelAdapter, Ingestion, Parser, Registry
+    channels.py         InteractionChannelAdapter, Parser, Router, Registry
     health.py           HealthMonitor
     recovery.py         RecoveryPolicy
   adapters/           Protocol implementations
@@ -347,9 +347,9 @@ The **Used in** column refers to the role in the distributed (department / enter
 | `RuntimeCache`                 | `runtime_cache.py`  | Map team IDs to live TeamHandle instances      | Both — real cache on the worker, stateless no-op resolver on the server |
 | `AuthStrategy`                 | `auth.py`           | Async `resolve_request_user(connection) -> RequestUser` (raises 401) + `get_auth_routes` — see [Authentication contract & enforcement](#authentication-contract--enforcement) | Server |
 | `InteractionChannelAdapter`    | `channels.py`       | Outbound message delivery to external channels | Worker — runs in the orchestrator's actor thread |
-| `InteractionChannelIngestion`  | `channels.py`       | Inbound webhook routing to teams               | Server |
+| `InteractionChannelRouter`     | `channels.py`       | Decide what one inbound channel message does — see [Interaction channels](#interaction-channels) | Server |
 | `ChannelParser`                | `channels.py`       | Parse channel-specific webhook payloads        | Server |
-| `ChannelRegistry`              | `channels.py`       | Map external channel users to active teams     | Server |
+| `ChannelRegistry`              | `channels.py`       | Bind one channel conversation to one agent of one team | Both — async reads/writes on the server, `find_binding_sync` on the worker |
 | `EventStream`                  | `event_stream.py`   | Tier-agnostic event streaming with replay and fan-out (ADR-010) | Both — worker appends, server reads / fans out |
 | `StreamReader`                 | `event_stream.py`   | Cursor-based blocking reader for a team's event stream | Server — read side of the WebSocket fan-out |
 | `HealthMonitor`                | `health.py`         | Worker liveness detection                      | Server |
@@ -889,6 +889,47 @@ The load-bearing invariant — **resolve-once + stash key + 401-on-raise pre-rou
 
 **Namespace proximity — `akgentic.infra.auth` is the plugin's, not infra's.** The plugin's `akgentic.infra.auth` namespace merges into infra's shared `akgentic.infra.*` namespace via `pkgutil.extend_path`, so it sits **beside** the infra-owned `akgentic.infra.server.auth` and `akgentic.infra.protocols.auth` — but it is **not** infra-owned. Infra does not depend on, import, or ship the plugin; the entry-point group is the only seam between them.
 
+### Interaction channels
+
+An external channel (Telegram today) reaches a team through one route and leaves it through one subscriber:
+
+```
+inbound   POST /webhook/{channel} → ChannelParser.parse → ChannelMessage
+          → InteractionChannelRouter.route(message, ChannelRouteContext) → TeamService
+outbound  SentMessage → InteractionChannelDispatcher → find_binding_sync(team_id, agent_name)
+          → InteractionChannelAdapter.deliver(msg, binding)
+```
+
+A channel is configured in `settings.channels` as a `ChannelConfig`: `parser_fqcn`, `adapter_fqcn`, an optional `router_fqcn`, and one `config` dict passed to all three constructors (so each must tolerate keys meant for the others).
+
+**The route parses and routes, nothing else.** What a message *does* is the router's decision. A channel that names no router gets `DefaultChannelRouter`:
+
+1. `/new [text]` releases the binding and starts a fresh team; `/unregister` releases it; `/status` reports the bound team and its state. Any other command reaches the team as ordinary text.
+2. A bound conversation's message is sent to its team.
+3. An unbound conversation's message starts a team from `message.catalog_entry` (else the parser's `default_catalog_entry`) and binds the conversation to it.
+
+Subclass it and override one hook (`on_command`, `on_bound`, `on_unbound`) to change one rule.
+
+**The binding is the authorization, by construction.** The webhook is unauthenticated, so every payload field is untrusted. `ChannelRouteContext` holds the registry and `TeamService` privately and exposes only methods scoped to *this* conversation — `find_binding`, `release`, `initiate_team`, `send`, `bound_process`, `notify`. None of them addresses a team by id, so a router acting through the context cannot reach another chat's team. Review still checks that a router does not reach *past* the context — into its private attributes or `app.state` — for a service that takes a team id.
+
+**`ChannelMessage.team_id` is a creation key, never an address.** It is read only when the conversation is unbound, and passed to `PlacementStrategy.create_team`, whose contract every tier implements:
+
+| The key… | Outcome |
+|---|---|
+| is unknown | the team is created under that id |
+| is being created right now for the **same** user | the call waits and gets the same team (or the same failure) |
+| is being created for **another** user, or names a team that **exists** | `PlacementError` 409 `team_id_conflict` |
+
+So a key can start a team but never reach one. `None` (Telegram's parser sets none) means a fresh id and no collapsing. Community enforces this in `LocalPlacement` with an in-process future per key; a multi-replica tier needs an atomic claim in a shared store.
+
+**Metadata has two destinations.** `team_metadata` goes to team creation and is validated against the card's declared contract. `binding_metadata` is stored verbatim on the `ChannelBinding` for the router's own later use — unvalidated, from an unauthenticated payload, never proof of identity.
+
+**Order and blanks.** `initiate_team` creates, **binds**, then sends — the team may answer at once, and outbound delivery only finds the chat once the binding exists. A blank or whitespace-only message is never sent to a team; a blank first message still creates and binds it. It returns the team's `Process`, whose `entry_point.name` is the agent the binding was written for. Only the entry point is bound: another user-proxy member is a different human.
+
+**Threads.** Every `TeamService` call from the router runs via `asyncio.to_thread` (creation spawns actors). Registry calls stay on the event loop: `YamlChannelRegistry`'s read-modify-write is safe only because the loop serialises it.
+
+**Errors.** An unparseable update is acknowledged (204) and dropped — a channel redelivers anything non-2xx forever. Everything the router raises propagates and is mapped exactly as on `POST /teams`.
+
 ### Frontend Adapter Plugin (removed)
 
 The V1 frontend-adapter plugin system was removed — the Angular frontend consumes the native V2 API directly; see the modular app assembly decision record (`_bmad-output/akgentic-infra/decisions/adr-039-modular-app-assembly-appmodule-contract.md`).
@@ -902,7 +943,9 @@ Tier-agnostic adapters that work across community, department, and enterprise de
 | `InteractionChannelDispatcher` | Per-team outbound message dispatcher — routes `SentMessage` events to registered channel adapters |
 | `TelegramChannelAdapter`     | Delivers outbound messages via the Telegram Bot API          |
 | `TelegramChannelParser`      | Parses inbound Telegram webhook payloads                     |
-| `ChannelParserRegistry`      | Resolves and holds channel parsers/adapters from config      |
+| `ChannelParserRegistry`      | Resolves and holds each channel's parser, adapter and router from config |
+| `DefaultChannelRouter`       | The routing rules a channel gets when it names no `router_fqcn` |
+| `ChannelRouteContext`        | One webhook request's view of the channel services, scoped to one conversation |
 | `EventStreamSubscriber`      | Event subscriber that routes orchestrator events to the team's `EventStream` |
 | `RuntimeCacheEvictionSubscriber` | Event subscriber that evicts a stopped team's handle from the worker's `RuntimeCache` |
 | `TelemetrySubscriber`        | Event subscriber that traces messages via Logfire            |

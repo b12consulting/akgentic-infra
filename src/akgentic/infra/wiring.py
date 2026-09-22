@@ -7,11 +7,11 @@ import logging
 from akgentic.catalog import Catalog, YamlEntryRepository
 from akgentic.core import ActorSystem, EventSubscriber
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
-from akgentic.infra.adapters.community.local_ingestion import LocalIngestion
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
@@ -35,10 +35,9 @@ def wire_community(
 ) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
 
-    The container is returned fully wired: ``TeamService`` is constructed here
-    (it needs the finished container) and the ``LocalIngestion`` back-reference
-    is bound here too — the one two-phase bind, owned by the layer that owns
-    services. No caller has any wiring left to do.
+    The container is returned fully wired: ``TeamService`` is constructed here,
+    because it needs the finished container, and assigned onto it. No caller has
+    any wiring left to do.
 
     Args:
         settings: Community-tier configuration
@@ -54,9 +53,8 @@ def wire_community(
     # Auth defaults to NoAuth (settings.auth_strategy == "noauth") via the loader,
     # which short-circuits without any entry-point lookup or auth-library import.
     auth = load_auth_strategy(settings.auth_strategy)
-    ingestion = LocalIngestion()
     channel_registry = YamlChannelRegistry(registry_path=settings.channel_registry_path)
-    channel_parser_registry = ChannelParserRegistry(channels_config={})
+    channel_parser_registry = ChannelParserRegistry(channels_config=settings.channels)
     catalog = Catalog(repository=YamlEntryRepository(root=settings.catalog_path))
 
     # Shared backends — persistence and the event bus, used by server and worker alike.
@@ -66,9 +64,17 @@ def wire_community(
 
     # Worker runtime — the in-process actor layer that runs the teams.
     actor_system = ActorSystem()
+    # One dispatcher for every team: it reads the team off each message and off
+    # the lifecycle hooks, so a revived team keeps its channel by construction.
+    # With no channel configured the adapter list is empty and the registry
+    # answers None, so nothing is delivered and behaviour is unchanged.
     shared_subscribers: list[EventSubscriber] = [
         TelemetrySubscriber(),
         EventStreamSubscriber(event_stream=event_stream),
+        InteractionChannelDispatcher(
+            adapters=channel_parser_registry.get_adapters(),
+            registry=channel_registry,
+        ),
     ]
     team_manager = TeamManager(
         actor_system=actor_system,
@@ -92,7 +98,6 @@ def wire_community(
         # Server services
         auth=auth,
         team_access_policy=resolved_team_access_policy,
-        ingestion=ingestion,
         channel_registry=channel_registry,
         channel_parser_registry=channel_parser_registry,
         catalog=catalog,
@@ -108,10 +113,9 @@ def wire_community(
         runtime_cache=runtime_cache,
     )
 
-    # TeamService needs the finished container, so it is the one two-phase
-    # bind: construct, assign onto the container, then complete the deferred
-    # LocalIngestion back-reference on the concrete instance built above.
+    # TeamService needs the finished container, so it is built last and assigned
+    # onto it. The channel router reaches it through the container too, so there
+    # is no second object to hand it to afterwards.
     team_service = TeamService(services, workspaces_root=settings.workspaces_root)
     services.team_service = team_service
-    ingestion.team_service = team_service
     return services

@@ -11,6 +11,9 @@ from akgentic.core.actor_address_impl import ActorAddressProxy
 from akgentic.core.messages.orchestrator import SentMessage
 
 from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
+from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
+
+TEAM_ID = uuid.uuid4()
 
 # ---------------------------------------------------------------------------
 # Helpers (following test_channel_dispatcher.py patterns)
@@ -51,6 +54,21 @@ def _make_sent_message(
 
     inner = UserMessage(content=content, sender=sender)
     return SentMessage(message=inner, recipient=recipient, sender=sender)
+
+
+def _binding(
+    channel: str = "telegram",
+    channel_user_id: str = "987654321",
+    team_id: uuid.UUID | None = None,
+    agent_name: str = "@HumanProxy_0",
+) -> ChannelBinding:
+    """A binding naming the destination chat — the value the address cannot carry."""
+    return ChannelBinding(
+        channel=channel,
+        channel_user_id=channel_user_id,
+        team_id=team_id or TEAM_ID,
+        agent_name=agent_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -98,17 +116,17 @@ class TestMatchesUserProxy:
     def test_user_proxy_matches(self) -> None:
         adapter = _make_adapter()
         msg = _make_sent_message(role="UserProxy", is_user_proxy=True)
-        assert adapter.matches(msg) is True
+        assert adapter.matches(msg, _binding()) is True
 
     def test_user_proxy_matches_with_unrelated_role(self) -> None:
         adapter = _make_adapter()
         msg = _make_sent_message(role="operator", is_user_proxy=True)
-        assert adapter.matches(msg) is True
+        assert adapter.matches(msg, _binding()) is True
 
     def test_user_proxy_matches_with_empty_role(self) -> None:
         adapter = _make_adapter()
         msg = _make_sent_message(role="", is_user_proxy=True)
-        assert adapter.matches(msg) is True
+        assert adapter.matches(msg, _binding()) is True
 
 
 # ---------------------------------------------------------------------------
@@ -123,17 +141,17 @@ class TestMatchesNonUserProxy:
     def test_agent_role_does_not_match(self) -> None:
         adapter = _make_adapter()
         msg = _make_sent_message(role="assistant", is_user_proxy=False)
-        assert adapter.matches(msg) is False
+        assert adapter.matches(msg, _binding()) is False
 
     def test_tester_role_does_not_match(self) -> None:
         adapter = _make_adapter()
         msg = _make_sent_message(role="tester", is_user_proxy=False)
-        assert adapter.matches(msg) is False
+        assert adapter.matches(msg, _binding()) is False
 
     def test_user_proxy_role_string_alone_does_not_match(self) -> None:
         adapter = _make_adapter()
         msg = _make_sent_message(role="UserProxy", is_user_proxy=False)
-        assert adapter.matches(msg) is False
+        assert adapter.matches(msg, _binding()) is False
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +186,11 @@ class TestMatchesGuard:
 
     def test_raising_recipient_access_returns_false(self) -> None:
         adapter = _make_adapter()
-        assert adapter.matches(cast(SentMessage, _RaisingMessage())) is False
+        assert adapter.matches(cast(SentMessage, _RaisingMessage()), _binding()) is False
 
     def test_raising_is_user_proxy_returns_false(self) -> None:
         adapter = _make_adapter()
-        assert adapter.matches(cast(SentMessage, _RaisingRecipientMessage())) is False
+        assert adapter.matches(cast(SentMessage, _RaisingRecipientMessage()), _binding()) is False
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +204,9 @@ class TestDeliver:
     def test_posts_to_send_message(self) -> None:
         transport = _CaptureTransport()
         adapter = _make_adapter(transport=transport)
-        msg = _make_sent_message(name="987654321", content="Test reply")
+        msg = _make_sent_message(name="@HumanProxy_0", content="Test reply")
 
-        adapter.deliver(msg)
+        adapter.deliver(msg, _binding(channel_user_id="987654321"))
 
         assert len(transport.requests) == 1
         req = transport.requests[0]
@@ -196,6 +214,22 @@ class TestDeliver:
         body = json.loads(req.content)
         assert body["chat_id"] == "987654321"
         assert body["text"] == "Test reply"
+
+    def test_binding_wins_over_recipient_name(self) -> None:
+        """The chat id comes from the binding, never from the recipient's name.
+
+        ``ActorAddress.name`` is ``actor.config.name`` off the TeamCard —
+        ``human_support``, ``@HumanProxy_0``. Posting it takes a Telegram 400.
+        The two values differ here so the assertion means something.
+        """
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+        msg = _make_sent_message(name="human_support", content="Test reply")
+
+        adapter.deliver(msg, _binding(channel_user_id="123456789"))
+
+        body = json.loads(transport.requests[0].content)
+        assert body["chat_id"] == "123456789"
 
 
 # ---------------------------------------------------------------------------
@@ -215,17 +249,141 @@ class TestDeliverError:
         msg = _make_sent_message()
 
         # Should not raise
-        adapter.deliver(msg)
+        adapter.deliver(msg, _binding())
 
 
 # ---------------------------------------------------------------------------
-# on_stop() cleanup
+# matches() rejects a binding belonging to another channel
+# ---------------------------------------------------------------------------
+
+
+class TestMatchesForeignChannel:
+    """A binding for another channel is not this adapter's to deliver.
+
+    With two channels configured, a recipient-only check accepts a Slack
+    binding and POSTs a Slack user id to Telegram — the same wrong-POST defect
+    one channel over.
+    """
+
+    def test_slack_binding_does_not_match(self) -> None:
+        adapter = _make_adapter()
+        msg = _make_sent_message(is_user_proxy=True)
+
+        assert adapter.matches(msg, _binding(channel="slack")) is False
+
+    def test_telegram_binding_still_matches(self) -> None:
+        adapter = _make_adapter()
+        msg = _make_sent_message(is_user_proxy=True)
+
+        assert adapter.matches(msg, _binding(channel="telegram")) is True
+
+
+# ---------------------------------------------------------------------------
+# on_stop() releases nothing process-scoped
 # ---------------------------------------------------------------------------
 
 
 class TestOnStop:
-    """on_stop() closes the httpx client without error."""
+    """on_stop() must NOT close the httpx client.
 
-    def test_on_stop_closes_client(self) -> None:
+    The inverse of the spec that used to live here. The client is
+    process-scoped and shared by every team, so closing it on one team's stop
+    mutes all the others — silently, since ``deliver()`` logs and swallows its
+    own errors.
+    """
+
+    def test_on_stop_leaves_the_client_open(self) -> None:
         adapter = _make_adapter()
-        adapter.on_stop(uuid.uuid4())  # Should not raise
+
+        adapter.on_stop(uuid.uuid4())
+
+        assert adapter._client.is_closed is False
+
+    def test_transport_survives_another_teams_stop(self) -> None:
+        """Team A stops; a delivery for team B still reaches the transport."""
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+        team_a = uuid.uuid4()
+        team_b = uuid.uuid4()
+
+        adapter.on_stop(team_a)
+        adapter.deliver(
+            _make_sent_message(content="still reachable"),
+            _binding(channel_user_id="555", team_id=team_b),
+        )
+
+        assert len(transport.requests) == 1
+        body = json.loads(transport.requests[0].content)
+        assert body["chat_id"] == "555"
+
+
+# ---------------------------------------------------------------------------
+# deliver_notice() answers one chat, named by an address
+# ---------------------------------------------------------------------------
+
+
+class TestDeliverNotice:
+    """A channel-layer acknowledgement reaches the chat the address names."""
+
+    def test_notice_addressed_by_a_bare_address_posts_to_that_chat(self) -> None:
+        """The unbound paths have no team, and must still be able to answer."""
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+
+        adapter.deliver_notice(
+            ChannelAddress(channel="telegram", channel_user_id="12345"),
+            "no active session",
+        )
+
+        assert len(transport.requests) == 1
+        body = json.loads(transport.requests[0].content)
+        assert body["chat_id"] == "12345"
+        assert body["text"] == "no active session"
+
+    def test_notice_addressed_by_a_binding_posts_to_the_same_chat(self) -> None:
+        """A binding *is* an address — every bound caller passes its own record."""
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+
+        adapter.deliver_notice(_binding(channel_user_id="777"), "released")
+
+        assert len(transport.requests) == 1
+        body = json.loads(transport.requests[0].content)
+        assert body["chat_id"] == "777"
+
+    def test_notice_for_another_channel_posts_nothing(self) -> None:
+        """G7: notices fan out to every adapter, so each one filters by channel.
+
+        Without the comparison this adapter posts a Slack chat id to Telegram —
+        the wrong-POST defect one channel over.
+        """
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+
+        adapter.deliver_notice(
+            ChannelAddress(channel="slack", channel_user_id="U123"),
+            "released",
+        )
+
+        assert transport.requests == []
+
+    def test_a_closed_client_does_not_raise_out_of_a_notice(self) -> None:
+        """A closed client raises RuntimeError, which is not an httpx.HTTPError.
+
+        On this path the command has already taken effect, so an escaping error
+        would turn a success into a 500 and a channel retry loop.
+        """
+        adapter = _make_adapter(transport=_CaptureTransport())
+        adapter._client.close()
+
+        adapter.deliver_notice(
+            ChannelAddress(channel="telegram", channel_user_id="12345"),
+            "released",
+        )
+
+    def test_a_closed_client_does_not_raise_out_of_deliver_either(self) -> None:
+        """The same guard protects the actor thread ``deliver`` runs on."""
+        adapter = _make_adapter(transport=_CaptureTransport())
+        adapter._client.close()
+
+        adapter.deliver(_make_sent_message(content="hi"), _binding())

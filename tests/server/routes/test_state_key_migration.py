@@ -16,6 +16,9 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
+
 from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.modules import CoreModule
 from akgentic.infra.server.routes.teams import get_team_service
@@ -27,10 +30,7 @@ from akgentic.infra.server.state_keys import CHANNEL_PARSERS
 from akgentic.infra.worker.deps import WorkerServices
 from akgentic.infra.worker.routes.teams import get_services as worker_get_services
 from akgentic.infra.worker.state_keys import SERVICES as WORKER_SERVICES
-from fastapi import FastAPI, Request
-from fastapi.testclient import TestClient
-
-from tests.server.routes.test_webhook_route import StubIngestion
+from tests.server.routes.test_webhook_route import StubTeamService
 
 
 class _RequestStub:
@@ -101,7 +101,7 @@ def _build_webhook_app_without_parser_registry() -> FastAPI:
     # to the missing parser registry — FastAPI resolves all three dependencies up
     # front, before the handler body.
     app.state.channel_registry = MagicMock()
-    app.state.ingestion = StubIngestion()
+    app.state.team_service = StubTeamService()
     app.include_router(webhook_router)
     return app
 
@@ -132,9 +132,8 @@ def test_contribute_state_leaves_channel_parsers_unset_when_services_lacks_it() 
     app = FastAPI()
     # ``team_service`` is in the spec because CoreModule.__init__ requires a
     # wired ``services.team_service`` (a MagicMock value satisfies the check).
-    services = MagicMock(spec=["channel_registry", "ingestion", "team_service"])
+    services = MagicMock(spec=["channel_registry", "team_service"])
     services.channel_registry = MagicMock()
-    services.ingestion = StubIngestion()
 
     module = CoreModule(services=cast(TierServices, services), settings=ServerSettings())
     for entry in module.contribute_state():

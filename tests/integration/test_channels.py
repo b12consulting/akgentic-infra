@@ -12,7 +12,12 @@ from fastapi.testclient import TestClient
 from akgentic.infra.adapters.community.yaml_channel_registry import (
     YamlChannelRegistry,
 )
-from akgentic.infra.protocols.channels import ChannelMessage, JsonValue
+from akgentic.infra.protocols.channels import (
+    ChannelAddress,
+    ChannelBinding,
+    ChannelMessage,
+    JsonValue,
+)
 
 from ._helpers import (
     POLL_INTERVAL_S,
@@ -49,14 +54,11 @@ class StubChannelParser:
         """Parse test payload into ChannelMessage."""
         content = str(payload.get("content", ""))
         channel_user_id = str(payload.get("channel_user_id", ""))
-        raw_team_id = payload.get("team_id")
-        team_id = uuid.UUID(str(raw_team_id)) if raw_team_id is not None else None
         message_id = str(payload["message_id"]) if payload.get("message_id") else None
         return ChannelMessage(
             content=content,
             channel_user_id=channel_user_id,
-            team_id=team_id,
-            message_id=message_id,
+            channel_message_id=message_id,
         )
 
 
@@ -65,12 +67,16 @@ class StubChannelAdapter:
 
     def __init__(self) -> None:
         self.delivered: list[SentMessage] = []
+        self.notices: list[tuple[ChannelAddress, str]] = []
 
-    def matches(self, msg: SentMessage) -> bool:  # noqa: ARG002
+    def matches(self, msg: SentMessage, binding: ChannelBinding) -> bool:  # noqa: ARG002
         return True
 
-    def deliver(self, msg: SentMessage) -> None:
+    def deliver(self, msg: SentMessage, binding: ChannelBinding) -> None:  # noqa: ARG002
         self.delivered.append(msg)
+
+    def deliver_notice(self, address: ChannelAddress, text: str) -> None:
+        self.notices.append((address, text))
 
     def on_stop(self, team_id: uuid.UUID) -> None:  # noqa: ARG002
         pass
@@ -89,7 +95,10 @@ def _find_team_via_registry(
     """Synchronously look up a team from the YAML channel registry."""
     import asyncio
 
-    return asyncio.run(registry.find_team(channel, channel_user_id))
+    binding = asyncio.run(
+        registry.find_binding(ChannelAddress(channel=channel, channel_user_id=channel_user_id))
+    )
+    return None if binding is None else binding.team_id
 
 
 # ---------------------------------------------------------------------------
@@ -133,34 +142,93 @@ class TestChannelInitiation:
 
 
 class TestChannelReply:
-    """AC #2: Webhook with team_id routes to the correct team."""
+    """A bound conversation's reply reaches its team; a payload cannot name another.
+
+    The team is resolved from the conversation's binding only. A ``team_id`` in
+    the payload is not a field any parser can carry, so it cannot address a
+    team the conversation is not bound to.
+    """
 
     def test_reply_routes_to_existing_team(
         self,
         channel_client: TestClient,
+        channel_registry_instance: YamlChannelRegistry,
     ) -> None:
-        create_resp = channel_client.post(
-            "/teams/",
-            json={"catalog_namespace": "test-team"},
+        resp = channel_client.post(
+            "/webhook/test-channel",
+            json={
+                "content": "Respond with one word.",
+                "channel_user_id": "ext-user-2",
+            },
         )
-        assert create_resp.status_code == 201
-        team_id = create_resp.json()["team_id"]
+        assert resp.status_code == 204
+
+        team_id = _find_team_via_registry(
+            channel_registry_instance,
+            "test-channel",
+            "ext-user-2",
+        )
+        assert team_id is not None, "Channel registry should map ext-user-2 after initiation"
 
         try:
+            wait_for_llm_response(channel_client, str(team_id))
+
             resp = channel_client.post(
                 "/webhook/test-channel",
                 json={
                     "content": "What is 3 + 3? Answer with the number.",
                     "channel_user_id": "ext-user-2",
-                    "team_id": team_id,
                 },
             )
             assert resp.status_code == 204
 
-            events = wait_for_llm_response(channel_client, team_id)
+            events = wait_for_llm_response(channel_client, str(team_id))
             assert has_llm_content(events)
         finally:
             channel_client.post(f"/teams/{team_id}/stop")
+
+    def test_naming_another_conversations_team_starts_your_own(
+        self,
+        channel_client: TestClient,
+        channel_registry_instance: YamlChannelRegistry,
+    ) -> None:
+        """A second channel user naming the first one's team gets a team of its own."""
+        resp = channel_client.post(
+            "/webhook/test-channel",
+            json={
+                "content": "Respond with one word.",
+                "channel_user_id": "ext-user-2a",
+            },
+        )
+        assert resp.status_code == 204
+
+        team_id = _find_team_via_registry(
+            channel_registry_instance,
+            "test-channel",
+            "ext-user-2a",
+        )
+        assert team_id is not None
+
+        other_team: uuid.UUID | None = None
+        try:
+            resp = channel_client.post(
+                "/webhook/test-channel",
+                json={
+                    "content": "What is 3 + 3? Answer with the number.",
+                    "channel_user_id": "ext-user-2b",
+                    "team_id": str(team_id),
+                },
+            )
+            assert resp.status_code == 204
+            other_team = _find_team_via_registry(
+                channel_registry_instance, "test-channel", "ext-user-2b"
+            )
+            assert other_team is not None
+            assert other_team != team_id
+        finally:
+            channel_client.post(f"/teams/{team_id}/stop")
+            if other_team is not None:
+                channel_client.post(f"/teams/{other_team}/stop")
 
 
 class TestChannelContinuation:

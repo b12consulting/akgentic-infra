@@ -13,6 +13,7 @@ from akgentic.infra.adapters.shared.channel_parser_registry import (
     ChannelConfig,
     ChannelParserRegistry,
 )
+from akgentic.infra.adapters.shared.channel_router import ChannelRouteContext, DefaultChannelRouter
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.null_event_stream import NullEventStream, NullStreamReader
 from akgentic.infra.adapters.shared.runtime_cache_eviction_subscriber import (
@@ -25,6 +26,8 @@ from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscri
 __all__ = [
     "ChannelConfig",
     "ChannelParserRegistry",
+    "ChannelRouteContext",
+    "DefaultChannelRouter",
     "EventStreamSubscriber",
     "InteractionChannelDispatcher",
     "NullEventStream",

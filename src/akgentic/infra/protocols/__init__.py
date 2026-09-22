@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.protocols.channels import (
+    ChannelAddress,
+    ChannelBinding,
+    ChannelCommand,
     ChannelMessage,
     ChannelParser,
     ChannelRegistry,
+    ChannelRegistryReadSync,
     InteractionChannelAdapter,
-    InteractionChannelIngestion,
+    InteractionChannelRouter,
     JsonValue,
 )
 from akgentic.infra.protocols.event_stream import EventStream, StreamClosed, StreamReader
@@ -27,13 +31,17 @@ from akgentic.infra.protocols.worker_handle import WorkerHandle
 
 __all__ = [
     "AuthStrategy",
+    "ChannelAddress",
+    "ChannelBinding",
+    "ChannelCommand",
     "ChannelMessage",
     "ChannelParser",
     "ChannelRegistry",
+    "ChannelRegistryReadSync",
     "EventStream",
     "HealthMonitor",
     "InteractionChannelAdapter",
-    "InteractionChannelIngestion",
+    "InteractionChannelRouter",
     "JsonValue",
     "NoCapacityError",
     "NoSandboxCapacityError",
