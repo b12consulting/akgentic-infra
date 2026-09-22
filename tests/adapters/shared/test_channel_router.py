@@ -126,6 +126,7 @@ class StubTeamService:
 
     def __init__(self, registry: YamlChannelRegistry | None = None) -> None:
         self.send_message_calls: list[tuple[uuid.UUID, str | Message]] = []
+        self.send_from_to_calls: list[tuple[uuid.UUID, str, str, str | Message]] = []
         self.create_team_calls: list[tuple[str, str, dict[str, JsonValue] | None]] = []
         self.create_team_keys: list[uuid.UUID | None] = []
         self.bound_at_send: list[bool] = []
@@ -137,6 +138,15 @@ class StubTeamService:
         self.send_message_calls.append((team_id, content))
         if self._registry is not None:
             binding = self._registry.find_binding_sync(team_id, "@HumanProxy_0")
+            self.bound_at_send.append(binding is not None)
+
+    def send_message_from_to(
+        self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str | Message
+    ) -> None:
+        self.send_from_to_calls.append((team_id, sender_name, recipient_name, content))
+        self.send_message_calls.append((team_id, content))
+        if self._registry is not None:
+            binding = self._registry.find_binding_sync(team_id, sender_name)
             self.bound_at_send.append(binding is not None)
 
     def create_team(
@@ -157,7 +167,11 @@ class StubTeamService:
             created_at=now,
             updated_at=now,
             entry_point=AgentRef(name="@HumanProxy_0", role="human_support"),
-            agent_cards=[AgentCardRef(role="human_support", card_hash="stub-hash")],
+            supervisors=[AgentRef(name="@Manager_0", role="manager")],
+            agent_cards=[
+                AgentCardRef(role="human_support", card_hash="stub-hash"),
+                AgentCardRef(role="manager", card_hash="stub-hash-manager"),
+            ],
         )
         self.teams[process.team_id] = process
         return process
@@ -478,6 +492,7 @@ _CONTEXT_SURFACE = {
     "release",
     "initiate_team",
     "send",
+    "send_to",
     "bound_process",
     "bind_team",
     "notify",
@@ -590,6 +605,12 @@ class _ThreadRecordingTeamService(StubTeamService):
         self.threads.append(threading.current_thread().name)
         super().send_message(team_id, content)
 
+    def send_message_from_to(
+        self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str | Message
+    ) -> None:
+        self.threads.append(threading.current_thread().name)
+        super().send_message_from_to(team_id, sender_name, recipient_name, content)
+
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         self.threads.append(threading.current_thread().name)
         return super().get_team(team_id)
@@ -606,10 +627,11 @@ async def test_every_team_service_call_runs_off_the_event_loop(tmp_path: Path) -
     loop_thread = threading.current_thread().name
 
     await ctx.initiate_team("first")  # create_team + send_message
-    await ctx.send("second")  # send_message
+    await ctx.send("second")  # get_team (the default recipient) + send_message_from_to
+    await ctx.send_to("@Manager_0", "third")  # send_message_from_to
     await ctx.bound_process()  # get_team
 
-    assert len(team_service.threads) == 4
+    assert len(team_service.threads) == 6
     assert loop_thread not in team_service.threads
 
 
@@ -976,3 +998,165 @@ async def test_an_unknown_command_is_still_ordinary_text(tmp_path: Path) -> None
     await _enabled_router().route(message, ctx)
 
     assert team_service.create_team_calls
+
+
+# --- A bound message is the bound agent speaking ---
+
+
+async def _bind(registry: YamlChannelRegistry, agent_name: str = "@HumanProxy_0") -> uuid.UUID:
+    """Bind the conversation to a team, as initiation would."""
+    team_id = uuid.uuid4()
+    await registry.register(
+        ChannelBinding(
+            channel="routed",
+            channel_user_id="user-1",
+            team_id=team_id,
+            agent_name=agent_name,
+        )
+    )
+    return team_id
+
+
+def _inbound(content: str, quoted: str | None = None) -> ChannelMessage:
+    return ChannelMessage(content=content, channel_user_id="user-1", quoted_text=quoted)
+
+
+async def test_a_bound_message_is_sent_as_the_bound_agent(tmp_path: Path) -> None:
+    """The chat IS the bound agent, so its messages carry that agent as sender.
+
+    ``send_message_from_to`` takes a proxy for the sender and calls ``send()``
+    on it, so the team sees one of its own members speaking rather than an
+    anonymous injection.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry, "@Expert_1")
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(_inbound("a question"), _ctx(registry, team_service))
+
+    assert team_service.send_from_to_calls == [(team_id, "@Expert_1", "@Manager_0", "a question")]
+
+
+async def test_a_bound_message_goes_to_the_supervisor_by_default(tmp_path: Path) -> None:
+    """No name in the message: the first supervisor answers."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service))
+
+    assert team_service.send_from_to_calls[0][2] == "@Manager_0"
+
+
+async def test_a_named_agent_in_the_message_is_the_recipient(tmp_path: Path) -> None:
+    """Addressing an agent by name sends to it instead of the supervisor."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(
+        _inbound("@Expert_1 tell me a joke"), _ctx(registry, team_service)
+    )
+
+    assert team_service.send_from_to_calls[0][2] == "@Expert_1"
+
+
+async def test_the_recipient_can_come_from_the_replied_to_message(tmp_path: Path) -> None:
+    """Answering an agent's message in the chat addresses that agent.
+
+    The bot's outbound messages name their sender, so replying to one is how a
+    user carries on a conversation with that member without retyping its name.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(
+        _inbound("and another one?", quoted="@Expert_1: why did the programmer quit?"),
+        _ctx(registry, team_service),
+    )
+
+    assert team_service.send_from_to_calls[0][2] == "@Expert_1"
+
+
+async def test_the_typed_name_beats_the_quoted_one(tmp_path: Path) -> None:
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(
+        _inbound("@Manager_0 take this back", quoted="@Expert_1: here is the joke"),
+        _ctx(registry, team_service),
+    )
+
+    assert team_service.send_from_to_calls[0][2] == "@Manager_0"
+
+
+async def test_the_content_keeps_the_name_the_user_typed(tmp_path: Path) -> None:
+    """An @Name is the user's sentence, not markup to strip."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(
+        _inbound("@Expert_1 tell me a joke"), _ctx(registry, team_service)
+    )
+
+    assert team_service.send_from_to_calls[0][3] == "@Expert_1 tell me a joke"
+
+
+async def test_a_team_with_no_other_supervisor_falls_back_to_the_default_entry(
+    tmp_path: Path,
+) -> None:
+    """Nobody to address: send to the team rather than to a name it lacks.
+
+    A chat bound to the only supervisor would otherwise be made to talk to
+    itself.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry, "@Manager_0")
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service))
+
+    assert team_service.send_from_to_calls == []
+    assert team_service.send_message_calls == [(team_id, "hello")]
+
+
+async def test_a_blank_bound_message_is_still_not_sent(tmp_path: Path) -> None:
+    """The blank rule survives the sender change, on both paths."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+    ctx = _ctx(registry, team_service)
+
+    assert await ctx.send("   ") is False
+    assert await ctx.send_to("@Manager_0", "\n") is False
+    assert team_service.send_from_to_calls == []
+    assert team_service.send_message_calls == []
+
+
+def _team_with_supervisor(team_id: uuid.UUID) -> Process:
+    """A persisted team whose first supervisor is @Manager_0."""
+    now = datetime.now(UTC)
+    return Process(
+        team_id=team_id,
+        status=TeamStatus.RUNNING,
+        user_id="user-1",
+        created_at=now,
+        updated_at=now,
+        entry_point=AgentRef(name="@HumanProxy_0", role="human_support"),
+        supervisors=[AgentRef(name="@Manager_0", role="manager")],
+        agent_cards=[
+            AgentCardRef(role="human_support", card_hash="stub-hash"),
+            AgentCardRef(role="manager", card_hash="stub-hash-manager"),
+        ],
+    )

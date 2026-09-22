@@ -220,28 +220,91 @@ class ChannelRouteContext:
         return process
 
     async def send(self, content: str | Message) -> bool:
-        """Send a message to this conversation's team.
+        """Send as the bound agent, to the team's first supervisor.
 
-        The team is resolved from the binding here, never passed in: that is
-        what makes the authorization rule hold by construction.
+        The chat *is* the bound agent — that is what the binding says — so an
+        inbound message is that agent speaking, not an anonymous injection.
+        ``TeamRuntime.send_from_to`` takes a proxy for the sender and calls
+        ``send()`` on it, so the message's ``sender`` is the bound agent and
+        the team answers it as it would any member.
 
-        There is no reply-to parameter. A channel's own message id
-        (``ChannelMessage.channel_message_id``) is not an akgentic message id,
-        so it cannot name the message being answered, and
-        ``TeamService.send_message`` has nowhere to put one.
+        The recipient is the first supervisor that is not the sender itself.
+        A team with no other supervisor has nobody to address, and the message
+        falls back to the team's default entry (``send_message``) rather than
+        being sent to a name that does not exist.
 
         Returns:
             True when sent. False when nothing was sent — the conversation has
             no team, or the content is blank.
         """
+        # Checked here as well as in ``_send_to``: the fallback below reaches
+        # ``send_message`` directly, so that path would otherwise hand a team a
+        # blank prompt — and an early return also spares a team lookup for a
+        # message that is going nowhere.
         if _is_blank(content):
             logger.info("Dropping blank inbound message for %s", self.address)
             return False
         binding = await self.find_binding()
         if binding is None:
             return False
-        await asyncio.to_thread(self._team_service.send_message, binding.team_id, content)
+        recipient = await self._default_recipient(binding)
+        if recipient is None:
+            await asyncio.to_thread(self._team_service.send_message, binding.team_id, content)
+            return True
+        return await self._send_to(binding, recipient, content)
+
+    async def send_to(self, recipient_name: str, content: str | Message) -> bool:
+        """Send as the bound agent, to the agent the message named.
+
+        The recipient is taken as given. The team raises for a name it does
+        not have, and that error propagates: unlike a channel id, an agent
+        name the user typed is worth reporting back rather than silently
+        redirecting.
+
+        Args:
+            recipient_name: Spawned name of the agent to address.
+            content: What to send.
+
+        Returns:
+            True when sent. False when nothing was sent — the conversation has
+            no team, or the content is blank.
+        """
+        binding = await self.find_binding()
+        if binding is None:
+            return False
+        return await self._send_to(binding, recipient_name, content)
+
+    async def _send_to(
+        self, binding: ChannelBinding, recipient_name: str, content: str | Message
+    ) -> bool:
+        """Perform the offloaded send, from the bound agent to one recipient."""
+
+        if _is_blank(content):
+            logger.info("Dropping blank inbound message for %s", self.address)
+            return False
+
+        await asyncio.to_thread(
+            self._team_service.send_message_from_to,
+            binding.team_id,
+            binding.agent_name,
+            recipient_name,
+            content,
+        )
         return True
+
+    async def _default_recipient(self, binding: ChannelBinding) -> str | None:
+        """Return the first supervisor that is not the bound agent, or None.
+
+        Read from the persisted team rather than configured: the supervisors
+        are whoever this team was built with, and a chat bound to one of them
+        must not be made to talk to itself.
+        """
+        process = await asyncio.to_thread(self._team_service.get_team, binding.team_id)
+        if process is None:
+            return None
+        return next(
+            (ref.name for ref in process.supervisors if ref.name != binding.agent_name), None
+        )
 
     async def bind_team(self, team_id: uuid.UUID, agent_name: str) -> None:
         """Bind this conversation to a team, taking both names as given.
@@ -383,14 +446,45 @@ class DefaultChannelRouter(InteractionChannelRouter):
     async def on_bound(
         self, message: ChannelMessage, binding: ChannelBinding, ctx: ChannelRouteContext
     ) -> None:
-        """Deliver the message to the team this conversation is bound to."""
+        """Deliver the message as the bound agent, to whoever it addresses.
+
+        The sender is never in question: the binding says which agent this
+        chat is, so the message is that agent speaking.
+
+        The recipient is taken from the first ``@Name`` in the message, else
+        from the message being replied to — answering an agent in the chat is
+        how a user addresses that agent — and otherwise defaults to the team's
+        first supervisor. ``content`` is passed verbatim either way: an
+        ``@Name`` is how the user wrote their sentence, not markup for us to
+        strip.
+        """
+        recipient = self._recipient_named_in(message)
         logger.debug(
-            "Channel continuation: channel=%s, user=%s, team_id=%s",
+            "Channel continuation: channel=%s, user=%s, team_id=%s, from=%s, to=%s",
             ctx.address.channel,
             ctx.address.channel_user_id,
             binding.team_id,
+            binding.agent_name,
+            recipient or "<supervisor>",
         )
-        await ctx.send(message.content)
+        if recipient is None:
+            await ctx.send(message.content)
+        else:
+            await ctx.send_to(recipient, message.content)
+
+    @staticmethod
+    def _recipient_named_in(message: ChannelMessage) -> str | None:
+        """Return the first ``@Name`` the message or its quotation carries.
+
+        Each text is searched in turn, the user's own words first, exactly as
+        ``register`` resolves its two names: a reply is a way of pointing at
+        who you are answering, and typing the name beats it.
+        """
+        for text in (message.content, message.quoted_text or ""):
+            match = _AGENT_NAME_RE.search(text)
+            if match is not None:
+                return match.group()
+        return None
 
     async def on_unbound(self, message: ChannelMessage, ctx: ChannelRouteContext) -> None:
         """Start a team for this conversation, with the message as its first."""

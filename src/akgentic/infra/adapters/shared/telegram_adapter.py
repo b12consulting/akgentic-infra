@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 # answer (ADR-043 §D6).
 TELEGRAM_CHANNEL = "telegram"
 
+# Shown in place of the sender's name when a message carries no sender. Every
+# message a team emits has one, so this stands for a malformed event rather
+# than an expected case — it names the gap instead of posting a bare colon.
+_UNKNOWN_SENDER = "an unknown sender"
+
 
 class TelegramChannelAdapter:
     """Delivers outbound agent messages to Telegram chats via the Bot API.
@@ -36,8 +41,10 @@ class TelegramChannelAdapter:
     team's internal traffic: the dispatcher stopped filtering by recipient, so
     this adapter is where that rule lives.
 
-    ``deliver()`` sends a synchronous POST to the Telegram ``sendMessage``
-    endpoint, addressing ``binding.channel_user_id`` — the chat the inbound
+    ``deliver()`` attributes the message to its sender — a chat can be bound
+    to any member, so "who is talking" is no longer implicit — and sends a
+    synchronous POST to the Telegram ``sendMessage`` endpoint, addressing
+    ``binding.channel_user_id`` — the chat the inbound
     message arrived from, and the only place that value exists on the outbound
     path. ``deliver_notice()`` posts a channel-layer acknowledgement to an
     address, which a binding also satisfies. Both go through one ``_post``, so
@@ -153,12 +160,16 @@ class TelegramChannelAdapter:
         chat_id = binding.channel_user_id
         # No ``or str(msg.message)`` fallback: an empty ``content`` is falsy, so
         # that idiom quietly posted the message model's repr into a human's chat.
-        # An agent with nothing to say produces nothing, and ``_post`` drops it.
         text = getattr(msg.message, "content", "") or ""
-        sender_name = msg.sender.name if msg.sender else  "Unknows sender"
-        post_message = f"You recieved a message from {sender_name}: \n\n{text}"
+        # An agent with nothing to say produces nothing. ``_post`` drops blank
+        # text, but the attribution below would make every message non-blank,
+        # so the check has to happen before it is prepended.
+        if not text.strip():
+            logger.debug("Agent produced no text; nothing delivered to chat %s", chat_id)
+            return
+        sender_name = msg.sender.name if msg.sender else _UNKNOWN_SENDER
         logger.debug("Delivering message to Telegram chat %s", chat_id)
-        self._post(chat_id, post_message)
+        self._post(chat_id, f"You received a message from {sender_name}: \n\n{text}")
 
     def deliver_notice(self, address: ChannelAddress, text: str) -> None:
         """Deliver a channel-layer acknowledgement to a Telegram chat.

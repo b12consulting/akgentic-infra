@@ -905,7 +905,7 @@ A channel is configured in `settings.channels` as a `ChannelConfig`: `parser_fqc
 **The route parses and routes, nothing else.** What a message *does* is the router's decision. A channel that names no router gets `DefaultChannelRouter`:
 
 1. `/new [text]` releases the binding and starts a fresh team; `/unregister` releases it; `/status` reports the bound team and its state. `/register <team-id> @Agent` binds the chat to a team the message names — see below. Any other command reaches the team as ordinary text.
-2. A bound conversation's message is sent to its team.
+2. A bound conversation's message is sent **as the bound agent** — the binding says which agent this chat is — to the first `@Name` in the message, else the first in the message it replies to, else the team's first supervisor. The text is passed verbatim; an `@Name` is the user's sentence, not markup.
 3. An unbound conversation's message starts a team from `message.catalog_entry` (else the parser's `default_catalog_entry`) and binds the conversation to it.
 
 Subclass it and override one hook (`on_command`, `on_bound`, `on_unbound`) to change one rule.
@@ -937,6 +937,8 @@ ChannelConfig(
 **Neither name is verified, deliberately.** A lookup would make the command an existence oracle — a chat could ask "is this id live?" and read the answer off the reply — while checking nothing that matters, since the payload carries no identity to compare against `Process.user_id`. A binding naming a team that does not exist is inert: the next message finds no team, and the outbound path never matches it. The cost of a mistyped id is the user's own conversation. It also means `bind_team` touches the registry only, never the team service, and an agent deeper than the first layer (`@Expert_1`) binds fine — `Process` could never have confirmed it anyway.
 
 **Metadata has two destinations.** `team_metadata` goes to team creation and is validated against the card's declared contract. `binding_metadata` is stored verbatim on the `ChannelBinding` for the router's own later use — unvalidated, from an unauthenticated payload, never proof of identity.
+
+**Who speaks, and to whom.** `ChannelRouteContext.send(content)` sends as the bound agent to the team's first supervisor that is not itself; `send_to(recipient, content)` sends as the bound agent to a named one. Both go through `TeamService.send_message_from_to`, which takes a proxy for the *sender* and calls `send()` on it, so the team sees one of its own members speaking rather than an anonymous injection. A team with no other supervisor falls back to the team's default entry, so a chat bound to the only supervisor is never made to talk to itself.
 
 **Order and blanks.** `initiate_team` creates, **binds**, then sends — the team may answer at once, and outbound delivery only finds the chat once the binding exists. A blank or whitespace-only message is never sent to a team; a blank first message still creates and binds it. It returns the team's `Process`, whose `entry_point.name` is the agent the binding was written for. Only the entry point is bound: another user-proxy member is a different human.
 

@@ -224,7 +224,40 @@ class TestDeliver:
         assert str(req.url).endswith("/sendMessage")
         body = json.loads(req.content)
         assert body["chat_id"] == "987654321"
-        assert body["text"] == "Test reply"
+        assert body["text"] == "You received a message from agent-1: \n\nTest reply"
+
+    def test_the_message_is_attributed_to_its_sender(self) -> None:
+        """A chat can be bound to any member, so who is talking is not implicit.
+
+        Before ``/register``, everything a chat received came to its entry
+        point, and the sender was always the same agent. Now the chat may hold
+        a conversation with a named member, and an unattributed line would read
+        as the bot's own words.
+        """
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+        msg = _make_sent_message(name="@HumanProxy_0", content="Here is the joke")
+
+        adapter.deliver(msg, _binding())
+
+        body = json.loads(transport.requests[0].content)
+        assert body["text"].startswith("You received a message from agent-1:")
+        assert body["text"].endswith("Here is the joke")
+
+    def test_an_agent_with_nothing_to_say_posts_nothing(self) -> None:
+        """The attribution must not turn an empty message into a delivered one.
+
+        ``_post`` drops blank text, but a prefix makes every message non-blank,
+        so the check runs before the prefix is built. Otherwise a chat receives
+        "You received a message from X:" with no message under it.
+        """
+        transport = _CaptureTransport()
+        adapter = _make_adapter(transport=transport)
+
+        adapter.deliver(_make_sent_message(name="@HumanProxy_0", content="   "), _binding())
+        adapter.deliver(_make_sent_message(name="@HumanProxy_0", content=""), _binding())
+
+        assert transport.requests == []
 
     def test_binding_wins_over_recipient_name(self) -> None:
         """The chat id comes from the binding, never from the recipient's name.
