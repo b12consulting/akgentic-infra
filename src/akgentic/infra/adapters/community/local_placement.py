@@ -188,6 +188,12 @@ class LocalPlacement:
                 ``_PARKED_CREATION_TIMEOUT_S``.
         """
         process = self._team_manager.get_team(team_id)
+        # The ``""`` fallback is for a team no caller can ask to resume:
+        # ``TeamService.restore_team`` pre-checks that the team exists and
+        # ``warm()`` resumes what the event store just returned. Should a future
+        # caller reach here for an unknown team, the claim left behind is
+        # precisely the create↔resume branch the ``_in_flight`` comment calls
+        # unreachable — redo that analysis rather than widening this fallback.
         owner = process.user_id if process is not None else ""
 
         with self._in_flight_lock:
@@ -231,10 +237,11 @@ class LocalPlacement:
         try:
             return future.result(timeout=_PARKED_CREATION_TIMEOUT_S)
         except TimeoutError as exc:
-            msg = (
-                f"Creation of team {team_id} did not finish within "
-                f"{_PARKED_CREATION_TIMEOUT_S:.0f}s"
-            )
+            # "Claim", not "creation": this helper now serves resumes too, and a
+            # parked resume timing out would otherwise report a creation that
+            # was never attempted — in the 503 body, the one place a human reads
+            # it.
+            msg = f"Claim on team {team_id} did not finish within {_PARKED_CREATION_TIMEOUT_S:.0f}s"
             raise PlacementError(msg) from exc
 
     def _create(

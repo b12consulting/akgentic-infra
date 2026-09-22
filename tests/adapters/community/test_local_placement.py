@@ -469,6 +469,29 @@ class TestResumeSharesTheCreationTable:
         assert not isinstance(first_out["error"], PlacementError)
         assert second_out["error"] is first_out["error"]
 
+    def test_a_successful_resume_releases_its_key(self) -> None:
+        """The key is popped on success too, not only on failure.
+
+        ``test_a_failed_resume_releases_its_key`` covers only half of the
+        ``finally``. Move the pop into the ``except`` branch — the shape a
+        developer reaches for when the release reads like error handling — and
+        every other spec stays green, because none resumes one team twice. What
+        breaks in production is the next resume of that team: it parks on a
+        future that resolved long ago and is handed a handle to a runtime that
+        was stopped in between, with ``TeamManager.resume_team`` never called
+        and nothing logged.
+        """
+        team_manager = MagicMock()
+        team_manager.resume_team.side_effect = [MagicMock(), MagicMock()]
+        adapter = LocalPlacement(team_manager, MagicMock())
+        team_id = uuid.uuid4()
+
+        first = adapter.resume_team(team_id)
+        second = adapter.resume_team(team_id)
+
+        assert team_manager.resume_team.call_count == 2
+        assert second is not first
+
     def test_a_create_naming_a_team_whose_resume_is_in_flight_is_refused(self) -> None:
         """The create↔resume branch of the shared table is unreachable by construction.
 
