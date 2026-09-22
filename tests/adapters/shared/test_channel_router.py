@@ -463,16 +463,36 @@ async def test_send_on_an_unbound_conversation_sends_nothing(tmp_path: Path) -> 
     assert team_service.send_message_calls == []
 
 
-@pytest.mark.parametrize("service", ["registry", "team_service", "team_service"])
-def test_the_context_exposes_no_service_that_takes_a_team_id(tmp_path: Path, service: str) -> None:
-    """Each of these has a method accepting an arbitrary team id.
+_CONTEXT_SURFACE = {
+    "address",
+    "default_catalog_entry",
+    "find_binding",
+    "release",
+    "initiate_team",
+    "send",
+    "bound_process",
+    "notify",
+}
 
-    Re-exposing one makes "address only the bound team" a rule a router has to
-    remember instead of one it cannot break — the payload is unauthenticated,
-    so that is the difference between a guarantee and a hope.
+
+def test_the_context_exposes_no_service_that_takes_a_team_id(tmp_path: Path) -> None:
+    """The registry and the team service each have a method accepting an arbitrary team id.
+
+    Re-exposing one — under any name — makes "address only the bound team" a
+    rule a router has to remember instead of one it cannot break: the payload
+    is unauthenticated, so that is the difference between a guarantee and a
+    hope. The public surface is pinned whole, so a new method must be added
+    here deliberately, after checking it resolves its team from the binding.
     """
-    ctx = _ctx(YamlChannelRegistry(tmp_path / "registry.yaml"), StubTeamService())
-    assert not hasattr(ctx, service)
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    ctx = _ctx(registry, team_service)
+
+    public = {name for name in dir(ctx) if not name.startswith("_")}
+
+    assert public == _CONTEXT_SURFACE
+    exposed = [getattr(ctx, name) for name in public]
+    assert not any(value is registry or value is team_service for value in exposed)
 
 
 # --- The creation key travels parser → router → team_service ---

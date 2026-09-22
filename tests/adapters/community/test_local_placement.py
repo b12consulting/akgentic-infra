@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from akgentic.infra.adapters.community import local_placement as local_placement_module
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.protocols.placement import (
@@ -237,15 +238,15 @@ class TestCreationKey:
         assert manager.creations == 1
         assert second_out["handle"] is first_out["handle"]
 
-    def test_a_key_being_created_for_another_user_is_refused(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_a_key_being_created_for_another_user_is_refused(self) -> None:
         """Collapsing into it would hand one user's team to another."""
         manager = _GatedTeamManager()
         placement = LocalPlacement(manager, MagicMock())  # type: ignore[arg-type]
         key = uuid.uuid4()
         first, _ = _run(lambda: placement.create_team(MagicMock(), "user-1", team_id=key))
+        deadline = time.monotonic() + 5
         while manager.creations == 0:
+            assert time.monotonic() < deadline, "first creation never started"
             time.sleep(0.005)
 
         with pytest.raises(PlacementError) as refused:
@@ -288,6 +289,28 @@ class TestCreationKey:
 
         assert isinstance(first_out["error"], PlacementError)
         assert second_out["error"] is first_out["error"]
+
+    def test_a_parked_duplicate_gives_up_on_a_stuck_creation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A creation that never finishes must not hold its duplicates' threads forever."""
+        monkeypatch.setattr(local_placement_module, "_PARKED_CREATION_TIMEOUT_S", 0.05)
+        manager = _GatedTeamManager()
+        placement = LocalPlacement(manager, MagicMock())  # type: ignore[arg-type]
+        key = uuid.uuid4()
+        first, _ = _run(lambda: placement.create_team(MagicMock(), "user-1", team_id=key))
+        deadline = time.monotonic() + 5
+        while manager.creations == 0:
+            assert time.monotonic() < deadline, "first creation never started"
+            time.sleep(0.005)
+
+        with pytest.raises(PlacementError, match="did not finish") as refused:
+            placement.create_team(MagicMock(), "user-1", team_id=key)
+
+        manager.release.set()
+        first.join(5)
+        assert refused.value.status_code == 503
+        assert manager.creations == 1
 
     def test_a_failed_creation_releases_its_key(self) -> None:
         """A retry after a failure creates afresh instead of re-reading the old failure."""

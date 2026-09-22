@@ -292,8 +292,10 @@ class InteractionChannelRouter(Protocol):
         only. The one method that accepts a team id, ``initiate_team``, takes it
         as a *creation key* — the placement contract refuses a key naming an
         existing team, so it can start a team but never reach one. A router
-        therefore cannot reach another chat's team however it is written, and
-        no reviewer has to check that it does not try.
+        acting through the context therefore cannot reach another chat's team.
+        What review must still check is that it does not reach *past* the
+        context — into its private attributes, ``app.state`` or a module
+        global — for a service that takes a team id.
 
     Errors propagate: the route maps the team service's and catalog's exceptions
     exactly as it did before routers existed.

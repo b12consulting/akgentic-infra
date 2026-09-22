@@ -910,7 +910,7 @@ A channel is configured in `settings.channels` as a `ChannelConfig`: `parser_fqc
 
 Subclass it and override one hook (`on_command`, `on_bound`, `on_unbound`) to change one rule.
 
-**The binding is the authorization, by construction.** The webhook is unauthenticated, so every payload field is untrusted. `ChannelRouteContext` holds the registry and `TeamService` privately and exposes only methods scoped to *this* conversation — `find_binding`, `release`, `initiate_team`, `send`, `bound_process`, `notify`. None of them addresses a team by id, so no router, however written, can reach another chat's team.
+**The binding is the authorization, by construction.** The webhook is unauthenticated, so every payload field is untrusted. `ChannelRouteContext` holds the registry and `TeamService` privately and exposes only methods scoped to *this* conversation — `find_binding`, `release`, `initiate_team`, `send`, `bound_process`, `notify`. None of them addresses a team by id, so a router acting through the context cannot reach another chat's team. Review still checks that a router does not reach *past* the context — into its private attributes or `app.state` — for a service that takes a team id.
 
 **`ChannelMessage.team_id` is a creation key, never an address.** It is read only when the conversation is unbound, and passed to `PlacementStrategy.create_team`, whose contract every tier implements:
 
