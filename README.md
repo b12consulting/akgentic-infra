@@ -904,7 +904,7 @@ A channel is configured in `settings.channels` as a `ChannelConfig`: `parser_fqc
 
 **The route parses and routes, nothing else.** What a message *does* is the router's decision. A channel that names no router gets `DefaultChannelRouter`:
 
-1. `/new [text]` releases the binding and starts a fresh team; `/unregister` releases it; `/status` reports the bound team and its state. Any other command reaches the team as ordinary text.
+1. `/new [text]` releases the binding and starts a fresh team; `/unregister` releases it; `/status` reports the bound team and its state. `/register <team-id> [@Agent]` binds the chat to a team that already exists — see below. Any other command reaches the team as ordinary text.
 2. A bound conversation's message is sent to its team.
 3. An unbound conversation's message starts a team from `message.catalog_entry` (else the parser's `default_catalog_entry`) and binds the conversation to it.
 
@@ -921,6 +921,18 @@ Subclass it and override one hook (`on_command`, `on_bound`, `on_unbound`) to ch
 | is being created for **another** user, or names a team that **exists** | `PlacementError` 409 `team_id_conflict` |
 
 So a key can start a team but never reach one. `None` (Telegram's parser sets none) means a fresh id and no collapsing. Community enforces this in `LocalPlacement` with an in-process future per key; a multi-replica tier needs an atomic claim in a shared store.
+
+**`/register` is off by default, and is the one hole in the rule above.** It binds a chat to a team named by the payload, through the context's single team-id-taking method, `bind_existing_team`. The channel layer has no verified identity for a chat user, so there is no ownership check to make: anyone who can message the bot and knows a team id can bind to it. Enable it per channel, only where chat users are trusted:
+
+```python
+ChannelConfig(
+    parser_fqcn="akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser",
+    adapter_fqcn="akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter",
+    config={"token": "…", "allow_register": "true"},
+)
+```
+
+It reads the team id from the command text, or — when the text has none — from the message being replied to (`ChannelMessage.quoted_text`), which is how the bot's own notices hand an id back to the chat. An `@Agent` binds that agent instead of the entry point, and is accepted only if the team actually has it. Every outcome answers the user: bound, team unknown, agent unknown, nothing found, or not enabled.
 
 **Metadata has two destinations.** `team_metadata` goes to team creation and is validated against the card's declared contract. `binding_metadata` is stored verbatim on the `ChannelBinding` for the router's own later use — unvalidated, from an unauthenticated payload, never proof of identity.
 

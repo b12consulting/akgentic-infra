@@ -81,6 +81,16 @@ class ChannelMessage(SerializableBaseModel):
             "consume must reach the team looking exactly as the user typed it."
         ),
     )
+    quoted_text: str | None = Field(
+        default=None,
+        description=(
+            "Text of the message this one replies to, when the channel says it "
+            "replies to something and carries that text — Telegram's "
+            "``reply_to_message.text``. Verbatim and UNPARSED: a router reads "
+            "it, the framework does not. It is the user's own quotation of an "
+            "earlier message, so it is no more trustworthy than ``content``."
+        ),
+    )
 
 
 class ChannelAddress(SerializableBaseModel):

@@ -471,6 +471,7 @@ _CONTEXT_SURFACE = {
     "initiate_team",
     "send",
     "bound_process",
+    "bind_existing_team",
     "notify",
 }
 
@@ -483,6 +484,12 @@ def test_the_context_exposes_no_service_that_takes_a_team_id(tmp_path: Path) -> 
     is unauthenticated, so that is the difference between a guarantee and a
     hope. The public surface is pinned whole, so a new method must be added
     here deliberately, after checking it resolves its team from the binding.
+
+    ``bind_existing_team`` is the one listed method that does not, and it is
+    listed knowingly: it takes a team id so a user can re-attach their chat to
+    a team they name, which is why the default router keeps it behind
+    ``allow_register``. Adding a second such method is a decision, not a
+    detail — that is what pinning the surface is for.
     """
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
@@ -691,3 +698,218 @@ async def test_status_reads_the_bound_teams_state(tmp_path: Path) -> None:
 
     assert process is not None
     assert process.team_id == created.team_id
+
+
+# --- /register: binding a chat to a team that already exists ---
+
+
+_ANOTHER_TEAM = uuid.UUID("11111111-2222-3333-4444-555555555555")
+
+
+def _enabled_router() -> DefaultChannelRouter:
+    """The default router with ``/register`` turned on, as a channel config would."""
+    return DefaultChannelRouter(allow_register="true")
+
+
+def _register(rest: str = "", quoted: str | None = None) -> ChannelMessage:
+    return ChannelMessage(
+        content=f"/register {rest}".strip(),
+        channel_user_id="user-1",
+        command=ChannelCommand(name="register", rest=rest),
+        quoted_text=quoted,
+    )
+
+
+def _existing_team(team_service: StubTeamService, team_id: uuid.UUID = _ANOTHER_TEAM) -> Process:
+    """Put a team the chat has never spoken to into the team service."""
+    now = datetime.now(UTC)
+    process = Process(
+        team_id=team_id,
+        status=TeamStatus.RUNNING,
+        user_id="someone-else",
+        created_at=now,
+        updated_at=now,
+        entry_point=AgentRef(name="@HumanProxy_0", role="human_support"),
+        supervisors=[AgentRef(name="@Manager_0", role="manager")],
+        agent_cards=[
+            AgentCardRef(role="human_support", card_hash="stub-hash"),
+            AgentCardRef(role="manager", card_hash="stub-hash-manager"),
+        ],
+    )
+    team_service.teams[team_id] = process
+    return process
+
+
+async def test_register_is_refused_unless_the_channel_enables_it(tmp_path: Path) -> None:
+    """The gate is the whole security story: off, the command binds nothing.
+
+    An unauthenticated payload naming any team id must not move a chat onto that
+    team, so the default router ships the command disabled and says so.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    _existing_team(team_service)
+    adapter = StubAdapter()
+    ctx = _ctx(registry, team_service, adapter)
+
+    await DefaultChannelRouter().route(_register(str(_ANOTHER_TEAM)), ctx)
+
+    assert await registry.find_binding(_ADDRESS) is None
+    assert "not enabled" in adapter.notices[0][1]
+
+
+async def test_register_binds_the_team_named_in_the_command(tmp_path: Path) -> None:
+    """The id comes out of the command's own text, and the entry point is bound."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    _existing_team(team_service)
+    adapter = StubAdapter()
+    ctx = _ctx(registry, team_service, adapter)
+
+    await _enabled_router().route(_register(str(_ANOTHER_TEAM)), ctx)
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == _ANOTHER_TEAM
+    assert binding.agent_name == "@HumanProxy_0"
+    assert str(_ANOTHER_TEAM) in adapter.notices[0][1]
+
+
+async def test_register_takes_the_team_from_the_replied_to_message(tmp_path: Path) -> None:
+    """A bare ``/register`` reads the message it answers.
+
+    This is what makes the command usable: the bot's own notices carry the team
+    id back into the chat, so replying to one needs no copying.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    _existing_team(team_service)
+    ctx = _ctx(registry, team_service, StubAdapter())
+
+    await _enabled_router().route(
+        _register(quoted=f"Started a new session — team {_ANOTHER_TEAM}."), ctx
+    )
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == _ANOTHER_TEAM
+
+
+async def test_register_prefers_the_command_text_over_the_quotation(tmp_path: Path) -> None:
+    """What the user typed now beats what they replied to."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    _existing_team(team_service)
+    quoted_team = uuid.uuid4()
+    _existing_team(team_service, quoted_team)
+    ctx = _ctx(registry, team_service, StubAdapter())
+
+    await _enabled_router().route(
+        _register(str(_ANOTHER_TEAM), quoted=f"team {quoted_team}"), ctx
+    )
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == _ANOTHER_TEAM
+
+
+async def test_register_binds_the_named_agent(tmp_path: Path) -> None:
+    """An ``@Agent`` in the text overrides the entry-point default."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    _existing_team(team_service)
+    ctx = _ctx(registry, team_service, StubAdapter())
+
+    await _enabled_router().route(_register(f"{_ANOTHER_TEAM} @Manager_0"), ctx)
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.agent_name == "@Manager_0"
+
+
+async def test_register_refuses_an_agent_the_team_does_not_have(tmp_path: Path) -> None:
+    """A name that is not the team's own binds nothing and says which one failed.
+
+    Telegram @-mentions of people live in the same text as agent names, so a
+    match is a candidate, never an instruction.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    _existing_team(team_service)
+    adapter = StubAdapter()
+    ctx = _ctx(registry, team_service, adapter)
+
+    await _enabled_router().route(_register(f"{_ANOTHER_TEAM} @SomeHuman"), ctx)
+
+    assert await registry.find_binding(_ADDRESS) is None
+    assert "@SomeHuman" in adapter.notices[0][1]
+
+
+async def test_register_refuses_a_team_the_service_does_not_know(tmp_path: Path) -> None:
+    """A deleted or invented id binds nothing and answers."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    adapter = StubAdapter()
+    ctx = _ctx(registry, StubTeamService(), adapter)
+
+    await _enabled_router().route(_register(str(_ANOTHER_TEAM)), ctx)
+
+    assert await registry.find_binding(_ADDRESS) is None
+    assert "not known" in adapter.notices[0][1]
+
+
+async def test_register_with_no_id_anywhere_explains_itself(tmp_path: Path) -> None:
+    """Every outcome answers the user; this one tells them both ways to call it."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    adapter = StubAdapter()
+    ctx = _ctx(registry, StubTeamService(), adapter)
+
+    await _enabled_router().route(_register(quoted="no ids here"), ctx)
+
+    assert await registry.find_binding(_ADDRESS) is None
+    assert "/register" in adapter.notices[0][1]
+
+
+async def test_register_replaces_the_previous_binding(tmp_path: Path) -> None:
+    """A chat moves between teams and never holds two."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    _existing_team(team_service)
+    ctx = _ctx(registry, team_service, StubAdapter())
+    first = await ctx.initiate_team(None)
+
+    await _enabled_router().route(_register(str(_ANOTHER_TEAM)), ctx)
+
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == _ANOTHER_TEAM
+    assert registry.find_binding_sync(first.team_id, "@HumanProxy_0") is None
+
+
+async def test_register_reaches_the_team_service_off_the_event_loop(tmp_path: Path) -> None:
+    """The lookup is offloaded like every other team-service call."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = _ThreadRecordingTeamService()
+    _existing_team(team_service)
+    ctx = _ctx(registry, team_service, StubAdapter())
+    loop_thread = threading.current_thread().name
+
+    await _enabled_router().route(_register(str(_ANOTHER_TEAM)), ctx)
+
+    assert team_service.threads == [team_service.threads[0]]
+    assert loop_thread not in team_service.threads
+
+
+async def test_an_unknown_command_is_still_ordinary_text(tmp_path: Path) -> None:
+    """Enabling register changes nothing for the fall-through branch."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    ctx = _ctx(registry, team_service, StubAdapter())
+    message = ChannelMessage(
+        content="/whatever please",
+        channel_user_id="user-1",
+        command=ChannelCommand(name="whatever", rest="please"),
+    )
+
+    await _enabled_router().route(message, ctx)
+
+    assert team_service.create_team_calls
