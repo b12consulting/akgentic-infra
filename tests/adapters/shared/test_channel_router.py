@@ -22,7 +22,7 @@ from akgentic.infra.adapters.shared.channel_router import (
     ChannelRouteContext,
     DefaultChannelRouter,
 )
-from akgentic.infra.errors import TeamNotFoundError
+from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelBinding,
@@ -135,7 +135,23 @@ class StubTeamService:
         self.teams: dict[uuid.UUID, Process] = {}
         self._registry = registry
 
+    def _require_running(self, team_id: uuid.UUID) -> None:
+        """Refuse a send to a team this stub holds in any state but RUNNING.
+
+        Mirrors ``TeamService._get_running_handle``, which every send goes
+        through: a team that exists but is not running is a
+        ``TeamStateConflictError``, and that is what reaches the router. A team
+        the stub does not hold is left alone — the real service would raise
+        ``TeamNotFoundError`` there, and the context's own default-recipient
+        lookup already does.
+        """
+        process = self.teams.get(team_id)
+        if process is not None and process.status != TeamStatus.RUNNING:
+            msg = f"Team {team_id} is not running"
+            raise TeamStateConflictError(msg)
+
     def send_message(self, team_id: uuid.UUID, content: str | Message) -> None:
+        self._require_running(team_id)
         self.send_message_calls.append((team_id, content))
         if self._registry is not None:
             binding = self._registry.find_binding_sync(team_id, "@HumanProxy_0")
@@ -144,6 +160,7 @@ class StubTeamService:
     def send_message_from_to(
         self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str | Message
     ) -> None:
+        self._require_running(team_id)
         self.send_from_to_calls.append((team_id, sender_name, recipient_name, content))
         self.send_message_calls.append((team_id, content))
         if self._registry is not None:
@@ -1229,6 +1246,52 @@ def _team_with_supervisor(team_id: uuid.UUID) -> Process:
             AgentCardRef(role="manager", card_hash="stub-hash-manager"),
         ],
     )
+
+
+def _stopped_team(team_id: uuid.UUID) -> Process:
+    """The same team after an idle timeout stopped it."""
+    return _team_with_supervisor(team_id).model_copy(update={"status": TeamStatus.STOPPED})
+
+
+# --- The accepted regression: a stopped team is not resumed yet ---
+
+
+async def test_a_message_to_a_stopped_bound_team_fails_until_the_resume_lands(
+    tmp_path: Path,
+) -> None:
+    """The known, accepted cost of keeping the binding without resolving the state.
+
+    The binding now survives a stop (ADR-045 §D6), so this hook meets teams
+    that are not running — and it sends to them unconditionally, because
+    resolving the state is ADR-045 §D7, **deferred to issue #487**. The send
+    therefore fails out of ``TeamService._get_running_handle`` with a
+    ``TeamStateConflictError``, the router lets it propagate (ADR-044, errors
+    propagate), and the webhook answers non-2xx so the channel redelivers. A
+    chat is unreachable between its idle timeout and its team coming back by
+    some other route.
+
+    This spec exists so that the regression is visible in the suite rather than
+    discovered in the field. **It is expected to be INVERTED when §D7 lands,
+    not deleted** — the same message must then resume the team and be
+    delivered. The binding is asserted intact so that the eventual §D7 has
+    something to resume, and so that nobody "fixes" this by reinstating the
+    release-on-stop.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _stopped_team(team_id)
+
+    with pytest.raises(TeamStateConflictError):
+        await DefaultChannelRouter().route(
+            _inbound("still there?"), _ctx(registry, team_service, StubAdapter())
+        )
+
+    assert team_service.send_from_to_calls == []
+    assert team_service.create_team_calls == []
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == team_id
 
 
 # --- Every creation announces its team and agent ---

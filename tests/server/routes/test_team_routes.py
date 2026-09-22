@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -11,7 +13,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from akgentic.infra.errors import TeamStateConflictError
+from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
+from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.deps import CommunityServices
@@ -157,6 +161,133 @@ def test_delete_team_not_found(client: TestClient) -> None:
     """DELETE /teams/{id} returns 404 for unknown team."""
     resp = client.delete(f"/teams/{uuid.uuid4()}")
     assert resp.status_code == 404
+
+
+# --- Deleting a team releases its chat bindings; a stop no longer does ---
+
+
+_CHAT = ChannelAddress(channel="telegram", channel_user_id="987654321")
+
+
+@pytest.fixture()
+def channel_registry(app: FastAPI, tmp_path: Path) -> YamlChannelRegistry:
+    """A path-backed registry in the app's own slot.
+
+    The suite's settings leave ``channel_registry_path`` unset, which disables
+    the wired registry — its reads answer None and its writes are no-ops — so a
+    delete could never be seen to release anything. The class, the route and
+    the service stay the real ones.
+    """
+    registry = YamlChannelRegistry(tmp_path / "channels.yaml")
+    app.state.channel_registry = registry
+    return registry
+
+
+def _bind_chat_to(registry: YamlChannelRegistry, team_id: uuid.UUID) -> None:
+    """Bind the test chat to a team, as an inbound message's initiation would."""
+    asyncio.run(
+        registry.register(
+            ChannelBinding(
+                channel=_CHAT.channel,
+                channel_user_id=_CHAT.channel_user_id,
+                team_id=team_id,
+                agent_name="@HumanProxy_0",
+            )
+        )
+    )
+
+
+def test_deleting_a_team_releases_its_chat_bindings(
+    client: TestClient,
+    channel_registry: YamlChannelRegistry,
+) -> None:
+    """A delete is the one lifecycle change a conversation cannot survive.
+
+    The team is gone for good, so the binding naming it can only misroute —
+    ``deregister_team`` releases every conversation bound to it, not just one.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    _bind_chat_to(channel_registry, uuid.UUID(team_id))
+    assert asyncio.run(channel_registry.find_binding(_CHAT)) is not None
+
+    assert client.delete(f"/teams/{team_id}").status_code == 204
+
+    assert asyncio.run(channel_registry.find_binding(_CHAT)) is None
+
+
+def test_a_failed_delete_costs_the_user_nothing(
+    client: TestClient,
+    channel_registry: YamlChannelRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delete that did not happen must not take the conversation with it.
+
+    **Every failure branch of the route is exercised, and each on a team the
+    access gate lets through.** That last part is the whole difficulty: a
+    ``DELETE`` for an id nobody owns is answered 404 by ``require_team_access``
+    before the route body runs, so it exercises no release at all — a release
+    added to the route's own ``except TeamNotFoundError`` stayed green against
+    exactly that shape. Each branch is therefore reached by making
+    ``delete_team`` itself raise, on a team that exists: the concurrent-delete
+    404, the still-running 409, and the unclassified ``ValueError`` the team
+    package can raise, which the route also answers 404.
+
+    The release must sit in the success path. In a ``finally`` — or in any one
+    of these three branches — the user loses their conversation to a delete
+    that never happened.
+    """
+    released: list[uuid.UUID] = []
+    real_deregister_team = channel_registry.deregister_team
+
+    async def _record(released_team_id: uuid.UUID) -> None:
+        released.append(released_team_id)
+        await real_deregister_team(released_team_id)
+
+    monkeypatch.setattr(channel_registry, "deregister_team", _record)
+    team_service = client.app.state.services.team_service
+
+    failures: list[Exception] = [
+        TeamNotFoundError("Team was deleted concurrently"),
+        TeamStateConflictError("Team is currently running"),
+        ValueError("the team package said no"),
+    ]
+    for failure in failures:
+        team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+        _bind_chat_to(channel_registry, uuid.UUID(team_id))
+
+        def _fail(_team_id: uuid.UUID, exc: Exception = failure) -> None:
+            raise exc
+
+        monkeypatch.setattr(team_service, "delete_team", _fail)
+        expected = 409 if isinstance(failure, TeamStateConflictError) else 404
+        assert client.delete(f"/teams/{team_id}").status_code == expected
+
+        assert released == []
+        assert asyncio.run(channel_registry.find_binding(_CHAT)) is not None
+
+
+def test_a_registry_failure_after_the_delete_still_answers_204(
+    client: TestClient,
+    channel_registry: YamlChannelRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The delete has happened, and refusing to report it does not undo it.
+
+    A binding left behind by the failed release strands its chat until the
+    router learns to heal it (ADR-045 §D7, deferred to issue #487) — but
+    turning a committed delete into a 5xx would not release it either, and
+    would report a failure that did not happen.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    _bind_chat_to(channel_registry, uuid.UUID(team_id))
+
+    async def _raise(_team_id: uuid.UUID) -> None:
+        msg = "registry unavailable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(channel_registry, "deregister_team", _raise)
+
+    assert client.delete(f"/teams/{team_id}").status_code == 204
 
 
 # --- Team-state errors are classified by type, not by message (Epic 59 Part B) ---

@@ -401,8 +401,10 @@ class ChannelRegistry(ChannelRegistryReadSync, Protocol):
     async def deregister_team(self, team_id: uuid.UUID) -> None:
         """Remove every binding for a team, across all channels.
 
-        Called when a team stops: the conversation it answered is over, and a
-        binding that outlives its team can only misroute.
+        Called when a team is **deleted** — not when it stops. A stop is
+        reversible, so the conversation survives it and the next message
+        resumes the team; a delete is final, and a binding that outlives its
+        team can only misroute (ADR-045 §D6).
 
         Args:
             team_id: The team whose bindings are released.

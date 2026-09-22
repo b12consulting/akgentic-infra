@@ -518,20 +518,29 @@ class TestOnMessageNeverAwaits:
 
 
 # ---------------------------------------------------------------------------
-# AC 5: on_stop releases the team's bindings and keeps notifying the adapters
+# on_stop keeps the team's bindings and notifies the adapters
 # ---------------------------------------------------------------------------
 
 
 class TestOnStop:
-    """AC 5: release the bindings, discard the restoring entry, fan out."""
+    """A stop is reversible, so the bindings stay: discard the entry, fan out."""
 
-    def test_on_stop_releases_the_stopping_teams_bindings(self) -> None:
+    def test_on_stop_makes_no_registry_call_at_all(self) -> None:
+        """A stopped team keeps its chat, so there is nothing to release.
+
+        Inverted from the pre-D6 spec, which pinned the release here. The
+        release moved to the delete route, which is the one lifecycle change a
+        conversation cannot survive; releasing on a stop turned every idle
+        timeout into a lost conversation.
+        """
         registry = _registry_for(_binding(TEAM_A))
         dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
 
         dispatcher.on_stop(TEAM_A)
 
-        assert registry.deregistered_teams == [TEAM_A]
+        assert registry.deregistered_teams == []
+        assert registry.awaited == []
+        assert registry.sync_lookups == []
 
     def test_on_stop_calls_all_adapters(self) -> None:
         """The fan-out stays; only the id's provenance changed."""
@@ -558,7 +567,6 @@ class TestOnStop:
         dispatcher.on_stop(TEAM_B)
 
         assert adapter.stop_team_id == TEAM_B
-        assert registry.deregistered_teams == [TEAM_B]
 
     def test_on_stop_discards_the_restoring_entry(self) -> None:
         """A team stopped mid-restore must not leak a UUID for the process's life."""
@@ -571,15 +579,22 @@ class TestOnStop:
 
         assert TEAM_A not in dispatcher._restoring
 
-    def test_on_stop_swallows_a_raising_registry(self) -> None:
-        """A failing release must not propagate, nor cost the adapters their notice."""
+    def test_a_registry_that_raises_on_every_method_is_never_touched(self) -> None:
+        """With no registry call there is nothing left to swallow.
+
+        Re-aimed from the pre-D6 spec, which pinned that a failing release did
+        not cost the adapters their notice. ``trap_awaits`` raises the instant
+        any async method is awaited, so a re-introduced release would surface
+        as a raising ``on_stop`` rather than as a silent log line.
+        """
         adapter = _MatchingAdapter()
-        registry = _registry_for(_binding(TEAM_A))
+        registry = _registry_for(_binding(TEAM_A), trap_awaits=True)
         registry.deregister_team_raises = True
         dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_stop(TEAM_A)  # must not raise
 
+        assert registry.awaited == []
         assert adapter.stop_called
         assert adapter.stop_team_id == TEAM_A
 
@@ -591,29 +606,35 @@ class TestOnStop:
 
 
 # ---------------------------------------------------------------------------
-# AC 5 (release): the binding really is gone, from the file and the sync index
+# The binding really does survive, on the file and on the sync index
 # ---------------------------------------------------------------------------
 
 
 class TestOnStopAgainstARealRegistry:
-    """The stopped team frees its chat, so the next message re-initiates."""
+    """The stopped team keeps its chat, so the next message resumes it."""
 
-    def test_binding_is_gone_from_both_faces(self, tmp_path: Path) -> None:
+    def test_the_binding_survives_the_stop(self, tmp_path: Path) -> None:
+        """An hour of silence costs the user nothing.
+
+        Both faces are read: the file is the authority for the inbound path,
+        the in-process index is what the outbound dispatch consults, and a
+        release that reached either would break a different half of the
+        conversation.
+        """
         registry = YamlChannelRegistry(registry_path=tmp_path / "channels.yaml")
         asyncio.run(registry.register(_binding(TEAM_A)))
-        assert registry.find_binding_sync(TEAM_A, AGENT_A) is not None
 
         dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
         dispatcher.on_stop(TEAM_A)
 
-        assert registry.find_binding_sync(TEAM_A, AGENT_A) is None
+        assert registry.find_binding_sync(TEAM_A, AGENT_A) is not None
         assert (
             asyncio.run(
                 registry.find_binding(
                     ChannelAddress(channel="telegram", channel_user_id="987654321")
                 )
             )
-            is None
+            is not None
         )
 
 

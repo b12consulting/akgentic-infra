@@ -506,6 +506,15 @@ class DefaultChannelRouter(InteractionChannelRouter):
         user addresses it — and otherwise the team's default recipient. A name
         anywhere but the front of the user's own text is left alone: it is part
         of what they are saying. ``content`` is passed verbatim either way.
+
+        **The bound team's state is not resolved here, and that is a known
+        gap.** Since the dispatcher stopped releasing bindings on a stop
+        (ADR-045 §D6), this hook meets teams that are not running, and the send
+        then fails out of ``TeamService`` with a ``TeamStateConflictError`` that
+        the webhook surfaces unchanged. Resolving the state — resume a stopped
+        team, replace a deleted one — is ADR-045 §D7, deferred to issue #487.
+        Do not soften the symptom with a partial resume or a swallowed error
+        here; the fix is §D7 whole.
         """
         recipient = self._recipient_named_in(message)
         logger.debug(
