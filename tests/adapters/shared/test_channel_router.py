@@ -22,6 +22,7 @@ from akgentic.infra.adapters.shared.channel_router import (
     ChannelRouteContext,
     DefaultChannelRouter,
 )
+from akgentic.infra.errors import TeamNotFoundError
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelBinding,
@@ -393,6 +394,7 @@ async def test_a_bound_message_replies_to_the_bound_team(tmp_path: Path) -> None
         )
     )
     team_service = StubTeamService()
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
 
     await DefaultChannelRouter().route(
         ChannelMessage(content="more", channel_user_id="user-1"), _ctx(registry, team_service)
@@ -469,6 +471,7 @@ async def test_send_reaches_the_bound_team_and_no_other(tmp_path: Path) -> None:
         )
     )
     team_service = StubTeamService()
+    team_service.teams[bound] = _team_with_supervisor(bound)
 
     sent = await _ctx(registry, team_service).send("more")
 
@@ -675,6 +678,7 @@ async def test_a_typed_message_is_judged_by_its_content(tmp_path: Path) -> None:
         )
     )
     team_service = StubTeamService()
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
     ctx = _ctx(registry, team_service)
     opaque = Message()
 
@@ -692,6 +696,7 @@ async def test_a_preformed_message_reaches_the_team_as_the_same_instance(tmp_pat
         )
     )
     team_service = StubTeamService()
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
     message = _TextMessage(content="hello")
 
     await _ctx(registry, team_service).send(message)
@@ -1111,13 +1116,15 @@ async def test_the_content_keeps_the_name_the_user_typed(tmp_path: Path) -> None
     assert team_service.send_from_to_calls[0][3] == "@Expert_1 tell me a joke"
 
 
-async def test_a_team_with_no_other_supervisor_falls_back_to_the_default_entry(
+async def test_a_chat_bound_to_the_only_supervisor_addresses_the_entry_point(
     tmp_path: Path,
 ) -> None:
-    """Nobody to address: send to the team rather than to a name it lacks.
+    """The sender is the bound agent on every path, fallback included.
 
-    A chat bound to the only supervisor would otherwise be made to talk to
-    itself.
+    Sending through the team's default entry would have stamped the entry point
+    as the sender, so a chat bound to ``@Manager_0`` would have spoken with
+    someone else's voice — and no reader of the transcript could untangle it.
+    The entry point is the seat left to address, and nobody talks to themselves.
     """
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
@@ -1126,8 +1133,70 @@ async def test_a_team_with_no_other_supervisor_falls_back_to_the_default_entry(
 
     await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service))
 
+    assert team_service.send_from_to_calls == [(team_id, "@Manager_0", "@HumanProxy_0", "hello")]
+
+
+def _lone_team(team_id: uuid.UUID) -> Process:
+    """A team that is its own entry point and declares no supervisors."""
+    now = datetime.now(UTC)
+    return Process(
+        team_id=team_id,
+        status=TeamStatus.RUNNING,
+        user_id="user-1",
+        created_at=now,
+        updated_at=now,
+        entry_point=AgentRef(name="@HumanProxy_0", role="human_support"),
+        agent_cards=[AgentCardRef(role="human_support", card_hash="stub-hash")],
+    )
+
+
+async def test_a_team_with_nobody_else_to_address_asks_the_user_to_name_one(
+    tmp_path: Path,
+) -> None:
+    """No fallback sends the message anyway, and the user is told what to do.
+
+    Every fallback available here changes who is speaking: the team's default
+    entry stamps the entry point as the sender, and the bound agent itself
+    would answer its own message. Delivering under the wrong name is worse
+    than not delivering, and the user can fix it in their next message.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    adapter = StubAdapter()
+    team_id = await _bind(registry, "@HumanProxy_0")
+    team_service.teams[team_id] = _lone_team(team_id)
+
+    await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service, adapter))
+
     assert team_service.send_from_to_calls == []
-    assert team_service.send_message_calls == [(team_id, "hello")]
+    assert team_service.send_message_calls == []
+    assert "@Agent" in adapter.notices[0][1]
+
+
+async def test_naming_the_agent_works_where_the_default_failed(tmp_path: Path) -> None:
+    """The remedy the notice names actually works."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry, "@HumanProxy_0")
+    team_service.teams[team_id] = _lone_team(team_id)
+
+    await DefaultChannelRouter().route(
+        _inbound("@Expert_1 hello"), _ctx(registry, team_service, StubAdapter())
+    )
+
+    assert team_service.send_from_to_calls == [
+        (team_id, "@HumanProxy_0", "@Expert_1", "@Expert_1 hello")
+    ]
+
+
+async def test_a_binding_naming_an_unknown_team_raises(tmp_path: Path) -> None:
+    """A binding that outlived its team is a 404, not a silent redirect."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    await _bind(registry, "@HumanProxy_0")
+
+    with pytest.raises(TeamNotFoundError):
+        await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service))
 
 
 async def test_a_blank_bound_message_is_still_not_sent(tmp_path: Path) -> None:
@@ -1241,3 +1310,81 @@ async def test_a_registered_chat_can_be_rebound_from_the_announcement(tmp_path: 
     assert binding is not None
     assert binding.team_id == team_service.next_team_id
     assert binding.agent_name == "@HumanProxy_0"
+
+
+async def test_a_leading_name_addresses_and_the_rest_is_the_message(tmp_path: Path) -> None:
+    """ "@Expert, ask a joke to @Support" is for the Expert.
+
+    The second name is what the Expert is being asked to do. Routing on any
+    name in the sentence would send the user's instruction to the agent it
+    names as its subject.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(
+        _inbound("@Expert_1, ask a joke to @Support_0"), _ctx(registry, team_service)
+    )
+
+    assert team_service.send_from_to_calls == [
+        (team_id, "@HumanProxy_0", "@Expert_1", "@Expert_1, ask a joke to @Support_0")
+    ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "ask @Expert_1 for a joke",
+        "the answer came from @Expert_1",
+        "tell @Expert_1 I said hello",
+    ],
+    ids=["mid-sentence", "trailing", "instruction"],
+)
+async def test_a_name_that_is_not_first_does_not_address(tmp_path: Path, content: str) -> None:
+    """A name inside the sentence belongs to the sentence."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(_inbound(content), _ctx(registry, team_service))
+
+    assert team_service.send_from_to_calls[0][2] == "@Manager_0"
+
+
+async def test_leading_whitespace_does_not_hide_the_address(tmp_path: Path) -> None:
+    """A copy-pasted message often carries a leading newline."""
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(
+        _inbound("  \n@Expert_1 hello"), _ctx(registry, team_service)
+    )
+
+    assert team_service.send_from_to_calls[0][2] == "@Expert_1"
+
+
+async def test_a_quoted_name_is_found_anywhere_in_the_bots_own_text(tmp_path: Path) -> None:
+    """The quotation is the adapter's wording, not the user's sentence.
+
+    A delivered message reads "You received a message from @Expert_1: …", so
+    the name never comes first there. Applying the leading-name rule to it
+    would make replying useless.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _team_with_supervisor(team_id)
+
+    await DefaultChannelRouter().route(
+        _inbound(
+            "and another one?", quoted="You received a message from @Expert_1: \n\nhere it is"
+        ),
+        _ctx(registry, team_service),
+    )
+
+    assert team_service.send_from_to_calls[0][2] == "@Expert_1"

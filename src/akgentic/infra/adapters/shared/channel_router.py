@@ -8,6 +8,7 @@ import re
 import uuid
 from typing import TYPE_CHECKING
 
+from akgentic.infra.errors import TeamNotFoundError
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelBinding,
@@ -49,6 +50,25 @@ _TEAM_ID_RE = re.compile(
 # the same text, which is why a match is verified against the team's own agents
 # rather than trusted.
 _AGENT_NAME_RE = re.compile(r"@[A-Za-z0-9_]+")
+# Addressing an agent is a name at the START of what the user typed. A name
+# anywhere else is part of the sentence and belongs to the recipient, not to
+# the routing: "@Expert, ask a joke to @Support" is for the Expert, and naming
+# the Support is the Expert's instruction to carry out.
+_LEADING_AGENT_RE = re.compile(r"^\s*(@[A-Za-z0-9_]+)")
+
+
+class NoDefaultRecipientError(ValueError):
+    """The bound agent has nobody to address, and the message named nobody.
+
+    Raised when the team holds no agent other than the bound one — it is the
+    team's own entry point and declares no supervisors. Every fallback
+    available at that point changes who is speaking, so the user is asked to
+    name a recipient instead.
+
+    A ``ValueError`` subclass for the same additive reason as
+    ``TeamNotFoundError``: a caller that catches ``ValueError`` around the
+    channel path keeps catching it.
+    """
 
 
 def _is_blank(content: str | Message) -> bool:
@@ -228,30 +248,39 @@ class ChannelRouteContext:
         ``send()`` on it, so the message's ``sender`` is the bound agent and
         the team answers it as it would any member.
 
-        The recipient is the first supervisor that is not the sender itself.
-        A team with no other supervisor has nobody to address, and the message
-        falls back to the team's default entry (``send_message``) rather than
-        being sent to a name that does not exist.
+        The recipient is the first supervisor that is not the sender itself,
+        else the entry point — a chat bound to the only supervisor still has
+        the team's own seat to address, and nobody is ever made to talk to
+        themselves.
+
+        There is no fallback to the team's default entry. That path sends
+        through the entry proxy, which stamps the **entry point** as the
+        sender, so a chat bound to any other member would speak with someone
+        else's voice — and no reader of the transcript could untangle it. A
+        team with nobody else to address is a broken team, and saying so beats
+        delivering a message attributed to the wrong member.
 
         Returns:
             True when sent. False when nothing was sent — the conversation has
             no team, or the content is blank.
+
+        Raises:
+            TeamNotFoundError: The binding names a team the service does not
+                know.
+            NoDefaultRecipientError: The team has no agent for the bound one
+                to address — it is its own entry point and has no supervisors.
+                The caller names a recipient, or tells the user to.
         """
-        # Checked here as well as in ``_send_to``: the fallback below reaches
-        # ``send_message`` directly, so that path would otherwise hand a team a
-        # blank prompt — and an early return also spares a team lookup for a
-        # message that is going nowhere.
         if _is_blank(content):
             logger.info("Dropping blank inbound message for %s", self.address)
             return False
+
         binding = await self.find_binding()
         if binding is None:
             return False
-        recipient = await self._default_recipient(binding)
-        if recipient is None:
-            await asyncio.to_thread(self._team_service.send_message, binding.team_id, content)
-            return True
-        return await self._send_to(binding, recipient, content)
+
+        supervisor = await self._default_recipient(binding)
+        return await self._send_to(binding, supervisor, content)
 
     async def send_to(self, recipient_name: str, content: str | Message) -> bool:
         """Send as the bound agent, to the agent the message named.
@@ -269,20 +298,20 @@ class ChannelRouteContext:
             True when sent. False when nothing was sent — the conversation has
             no team, or the content is blank.
         """
+        if _is_blank(content):
+            logger.info("Dropping blank inbound message for %s", self.address)
+            return False
+
         binding = await self.find_binding()
         if binding is None:
             return False
+
         return await self._send_to(binding, recipient_name, content)
 
     async def _send_to(
         self, binding: ChannelBinding, recipient_name: str, content: str | Message
     ) -> bool:
         """Perform the offloaded send, from the bound agent to one recipient."""
-
-        if _is_blank(content):
-            logger.info("Dropping blank inbound message for %s", self.address)
-            return False
-
         await asyncio.to_thread(
             self._team_service.send_message_from_to,
             binding.team_id,
@@ -292,19 +321,40 @@ class ChannelRouteContext:
         )
         return True
 
-    async def _default_recipient(self, binding: ChannelBinding) -> str | None:
-        """Return the first supervisor that is not the bound agent, or None.
+    async def _default_recipient(self, binding: ChannelBinding) -> str:
+        """Return whom the bound agent addresses when the message names nobody.
 
-        Read from the persisted team rather than configured: the supervisors
-        are whoever this team was built with, and a chat bound to one of them
-        must not be made to talk to itself.
+        The first supervisor that is not the bound agent, else the entry point
+        if that is not the bound agent either. Read from the persisted team
+        rather than configured: the supervisors are whoever this team was built
+        with, and a chat bound to one of them must not be made to talk to
+        itself.
+
+        Raises rather than falling back, because every fallback available here
+        changes who is speaking: sending through the team's default entry
+        stamps the entry point as the sender, and addressing the bound agent
+        itself makes it answer its own message.
+
+        Raises:
+            TeamNotFoundError: The team is not in the system of record — the
+                binding outlived it, or named one that never existed.
+            NoDefaultRecipientError: The team exists and holds nobody else: it
+                is its own entry point and declares no supervisors.
         """
         process = await asyncio.to_thread(self._team_service.get_team, binding.team_id)
         if process is None:
-            return None
-        return next(
-            (ref.name for ref in process.supervisors if ref.name != binding.agent_name), None
-        )
+            msg = f"Team {binding.team_id} not found"
+            raise TeamNotFoundError(msg)
+        candidates = [ref.name for ref in process.supervisors] + [process.entry_point.name]
+        recipient = next((name for name in candidates if name != binding.agent_name), None)
+        if recipient is None:
+            msg = (
+                f"Team {binding.team_id} has no agent for {binding.agent_name} to address: "
+                "it is the team's entry point and the team declares no supervisors. "
+                "Name the recipient in the message"
+            )
+            raise NoDefaultRecipientError(msg)
+        return recipient
 
     async def bind_team(self, team_id: uuid.UUID, agent_name: str) -> None:
         """Bind this conversation to a team, taking both names as given.
@@ -451,12 +501,11 @@ class DefaultChannelRouter(InteractionChannelRouter):
         The sender is never in question: the binding says which agent this
         chat is, so the message is that agent speaking.
 
-        The recipient is taken from the first ``@Name`` in the message, else
-        from the message being replied to — answering an agent in the chat is
-        how a user addresses that agent — and otherwise defaults to the team's
-        first supervisor. ``content`` is passed verbatim either way: an
-        ``@Name`` is how the user wrote their sentence, not markup for us to
-        strip.
+        The recipient is the ``@Name`` the message **starts** with, else the
+        first one in the message being replied to — answering an agent is how a
+        user addresses it — and otherwise the team's default recipient. A name
+        anywhere but the front of the user's own text is left alone: it is part
+        of what they are saying. ``content`` is passed verbatim either way.
         """
         recipient = self._recipient_named_in(message)
         logger.debug(
@@ -467,24 +516,42 @@ class DefaultChannelRouter(InteractionChannelRouter):
             binding.agent_name,
             recipient or "<supervisor>",
         )
-        if recipient is None:
-            await ctx.send(message.content)
-        else:
+        if recipient is not None:
             await ctx.send_to(recipient, message.content)
+            return
+        try:
+            await ctx.send(message.content)
+        except NoDefaultRecipientError as exc:
+            logger.info("No default recipient for %s: %s", ctx.address, exc)
+            ctx.notify(
+                "This team has nobody for me to pass that to. "
+                "Name the agent, for example '@Agent your question'."
+            )
 
     @staticmethod
     def _recipient_named_in(message: ChannelMessage) -> str | None:
-        """Return the first ``@Name`` the message or its quotation carries.
+        """Return the agent this message addresses, or None for the default.
 
-        Each text is searched in turn, the user's own words first, exactly as
-        ``register`` resolves its two names: a reply is a way of pointing at
-        who you are answering, and typing the name beats it.
+        Two texts, two rules, because they are written by different people:
+
+        - **What the user typed** addresses an agent only when the name comes
+          *first*. Anywhere else it is part of the sentence, and belongs to the
+          recipient rather than to the routing — "@Expert, ask a joke to
+          @Support" is for the Expert, and the Support is what the Expert is
+          being asked to do.
+        - **The message being replied to** is the bot's own text, where a name
+          appears wherever the adapter put it ("You received a message from
+          @Expert_1: …"). There the first name found identifies who is being
+          answered.
+
+        Typing a name wins over replying to one: a reply says who you were
+        reading, the leading name says whom you mean now.
         """
-        for text in (message.content, message.quoted_text or ""):
-            match = _AGENT_NAME_RE.search(text)
-            if match is not None:
-                return match.group()
-        return None
+        typed = _LEADING_AGENT_RE.match(message.content)
+        if typed is not None:
+            return typed.group(1)
+        quoted = _AGENT_NAME_RE.search(message.quoted_text or "")
+        return quoted.group() if quoted is not None else None
 
     async def on_unbound(self, message: ChannelMessage, ctx: ChannelRouteContext) -> None:
         """Start a team for this conversation, with the message as its first."""
@@ -613,4 +680,8 @@ class DefaultChannelRouter(InteractionChannelRouter):
         if process is None:
             ctx.notify(f"Bound to team {binding.team_id}, which is no longer known.")
             return
-        ctx.notify(f"Bound to team {binding.team_id} — {process.status.value}.")
+
+        team_id = binding.team_id
+        agent_name = binding.agent_name
+        status = process.status.value
+        ctx.notify(f"Bound to team {team_id} as {agent_name} — {status}.")

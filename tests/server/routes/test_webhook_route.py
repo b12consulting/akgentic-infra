@@ -102,6 +102,14 @@ class StubTeamService:
         self.get_team_calls: list[uuid.UUID] = []
 
     def add_running_team(self, team_id: uuid.UUID, status: TeamStatus = TeamStatus.RUNNING) -> None:
+        """Register a team the route can reach.
+
+        It carries a supervisor because the router resolves the recipient of an
+        inbound message from the persisted team: a team holding nobody but the
+        bound agent has nobody to address, which is its own spec in
+        ``test_channel_router.py`` rather than the shape every route spec
+        should exercise.
+        """
         now = datetime.now(UTC)
         self.teams[team_id] = Process(
             team_id=team_id,
@@ -109,7 +117,11 @@ class StubTeamService:
             created_at=now,
             updated_at=now,
             entry_point=AgentRef(name="@HumanProxy_0", role="human_support"),
-            agent_cards=[AgentCardRef(role="human_support", card_hash="stub-hash")],
+            supervisors=[AgentRef(name="@Manager_0", role="manager")],
+            agent_cards=[
+                AgentCardRef(role="human_support", card_hash="stub-hash"),
+                AgentCardRef(role="manager", card_hash="stub-hash-manager"),
+            ],
         )
 
     def get_team(self, team_id: uuid.UUID) -> Process | None:
@@ -128,6 +140,7 @@ class RecordingTeamService(StubTeamService):
     def __init__(self) -> None:
         super().__init__()
         self.send_message_calls: list[tuple[uuid.UUID, str | Message]] = []
+        self.send_from_to_calls: list[tuple[uuid.UUID, str, str, str | Message]] = []
         # Anything passed to send_message beyond the two declared parameters
         # lands here, so "the reply path forwards no metadata" is an assertion
         # about recorded evidence rather than about a TypeError.
@@ -148,6 +161,26 @@ class RecordingTeamService(StubTeamService):
         self._next_entry_point_name = entry_point_name
 
     def send_message(self, team_id: uuid.UUID, content: str | Message, **extra: object) -> None:
+        self.send_message_calls.append((team_id, content))
+        self.send_message_extra_kwargs.append(extra)
+
+    def send_message_from_to(
+        self,
+        team_id: uuid.UUID,
+        sender_name: str,
+        recipient_name: str,
+        content: str | Message,
+        **extra: object,
+    ) -> None:
+        """Record the path an inbound channel message actually takes.
+
+        A bound chat speaks as its agent, so the route reaches this rather than
+        ``send_message``. Both land in ``send_message_calls`` so a spec that
+        only cares *that* the team was messaged reads the same either way, and
+        ``send_from_to_calls`` keeps the sender and recipient for the specs
+        that do care.
+        """
+        self.send_from_to_calls.append((team_id, sender_name, recipient_name, content))
         self.send_message_calls.append((team_id, content))
         self.send_message_extra_kwargs.append(extra)
 
@@ -257,6 +290,7 @@ class TestWebhookReplyFlow:
             )
         )
         team_service = RecordingTeamService()
+        team_service.add_running_team(team_id)
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -291,6 +325,7 @@ class TestWebhookContinuationFlow:
             )
         )
         team_service = RecordingTeamService()
+        team_service.add_running_team(existing_team_id)
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         # Pre-register a team for this user
         await registry.register(
@@ -448,6 +483,7 @@ class TestWebhookStatusCode:
             )
         )
         team_service = RecordingTeamService()
+        team_service.add_running_team(team_id)
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -527,6 +563,7 @@ class TestWebhookContentTypeEdgeCases:
             )
         )
         team_service = RecordingTeamService()
+        team_service.add_running_team(team_id)
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -646,6 +683,7 @@ class TestWebhookMetadataForwarding:
             )
         )
         team_service = RecordingTeamService()
+        team_service.add_running_team(team_id)
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
@@ -673,13 +711,15 @@ class TestWebhookMetadataForwarding:
                 team_metadata={"tenant": "acme"},
             )
         )
+        team_id = uuid.uuid4()
         team_service = RecordingTeamService()
+        team_service.add_running_team(team_id)
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
             ChannelBinding(
                 channel="test-channel",
                 channel_user_id="user-m4",
-                team_id=uuid.uuid4(),
+                team_id=team_id,
                 agent_name="@HumanProxy_0",
             )
         )
@@ -760,6 +800,7 @@ class TestUnrecognisedCommandFallsThrough:
         parser = StubParser()
         parser.set_next_message(_command_message("roster", "please", channel_user_id="user-r"))
         team_service = RecordingTeamService()
+        team_service.add_running_team(team_id)
         adapter = StubNoticeAdapter()
         registry = YamlChannelRegistry(tmp_path / "registry.yaml")
         await registry.register(
