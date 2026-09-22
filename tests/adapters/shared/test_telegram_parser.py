@@ -279,3 +279,62 @@ class TestParseCommand:
 
         assert msg.command is None
         assert msg.content == "/new hi"
+
+
+class TestQuotedText:
+    """``reply_to_message`` is carried through as ``quoted_text``."""
+
+    async def test_a_reply_carries_the_quoted_text(self) -> None:
+        """Telegram sends the whole quoted message, so its text costs nothing to keep.
+
+        It is what lets ``/register`` answer a notice the bot itself sent
+        instead of making the user copy a team id.
+        """
+        payload = {
+            "update_id": 1,
+            "message": {
+                "message_id": 44,
+                "chat": {"id": 987654321, "type": "private"},
+                "text": "/register",
+                "reply_to_message": {
+                    "message_id": 43,
+                    "chat": {"id": 987654321, "type": "private"},
+                    "text": "Started a new session — team 11111111-2222-3333-4444-555555555555.",
+                },
+            },
+        }
+
+        message = await TelegramChannelParser().parse(payload)
+
+        assert message.quoted_text is not None
+        assert "11111111-2222-3333-4444-555555555555" in message.quoted_text
+
+    async def test_a_message_replying_to_nothing_quotes_nothing(self) -> None:
+        message = await TelegramChannelParser().parse(VALID_TEXT_UPDATE)
+
+        assert message.quoted_text is None
+
+    @pytest.mark.parametrize(
+        "reply_to_message",
+        [
+            {"message_id": 43, "photo": [{"file_id": "x"}]},
+            "not-a-mapping",
+            None,
+        ],
+        ids=["textless", "scalar", "null"],
+    )
+    async def test_a_reply_with_no_text_quotes_nothing(self, reply_to_message: object) -> None:
+        """A reply to a photo or a service message is ordinary input, not a bad payload."""
+        payload = {
+            "update_id": 1,
+            "message": {
+                "message_id": 44,
+                "chat": {"id": 987654321, "type": "private"},
+                "text": "/register",
+                "reply_to_message": reply_to_message,
+            },
+        }
+
+        message = await TelegramChannelParser().parse(payload)
+
+        assert message.quoted_text is None

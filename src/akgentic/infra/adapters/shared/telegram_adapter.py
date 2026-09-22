@@ -20,6 +20,11 @@ logger = logging.getLogger(__name__)
 # answer (ADR-043 §D6).
 TELEGRAM_CHANNEL = "telegram"
 
+# Shown in place of the sender's name when a message carries no sender. Every
+# message a team emits has one, so this stands for a malformed event rather
+# than an expected case — it names the gap instead of posting a bare colon.
+_UNKNOWN_SENDER = "an unknown sender"
+
 
 class TelegramChannelAdapter:
     """Delivers outbound agent messages to Telegram chats via the Bot API.
@@ -32,9 +37,14 @@ class TelegramChannelAdapter:
     ``HumanProxy`` — **and** the binding names this adapter's own channel.
     Without the second half, a deployment configuring two channels would have
     this adapter accept a Slack binding and post a Slack user id to Telegram.
+    Without the first, a chat bound to an ordinary member would receive the
+    team's internal traffic: the dispatcher stopped filtering by recipient, so
+    this adapter is where that rule lives.
 
-    ``deliver()`` sends a synchronous POST to the Telegram ``sendMessage``
-    endpoint, addressing ``binding.channel_user_id`` — the chat the inbound
+    ``deliver()`` attributes the message to its sender — a chat can be bound
+    to any member, so "who is talking" is no longer implicit — and sends a
+    synchronous POST to the Telegram ``sendMessage`` endpoint, addressing
+    ``binding.channel_user_id`` — the chat the inbound
     message arrived from, and the only place that value exists on the outbound
     path. ``deliver_notice()`` posts a channel-layer acknowledgement to an
     address, which a binding also satisfies. Both go through one ``_post``, so
@@ -60,11 +70,24 @@ class TelegramChannelAdapter:
         """Check if this adapter should deliver the message.
 
         Returns True when the recipient actor is a ``UserProxy``, or a
-        subclass such as ``HumanProxy``, indicating the message is headed
-        to a human participant — and the binding belongs to Telegram. The
-        recipient check is structural rather than a comparison against the
-        recipient's ``role`` string, so a team is free to name its
-        human-in-the-loop member anything.
+        subclass such as ``HumanProxy``, indicating the message is headed to a
+        human participant — and the binding belongs to Telegram. The recipient
+        check is structural rather than a comparison against the recipient's
+        ``role`` string, so a team is free to name its human-in-the-loop
+        member anything.
+
+        **This adapter is now the only thing enforcing that rule.** The
+        dispatcher no longer drops a message whose recipient is not a user
+        proxy: it finds the binding and offers the message to every adapter,
+        leaving each to say what it will carry. A chat is a place for humans,
+        so Telegram carries a message to a human's seat and not the team's
+        internal traffic — even where a binding names an ordinary member,
+        which ``/register`` permits. Another channel may decide otherwise
+        without changing the dispatcher.
+
+        The channel comparison is not optional either: messages are offered to
+        every configured adapter, so without it a deployment running two
+        channels would post a Slack chat id to Telegram.
 
         Args:
             msg: The outbound message to check.
@@ -137,10 +160,16 @@ class TelegramChannelAdapter:
         chat_id = binding.channel_user_id
         # No ``or str(msg.message)`` fallback: an empty ``content`` is falsy, so
         # that idiom quietly posted the message model's repr into a human's chat.
-        # An agent with nothing to say produces nothing, and ``_post`` drops it.
         text = getattr(msg.message, "content", "") or ""
+        # An agent with nothing to say produces nothing. ``_post`` drops blank
+        # text, but the attribution below would make every message non-blank,
+        # so the check has to happen before it is prepended.
+        if not text.strip():
+            logger.debug("Agent produced no text; nothing delivered to chat %s", chat_id)
+            return
+        sender_name = msg.sender.name if msg.sender else _UNKNOWN_SENDER
         logger.debug("Delivering message to Telegram chat %s", chat_id)
-        self._post(chat_id, text)
+        self._post(chat_id, f"You received a message from {sender_name}: \n\n{text}")
 
     def deliver_notice(self, address: ChannelAddress, text: str) -> None:
         """Deliver a channel-layer acknowledgement to a Telegram chat.

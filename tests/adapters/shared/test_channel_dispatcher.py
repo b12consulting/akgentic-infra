@@ -347,15 +347,32 @@ class TestDeliveryIsOptIn:
         assert not adapter.matches_called
         assert not adapter.deliver_called
 
-    def test_agent_to_agent_never_reaches_the_registry(self) -> None:
-        """Traffic between agents never leaves the team — not even as a lookup."""
+    def test_the_recipient_policy_is_left_to_the_adapters(self) -> None:
+        """The dispatcher finds the binding and asks; it does not pre-filter.
+
+        It used to drop anything whose recipient was not a user proxy, which
+        decided for every channel at once and meant an adapter willing to
+        carry such a message never saw it. Each adapter now says what it will
+        take — ``TelegramChannelAdapter`` still refuses a non-user-proxy
+        recipient, and its own specs pin that.
+        """
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A, AGENT_B))
         dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A, AGENT_B, is_user_proxy=False))
 
-        assert registry.sync_lookups == []
+        assert adapter.matches_called
+        assert adapter.deliver_called
+
+    def test_an_unbound_agents_message_stops_at_the_lookup(self) -> None:
+        """Intra-team traffic still stays in the team unless a binding names it."""
+        adapter = _MatchingAdapter()
+        registry = _registry_for(_binding(TEAM_A, AGENT_B))
+        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+
+        dispatcher.on_message(_make_sent_message(TEAM_A, "@Unbound_0", is_user_proxy=False))
+
         assert not adapter.matches_called
         assert not adapter.deliver_called
 

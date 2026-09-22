@@ -81,11 +81,19 @@ class InteractionChannelDispatcher:
     def on_message(self, msg: Message) -> None:
         """Dispatch a SentMessage to every adapter matching the recipient's binding.
 
-        Five conditions, in order: the event is a ``SentMessage``; its team is
-        not replaying; the recipient is a user proxy (agent-to-agent traffic
-        never leaves the team); the recipient agent has a binding; and an
-        adapter claims it. Absence means skip, never guess — an unregistered
-        agent's message is silently left to the WebSocket.
+        Four conditions, in order: the event is a ``SentMessage``; its team is
+        not replaying; the recipient agent has a binding; and an adapter claims
+        it. Absence means skip, never guess — an unbound agent's message is
+        silently left to the WebSocket.
+
+        **The binding is the whole rule, including for agent-to-agent
+        traffic.** This used to drop anything whose recipient was not a user
+        proxy, so that intra-team traffic could never leave the team. A binding
+        is now written for an arbitrary agent only when a user asks for one
+        (``/register <team-id> @Agent``), so the lookup already carries that
+        consent, and the extra test only made the explicit request silently do
+        nothing. A chat bound to a member therefore sees what that member is
+        told — which is what binding it means.
 
         Performs no blocking call: ``find_binding_sync`` answers from an
         in-process index. The orchestrator already guards every subscriber
@@ -97,8 +105,6 @@ class InteractionChannelDispatcher:
         if not isinstance(msg, SentMessage):
             return
         if msg.recipient.team_id in self._restoring:
-            return
-        if not msg.recipient.is_user_proxy:
             return
         binding = self._registry.find_binding_sync(msg.recipient.team_id, msg.recipient.name)
         if binding is None:

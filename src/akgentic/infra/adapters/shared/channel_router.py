@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from typing import TYPE_CHECKING
 
+from akgentic.infra.errors import TeamNotFoundError
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelBinding,
@@ -25,12 +27,48 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The three command words the default router consumes. Every other name falls
-# through to the routing branches as ordinary text, where akgentic-tool's
-# in-team slash mechanism may claim it (ADR-043 §D10).
+# The command words the default router consumes. ``register`` is consumed only
+# where the channel config enables it, and answers with a refusal otherwise —
+# never silently, since a user who typed it is waiting for an answer. Every
+# other name falls through to the routing branches as ordinary text, where
+# akgentic-tool's in-team slash mechanism may claim it (ADR-043 §D10).
 _COMMAND_NEW = "new"
 _COMMAND_UNREGISTER = "unregister"
 _COMMAND_STATUS = "status"
+_COMMAND_REGISTER = "register"
+
+# ``/register`` reads its two ids out of free text — the command's own rest, or
+# the message it replies to, which is how the bot's own notices ("Started a new
+# session — team <id>.") hand a team id back to the user. Both patterns are
+# anchored on word boundaries so an id embedded in a sentence is still found.
+_TEAM_ID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+# A spawned agent name as ``AgentRef.name`` carries it: '@' then the card's name,
+# headcount-expanded ('@HumanProxy_0'). Telegram @-mentions of *people* exist in
+# the same text, which is why a match is verified against the team's own agents
+# rather than trusted.
+_AGENT_NAME_RE = re.compile(r"@[A-Za-z0-9_]+")
+# Addressing an agent is a name at the START of what the user typed. A name
+# anywhere else is part of the sentence and belongs to the recipient, not to
+# the routing: "@Expert, ask a joke to @Support" is for the Expert, and naming
+# the Support is the Expert's instruction to carry out.
+_LEADING_AGENT_RE = re.compile(r"^\s*(@[A-Za-z0-9_]+)")
+
+
+class NoDefaultRecipientError(ValueError):
+    """The bound agent has nobody to address, and the message named nobody.
+
+    Raised when the team holds no agent other than the bound one — it is the
+    team's own entry point and declares no supervisors. Every fallback
+    available at that point changes who is speaking, so the user is asked to
+    name a recipient instead.
+
+    A ``ValueError`` subclass for the same additive reason as
+    ``TeamNotFoundError``: a caller that catches ``ValueError`` around the
+    channel path keeps catching it.
+    """
 
 
 def _is_blank(content: str | Message) -> bool:
@@ -60,17 +98,27 @@ class ChannelRouteContext:
     It holds runtime services, not data, which is why it is a plain class and
     not a model.
 
-    Every method acts on ``address`` — the conversation the message came from —
-    and none addresses a team by id, so a router cannot reach another chat's
-    team by construction. The registry and the team service are held privately
-    for exactly that reason: each has a method taking an arbitrary team id
-    (``register``, ``send_message``, ``get_team``), and exposing either would
-    turn the authorization rule back into a request to be careful.
+    Every method acts on ``address`` — the conversation the message came from.
+    The registry and the team service are held privately: each has a method
+    taking an arbitrary team id (``register``, ``send_message``, ``get_team``),
+    and exposing either would turn the authorization rule into a request to be
+    careful about every call a router makes.
 
-    ``initiate_team`` does accept a ``team_id``, and is not an exception to the
-    rule: the id is a *creation key*. The placement contract
-    (``PlacementStrategy.create_team``) refuses one naming a team that already
-    exists, so the method can start a team but can never reach one.
+    ``initiate_team`` accepts a ``team_id`` and is not an exception: the id is a
+    *creation key*. The placement contract (``PlacementStrategy.create_team``)
+    refuses one naming a team that already exists, so the method can start a
+    team but can never reach one.
+
+    **``bind_team`` is the one real exception, and it is deliberate.** It binds
+    this conversation to a team named by id, which is precisely what the rest
+    of the class prevents — there is no ownership check available, because the
+    channel layer has no verified identity for the chat user. It exists so a
+    user can re-attach a chat to a team they already know about, and a router
+    that exposes it to users must gate it: ``DefaultChannelRouter`` ships it
+    off, behind ``allow_register`` on the channel config. It is one method,
+    named for what it does, so a review of a custom router has exactly one call
+    to look for rather than a class of them. It verifies neither name, which is
+    what keeps it from becoming an existence oracle.
 
     There is no ingestion layer between this context and ``TeamService``.
     ``TeamService`` is already the tier-agnostic seam — creation goes through
@@ -192,15 +240,59 @@ class ChannelRouteContext:
         return process
 
     async def send(self, content: str | Message) -> bool:
-        """Send a message to this conversation's team.
+        """Send as the bound agent, to the team's first supervisor.
 
-        The team is resolved from the binding here, never passed in: that is
-        what makes the authorization rule hold by construction.
+        The chat *is* the bound agent — that is what the binding says — so an
+        inbound message is that agent speaking, not an anonymous injection.
+        ``TeamRuntime.send_from_to`` takes a proxy for the sender and calls
+        ``send()`` on it, so the message's ``sender`` is the bound agent and
+        the team answers it as it would any member.
 
-        There is no reply-to parameter. A channel's own message id
-        (``ChannelMessage.channel_message_id``) is not an akgentic message id,
-        so it cannot name the message being answered, and
-        ``TeamService.send_message`` has nowhere to put one.
+        The recipient is the first supervisor that is not the sender itself,
+        else the entry point — a chat bound to the only supervisor still has
+        the team's own seat to address, and nobody is ever made to talk to
+        themselves.
+
+        There is no fallback to the team's default entry. That path sends
+        through the entry proxy, which stamps the **entry point** as the
+        sender, so a chat bound to any other member would speak with someone
+        else's voice — and no reader of the transcript could untangle it. A
+        team with nobody else to address is a broken team, and saying so beats
+        delivering a message attributed to the wrong member.
+
+        Returns:
+            True when sent. False when nothing was sent — the conversation has
+            no team, or the content is blank.
+
+        Raises:
+            TeamNotFoundError: The binding names a team the service does not
+                know.
+            NoDefaultRecipientError: The team has no agent for the bound one
+                to address — it is its own entry point and has no supervisors.
+                The caller names a recipient, or tells the user to.
+        """
+        if _is_blank(content):
+            logger.info("Dropping blank inbound message for %s", self.address)
+            return False
+
+        binding = await self.find_binding()
+        if binding is None:
+            return False
+
+        supervisor = await self._default_recipient(binding)
+        return await self._send_to(binding, supervisor, content)
+
+    async def send_to(self, recipient_name: str, content: str | Message) -> bool:
+        """Send as the bound agent, to the agent the message named.
+
+        The recipient is taken as given. The team raises for a name it does
+        not have, and that error propagates: unlike a channel id, an agent
+        name the user typed is worth reporting back rather than silently
+        redirecting.
+
+        Args:
+            recipient_name: Spawned name of the agent to address.
+            content: What to send.
 
         Returns:
             True when sent. False when nothing was sent — the conversation has
@@ -209,11 +301,103 @@ class ChannelRouteContext:
         if _is_blank(content):
             logger.info("Dropping blank inbound message for %s", self.address)
             return False
+
         binding = await self.find_binding()
         if binding is None:
             return False
-        await asyncio.to_thread(self._team_service.send_message, binding.team_id, content)
+
+        return await self._send_to(binding, recipient_name, content)
+
+    async def _send_to(
+        self, binding: ChannelBinding, recipient_name: str, content: str | Message
+    ) -> bool:
+        """Perform the offloaded send, from the bound agent to one recipient."""
+        await asyncio.to_thread(
+            self._team_service.send_message_from_to,
+            binding.team_id,
+            binding.agent_name,
+            recipient_name,
+            content,
+        )
         return True
+
+    async def _default_recipient(self, binding: ChannelBinding) -> str:
+        """Return whom the bound agent addresses when the message names nobody.
+
+        The first supervisor that is not the bound agent, else the entry point
+        if that is not the bound agent either. Read from the persisted team
+        rather than configured: the supervisors are whoever this team was built
+        with, and a chat bound to one of them must not be made to talk to
+        itself.
+
+        Raises rather than falling back, because every fallback available here
+        changes who is speaking: sending through the team's default entry
+        stamps the entry point as the sender, and addressing the bound agent
+        itself makes it answer its own message.
+
+        Raises:
+            TeamNotFoundError: The team is not in the system of record — the
+                binding outlived it, or named one that never existed.
+            NoDefaultRecipientError: The team exists and holds nobody else: it
+                is its own entry point and declares no supervisors.
+        """
+        process = await asyncio.to_thread(self._team_service.get_team, binding.team_id)
+        if process is None:
+            msg = f"Team {binding.team_id} not found"
+            raise TeamNotFoundError(msg)
+        candidates = [ref.name for ref in process.supervisors] + [process.entry_point.name]
+        recipient = next((name for name in candidates if name != binding.agent_name), None)
+        if recipient is None:
+            msg = (
+                f"Team {binding.team_id} has no agent for {binding.agent_name} to address: "
+                "it is the team's entry point and the team declares no supervisors. "
+                "Name the recipient in the message"
+            )
+            raise NoDefaultRecipientError(msg)
+        return recipient
+
+    async def bind_team(self, team_id: uuid.UUID, agent_name: str) -> None:
+        """Bind this conversation to a team, taking both names as given.
+
+        **Nothing is verified — deliberately, and it is the safer of the two
+        designs.** Looking the team up would make this an oracle: a chat could
+        ask "does this id exist?" and read the answer off the reply, and the
+        same for an agent name. Since nothing can be checked anyway — the
+        payload is unauthenticated, so there is no identity to compare against
+        ``Process.user_id`` — the lookup would buy a better error message at
+        the cost of confirming what exists. It also keeps this method free of
+        the team service entirely: it writes a binding, and that is all.
+
+        A binding naming a team that does not exist is inert rather than
+        harmful: the next message fails to reach it, and the outbound path
+        never matches it. The cost of a mistyped id is the user's own
+        conversation, which is the only thing they could have broken anyway.
+
+        The binding replaces any existing one for this conversation, exactly as
+        ``initiate_team``'s does, so a chat can move between teams but never
+        hold two.
+
+        Args:
+            team_id: The team to bind to, unverified.
+            agent_name: The agent's spawned name, unverified. There is no
+                default: the entry point's name could only be learned by
+                looking the team up, which is what this method does not do.
+        """
+        await self._registry.register(
+            ChannelBinding(
+                channel=self.address.channel,
+                channel_user_id=self.address.channel_user_id,
+                team_id=team_id,
+                agent_name=agent_name,
+            )
+        )
+        logger.info(
+            "Channel bound to a named team: channel=%s, user=%s, team_id=%s, agent=%s",
+            self.address.channel,
+            self.address.channel_user_id,
+            team_id,
+            agent_name,
+        )
 
     async def bound_process(self) -> Process | None:
         """Return the bound team's ``Process``, or None when unbound or unknown.
@@ -241,7 +425,8 @@ class DefaultChannelRouter(InteractionChannelRouter):
     """The routing rules a channel gets when its config names no router.
 
     1. A ``new`` / ``unregister`` / ``status`` command is consumed (ADR-043
-       §D10). Any other command name is ordinary text and falls through.
+       §D10), and ``register`` too where the channel config enables it. Any
+       other command name is ordinary text and falls through.
     2. A bound conversation's message is a reply to its team.
     3. An unbound conversation's message starts a team and binds to it.
 
@@ -251,12 +436,20 @@ class DefaultChannelRouter(InteractionChannelRouter):
     """
 
     def __init__(self, **config: str) -> None:
-        """Accept the channel's shared ``config`` kwargs, which it does not use.
+        """Read ``allow_register``, ignoring every other key.
 
         ``ChannelConfig.config`` is passed to the parser, the adapter and the
         router alike, so a router constructor must tolerate keys meant for the
         other two.
+
+        ``allow_register`` enables the ``register`` command and defaults to
+        **off**. The command binds a chat to a team named by an unauthenticated
+        payload, so a deployment turns it on only where chat users are trusted
+        or team ids are not obtainable by anyone who should not have them.
+        Anything but ``"true"`` (case-insensitively) leaves it off: a typo must
+        fail closed.
         """
+        self._allow_register = config.get("allow_register", "").strip().lower() == "true"
 
     async def route(self, message: ChannelMessage, ctx: ChannelRouteContext) -> None:
         """Consume a command, else reply to the bound team, else start one."""
@@ -277,10 +470,12 @@ class DefaultChannelRouter(InteractionChannelRouter):
     async def on_command(
         self, message: ChannelMessage, command: ChannelCommand, ctx: ChannelRouteContext
     ) -> bool:
-        """Consume ``new`` / ``unregister`` / ``status``, or decline the message.
+        """Consume ``new`` / ``unregister`` / ``status`` / ``register``, or decline.
 
-        No command reads anything from the payload beyond its own text: each
-        resolves its subject from the conversation's binding.
+        Three of the four read nothing from the payload beyond their own text:
+        each resolves its subject from the conversation's binding. ``register``
+        is the exception — it takes a team id from the message — and it answers
+        only when the channel config enables it.
 
         Returns:
             True when consumed. False for any other name, which then reaches
@@ -292,6 +487,8 @@ class DefaultChannelRouter(InteractionChannelRouter):
             await self._command_unregister(ctx)
         elif command.name == _COMMAND_STATUS:
             await self._command_status(ctx)
+        elif command.name == _COMMAND_REGISTER:
+            await self._command_register(message, command.rest, ctx)
         else:
             return False
         return True
@@ -299,24 +496,66 @@ class DefaultChannelRouter(InteractionChannelRouter):
     async def on_bound(
         self, message: ChannelMessage, binding: ChannelBinding, ctx: ChannelRouteContext
     ) -> None:
-        """Deliver the message to the team this conversation is bound to."""
+        """Deliver the message as the bound agent, to whoever it addresses.
+
+        The sender is never in question: the binding says which agent this
+        chat is, so the message is that agent speaking.
+
+        The recipient is the ``@Name`` the message **starts** with, else the
+        first one in the message being replied to — answering an agent is how a
+        user addresses it — and otherwise the team's default recipient. A name
+        anywhere but the front of the user's own text is left alone: it is part
+        of what they are saying. ``content`` is passed verbatim either way.
+        """
+        recipient = self._recipient_named_in(message)
         logger.debug(
-            "Channel continuation: channel=%s, user=%s, team_id=%s",
+            "Channel continuation: channel=%s, user=%s, team_id=%s, from=%s, to=%s",
             ctx.address.channel,
             ctx.address.channel_user_id,
             binding.team_id,
+            binding.agent_name,
+            recipient or "<supervisor>",
         )
-        await ctx.send(message.content)
+        if recipient is not None:
+            await ctx.send_to(recipient, message.content)
+            return
+        try:
+            await ctx.send(message.content)
+        except NoDefaultRecipientError as exc:
+            logger.info("No default recipient for %s: %s", ctx.address, exc)
+            ctx.notify(
+                "This team has nobody for me to pass that to. "
+                "Name the agent, for example '@Agent your question'."
+            )
+
+    @staticmethod
+    def _recipient_named_in(message: ChannelMessage) -> str | None:
+        """Return the agent this message addresses, or None for the default.
+
+        Two texts, two rules, because they are written by different people:
+
+        - **What the user typed** addresses an agent only when the name comes
+          *first*. Anywhere else it is part of the sentence, and belongs to the
+          recipient rather than to the routing — "@Expert, ask a joke to
+          @Support" is for the Expert, and the Support is what the Expert is
+          being asked to do.
+        - **The message being replied to** is the bot's own text, where a name
+          appears wherever the adapter put it ("You received a message from
+          @Expert_1: …"). There the first name found identifies who is being
+          answered.
+
+        Typing a name wins over replying to one: a reply says who you were
+        reading, the leading name says whom you mean now.
+        """
+        typed = _LEADING_AGENT_RE.match(message.content)
+        if typed is not None:
+            return typed.group(1)
+        quoted = _AGENT_NAME_RE.search(message.quoted_text or "")
+        return quoted.group() if quoted is not None else None
 
     async def on_unbound(self, message: ChannelMessage, ctx: ChannelRouteContext) -> None:
         """Start a team for this conversation, with the message as its first."""
-        await ctx.initiate_team(
-            message.content,
-            catalog_entry=message.catalog_entry,
-            team_id=message.team_id,
-            team_metadata=message.team_metadata,
-            binding_metadata=message.binding_metadata,
-        )
+        await self._start_session(message, message.content, ctx)
 
     async def _command_new(
         self, message: ChannelMessage, rest: str, ctx: ChannelRouteContext
@@ -332,17 +571,43 @@ class DefaultChannelRouter(InteractionChannelRouter):
         as ``on_unbound`` honours it.
         """
         await ctx.release()
+        await self._start_session(message, rest or None, ctx)
+
+    async def _start_session(
+        self, message: ChannelMessage, content: str | None, ctx: ChannelRouteContext
+    ) -> Process:
+        """Create the team, bind the chat to it, and tell the user which team it is.
+
+        Every creation announces itself, whether the user asked for one with
+        ``new`` or simply spoke to an unbound chat. Two reasons, and the second
+        is why this is not merely a nicety:
+
+        - ``new`` with no text produces no team reply at all, so the user who
+          just abandoned a conversation would otherwise see nothing happen;
+        - the notice is the only place the chat ever learns its team id and
+          bound agent. ``register`` reads both out of a replied-to message, so
+          this is what makes re-attaching a chat possible without going to the
+          web UI for the id.
+
+        Both callers go through here so the two notices cannot drift apart.
+
+        Args:
+            message: The inbound message, for the creation parameters it carries.
+            content: The team's first message, or None to create it silently.
+            ctx: This request's context.
+
+        Returns:
+            The created team's ``Process``.
+        """
         process = await ctx.initiate_team(
-            rest or None,
+            content,
             catalog_entry=message.catalog_entry,
             team_id=message.team_id,
             team_metadata=message.team_metadata,
             binding_metadata=message.binding_metadata,
         )
-        # ``new`` acknowledges even though the team usually answers for itself:
-        # ``/new`` with no text produces no team reply at all, so without this
-        # the user who just abandoned a conversation would see nothing.
-        ctx.notify(f"Started a new session — team {process.team_id}.")
+        ctx.notify(f"Started a new session — team {process.team_id} as {process.entry_point.name}.")
+        return process
 
     async def _command_unregister(self, ctx: ChannelRouteContext) -> None:
         """Release this conversation's binding, acknowledging either way.
@@ -355,6 +620,51 @@ class DefaultChannelRouter(InteractionChannelRouter):
             ctx.notify("No active session to release.")
             return
         ctx.notify(f"Released team {released.team_id}.")
+
+    async def _command_register(
+        self, message: ChannelMessage, rest: str, ctx: ChannelRouteContext
+    ) -> None:
+        """Bind this conversation to the team and agent the message names.
+
+        Both names are read out of free text, and **each falls back on its own**:
+        a name the command's own words do not carry is looked for in the
+        message being replied to. They routinely arrive from different places —
+        a notice names the team but no agent, so replying to one with
+        ``/register @HumanProxy_0`` supplies the missing half by hand. Taking
+        both from whichever text happened to carry the team id would reject
+        that, which is the usable case.
+
+        Neither name is verified (``ChannelRouteContext.bind_team``). The reply
+        therefore says what was bound, never whether it exists: a user who
+        mistypes finds out when their next message goes unanswered, and a chat
+        probing for live team ids learns nothing from the difference.
+
+        Every outcome answers the user, because this decides where their next
+        message goes.
+
+        Disabled unless the channel config sets ``allow_register``.
+        """
+        if not self._allow_register:
+            logger.warning(
+                "Rejected /register on a channel that has not enabled it: channel=%s, user=%s",
+                ctx.address.channel,
+                ctx.address.channel_user_id,
+            )
+            ctx.notify("Registering to an existing team is not enabled on this channel.")
+            return
+        quoted = message.quoted_text or ""
+        team_id_match = _TEAM_ID_RE.search(rest) or _TEAM_ID_RE.search(quoted)
+        agent_match = _AGENT_NAME_RE.search(rest) or _AGENT_NAME_RE.search(quoted)
+        if team_id_match is None or agent_match is None:
+            ctx.notify(
+                "Send '/register <team-id> @Agent', or reply to a message naming both "
+                "with '/register'. The agent is its spawned name, e.g. @HumanProxy_0."
+            )
+            return
+        team_id = uuid.UUID(team_id_match.group())
+        agent_name = agent_match.group()
+        await ctx.bind_team(team_id, agent_name)
+        ctx.notify(f"Bound to team {team_id} as {agent_name}.")
 
     async def _command_status(self, ctx: ChannelRouteContext) -> None:
         """Report the bound team and its lifecycle state.
@@ -370,4 +680,8 @@ class DefaultChannelRouter(InteractionChannelRouter):
         if process is None:
             ctx.notify(f"Bound to team {binding.team_id}, which is no longer known.")
             return
-        ctx.notify(f"Bound to team {binding.team_id} — {process.status.value}.")
+
+        team_id = binding.team_id
+        agent_name = binding.agent_name
+        status = process.status.value
+        ctx.notify(f"Bound to team {team_id} as {agent_name} — {status}.")

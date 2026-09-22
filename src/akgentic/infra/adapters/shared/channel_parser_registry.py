@@ -116,8 +116,16 @@ class ChannelParserRegistry:
                 raise TypeError(msg)
 
             self._parsers[parser.channel_name] = parser
-            if cfg.router_fqcn is not None:
-                self._routers[parser.channel_name] = _load_router(cfg.router_fqcn, cfg.config)
+            # A channel that names no router still gets ITS OWN default router,
+            # built with its config. The shared ``_default_router`` below is for
+            # a channel this loader never saw — a subclass registering parsers
+            # of its own — and carries no config, so using it here would silently
+            # drop every key the channel set for the router (``allow_register``).
+            self._routers[parser.channel_name] = (
+                _load_router(cfg.router_fqcn, cfg.config)
+                if cfg.router_fqcn is not None
+                else DefaultChannelRouter(**cfg.config)
+            )
             self._adapters.append(adapter)
         logger.debug("Channel parser registry loaded: %d channel(s)", len(self._parsers))
 
@@ -133,6 +141,11 @@ class ChannelParserRegistry:
         Never None: a channel with a parser always routes. A subclass that
         registers parsers without routers therefore keeps today's behaviour
         rather than losing every channel to a missing router.
+
+        A channel this registry loaded has its own entry either way — the
+        default router built with that channel's ``config``. The shared
+        fallback is config-less, and only a channel registered by some other
+        path can reach it.
         """
         return self._routers.get(channel_name, self._default_router)
 

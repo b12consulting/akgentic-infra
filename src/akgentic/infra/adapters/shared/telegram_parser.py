@@ -55,6 +55,29 @@ def _parse_command(text: str, entities: JsonValue) -> ChannelCommand | None:
     return ChannelCommand(name=name, rest=text[length:].lstrip())
 
 
+def _quoted_text(reply_to_message: JsonValue) -> str | None:
+    """Return the text of the replied-to message, or None.
+
+    Telegram sends the whole quoted message under ``reply_to_message``, not
+    merely its id, so the text is here for free. Everything but a mapping
+    carrying a ``text`` string reads as "no quotation": a reply to a photo, a
+    sticker or a service message has nothing a router could act on, and that is
+    an ordinary input rather than a malformed payload.
+
+    Args:
+        reply_to_message: The raw ``message["reply_to_message"]`` value, of any
+            shape.
+
+    Returns:
+        The quoted text, or None when the message replies to nothing or to
+        something textless.
+    """
+    if not isinstance(reply_to_message, dict):
+        return None
+    text = reply_to_message.get("text")
+    return text if isinstance(text, str) else None
+
+
 class TelegramChannelParser:
     """Parses inbound Telegram webhook Update payloads into normalized ChannelMessage.
 
@@ -155,4 +178,5 @@ class TelegramChannelParser:
             channel_user_id=str(chat_id),
             channel_message_id=str(message_id) if message_id is not None else None,
             command=_parse_command(text, message.get("entities")),
+            quoted_text=_quoted_text(message.get("reply_to_message")),
         )
