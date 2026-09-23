@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ from akgentic.infra.adapters.shared.channel_router import (
     ChannelRouteContext,
     DefaultChannelRouter,
 )
-from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
+from akgentic.infra.errors import TeamNotFoundError
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelBinding,
@@ -116,31 +117,6 @@ class ReplyOnlyRouter(DefaultChannelRouter):
         ctx.notify("Say /new to start.")
 
 
-class StubPlacement:
-    """What a resume that bypassed ``restore_team`` would reach.
-
-    Mirrors ``PlacementStrategy.resume_team``: it brings the runtime back up,
-    and the persisted status with it, and it warms **no cache** — the store is
-    ``TeamService.restore_team``'s own next line. So a bypass leaves the team
-    running with a cold handle, which is exactly how the real one fails.
-
-    Held privately, as the real service holds it
-    (``TeamService._services.placement``), so the bypass has to be written the
-    same way against this stub as against production.
-    """
-
-    def __init__(self, service: StubTeamService) -> None:
-        self._service = service
-        self.resume_team_calls: list[uuid.UUID] = []
-
-    def resume_team(self, team_id: uuid.UUID) -> uuid.UUID:
-        self.resume_team_calls.append(team_id)
-        process = self._service.teams[team_id]
-        self._service.teams[team_id] = process.model_copy(update={"status": TeamStatus.RUNNING})
-        self._service.cold_handles.add(team_id)
-        return team_id
-
-
 class StubTeamService:
     """The TeamService the router context calls, recording every call.
 
@@ -148,6 +124,12 @@ class StubTeamService:
     ``asyncio.to_thread``. Given a registry, it also records whether the chat was
     already bound when each message was sent: the ordering the create / bind /
     send sequence exists to guarantee.
+
+    Its sends mirror ``TeamService._get_or_revive_handle``: a deleted team is
+    refused, a stopped one is revived on the way through — recorded in
+    ``revive_calls`` — and a running one is simply sent to. A stub that
+    silently accepted a send to a stopped team would let a router that never
+    revives pass every spec.
     """
 
     def __init__(self, registry: YamlChannelRegistry | None = None) -> None:
@@ -158,60 +140,28 @@ class StubTeamService:
         self.bound_at_send: list[bool] = []
         self.next_team_id = uuid.uuid4()
         self.teams: dict[uuid.UUID, Process] = {}
-        self.restore_team_calls: list[uuid.UUID] = []
-        # Teams whose runtime is up but whose handle the service never cached.
-        # Only a resume that bypasses ``restore_team`` can put one here, which
-        # is the one cold-handle transition this stub can honestly know about:
-        # a team a spec seeds directly is seeded warm, as the real cache would
-        # hold a team that has been running all along.
-        self.cold_handles: set[uuid.UUID] = set()
-        self._placement = StubPlacement(self)
+        self.revive_calls: list[uuid.UUID] = []
         self._registry = registry
 
-    def _require_running(self, team_id: uuid.UUID) -> None:
-        """Refuse a send the real ``_get_running_handle`` would refuse.
+    def _get_or_revive(self, team_id: uuid.UUID) -> None:
+        """Mirror ``TeamService._get_or_revive_handle``: deleted → gone; stopped → revived.
 
-        Mirrors it in both checks and in their order: a team that exists but is
-        not running is a ``TeamStateConflictError``, and a running team with no
-        cached handle is the bare ``ValueError`` the webhook surfaces as a 500.
-        A team the stub does not hold is left alone — the real service would
-        raise ``TeamNotFoundError`` there, and the context's own
-        default-recipient lookup already does.
+        A team the stub does not hold is left alone — the real service raises
+        ``TeamNotFoundError`` there, and the context's own default-recipient
+        lookup already does.
         """
         process = self.teams.get(team_id)
         if process is None:
             return
-        if process.status != TeamStatus.RUNNING:
-            msg = f"Team {team_id} is not running"
-            raise TeamStateConflictError(msg)
-        if team_id in self.cold_handles:
-            msg = f"Team {team_id} handle not cached"
-            raise ValueError(msg)
-
-    def restore_team(self, team_id: uuid.UUID) -> Process:
-        """Mirror ``TeamService.restore_team``: guard, place, then warm the cache.
-
-        The guards and their error types are the real ones, because the router
-        branches on them: already-running is the race AC 6 resolves by sending
-        anyway, and not-found / deleted are what fall to the third row.
-        """
-        process = self.teams.get(team_id)
-        if process is None:
-            msg = f"Team {team_id} not found"
-            raise TeamNotFoundError(msg)
-        if process.status == TeamStatus.RUNNING:
-            msg = f"Team {team_id} is already running"
-            raise TeamStateConflictError(msg)
         if process.status == TeamStatus.DELETED:
             msg = f"Team {team_id} has been deleted"
-            raise ValueError(msg)
-        self.restore_team_calls.append(team_id)
-        self._placement.resume_team(team_id)
-        self.cold_handles.discard(team_id)
-        return self.teams[team_id]
+            raise TeamNotFoundError(msg)
+        if process.status != TeamStatus.RUNNING:
+            self.revive_calls.append(team_id)
+            self.teams[team_id] = process.model_copy(update={"status": TeamStatus.RUNNING})
 
     def send_message(self, team_id: uuid.UUID, content: str | Message) -> None:
-        self._require_running(team_id)
+        self._get_or_revive(team_id)
         self.send_message_calls.append((team_id, content))
         if self._registry is not None:
             binding = self._registry.find_binding_sync(team_id, "@HumanProxy_0")
@@ -220,7 +170,7 @@ class StubTeamService:
     def send_message_from_to(
         self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str | Message
     ) -> None:
-        self._require_running(team_id)
+        self._get_or_revive(team_id)
         self.send_from_to_calls.append((team_id, sender_name, recipient_name, content))
         self.send_message_calls.append((team_id, content))
         if self._registry is not None:
@@ -574,7 +524,6 @@ _CONTEXT_SURFACE = {
     "send",
     "send_to",
     "bound_process",
-    "resume_bound_team",
     "bind_team",
     "notify",
 }
@@ -1286,7 +1235,7 @@ async def test_a_binding_naming_an_unknown_team_is_reported_to_the_chat(tmp_path
     assert team_service.send_from_to_calls == []
     assert team_service.send_message_calls == []
     assert team_service.create_team_calls == []
-    assert team_service.restore_team_calls == []
+    assert team_service.revive_calls == []
     ((_, notice),) = adapter.notices
     assert str(team_id) in notice
     assert "/new" in notice
@@ -1332,44 +1281,39 @@ def _stopped_team(team_id: uuid.UUID) -> Process:
     return _team_with_supervisor(team_id).model_copy(update={"status": TeamStatus.STOPPED})
 
 
-class _RacingTeamService(StubTeamService):
-    """A team that comes up between the router's state read and its resume.
+_ROUTER_LOGGER = "akgentic.infra.adapters.shared.channel_router"
 
-    ``get_team`` answers STOPPED — the read the router branches on — while the
-    team itself is already RUNNING, so the resume meets
-    ``TeamStateConflictError`` exactly as the real service raises it when
-    something else got there first.
+
+class _NeverRestoringTeamService(StubTeamService):
+    """A service whose ``restore_team`` is a trap.
+
+    The router has no resume branch: the send revives. Any path that still
+    reaches ``restore_team`` — under any name, through the context or past
+    it — trips this and the spec goes red.
     """
 
-    def get_team(self, team_id: uuid.UUID) -> Process | None:
-        process = super().get_team(team_id)
-        if process is None:
-            return None
-        return process.model_copy(update={"status": TeamStatus.STOPPED})
+    def restore_team(self, team_id: uuid.UUID) -> Process:
+        msg = "router must not restore"
+        raise AssertionError(msg)
 
 
-# --- Row two: a stopped bound team is resumed, silently, and the message lands ---
+# --- A stopped bound team is revived by the send, silently, and the message lands ---
 
 
 async def test_a_message_to_a_stopped_bound_team_resumes_it_and_is_delivered(
     tmp_path: Path,
 ) -> None:
-    """The inversion of the regression §D6 shipped alone — ADR-045 §D7 row two.
+    """The revive is the send's, and the router only checks the team exists.
 
-    The binding survives a stop (§D6), so this hook meets teams that are not
-    running. It used to send to them unconditionally: the send failed out of
-    ``TeamService._get_running_handle`` with a ``TeamStateConflictError``, the
-    webhook answered non-2xx, and the channel redelivered for ever. Now the
-    state is resolved first and a stopped team is brought back.
+    The binding survives a stop, so this hook meets teams that are not
+    running. The router reads no status: it confirms the team is known and
+    sends, and ``TeamService``'s delivery methods revive a stopped team on the
+    way through — observed here on the stub's ``send_message_from_to`` as
+    exactly one revive, with the record ``RUNNING`` afterwards.
 
     **Silently.** A notice on every post-idle message would make the idle
-    timeout a user-visible rule again, which is what §D6 removes. And exactly
-    one resume, no second team: the conversation continued, it did not restart.
-
-    The resume goes through ``restore_team``, which is what warms the handle
-    cache — hence ``cold_handles``: a resume through the placement alone leaves
-    the team running with a cold handle, and the send that follows dies on
-    ``handle not cached``.
+    timeout a user-visible rule again. And exactly one revive, no second team:
+    the conversation continued, it did not restart.
     """
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
@@ -1381,8 +1325,8 @@ async def test_a_message_to_a_stopped_bound_team_resumes_it_and_is_delivered(
         _inbound("still there?"), _ctx(registry, team_service, adapter)
     )
 
-    assert team_service.restore_team_calls == [team_id]
-    assert team_service.cold_handles == set()
+    assert team_service.revive_calls == [team_id]
+    assert team_service.teams[team_id].status is TeamStatus.RUNNING
     assert team_service.send_from_to_calls == [
         (team_id, "@HumanProxy_0", "@Manager_0", "still there?")
     ]
@@ -1396,12 +1340,10 @@ async def test_a_message_to_a_stopped_bound_team_resumes_it_and_is_delivered(
 async def test_a_named_recipient_message_also_resumes_the_stopped_bound_team(
     tmp_path: Path,
 ) -> None:
-    """Row two on the other dispatch path.
+    """The same on the named-recipient path.
 
-    ``on_bound`` resolves the state once, above the recipient branch. Put the
-    check inside the default-recipient branch only and this spec goes red
-    while its sibling above stays green — which is half the regression left
-    behind.
+    Both dispatch paths end in ``send_message_from_to``, so the revive that
+    lives there covers both without the router doing anything per path.
     """
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
@@ -1413,19 +1355,68 @@ async def test_a_named_recipient_message_also_resumes_the_stopped_bound_team(
         _inbound("@Expert_1 still there?"), _ctx(registry, team_service, adapter)
     )
 
-    assert team_service.restore_team_calls == [team_id]
+    assert team_service.revive_calls == [team_id]
+    assert team_service.teams[team_id].status is TeamStatus.RUNNING
     assert team_service.send_from_to_calls == [
         (team_id, "@HumanProxy_0", "@Expert_1", "@Expert_1 still there?")
     ]
+    assert team_service.create_team_calls == []
+    assert adapter.notices == []
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == team_id
+
+
+async def test_the_router_never_reaches_restore_team(tmp_path: Path) -> None:
+    """The revive exists once, in the send — no second road through ``restore_team``.
+
+    The stub's ``restore_team`` raises, so a router that resumes by any path
+    — the context, a private attribute, a status read of its own — fails
+    here. What must happen instead: the send revives, and the message lands.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = _NeverRestoringTeamService()
+    adapter = StubAdapter()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _stopped_team(team_id)
+
+    await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service, adapter))
+
+    assert team_service.revive_calls == [team_id]
+    assert team_service.send_from_to_calls == [(team_id, "@HumanProxy_0", "@Manager_0", "hello")]
     assert adapter.notices == []
 
 
-async def test_a_deleted_bound_team_is_reported_rather_than_resumed(tmp_path: Path) -> None:
-    """A team the service still knows, but has deleted, is the third row too.
+async def test_the_router_logs_no_resume_of_its_own(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The router's "Resumed a bound team" line went with the branch it reported on.
 
-    ``restore_team`` refuses a deleted team with a bare ``ValueError``, and
-    that falls through to the notice with the not-found case — there is
-    nothing to resume and nothing to send.
+    The revive is now ``TeamService``'s to log; a router line claiming it
+    would name a resume the router did not perform.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _stopped_team(team_id)
+
+    with caplog.at_level(logging.INFO, logger=_ROUTER_LOGGER):
+        await DefaultChannelRouter().route(
+            _inbound("hello"), _ctx(registry, team_service, StubAdapter())
+        )
+
+    assert team_service.revive_calls == [team_id]
+    assert not any("Resumed a bound team" in record.getMessage() for record in caplog.records)
+
+
+async def test_a_deleted_bound_team_is_reported_rather_than_resumed(tmp_path: Path) -> None:
+    """A team the service still knows, but has deleted, is gone — not sent to.
+
+    ``bound_process()`` answers None for a ``DELETED`` record, so the router
+    reports it exactly as it reports an unknown team: nothing is revived,
+    nothing is sent, and the chat is told with a remedy. Sending instead would
+    hit the delivery method's ``TeamNotFoundError``, which the webhook has no
+    handler for, and the channel would redeliver for ever.
     """
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
@@ -1437,40 +1428,50 @@ async def test_a_deleted_bound_team_is_reported_rather_than_resumed(tmp_path: Pa
 
     await DefaultChannelRouter().route(_inbound("hello?"), _ctx(registry, team_service, adapter))
 
+    assert team_service.revive_calls == []
     assert team_service.send_from_to_calls == []
     assert team_service.create_team_calls == []
     ((_, notice),) = adapter.notices
     assert "/new" in notice
 
 
-async def test_a_team_brought_up_before_the_resume_lands_still_gets_the_message(
-    tmp_path: Path,
-) -> None:
-    """The race between the state read and the resume is resolved, not propagated.
+async def test_a_deleted_bound_team_is_no_longer_known_to_the_context(tmp_path: Path) -> None:
+    """The deleted row is classified at the context seam, not in the router.
 
-    The read said stopped; by the time the resume ran, a concurrent message or
-    an operator had already brought the team up. ``TeamStateConflictError``
-    means the team is running, which is what the message needed — so it goes,
-    and the user never learns there was a race.
+    ``bound_process()`` is None for a ``DELETED`` record, and ``/status`` —
+    which reads the same method — reports the team as no longer known rather
+    than echoing ``deleted``.
     """
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
-    team_service = _RacingTeamService()
+    team_service = StubTeamService()
     adapter = StubAdapter()
     team_id = await _bind(registry)
-    team_service.teams[team_id] = _team_with_supervisor(team_id)
+    team_service.teams[team_id] = _team_with_supervisor(team_id).model_copy(
+        update={"status": TeamStatus.DELETED}
+    )
+    ctx = _ctx(registry, team_service, adapter)
 
-    await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service, adapter))
+    assert await ctx.bound_process() is None
 
-    assert team_service.restore_team_calls == []
-    assert team_service.send_from_to_calls == [(team_id, "@HumanProxy_0", "@Manager_0", "hello")]
-    assert adapter.notices == []
+    await DefaultChannelRouter().route(
+        ChannelMessage(
+            content="/status",
+            channel_user_id="user-1",
+            command=ChannelCommand(name="status", rest=""),
+        ),
+        ctx,
+    )
+
+    ((_, notice),) = adapter.notices
+    assert str(team_id) in notice
+    assert "no longer known" in notice
 
 
-# --- Row one: a running team behaves exactly as it did, on both paths ---
+# --- A running team behaves exactly as it did, on both paths ---
 
 
 async def test_a_running_bound_team_is_not_resumed_on_the_default_path(tmp_path: Path) -> None:
-    """Row one is byte-for-byte what it was: no resume, same recipient, same content."""
+    """A running team is byte-for-byte what it was: no revive, same recipient, same content."""
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
     adapter = StubAdapter()
@@ -1479,13 +1480,13 @@ async def test_a_running_bound_team_is_not_resumed_on_the_default_path(tmp_path:
 
     await DefaultChannelRouter().route(_inbound("hello"), _ctx(registry, team_service, adapter))
 
-    assert team_service.restore_team_calls == []
+    assert team_service.revive_calls == []
     assert team_service.send_from_to_calls == [(team_id, "@HumanProxy_0", "@Manager_0", "hello")]
     assert adapter.notices == []
 
 
 async def test_a_running_bound_team_is_not_resumed_on_the_named_path(tmp_path: Path) -> None:
-    """Row one on the named-recipient path — the name and the content survive it."""
+    """The running case on the named-recipient path — the name and the content survive it."""
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
     adapter = StubAdapter()
@@ -1496,7 +1497,7 @@ async def test_a_running_bound_team_is_not_resumed_on_the_named_path(tmp_path: P
         _inbound("@Expert_1 a joke please"), _ctx(registry, team_service, adapter)
     )
 
-    assert team_service.restore_team_calls == []
+    assert team_service.revive_calls == []
     assert team_service.send_from_to_calls == [
         (team_id, "@HumanProxy_0", "@Expert_1", "@Expert_1 a joke please")
     ]
@@ -1507,13 +1508,13 @@ async def test_a_running_bound_team_is_not_resumed_on_the_named_path(tmp_path: P
 
 
 async def test_a_blank_message_does_not_resume_a_stopped_bound_team(tmp_path: Path) -> None:
-    """The blank rule runs before the state is resolved, not after it.
+    """The blank rule runs before anything touches the team.
 
-    ``ctx.send`` and ``ctx.send_to`` hold the rule, and both run *below* the
-    state resolution. Resolve first and a caption-less photo or a stray
-    newline places and starts a whole team runtime, and then the message it
-    was resumed for is thrown away — a larger version of the LLM call
-    ``_is_blank`` was written to avoid.
+    The revive lives in the send, and ``ctx.send`` / ``ctx.send_to`` drop a
+    blank before sending — but the router drops it earlier still, before it
+    even asks whether the team exists. A caption-less photo or a stray
+    newline must not bring a whole team runtime back up for a message that
+    is then thrown away.
     """
     registry = YamlChannelRegistry(tmp_path / "registry.yaml")
     team_service = StubTeamService()
@@ -1523,7 +1524,8 @@ async def test_a_blank_message_does_not_resume_a_stopped_bound_team(tmp_path: Pa
 
     await DefaultChannelRouter().route(_inbound("  \n\t "), _ctx(registry, team_service, adapter))
 
-    assert team_service.restore_team_calls == []
+    assert team_service.revive_calls == []
+    assert team_service.teams[team_id].status is TeamStatus.STOPPED
     assert team_service.send_from_to_calls == []
     assert team_service.send_message_calls == []
     assert team_service.create_team_calls == []
