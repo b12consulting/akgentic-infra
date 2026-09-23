@@ -14,8 +14,9 @@ from unittest.mock import MagicMock
 import pytest
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.core.agent_card import AgentCard
+from akgentic.core.messages.message import UserMessage
 from akgentic.core.utils.serializer import SerializableBaseModel
-from akgentic.team.models import AgentCardRef, Process, TeamStatus
+from akgentic.team.models import AgentCardRef, PersistedEvent, Process, TeamStatus
 from akgentic.team.projection import hash_agent_card
 from akgentic.tool.workspace import (
     ID_KIND,
@@ -28,7 +29,11 @@ from akgentic.tool.workspace import (
 )
 
 from akgentic.infra.adapters.shared.team_tree_only_policy import TeamTreeOnlyPolicy
-from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
+from akgentic.infra.errors import (
+    MetadataValidationError,
+    TeamNotFoundError,
+    TeamStateConflictError,
+)
 from akgentic.infra.protocols.workspace_deletion import (
     WorkspaceDeletionContext,
     WorkspaceDeletionPolicy,
@@ -39,6 +44,7 @@ from akgentic.infra.server.services.team_service import (
     CatalogTeamEntryMissingError,
     TeamService,
 )
+from tests.fixtures.events import build_sent_message
 from tests.server.routes._workspace_cards import CaseMetadata, RecordingCardStore, tool_card
 
 
@@ -515,13 +521,326 @@ def test_stopped_team_stop_again_raises_state_conflict(team_service: TeamService
         team_service.stop_team(process.team_id)
 
 
-def test_message_to_a_stopped_team_raises_state_conflict(team_service: TeamService) -> None:
-    """A stopped team is present-but-unusable — the running-handle path says so."""
+# ---------------------------------------------------------------------------
+# Epic 76 — a message to a stopped team brings it back, on every door.
+#
+# The five delivery methods share one rule in ``TeamService``: read the record,
+# refuse a deleted team as missing, deliver to a cached handle, and otherwise
+# revive through the placement before delivering. The lifecycle methods are
+# deliberately excluded from that rule.
+# ---------------------------------------------------------------------------
+
+
+def _spy_placement(team_service: TeamService) -> MagicMock:
+    """Wrap the wired placement so its calls are observable while it still runs."""
+    spy = MagicMock(wraps=team_service._services.placement)
+    team_service._services.placement = spy  # type: ignore[assignment]
+    return spy
+
+
+def _persist_sent_message(team_service: TeamService, team_id: uuid.UUID) -> str:
+    """Append a ``SentMessage`` to the team's log; return its **inner** message id.
+
+    ``_find_message`` resolves by ``SentMessage.message.id``, not the envelope's
+    own id. The sequence sits far above anything the live team persists, as
+    ``tests/server/conftest.py::append_synthetic_events`` does.
+    """
+    sent = build_sent_message(content="an agent asked the human something")
+    team_service._services.event_store.save_event(
+        PersistedEvent(
+            team_id=team_id,
+            sequence=100_000,
+            event=sent,
+            timestamp=datetime.now(UTC),
+        )
+    )
+    return str(sent.message.id)
+
+
+def _stopped_team(team_service: TeamService) -> uuid.UUID:
+    """A real team, created then stopped, with no cached handle left behind."""
     process = team_service.create_team(catalog_namespace="test-team", user_id="anonymous")
     team_service.stop_team(process.team_id)
+    assert team_service.get_handle(process.team_id) is None
+    return process.team_id
 
-    with pytest.raises(TeamStateConflictError, match="is not running"):
+
+def _deliver(team_service: TeamService, method: str, team_id: uuid.UUID, message_id: str) -> None:
+    """Invoke one of the five delivery methods by name with a valid payload."""
+    if method == "send_message":
+        team_service.send_message(team_id, "hello")
+    elif method == "send_message_to":
+        team_service.send_message_to(team_id, "@Manager", "hello")
+    elif method == "send_message_from_to":
+        team_service.send_message_from_to(team_id, "@Human", "@Manager", "hello")
+    elif method == "emit_message":
+        team_service.emit_message(team_id, UserMessage(content="hello"))
+    elif method == "process_human_input":
+        team_service.process_human_input(team_id, "hello", message_id=message_id)
+    else:  # pragma: no cover
+        raise AssertionError(method)
+
+
+_DELIVERY_METHODS = [
+    "send_message",
+    "send_message_to",
+    "send_message_from_to",
+    "emit_message",
+    "process_human_input",
+]
+
+
+@pytest.mark.parametrize("method", _DELIVERY_METHODS)
+def test_a_delivery_to_a_stopped_team_revives_it_once_and_delivers(
+    team_service: TeamService, method: str
+) -> None:
+    """AC 1: a stopped team is revived through the placement, exactly once, then delivered to.
+
+    ``process_human_input`` is the one method whose delivery the seeded team
+    cannot complete — its agents are plain ``Akgent``s, not user proxies — so
+    the revived handle is wrapped and the routing call stubbed. The revive is
+    still the real one: the placement resumes the actual runtime.
+    """
+    team_id = _stopped_team(team_service)
+    message_id = _persist_sent_message(team_service, team_id)
+    spy = _spy_placement(team_service)
+    real_resume = spy.resume_team
+    delivered: list[MagicMock] = []
+
+    def _resume_with_stubbed_routing(resumed_team_id: uuid.UUID) -> MagicMock:
+        handle = MagicMock(wraps=real_resume(resumed_team_id))
+        # The cache is keyed by ``handle.team_id``; a wrapping mock does not
+        # forward attributes, so the id is set explicitly (see
+        # ``test_create_team_forwards_user_email_and_team_id``).
+        handle.team_id = resumed_team_id
+        handle.process_human_input = MagicMock()
+        delivered.append(handle)
+        return handle
+
+    if method == "process_human_input":
+        spy.resume_team = MagicMock(side_effect=_resume_with_stubbed_routing)
+
+    _deliver(team_service, method, team_id, message_id)
+
+    assert spy.resume_team.call_count == 1
+    assert spy.resume_team.call_args == ((team_id,), {})
+    after = team_service.get_team(team_id)
+    assert after is not None
+    assert after.status == TeamStatus.RUNNING
+    assert team_service.get_handle(team_id) is not None
+    if method == "process_human_input":
+        assert delivered[0].process_human_input.call_count == 1
+        routed_content, routed_message = delivered[0].process_human_input.call_args.args
+        assert routed_content == "hello"
+        assert str(routed_message.id) == message_id
+
+
+def test_a_second_delivery_after_the_revive_does_not_revive_again(
+    team_service: TeamService,
+) -> None:
+    """The handle stored by the revive serves the next delivery; no second resume."""
+    team_id = _stopped_team(team_service)
+    spy = _spy_placement(team_service)
+
+    team_service.send_message(team_id, "first")
+    team_service.send_message(team_id, "second")
+
+    assert spy.resume_team.call_count == 1
+
+
+def _process_with(status: TeamStatus) -> Process:
+    """A minimal ``Process`` snapshot carrying only the status the rule reads."""
+    now = datetime.now(UTC)
+    return Process.model_construct(
+        team_id=uuid.uuid4(),
+        status=status,
+        user_id="alice",
+        user_email="",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _delivery_service_over(status: TeamStatus) -> tuple[TeamService, MagicMock, str]:
+    """A ``TeamService`` over stubbed services whose record carries ``status``.
+
+    The event store holds one ``SentMessage`` so ``process_human_input`` finds
+    its message and reaches the same rule as the other four. Returns the
+    service, the stubbed services container and the inner message id.
+    """
+    services = MagicMock()
+    services.worker_handle.get_team.return_value = _process_with(status)
+    sent = build_sent_message(content="asked")
+    services.event_store.load_events.return_value = [
+        PersistedEvent(team_id=uuid.uuid4(), sequence=1, event=sent, timestamp=datetime.now(UTC))
+    ]
+    return (
+        TeamService(services, workspaces_root=Path("/unused")),
+        services,
+        str(sent.message.id),
+    )
+
+
+@pytest.mark.parametrize("method", _DELIVERY_METHODS)
+def test_the_delivery_lands_on_the_handle_read_back_from_the_cache(method: str) -> None:
+    """AC 2: what is delivered to is what ``cache.get`` returns after the store.
+
+    On community ``store`` then ``get`` hand back the same object, so returning
+    the ``resume_team`` result directly passes every wired test. A cache whose
+    ``get`` answers a distinct object is the only thing that tells the two
+    apart — and on a tier where the cache wraps or proxies what it stores, the
+    ``resume_team`` object is the wrong one to deliver to.
+    """
+    service, services, message_id = _delivery_service_over(TeamStatus.STOPPED)
+    resumed = MagicMock(name="A-from-resume_team")
+    resumed.team_id = services.worker_handle.get_team.return_value.team_id
+    cached = MagicMock(name="B-from-cache")
+    services.placement.resume_team.return_value = resumed
+    services.runtime_cache.get.side_effect = [None, cached]
+
+    _deliver(service, method, resumed.team_id, message_id)
+
+    services.placement.resume_team.assert_called_once_with(resumed.team_id)
+    services.runtime_cache.store.assert_called_once_with(resumed.team_id, resumed)
+    delivery_calls = {
+        "send_message": cached.send,
+        "send_message_to": cached.send_to,
+        "send_message_from_to": cached.send_from_to,
+        "emit_message": cached.emitMessage,
+        "process_human_input": cached.process_human_input,
+    }
+    assert delivery_calls[method].call_count == 1
+    assert resumed.method_calls == []
+
+
+@pytest.mark.parametrize("method", _DELIVERY_METHODS)
+def test_a_deleted_record_is_missing_on_every_delivery_method(method: str) -> None:
+    """AC 3: ``DELETED`` is ``TeamNotFoundError`` — a 404, never a 409 — and no revive."""
+    service, services, message_id = _delivery_service_over(TeamStatus.DELETED)
+    team_id = services.worker_handle.get_team.return_value.team_id
+
+    with pytest.raises(TeamNotFoundError, match="deleted") as excinfo:
+        _deliver(service, method, team_id, message_id)
+
+    assert not isinstance(excinfo.value, TeamStateConflictError)
+    services.placement.resume_team.assert_not_called()
+    services.runtime_cache.store.assert_not_called()
+
+
+def test_a_running_record_with_no_cached_handle_asks_the_placement_and_propagates_its_refusal(
+    team_service: TeamService,
+) -> None:
+    """AC 4: the row is handed to the placement; community refuses it, unchanged.
+
+    ``TeamManager.resume_team`` refuses a running team with a bare
+    ``ValueError`` that names neither "not found" nor "deleted", so the route
+    keeps answering 409 — exactly what it answered for "handle not cached".
+    The service classifies nothing here; the placement's message is the one
+    that reaches the client.
+    """
+    process = team_service.create_team(catalog_namespace="test-team", user_id="anonymous")
+    team_service._cache.remove(process.team_id)  # type: ignore[attr-defined]
+    spy = _spy_placement(team_service)
+
+    with pytest.raises(ValueError, match="currently running") as excinfo:
         team_service.send_message(process.team_id, "hello")
+
+    assert not isinstance(excinfo.value, TeamNotFoundError)
+    assert not isinstance(excinfo.value, TeamStateConflictError)
+    assert spy.resume_team.call_count == 1
+
+
+def test_process_human_input_finds_the_message_before_it_revives(
+    team_service: TeamService,
+) -> None:
+    """AC 5: an unknown message id on a stopped team is a 404 with no revive.
+
+    Reviving first would start a runtime for a request that can only fail —
+    and on a channel, leave a team running that nobody addressed.
+    """
+    team_id = _stopped_team(team_service)
+    spy = _spy_placement(team_service)
+
+    with pytest.raises(TeamNotFoundError, match="not found"):
+        team_service.process_human_input(team_id, "hello", message_id="no-such-id")
+
+    assert spy.resume_team.call_count == 0
+    after = team_service.get_team(team_id)
+    assert after is not None
+    assert after.status == TeamStatus.STOPPED
+
+
+def test_the_lifecycle_methods_never_revive(team_service: TeamService, tmp_path: Path) -> None:
+    """AC 6: stop, delete, metadata update and create never resume a team.
+
+    Every call runs against a team with **no cached handle** — that is the
+    only state in which routing a lifecycle method through the revive rule
+    would reach ``placement.resume_team``; on a running team with its handle
+    cached the rule returns early and a wrongly-routed method looks correct.
+    So: a running team whose handle was dropped (stop), a stopped team
+    (metadata update), an id that names no team yet (create), and a stopped
+    record over the stub shape (delete — the wired ``TeamManager.delete_team``
+    has a known teardown race with subscribers, and the guard is on the
+    service's own path, which the stub reaches). ``restore_team`` is excluded:
+    it resumes by design.
+    """
+    spy = _spy_placement(team_service)
+
+    running = team_service.create_team(catalog_namespace="test-team", user_id="anonymous")
+    team_service._cache.remove(running.team_id)  # type: ignore[attr-defined]
+    team_service.stop_team(running.team_id)
+
+    stopped = _stopped_team(team_service)
+    with pytest.raises(MetadataValidationError):
+        team_service.update_team_metadata(stopped, {"tenant": "acme"})
+
+    team_service.create_team(
+        catalog_namespace="test-team", user_id="anonymous", team_id=uuid.uuid4()
+    )
+    assert spy.resume_team.call_count == 0
+
+    stub = _stub_team_service(tmp_path, team_exists=True)
+    stub._services.runtime_cache.get.return_value = None
+    stub.delete_team(stub._services.worker_handle.get_team.return_value.team_id)
+    stub._services.placement.resume_team.assert_not_called()
+
+
+def test_the_revive_is_logged_once_at_info_naming_the_team(
+    team_service: TeamService, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC 9: one INFO record per revive, none for a delivery to a running cached team."""
+    stopped = _stopped_team(team_service)
+    running = team_service.create_team(catalog_namespace="test-team", user_id="anonymous")
+    logger_name = "akgentic.infra.server.services.team_service"
+
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        team_service.send_message(stopped, "hello")
+    revives = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.INFO and "reviving" in r.getMessage()
+    ]
+    assert all(str(stopped) in message for message in revives)
+    assert len(revives) == 1
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        team_service.send_message(running.team_id, "hello")
+    assert not any("reviving" in r.getMessage() for r in caplog.records)
+
+
+def test_no_delivery_method_still_refuses_a_stopped_team(team_service: TeamService) -> None:
+    """AC 8: the former "is not running" pin, inverted — the running-handle path is gone.
+
+    Kept beside the revive spec because the two say different things: that one
+    proves the revive happens, this one proves nothing in the service still
+    answers a stopped team with a conflict.
+    """
+    team_id = _stopped_team(team_service)
+
+    team_service.send_message(team_id, "hello")  # must NOT raise
+
+    assert not hasattr(TeamService, "_get_running_handle")
 
 
 # ---------------------------------------------------------------------------

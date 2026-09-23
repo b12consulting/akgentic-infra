@@ -516,25 +516,24 @@ class TestCommandsOnStoppedTeam:
         finally:
             _cleanup_team(smoke_server, team_id)
 
-    async def test_cs3_send_to_stopped_team_errors(
-        self, smoke_server: str
-    ) -> None:
-        """CS3: Send message to stopped team → error."""
+    async def test_cs3_send_to_stopped_team_revives_it(self, smoke_server: str) -> None:
+        """CS3: Send message to stopped team → the team is revived and running again.
+
+        A message to a stopped team brings it back on every door (epic 76), so
+        the REST send no longer errors and the client need not restore first.
+        """
         team_id = _create_team(smoke_server)
         _stop_team(smoke_server, team_id)
         await asyncio.sleep(0.3)
         try:
             session = _make_session(smoke_server, team_id)
 
-            # Sending to a stopped team should fail via REST
             loop = asyncio.get_running_loop()
-            try:
-                await loop.run_in_executor(
-                    None, session.client.send_message, team_id, "hello stopped"
-                )
-                pytest.fail("Expected error sending to stopped team")
-            except (SystemExit, Exception):  # noqa: BLE001
-                pass  # Expected — team not running
+            await loop.run_in_executor(
+                None, session.client.send_message, team_id, "hello stopped"
+            )  # must NOT raise
+            info = await loop.run_in_executor(None, session.client.get_team, team_id)
+            assert info.status == "running"
 
         finally:
             _cleanup_team(smoke_server, team_id)
