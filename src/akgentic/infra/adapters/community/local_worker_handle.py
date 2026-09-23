@@ -7,13 +7,11 @@ import uuid
 from typing import TYPE_CHECKING
 
 from akgentic.core import ActorSystem
-from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
 
 if TYPE_CHECKING:
     from akgentic.core.utils.serializer import SerializableBaseModel
-    from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import Process
 
 
@@ -24,7 +22,8 @@ class LocalWorkerHandle:
     """Community-tier adapter delegating WorkerHandle methods to TeamManager.
 
     Wraps an in-process ``TeamManager`` and ``ServiceRegistry`` to provide
-    tier-agnostic worker lifecycle operations.
+    tier-agnostic worker lifecycle operations. Resuming is not among them —
+    it is a placement decision, taken by ``LocalPlacement`` (ADR-045 §D1).
     """
 
     def __init__(
@@ -46,12 +45,6 @@ class LocalWorkerHandle:
         """Delete a team by delegating to TeamManager."""
         logger.debug("Deleting team: %s", team_id)
         self._team_manager.delete_team(team_id)
-
-    def resume_team(self, team_id: uuid.UUID) -> TeamHandle:
-        """Resume a stopped team and return a LocalTeamHandle."""
-        logger.debug("Resuming team: %s", team_id)
-        runtime = self._team_manager.resume_team(team_id)
-        return LocalTeamHandle(runtime)
 
     def get_team(self, team_id: uuid.UUID) -> Process | None:
         """Get team metadata by delegating to TeamManager."""

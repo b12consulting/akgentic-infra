@@ -63,10 +63,14 @@ class WorkerRejectedError(PlacementError):
 
 @runtime_checkable
 class PlacementStrategy(Protocol):
-    """Creates a team on a selected worker instance and returns a handle.
+    """Decides where a team runs — new or returning — and returns a handle.
 
     Encapsulates worker selection and team creation so that ``TeamService``
-    never needs to know about ``TeamManager`` or actor internals.
+    never needs to know about ``TeamManager`` or actor internals. Resuming a
+    stopped team is the same decision taken a second time (ADR-045 §D1): a
+    returning team is placed by the same rules that placed it when it was
+    created, rather than by whatever worker a caller happens to hold a handle
+    to.
 
     Worker selection semantics vary by tier:
 
@@ -155,5 +159,35 @@ class PlacementStrategy(Protocol):
                 above; otherwise if no worker is available or creation fails.
                 A ``ServerError``, and — for backward compatibility — a
                 ``RuntimeError``.
+        """
+        ...
+
+    def resume_team(self, team_id: uuid.UUID) -> TeamHandle:
+        """Place a stopped team again and return a handle to the live team.
+
+        The team already exists; what is decided here is *where* it runs now.
+        Implementations select a worker exactly as ``create_team`` does and then
+        have that worker carry the resume out.
+
+        Concurrent resumes of one team must yield **one** runtime: a second
+        caller arriving while the first resume is still running waits for it and
+        receives the same handle, or the same failure.
+
+        Args:
+            team_id: ID of the stopped team to resume.
+
+        Raises:
+            ValueError: If the team is not in a stopped state — unknown,
+                already running, or deleted. **Unchanged from where this member
+                moved** (ADR-045 §D1): callers classify these by message, so
+                they must not be translated into ``PlacementError``, which the
+                single infra handler would map to 503 instead of today's 409
+                and 404.
+            PlacementError: Only where placement itself fails — no worker is
+                available, or a caller waiting on another resume of the same
+                team gives up.
+
+        Returns:
+            A TeamHandle for interacting with the resumed team.
         """
         ...

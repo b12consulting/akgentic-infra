@@ -39,7 +39,7 @@ from akgentic.infra.server.routes._team_access import (
 )
 from akgentic.infra.server.services._metadata_payload import dump_metadata
 from akgentic.infra.server.services.team_service import CatalogTeamEntryMissingError, TeamService
-from akgentic.infra.server.state_keys import CONNECTION_MANAGER
+from akgentic.infra.server.state_keys import CHANNEL_REGISTRY, CONNECTION_MANAGER
 from akgentic.team import EventNotFoundError
 from akgentic.team.models import Process, TeamStatus
 
@@ -281,14 +281,37 @@ def get_team(
     status_code=204,
     dependencies=[Depends(require_team_access)],
 )
-def delete_team(
+async def delete_team(
     team_id: uuid.UUID,
+    request: Request,
     service: TeamService = Depends(get_team_service),
 ) -> None:
-    """Stop and delete a team."""
+    """Stop and delete a team, releasing every chat bound to it.
+
+    A delete is the one lifecycle change a conversation cannot survive, so it
+    is where channel bindings are released (ADR-045 §D6) — a stop keeps them,
+    because a stop is reversible and the chat's next message brings the team
+    back (ADR-045 §D7).
+
+    The release runs **only after** the delete has succeeded: a failed delete
+    must not cost the user their conversation. It is also not allowed to fail
+    the 204 — the team is gone either way, and refusing to report a committed
+    delete does not undo it. A binding left behind by a failed release no
+    longer strands its chat in silence — the next message finds the team gone
+    and says so (ADR-045 §D7) — but it is not healed either: starting a fresh
+    team and rebinding is what issue #487 still owes. That is why this release
+    is the only thing releasing a binding today, and why it is worth doing
+    even though it cannot fail the route.
+
+    ``service.delete_team`` runs on a worker thread: it stops actors and can
+    take a while, and this route is ``async`` so it can await the registry
+    directly. The registry must not be pushed onto a thread — the YAML
+    implementation's read-modify-write is safe only because the event loop
+    serialises it.
+    """
     logger.info("DELETE /teams/%s", team_id)
     try:
-        service.delete_team(team_id)
+        await asyncio.to_thread(service.delete_team, team_id)
     except TeamNotFoundError:
         raise HTTPException(status_code=404, detail="Team not found") from None
     except TeamStateConflictError as exc:
@@ -298,6 +321,14 @@ def delete_team(
         # than becoming a 500 — including a bare ValueError rising from the
         # team package, whose conditions this layer cannot name.
         raise HTTPException(status_code=404, detail="Team not found") from None
+
+    # The lookup is inside the guard, not above it: ``require`` raises on an
+    # unset slot, and nothing about this route's contract survives a committed
+    # delete reported as a 500. Every way the release can fail is one way.
+    try:
+        await CHANNEL_REGISTRY.require(request).deregister_team(team_id)
+    except Exception:
+        logger.exception("Releasing channel bindings failed for deleted team %s", team_id)
 
 
 @router.patch(

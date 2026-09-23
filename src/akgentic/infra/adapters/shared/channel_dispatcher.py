@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import TYPE_CHECKING
@@ -36,9 +35,9 @@ class InteractionChannelDispatcher:
         ``on_message`` runs in a Pykka actor thread with no event loop and must
         **never** block or await — its only registry call is
         ``find_binding_sync``, which answers from memory. A missed delivery is
-        recoverable; a stalled actor thread is not. ``on_stop`` runs during
-        teardown, which is not latency-critical, and may block for the length of
-        one registry write (ADR-043 §D5).
+        recoverable; a stalled actor thread is not. ``on_stop`` makes no
+        registry call at all — it discards one set entry and fans out to the
+        adapters (ADR-043 §D5, as amended by ADR-045 §D6).
 
     Concurrency:
         Sharing the instance also means sharing it across threads. Every team
@@ -133,26 +132,27 @@ class InteractionChannelDispatcher:
         """
 
     def on_stop(self, team_id: uuid.UUID) -> None:
-        """Release the stopped team's bindings and notify every adapter.
+        """Notify every adapter. The team's bindings are **kept**.
 
-        Freeing the binding is what makes "one active team per conversation"
-        true rather than aspirational: the next inbound message from that chat
-        finds nothing and takes the initiation branch.
+        A stop is reversible — an idle timeout the user never asked for is the
+        usual cause — so the conversation survives it and the next inbound
+        message still finds its binding (ADR-045 §D6). Releasing here made
+        every idle timeout a lost conversation.
 
-        ``asyncio.run`` is the bridge because ``deregister_team`` is ``async``
-        while this hook is synchronous and runs on the orchestrator's own actor
-        thread, which has no running loop. The adapter fan-out sits **after**
-        the guarded block, so a failing registry does not cost the adapters
-        their notification.
+        Bindings are released on **delete**, by the delete route, which is the
+        one lifecycle change a conversation cannot survive.
+
+        What that next message then *does* with the binding — resume the
+        stopped team and carry on, silently — is ADR-045 §D7, and the router
+        does it: it resolves the bound team's state before it sends. Only
+        §D7's third row is outstanding (issue #487); a binding whose team is
+        gone altogether gets a notice rather than a fresh team. Neither case
+        is a reason to reinstate a release here.
 
         Args:
             team_id: ``team_id`` from the orchestrator — the team being stopped.
         """
         self._restoring.discard(team_id)
-        try:
-            asyncio.run(self._registry.deregister_team(team_id))
-        except Exception:
-            logger.exception("Channel dispatcher: releasing bindings failed for team %s", team_id)
         logger.debug("ChannelDispatcher stopped: team_id=%s", team_id)
         for adapter in self._adapters:
             adapter.on_stop(team_id)

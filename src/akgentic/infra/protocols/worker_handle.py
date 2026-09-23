@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from akgentic.core.utils.serializer import SerializableBaseModel
-    from akgentic.infra.protocols.team_handle import TeamHandle
     from akgentic.team.models import Process
 
 
@@ -15,7 +14,7 @@ if TYPE_CHECKING:
 class WorkerHandle(Protocol):
     """Tier-agnostic handle for worker-level team lifecycle operations.
 
-    Abstracts stop/delete/resume/get operations so that ``TeamService``
+    Abstracts stop/delete/get operations so that ``TeamService``
     can manage team lifecycle without knowing the underlying tier implementation.
 
     Implementations: ``LocalWorkerHandle`` (community), ``HttpWorkerHandle``
@@ -26,8 +25,6 @@ class WorkerHandle(Protocol):
           or has been deleted.
         - ``delete_team()`` raises ``ValueError`` if the team has already
           been deleted.
-        - ``resume_team()`` raises ``ValueError`` if the team is not in a
-          stopped state (e.g. already running or deleted).
         - ``get_team()`` returns ``None`` for unknown team IDs (never raises).
         - ``update_team_metadata()`` raises ``ValueError`` for an unknown or
           deleted team, and ``pydantic.ValidationError`` for a value that does
@@ -49,17 +46,6 @@ class WorkerHandle(Protocol):
 
         Args:
             team_id: ID of the team to delete.
-        """
-        ...
-
-    def resume_team(self, team_id: uuid.UUID) -> TeamHandle:
-        """Resume a stopped team.
-
-        Args:
-            team_id: ID of the team to resume.
-
-        Returns:
-            A TeamHandle for interacting with the resumed team.
         """
         ...
 

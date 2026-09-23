@@ -10,6 +10,7 @@ from akgentic.infra.protocols.team_handle import TeamHandle
 
 if TYPE_CHECKING:
     from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
+    from akgentic.infra.protocols.placement import PlacementStrategy
     from akgentic.team.repositories.yaml import YamlEventStore
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,7 @@ class LocalRuntimeCache:
         self,
         worker_handle: LocalWorkerHandle,
         event_store: YamlEventStore,
+        placement: PlacementStrategy,
     ) -> None:
         """Auto-restore teams that were running before a server restart.
 
@@ -58,6 +60,10 @@ class LocalRuntimeCache:
         teams. Each team the store returns is stopped first (RUNNING →
         STOPPED) then resumed (STOPPED → RUNNING) to create live actors and
         store the handle in the cache.
+
+        The stop goes to the worker handle and the resume to the placement:
+        deciding where a returning team runs is a placement decision (ADR-045
+        §D5), and boot is one of the two callers that take it.
 
         Failures are logged and skipped — one broken team must not block
         server startup.
@@ -71,7 +77,7 @@ class LocalRuntimeCache:
         for process in running:
             try:
                 worker_handle.stop_team(process.team_id)
-                handle = worker_handle.resume_team(process.team_id)
+                handle = placement.resume_team(process.team_id)
                 self.store(process.team_id, handle)
                 logger.info("Restored team: %s", process.team_id)
             except Exception:  # noqa: BLE001
