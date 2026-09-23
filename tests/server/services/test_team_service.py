@@ -727,6 +727,30 @@ def test_a_deleted_record_is_missing_on_every_delivery_method(method: str) -> No
     services.runtime_cache.store.assert_not_called()
 
 
+def test_a_revive_that_leaves_no_handle_in_the_cache_is_a_wiring_defect_not_a_delivery() -> None:
+    """The placement resumed, the store ran, and the cache still answers None: ``RuntimeError``.
+
+    This is the one branch of the rule no wired tier reaches — a cache that
+    forgets what was just stored is a wiring defect, not a state a client can
+    act on — so it is pinned over the stub. The error must not be a
+    ``ValueError`` (which the routes would classify as a client-visible 4xx),
+    and nothing is delivered to the ``resume_team`` result in its place.
+    """
+    service, services, message_id = _delivery_service_over(TeamStatus.STOPPED)
+    resumed = MagicMock(name="A-from-resume_team")
+    resumed.team_id = services.worker_handle.get_team.return_value.team_id
+    services.placement.resume_team.return_value = resumed
+    services.runtime_cache.get.side_effect = [None, None]
+
+    with pytest.raises(RuntimeError, match="revived but has no live handle") as excinfo:
+        _deliver(service, "send_message", resumed.team_id, message_id)
+
+    assert not isinstance(excinfo.value, ValueError)
+    services.placement.resume_team.assert_called_once_with(resumed.team_id)
+    services.runtime_cache.store.assert_called_once_with(resumed.team_id, resumed)
+    assert resumed.method_calls == []
+
+
 def test_a_running_record_with_no_cached_handle_asks_the_placement_and_propagates_its_refusal(
     team_service: TeamService,
 ) -> None:
