@@ -556,7 +556,17 @@ class DefaultChannelRouter(InteractionChannelRouter):
         start a fresh team and rebind the chat, which is a larger behavioural
         decision than saying so; that rebind is what issue #487 still owes.
         The binding is left in place in every row.
+
+        **A blank body is dropped before any of that.** ``ctx.send`` and
+        ``ctx.send_to`` hold the blank rule, but they run below the state
+        resolution, so without this the router would place and start a whole
+        team for a caption-less photo and then throw the message away — a
+        larger version of the cost ``_is_blank`` exists to avoid — and would
+        tell a chat its team is gone over a stray newline.
         """
+        if _is_blank(message.content):
+            logger.info("Dropping blank inbound message for %s", ctx.address)
+            return
         if not await self._resolve_bound_team(binding, ctx):
             return
         recipient = self._recipient_named_in(message)
@@ -580,9 +590,7 @@ class DefaultChannelRouter(InteractionChannelRouter):
                 "Name the agent, for example '@Agent your question'."
             )
 
-    async def _resolve_bound_team(
-        self, binding: ChannelBinding, ctx: ChannelRouteContext
-    ) -> bool:
+    async def _resolve_bound_team(self, binding: ChannelBinding, ctx: ChannelRouteContext) -> bool:
         """Make the bound team reachable, or tell the chat it is gone.
 
         Called once at the top of ``on_bound``, before the recipient is

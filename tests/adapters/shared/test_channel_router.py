@@ -1503,6 +1503,55 @@ async def test_a_running_bound_team_is_not_resumed_on_the_named_path(tmp_path: P
     assert adapter.notices == []
 
 
+# --- A blank body costs nothing, whatever state the bound team is in ---
+
+
+async def test_a_blank_message_does_not_resume_a_stopped_bound_team(tmp_path: Path) -> None:
+    """The blank rule runs before the state is resolved, not after it.
+
+    ``ctx.send`` and ``ctx.send_to`` hold the rule, and both run *below* the
+    state resolution. Resolve first and a caption-less photo or a stray
+    newline places and starts a whole team runtime, and then the message it
+    was resumed for is thrown away — a larger version of the LLM call
+    ``_is_blank`` was written to avoid.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    adapter = StubAdapter()
+    team_id = await _bind(registry)
+    team_service.teams[team_id] = _stopped_team(team_id)
+
+    await DefaultChannelRouter().route(_inbound("  \n\t "), _ctx(registry, team_service, adapter))
+
+    assert team_service.restore_team_calls == []
+    assert team_service.send_from_to_calls == []
+    assert team_service.send_message_calls == []
+    assert team_service.create_team_calls == []
+    assert adapter.notices == []
+    binding = await registry.find_binding(_ADDRESS)
+    assert binding is not None
+    assert binding.team_id == team_id
+
+
+async def test_a_blank_message_to_a_lost_bound_team_is_not_reported(tmp_path: Path) -> None:
+    """Row three is owed to a user who typed something, and a blank is not that.
+
+    The notice exists so that nobody is left with silence after saying
+    something. Announcing a lost team because a sticker arrived is noise the
+    user cannot act on and did not ask for.
+    """
+    registry = YamlChannelRegistry(tmp_path / "registry.yaml")
+    team_service = StubTeamService()
+    adapter = StubAdapter()
+    await _bind(registry)
+
+    await DefaultChannelRouter().route(_inbound("   "), _ctx(registry, team_service, adapter))
+
+    assert adapter.notices == []
+    assert team_service.send_from_to_calls == []
+    assert team_service.create_team_calls == []
+
+
 # --- Every creation announces its team and agent ---
 
 
