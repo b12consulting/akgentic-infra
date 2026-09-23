@@ -583,9 +583,11 @@ class TestOnStop:
         """With no registry call there is nothing left to swallow.
 
         Re-aimed from the pre-D6 spec, which pinned that a failing release did
-        not cost the adapters their notice. ``trap_awaits`` raises the instant
-        any async method is awaited, so a re-introduced release would surface
-        as a raising ``on_stop`` rather than as a silent log line.
+        not cost the adapters their notice. ``awaited`` records the method
+        before ``trap_awaits`` raises, so a re-introduced release is caught by
+        the recording whether or not it keeps the ``except Exception`` that
+        used to swallow it — the assertion below, not a propagating
+        ``on_stop``, is what goes red.
         """
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A), trap_awaits=True)
@@ -611,7 +613,11 @@ class TestOnStop:
 
 
 class TestOnStopAgainstARealRegistry:
-    """The stopped team keeps its chat, so the next message resumes it."""
+    """The stopped team keeps its chat, so a later resume has one to return to.
+
+    Resuming it on the chat's next message is ADR-045 §D7, deferred to issue
+    #487; what is pinned here is only that the binding is still there for it.
+    """
 
     def test_the_binding_survives_the_stop(self, tmp_path: Path) -> None:
         """An hour of silence costs the user nothing.

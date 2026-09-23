@@ -290,7 +290,9 @@ async def delete_team(
 
     A delete is the one lifecycle change a conversation cannot survive, so it
     is where channel bindings are released (ADR-045 §D6) — a stop keeps them,
-    because a stop is reversible and the next message simply resumes the team.
+    because a stop is reversible. (Resuming the stopped team on the chat's
+    next message is ADR-045 §D7, deferred to issue #487; a kept binding is
+    therefore not yet a working conversation.)
 
     The release runs **only after** the delete has succeeded: a failed delete
     must not cost the user their conversation. It is also not allowed to fail
@@ -319,9 +321,11 @@ async def delete_team(
         # team package, whose conditions this layer cannot name.
         raise HTTPException(status_code=404, detail="Team not found") from None
 
-    registry = CHANNEL_REGISTRY.require(request)
+    # The lookup is inside the guard, not above it: ``require`` raises on an
+    # unset slot, and nothing about this route's contract survives a committed
+    # delete reported as a 500. Every way the release can fail is one way.
     try:
-        await registry.deregister_team(team_id)
+        await CHANNEL_REGISTRY.require(request).deregister_team(team_id)
     except Exception:
         logger.exception("Releasing channel bindings failed for deleted team %s", team_id)
 

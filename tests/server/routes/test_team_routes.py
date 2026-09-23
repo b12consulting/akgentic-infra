@@ -21,6 +21,7 @@ from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.routes._team_access import get_team_service
 from akgentic.infra.server.settings import CommunitySettings
+from akgentic.infra.server.state_keys import CHANNEL_REGISTRY
 from akgentic.infra.wiring import wire_community
 
 
@@ -179,7 +180,7 @@ def channel_registry(app: FastAPI, tmp_path: Path) -> YamlChannelRegistry:
     the service stay the real ones.
     """
     registry = YamlChannelRegistry(tmp_path / "channels.yaml")
-    app.state.channel_registry = registry
+    CHANNEL_REGISTRY.set(app, registry)
     return registry
 
 

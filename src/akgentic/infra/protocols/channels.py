@@ -402,9 +402,13 @@ class ChannelRegistry(ChannelRegistryReadSync, Protocol):
         """Remove every binding for a team, across all channels.
 
         Called when a team is **deleted** — not when it stops. A stop is
-        reversible, so the conversation survives it and the next message
-        resumes the team; a delete is final, and a binding that outlives its
-        team can only misroute (ADR-045 §D6).
+        reversible, so the conversation survives it; a delete is final, and a
+        binding that outlives its team can only misroute (ADR-045 §D6).
+
+        Resuming the stopped team on the conversation's next message is
+        ADR-045 §D7 and is **not yet implemented** (issue #487): until it
+        lands, a surviving binding whose team is stopped makes that chat
+        unreachable rather than restoring it.
 
         Args:
             team_id: The team whose bindings are released.
