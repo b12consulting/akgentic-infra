@@ -143,12 +143,11 @@ class InteractionChannelDispatcher:
         one lifecycle change a conversation cannot survive.
 
         What that next message then *does* with the binding — resume the
-        stopped team and carry on — is ADR-045 §D7 and is **not yet
-        implemented** (issue #487). Until it lands the router sends to the
-        stopped team unconditionally and the send fails, so a chat is
-        unreachable between its idle timeout and the team being restored by
-        some other route. That regression was accepted knowingly when §D6
-        shipped alone; the remedy is §D7, not a release reinstated here.
+        stopped team and carry on, silently — is ADR-045 §D7, and the router
+        does it: it resolves the bound team's state before it sends. Only
+        §D7's third row is outstanding (issue #487); a binding whose team is
+        gone altogether gets a notice rather than a fresh team. Neither case
+        is a reason to reinstate a release here.
 
         Args:
             team_id: ``team_id`` from the orchestrator — the team being stopped.

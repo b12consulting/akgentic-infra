@@ -8,7 +8,7 @@ import re
 import uuid
 from typing import TYPE_CHECKING
 
-from akgentic.infra.errors import TeamNotFoundError
+from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelBinding,
@@ -19,6 +19,7 @@ from akgentic.infra.protocols.channels import (
     InteractionChannelRouter,
     JsonValue,
 )
+from akgentic.team.models import TeamStatus
 
 if TYPE_CHECKING:
     from akgentic.core.messages.message import Message
@@ -411,6 +412,37 @@ class ChannelRouteContext:
             return None
         return await asyncio.to_thread(self._team_service.get_team, binding.team_id)
 
+    async def resume_bound_team(self) -> Process | None:
+        """Bring this conversation's bound team back up, and return it.
+
+        Takes **no argument**, like ``release()``, ``send()`` and
+        ``bound_process()``: the subject is the conversation's own binding, so
+        this cannot reach a team the chat is not bound to. That is the whole
+        of why it is safe to expose (see this class's docstring).
+
+        Goes through ``TeamService.restore_team`` rather than the placement
+        directly, and that is load-bearing: ``restore_team`` is what stores the
+        new handle in the runtime cache. A resume that bypassed it would leave
+        the cache cold, and the very next send would fail with
+        ``Team {id} handle not cached`` — a bare ``ValueError`` the webhook
+        surfaces as a 500 and the channel then redelivers (ADR-045 §D7).
+
+        Returns:
+            The restored ``Process``, or None when the conversation has no
+            binding — there is nothing to resume.
+
+        Raises:
+            TeamNotFoundError: The binding names a team the service does not
+                know.
+            TeamStateConflictError: The team was already running by the time
+                this ran — something else brought it up.
+            ValueError: The team has been deleted.
+        """
+        binding = await self.find_binding()
+        if binding is None:
+            return None
+        return await asyncio.to_thread(self._team_service.restore_team, binding.team_id)
+
     def notify(self, text: str) -> None:
         """Send a channel-layer acknowledgement to this conversation.
 
@@ -507,15 +539,26 @@ class DefaultChannelRouter(InteractionChannelRouter):
         anywhere but the front of the user's own text is left alone: it is part
         of what they are saying. ``content`` is passed verbatim either way.
 
-        **The bound team's state is not resolved here, and that is a known
-        gap.** Since the dispatcher stopped releasing bindings on a stop
-        (ADR-045 §D6), this hook meets teams that are not running, and the send
-        then fails out of ``TeamService`` with a ``TeamStateConflictError`` that
-        the webhook surfaces unchanged. Resolving the state — resume a stopped
-        team, replace a deleted one — is ADR-045 §D7, deferred to issue #487.
-        Do not soften the symptom with a partial resume or a swallowed error
-        here; the fix is §D7 whole.
+        **The bound team's state is resolved first**, because since the
+        dispatcher stopped releasing bindings on a stop (ADR-045 §D6) this hook
+        meets teams that are not running. Three rows (ADR-045 §D7), resolved
+        once for **both** dispatch paths below:
+
+        - **running** — sent, exactly as it always was;
+        - **anything else** — resumed, then sent, and *silently*. The
+          conversation simply continued; a notice on every post-idle message
+          would make the idle timeout a user-visible rule again, which is what
+          §D6 exists to remove.
+        - **unknown** — the binding names a team the service no longer has.
+          The chat is told, and nothing is sent.
+
+        The third row **reports** the loss rather than healing it. §D7 has it
+        start a fresh team and rebind the chat, which is a larger behavioural
+        decision than saying so; that rebind is what issue #487 still owes.
+        The binding is left in place in every row.
         """
+        if not await self._resolve_bound_team(binding, ctx):
+            return
         recipient = self._recipient_named_in(message)
         logger.debug(
             "Channel continuation: channel=%s, user=%s, team_id=%s, from=%s, to=%s",
@@ -536,6 +579,75 @@ class DefaultChannelRouter(InteractionChannelRouter):
                 "This team has nobody for me to pass that to. "
                 "Name the agent, for example '@Agent your question'."
             )
+
+    async def _resolve_bound_team(
+        self, binding: ChannelBinding, ctx: ChannelRouteContext
+    ) -> bool:
+        """Make the bound team reachable, or tell the chat it is gone.
+
+        Called once at the top of ``on_bound``, before the recipient is
+        resolved, so the named-recipient and default-recipient paths are
+        governed by the same check — half of it in one branch would leave half
+        the regression it closes.
+
+        ``bound_process()`` returns None for a binding naming a team the
+        service no longer knows. It also returns None for an unbound
+        conversation, but this hook is only ever reached with a binding in
+        hand, so None here is unambiguously the third row; do not call
+        ``find_binding()`` a second time to tell them apart.
+
+        Returns:
+            True when the message can be dispatched — the team was running, or
+            has just been resumed. False when it cannot: the team is gone and
+            the chat has been told so.
+        """
+        process = await ctx.bound_process()
+        if process is None:
+            return self._report_team_gone(binding, ctx)
+        if process.status == TeamStatus.RUNNING:
+            return True
+        try:
+            await ctx.resume_bound_team()
+        except TeamStateConflictError:
+            # Between the state read and the resume, something else brought
+            # the team up — a concurrent message, or an operator. Nothing to
+            # do but carry on with the send. Ordered before ``ValueError``
+            # deliberately: it is a subclass of it.
+            logger.debug("Bound team %s was already running by the resume", binding.team_id)
+        except ValueError:
+            # TeamNotFoundError, and the bare ValueError a deleted team
+            # raises. The team is not coming back, so this is the third row.
+            return self._report_team_gone(binding, ctx)
+        else:
+            logger.info(
+                "Resumed a bound team for an inbound message: channel=%s, user=%s, team_id=%s",
+                ctx.address.channel,
+                ctx.address.channel_user_id,
+                binding.team_id,
+            )
+        return True
+
+    @staticmethod
+    def _report_team_gone(binding: ChannelBinding, ctx: ChannelRouteContext) -> bool:
+        """Tell the chat its team is gone, send nothing, and always answer False.
+
+        The notice promises nothing: the team is not coming back on its own,
+        and the only remedy this router has is one the user can act on now.
+        Starting a fresh team and rebinding the chat here is ADR-045 §D7's
+        third row and issue #487's — so the binding is left exactly as it is,
+        naming the team that was lost.
+        """
+        logger.info(
+            "Bound team is gone: channel=%s, user=%s, team_id=%s",
+            ctx.address.channel,
+            ctx.address.channel_user_id,
+            binding.team_id,
+        )
+        ctx.notify(
+            f"Team {binding.team_id} is no longer available, and I cannot bring it back. "
+            "Say /new to start a fresh session."
+        )
+        return False
 
     @staticmethod
     def _recipient_named_in(message: ChannelMessage) -> str | None:

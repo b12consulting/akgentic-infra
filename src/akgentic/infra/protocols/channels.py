@@ -406,9 +406,11 @@ class ChannelRegistry(ChannelRegistryReadSync, Protocol):
         binding that outlives its team can only misroute (ADR-045 §D6).
 
         Resuming the stopped team on the conversation's next message is
-        ADR-045 §D7 and is **not yet implemented** (issue #487): until it
-        lands, a surviving binding whose team is stopped makes that chat
-        unreachable rather than restoring it.
+        ADR-045 §D7, and the router does it: a surviving binding whose team is
+        stopped brings that team back, silently, and the message goes through.
+        What §D7 still owes is its third row (issue #487) — starting a fresh
+        team and rebinding when the bound team is gone altogether. A chat in
+        that state is told so rather than healed.
 
         Args:
             team_id: The team whose bindings are released.

@@ -290,17 +290,18 @@ async def delete_team(
 
     A delete is the one lifecycle change a conversation cannot survive, so it
     is where channel bindings are released (ADR-045 §D6) — a stop keeps them,
-    because a stop is reversible. (Resuming the stopped team on the chat's
-    next message is ADR-045 §D7, deferred to issue #487; a kept binding is
-    therefore not yet a working conversation.)
+    because a stop is reversible and the chat's next message brings the team
+    back (ADR-045 §D7).
 
     The release runs **only after** the delete has succeeded: a failed delete
     must not cost the user their conversation. It is also not allowed to fail
     the 204 — the team is gone either way, and refusing to report a committed
-    delete does not undo it. A binding left behind by a failed release strands
-    its chat until ADR-045 §D7 lands (issue #487) and makes the next message
-    heal it; that is why this release is the only thing releasing a binding
-    today, and why it is worth doing even though it cannot fail the route.
+    delete does not undo it. A binding left behind by a failed release no
+    longer strands its chat in silence — the next message finds the team gone
+    and says so (ADR-045 §D7) — but it is not healed either: starting a fresh
+    team and rebinding is what issue #487 still owes. That is why this release
+    is the only thing releasing a binding today, and why it is worth doing
+    even though it cannot fail the route.
 
     ``service.delete_team`` runs on a worker thread: it stops actors and can
     take a while, and this route is ``async`` so it can await the registry
