@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from akgentic.catalog import Catalog
 from akgentic.core import ActorSystem
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.team_tree_only_policy import TeamTreeOnlyPolicy
 from akgentic.infra.protocols.auth import AuthStrategy

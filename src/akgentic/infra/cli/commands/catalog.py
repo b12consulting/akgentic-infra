@@ -196,9 +196,7 @@ def _register_kind_commands(parent_app: typer.Typer, kind_name: str) -> None:
     ) -> None:
         state = _current_state()
         body, content_type = _read_body(file, state.fmt)
-        data = _call_api(
-            lambda: state.client.admin_catalog_create(kind_name, body, content_type)
-        )
+        data = _call_api(lambda: state.client.admin_catalog_create(kind_name, body, content_type))
         _render_entry(data, kind_name, state.fmt)
 
     @kind_app.command("update")

@@ -1,6 +1,14 @@
 telegram:
-  parser_fqcn: "akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser"
-  adapter_fqcn: "akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter"
+  parser_fqcn: "akgentic.infra.adapters.channels.telegram_parser.TelegramChannelParser"
+  adapter_fqcn: "akgentic.infra.adapters.channels.telegram_adapter.TelegramChannelAdapter"
   config:
     bot_token: "${TELEGRAM_BOT_TOKEN}"
+    default_catalog_entry: "default"
+
+signal:
+  parser_fqcn: "akgentic.infra.adapters.channels.signal_parser.SignalChannelParser"
+  adapter_fqcn: "akgentic.infra.adapters.channels.signal_adapter.SignalChannelAdapter"
+  config:
+    signal_api_url: "${SIGNAL_API_URL}"
+    signal_number: "${SIGNAL_NUMBER}"
     default_catalog_entry: "default"

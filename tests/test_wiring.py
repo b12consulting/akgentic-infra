@@ -16,11 +16,11 @@ from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
+from akgentic.infra.adapters.channels.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelConfig
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
-from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
+from akgentic.infra.adapters.channels.telegram_adapter import TelegramChannelAdapter
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.protocols.channels import ChannelAddress
 from akgentic.infra.server.deps import CommunityServices
@@ -316,10 +316,10 @@ class TestWireCommunityChannelDispatcher:
             channels={
                 "telegram": ChannelConfig(
                     parser_fqcn=(
-                        "akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser"
+                        "akgentic.infra.adapters.channels.telegram_parser.TelegramChannelParser"
                     ),
                     adapter_fqcn=(
-                        "akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter"
+                        "akgentic.infra.adapters.channels.telegram_adapter.TelegramChannelAdapter"
                     ),
                     config={"bot_token": "test-token"},
                 )

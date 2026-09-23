@@ -215,9 +215,7 @@ async def check_workspace_scope(
             extra={"team_id": str(team_id), "user_id": user.user_id, "path": str(path)},
         )
         raise SharedWorkspaceRefusedError()
-    ctx = TeamAccessContext(
-        team_id=team_id, owner_user_id=scope, metadata_indexes=metadata_indexes
-    )
+    ctx = TeamAccessContext(team_id=team_id, owner_user_id=scope, metadata_indexes=metadata_indexes)
     if not await policy.is_allowed(ctx=ctx, user=user):
         logger.info(
             "workspace-scope gate denied",

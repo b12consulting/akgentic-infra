@@ -625,37 +625,63 @@ def test_channel_binding_is_pydantic_model_with_its_fields() -> None:
     }
 
 
-def test_channel_binding_is_a_channel_address_in_declaration_order() -> None:
-    """The split names a concept the design already had, and moves no field.
+def test_channel_binding_is_a_channel_address_losing_no_field() -> None:
+    """The split names a concept the design already had, and loses no field.
 
-    Pydantic orders base-class fields first, so the inherited pair must still
-    come out ``channel, channel_user_id, team_id, agent_name`` — the order the
-    persisted YAML record is written in. ``issubclass`` alone would stay green
-    through a field re-declared on the subclass, which silently reorders the
-    record; the field-order comparison is what notices.
+    ``metadata`` is declared on ``ChannelAddress``, not on the binding. The
+    notice path (``deliver_notice``) is handed a bare address and never a
+    binding, so an adapter routing on metadata — Signal choosing which of
+    several bot accounts answers — would otherwise have it for agent messages
+    and not for acknowledgements. Pydantic orders base-class fields first, so
+    it sits between the address pair and the binding pair.
+
+    **Field ORDER is deliberately not asserted, because it does not ship.** An
+    earlier version of this test pinned the dumped key order on the stated
+    grounds that it "is what the YAML registry writes". That premise was false:
+    ``YamlChannelRegistry`` persists with ``yaml.safe_dump``, whose
+    ``sort_keys`` defaults to True, so every record is written alphabetically
+    and Pydantic's declaration order never reaches the file. The assertion
+    could only ever fail for a reordering no reader could observe — and it did,
+    when ``metadata`` moved to the base class, against a change that altered
+    nothing on disk.
+
+    What must hold is what a reader actually depends on: every field is still
+    present, and a record persisted before the move still loads.
     """
     from akgentic.infra.protocols import ChannelAddress, ChannelBinding
 
     assert issubclass(ChannelBinding, ChannelAddress)
-    assert list(ChannelBinding.model_fields) == [
+    assert set(ChannelAddress.model_fields) == {"channel", "channel_user_id", "metadata"}
+    assert set(ChannelBinding.model_fields) == {
         "channel",
         "channel_user_id",
+        "metadata",
         "team_id",
         "agent_name",
-        "metadata",
-    ]
-    assert list(ChannelAddress.model_fields) == ["channel", "channel_user_id"]
+    }
 
-    # The declaration order above is only a proxy for what actually ships: the
-    # key order of the dumped record, which is what the YAML registry writes.
     binding = ChannelBinding(
         channel="telegram",
         channel_user_id="987654321",
         team_id=uuid.uuid4(),
         agent_name="@HumanProxy_0",
     )
-    dumped = [key for key in binding.model_dump(mode="json") if not key.startswith("__")]
-    assert dumped == ["channel", "channel_user_id", "team_id", "agent_name", "metadata"]
+    dumped = {key for key in binding.model_dump(mode="json") if not key.startswith("__")}
+    assert dumped == {"channel", "channel_user_id", "team_id", "agent_name", "metadata"}
+
+    # A record written before ``metadata`` existed — the shape on disk in any
+    # registry that has not been rewritten since — must still load.
+    team_id = uuid.uuid4()
+    legacy = ChannelBinding.model_validate(
+        {
+            "agent_name": "@Human",
+            "channel": "signal",
+            "channel_user_id": "+32470000000",
+            "team_id": str(team_id),
+        }
+    )
+    assert legacy.metadata == {}
+    assert legacy.team_id == team_id
 
 
 def test_channel_address_carries_no_team() -> None:

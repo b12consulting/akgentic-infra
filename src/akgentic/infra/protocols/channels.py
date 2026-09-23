@@ -11,7 +11,7 @@ from akgentic.core.utils.serializer import SerializableBaseModel
 
 if TYPE_CHECKING:
     from akgentic.core.messages import SentMessage
-    from akgentic.infra.adapters.shared.channel_router import ChannelRouteContext
+    from akgentic.infra.adapters.channels.channel_router import ChannelRouteContext
 
 # Recursive JSON-safe type for webhook payloads — replaces dict[str, Any].
 # PEP 695 (``type`` statement) rather than a plain assignment: the alias is
@@ -98,6 +98,26 @@ class ChannelAddress(SerializableBaseModel):
 
     channel: str = Field(description="Channel name (e.g., 'telegram', 'slack')")
     channel_user_id: str = Field(description="Channel-specific user identifier (the chat)")
+    metadata: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description=(
+            "Plain-JSON data a channel router attaches to this address for its own "
+            "later use. Opaque to the framework: its shape is whatever the router "
+            "that wrote it defines.\n\n"
+            "It lives on the **address** rather than only on the binding because "
+            "the outbound path has two halves and both need it. ``deliver`` is "
+            "given a binding, but ``deliver_notice`` is given a bare address — a "
+            "``status`` reply finds no binding and an ``unregister`` has just "
+            "destroyed one — so an adapter that needs per-conversation routing "
+            "data would have had it for messages and not for acknowledgements. "
+            "Signal is the case that forced it: one daemon may hold several bot "
+            "accounts, and a reply must leave from the account the message "
+            "arrived on, notices included.\n\n"
+            "UNVALIDATED, and on the inbound path it comes from an "
+            "unauthenticated payload, so a router reading it back must treat it "
+            "as untrusted input — never as proof of identity or entitlement."
+        ),
+    )
 
 
 class ChannelBinding(ChannelAddress):
@@ -126,15 +146,11 @@ class ChannelBinding(ChannelAddress):
             "table, already headcount-expanded (e.g. '@HumanProxy_0'). Not a role."
         ),
     )
-    metadata: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description=(
-            "Plain-JSON data a channel router attaches to the binding for its own "
-            "later use — on the inbound path through ``find_binding`` and on the "
-            "outbound one through ``find_binding_sync``. Opaque to the framework: "
-            "its shape is whatever the router that wrote it defines."
-        ),
-    )
+    # ``metadata`` is inherited from ChannelAddress rather than redeclared here.
+    # It was originally a binding-only field; it moved up so that the notice
+    # path, which has no binding, can carry the same data (see the field's own
+    # description). A binding reads it back on the inbound path through
+    # ``find_binding`` and on the outbound one through ``find_binding_sync``.
 
 
 @runtime_checkable

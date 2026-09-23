@@ -6,8 +6,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
-from akgentic.infra.adapters.shared.channel_router import ChannelRouteContext
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.channels.channel_router import ChannelRouteContext
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelRegistry,
@@ -98,7 +98,15 @@ async def webhook(
         return
 
     ctx = ChannelRouteContext(
-        address=ChannelAddress(channel=channel, channel_user_id=message.channel_user_id),
+        address=ChannelAddress(
+            channel=channel,
+            channel_user_id=message.channel_user_id,
+            # Carried onto the address, not just the binding a router may later
+            # write: the notice path has no binding, so an adapter needing
+            # per-conversation routing data would otherwise have it for agent
+            # messages and not for acknowledgements.
+            metadata=message.binding_metadata or {},
+        ),
         registry=channel_registry,
         team_service=team_service,
         adapters=parser_registry.get_adapters(),

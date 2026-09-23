@@ -17,7 +17,7 @@ from akgentic.catalog import parse_prefixes
 # server.settings), at which point ``akgentic.infra.adapters`` is in
 # ``sys.modules`` but only partially executed. Importing the submodule resolves;
 # reading ``ChannelConfig`` off the half-built parent package would not.
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelConfig
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 

@@ -13,15 +13,15 @@ from akgentic.team.models import AgentCardRef, AgentRef, Process, TeamStatus
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_parser_registry import (
+from akgentic.infra.adapters.channels.channel_parser_registry import (
     ChannelConfig,
     ChannelParserRegistry,
 )
-from akgentic.infra.adapters.shared.channel_router import (
+from akgentic.infra.adapters.channels.channel_router import (
     ChannelRouteContext,
     DefaultChannelRouter,
 )
+from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.errors import TeamNotFoundError, TeamStateConflictError
 from akgentic.infra.protocols.channels import (
     ChannelAddress,
@@ -33,7 +33,7 @@ from akgentic.infra.protocols.channels import (
 )
 from akgentic.infra.server.routes.webhook import router as webhook_router
 
-_THIS_MODULE = "tests.adapters.shared.test_channel_router"
+_THIS_MODULE = "tests.adapters.channels.test_channel_router"
 
 
 # --- Stubs, resolvable by FQCN from this module ---
@@ -315,7 +315,7 @@ def test_a_class_without_route_is_refused_at_wiring() -> None:
 def test_the_default_router_accepts_config_meant_for_the_other_two() -> None:
     """Configured explicitly, the default router must survive the shared kwargs."""
     registry = ChannelParserRegistry(
-        _config("akgentic.infra.adapters.shared.channel_router.DefaultChannelRouter")
+        _config("akgentic.infra.adapters.channels.channel_router.DefaultChannelRouter")
     )
     assert isinstance(registry.get_router("routed"), DefaultChannelRouter)
 

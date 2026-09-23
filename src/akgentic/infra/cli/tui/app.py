@@ -354,9 +354,7 @@ class ChatApp(App[None]):
         else:
             self._update_thinking_indicator()
 
-    def _on_processed_message(
-        self, msg: ProcessedMessage, conversation: VerticalScroll
-    ) -> None:
+    def _on_processed_message(self, msg: ProcessedMessage, conversation: VerticalScroll) -> None:
         """Handle ProcessedMessage telemetry -- remove pending agent processing."""
         self._pending_messages.pop(msg.message_id, None)
         if not self._pending_messages:

@@ -122,7 +122,7 @@ def _parse_kind_and_id(path: str) -> tuple[str, str]:
     ``entry_id`` is the empty string when the path targets the collection
     endpoint (e.g. ``POST /admin/catalog/team``).
     """
-    remainder = path[len(_ADMIN_CATALOG_PREFIX):]
+    remainder = path[len(_ADMIN_CATALOG_PREFIX) :]
     segments = [s for s in remainder.split("/") if s]
     if not segments:
         return "", ""

@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.errors import MetadataValidationError
 from akgentic.infra.protocols.channels import (
     ChannelAddress,

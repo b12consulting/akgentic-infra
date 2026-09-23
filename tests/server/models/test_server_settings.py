@@ -11,7 +11,7 @@ import pytest
 from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
 from pydantic import ValidationError
 
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelConfig
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 
@@ -563,10 +563,10 @@ class TestServerSettingsChannels:
                 {
                     "telegram": {
                         "parser_fqcn": (
-                            "akgentic.infra.adapters.shared.telegram_parser.TelegramChannelParser"
+                            "akgentic.infra.adapters.channels.telegram_parser.TelegramChannelParser"
                         ),
                         "adapter_fqcn": (
-                            "akgentic.infra.adapters.shared.telegram_adapter.TelegramChannelAdapter"
+                            "akgentic.infra.adapters.channels.telegram_adapter.TelegramChannelAdapter"
                         ),
                         "config": {"bot_token": "test-token"},
                     }

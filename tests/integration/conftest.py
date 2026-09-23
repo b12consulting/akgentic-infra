@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 from pydantic_ai.models.test import TestModel
 
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.server.app import create_app
 from akgentic.infra.server.assembly import build_app
 from akgentic.infra.server.deps import CommunityServices

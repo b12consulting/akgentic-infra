@@ -188,9 +188,7 @@ class LocalEventStream:
                 sig.set()
             return seq
 
-    def read_from(
-        self, team_id: uuid.UUID, cursor: int = 0
-    ) -> list[Message]:
+    def read_from(self, team_id: uuid.UUID, cursor: int = 0) -> list[Message]:
         """Read all events from cursor position (non-blocking snapshot).
 
         A closed stream still yields what was written to it: ``closed`` means
@@ -211,9 +209,7 @@ class LocalEventStream:
 
         return list(ts.events[cursor:])
 
-    def subscribe(
-        self, team_id: uuid.UUID, cursor: int = 0
-    ) -> LocalStreamReader:
+    def subscribe(self, team_id: uuid.UUID, cursor: int = 0) -> LocalStreamReader:
         """Create a cursor-based blocking reader for the team's stream.
 
         Creates the stream implicitly if it does not exist.

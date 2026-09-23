@@ -6,13 +6,13 @@ import logging
 
 from akgentic.catalog import Catalog, YamlEntryRepository
 from akgentic.core import ActorSystem, EventSubscriber
+from akgentic.infra.adapters.channels.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber

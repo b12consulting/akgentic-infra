@@ -14,7 +14,7 @@ targets byte-for-byte the same slot.
 
 from __future__ import annotations
 
-from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
+from akgentic.infra.adapters.channels.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.protocols.channels import ChannelRegistry
 from akgentic.infra.server.deps import TierServices
 from akgentic.infra.server.routes.ws import ConnectionManager

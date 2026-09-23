@@ -491,9 +491,7 @@ def _validate_composition(
     names: set[str] = set()
     for module in modules:
         if module.name in names:
-            raise DuplicateModuleNameError(
-                f"duplicate module name '{module.name}' in composition"
-            )
+            raise DuplicateModuleNameError(f"duplicate module name '{module.name}' in composition")
         names.add(module.name)
     providers: dict[str, str] = {}
     for module, entries in zip(modules, contributions, strict=True):

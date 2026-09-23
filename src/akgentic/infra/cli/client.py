@@ -389,9 +389,7 @@ class ApiClient:
             raise ApiError(0, "unexpected response shape: expected JSON array")
         return [Entry.model_validate(item) for item in body]
 
-    def admin_catalog_get(
-        self, kind: str, entry_id: str, *, namespace: str
-    ) -> CatalogEntry:
+    def admin_catalog_get(self, kind: str, entry_id: str, *, namespace: str) -> CatalogEntry:
         """GET /admin/catalog/<kind>/<id>?namespace=<ns> → v2 ``Entry`` model."""
         resp = self._request(
             "GET",
@@ -469,9 +467,7 @@ class ApiClient:
         data = _require_json_object(resp.json())
         return Entry.model_validate(data)
 
-    def admin_catalog_delete(
-        self, kind: str, entry_id: str, *, namespace: str
-    ) -> None:
+    def admin_catalog_delete(self, kind: str, entry_id: str, *, namespace: str) -> None:
         """DELETE /admin/catalog/<kind>/<id>?namespace=<ns> — 204 on success."""
         self._request(
             "DELETE",

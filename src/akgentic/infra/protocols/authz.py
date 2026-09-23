@@ -44,9 +44,7 @@ class TeamListFilter(BaseModel):
                 for key, values in self.metadata.items()
             )
         ):
-            raise ValueError(
-                "TeamListFilter.metadata must contain non-empty keys and value lists"
-            )
+            raise ValueError("TeamListFilter.metadata must contain non-empty keys and value lists")
         return self
 
 
@@ -114,9 +112,7 @@ class TeamAccessPolicy(Protocol):
         """Return whether ``user`` may restore the team described by ``ctx``."""
         ...
 
-    async def can_update_metadata(
-        self, *, ctx: TeamAccessContext, user: RequestUser
-    ) -> bool:
+    async def can_update_metadata(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         """Return whether ``user`` may update metadata for the team in ``ctx``."""
         ...
 

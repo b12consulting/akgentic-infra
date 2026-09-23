@@ -58,9 +58,7 @@ class OwnerOrAdminPolicy:
     async def can_restore_team(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         return await self.is_allowed(ctx=ctx, user=user)
 
-    async def can_update_metadata(
-        self, *, ctx: TeamAccessContext, user: RequestUser
-    ) -> bool:
+    async def can_update_metadata(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:
         return await self.is_allowed(ctx=ctx, user=user)
 
     async def is_allowed(self, *, ctx: TeamAccessContext, user: RequestUser) -> bool:

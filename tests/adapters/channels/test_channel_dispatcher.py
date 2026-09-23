@@ -11,8 +11,8 @@ from akgentic.core.messages.message import UserMessage
 from akgentic.core.messages.orchestrator import ReceivedMessage, SentMessage, StartMessage
 from akgentic.core.orchestrator import EventSubscriber
 
+from akgentic.infra.adapters.channels.channel_dispatcher import InteractionChannelDispatcher
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
 from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
 
 # ---------------------------------------------------------------------------
