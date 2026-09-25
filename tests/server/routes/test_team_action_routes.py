@@ -49,13 +49,19 @@ def test_send_message_not_found(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def _status_of(client: TestClient, team_id: str) -> str:
+    """The team's lifecycle status as the API reports it."""
+    return str(client.get(f"/teams/{team_id}").json()["status"])
+
+
 def test_send_message_stopped_team(client: TestClient) -> None:
-    """POST /teams/{id}/message on stopped team returns 409."""
+    """POST /teams/{id}/message on a stopped team revives it and returns 204 (epic 76)."""
     create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
     team_id = create_resp.json()["team_id"]
     client.post(f"/teams/{team_id}/stop")
     resp = client.post(f"/teams/{team_id}/message", json={"content": "hello"})
-    assert resp.status_code == 409
+    assert resp.status_code == 204
+    assert _status_of(client, team_id) == "running"
 
 
 def test_send_message_to_agent_success(client: TestClient) -> None:
@@ -76,12 +82,13 @@ def test_send_message_to_agent_not_found_team(client: TestClient) -> None:
 
 
 def test_send_message_to_agent_stopped_team(client: TestClient) -> None:
-    """POST /teams/{id}/message/{agent} on stopped team returns 409."""
+    """POST /teams/{id}/message/{agent} on a stopped team revives it and returns 204."""
     create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
     team_id = create_resp.json()["team_id"]
     client.post(f"/teams/{team_id}/stop")
     resp = client.post(f"/teams/{team_id}/message/@Manager", json={"content": "hello"})
-    assert resp.status_code == 409
+    assert resp.status_code == 204
+    assert _status_of(client, team_id) == "running"
 
 
 def test_send_message_to_agent_unknown_agent(client: TestClient) -> None:
@@ -113,7 +120,7 @@ def test_send_message_from_to_not_found_team(client: TestClient) -> None:
 
 
 def test_send_message_from_to_stopped_team(client: TestClient) -> None:
-    """POST send_from_to on stopped team returns 409."""
+    """POST send_from_to on a stopped team revives it and returns 204."""
     create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
     team_id = create_resp.json()["team_id"]
     client.post(f"/teams/{team_id}/stop")
@@ -121,7 +128,8 @@ def test_send_message_from_to_stopped_team(client: TestClient) -> None:
         f"/teams/{team_id}/message/from/@Human/to/@Manager",
         json={"content": "hello"},
     )
-    assert resp.status_code == 409
+    assert resp.status_code == 204
+    assert _status_of(client, team_id) == "running"
 
 
 def test_send_message_from_to_unknown_sender(client: TestClient) -> None:
@@ -179,14 +187,15 @@ def test_emit_notification_not_found_team(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_emit_notification_stopped_team_returns_409(client: TestClient) -> None:
-    """POST /teams/{id}/notification on a stopped team returns 409."""
+def test_emit_notification_stopped_team_revives_it(client: TestClient) -> None:
+    """POST /teams/{id}/notification on a stopped team revives it and returns 204."""
     create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
     team_id = create_resp.json()["team_id"]
     client.post(f"/teams/{team_id}/stop")
     payload = UserMessage(content="banner").model_dump(mode="json")
     resp = client.post(f"/teams/{team_id}/notification", json={"message": payload})
-    assert resp.status_code == 409
+    assert resp.status_code == 204
+    assert _status_of(client, team_id) == "running"
 
 
 # --- Typed-Message send via the merged /message* routes (Story 47.3, ADR-22 §Decision 6) ---

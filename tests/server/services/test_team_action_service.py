@@ -30,12 +30,19 @@ def test_send_message_not_found(team_service: TeamService) -> None:
         team_service.send_message(uuid.uuid4(), "hello")
 
 
+def _assert_running(team_service: TeamService, team_id: uuid.UUID) -> None:
+    """The team's record says RUNNING again after a delivery revived it."""
+    after = team_service.get_team(team_id)
+    assert after is not None
+    assert after.status == TeamStatus.RUNNING
+
+
 def test_send_message_stopped_team(team_service: TeamService) -> None:
-    """send_message raises ValueError for stopped team."""
+    """send_message revives a stopped team and delivers (epic 76)."""
     process = team_service.create_team("test-team", user_id="anonymous")
     team_service.stop_team(process.team_id)
-    with pytest.raises(ValueError, match="not running"):
-        team_service.send_message(process.team_id, "hello")
+    team_service.send_message(process.team_id, "hello")  # must NOT raise
+    _assert_running(team_service, process.team_id)
 
 
 def test_send_message_to_success(team_service: TeamService) -> None:
@@ -52,11 +59,11 @@ def test_send_message_to_not_found_team(team_service: TeamService) -> None:
 
 
 def test_send_message_to_stopped_team(team_service: TeamService) -> None:
-    """send_message_to raises ValueError for stopped team."""
+    """send_message_to revives a stopped team and delivers (epic 76)."""
     process = team_service.create_team("test-team", user_id="anonymous")
     team_service.stop_team(process.team_id)
-    with pytest.raises(ValueError, match="not running"):
-        team_service.send_message_to(process.team_id, "@Manager", "hello")
+    team_service.send_message_to(process.team_id, "@Manager", "hello")  # must NOT raise
+    _assert_running(team_service, process.team_id)
 
 
 def test_send_message_from_to_success(team_service: TeamService) -> None:
@@ -72,11 +79,11 @@ def test_send_message_from_to_not_found_team(team_service: TeamService) -> None:
 
 
 def test_send_message_from_to_stopped_team(team_service: TeamService) -> None:
-    """send_message_from_to raises ValueError for stopped team."""
+    """send_message_from_to revives a stopped team and delivers (epic 76)."""
     process = team_service.create_team("test-team", user_id="anonymous")
     team_service.stop_team(process.team_id)
-    with pytest.raises(ValueError, match="not running"):
-        team_service.send_message_from_to(process.team_id, "@Human", "@Manager", "hello")
+    team_service.send_message_from_to(process.team_id, "@Human", "@Manager", "hello")
+    _assert_running(team_service, process.team_id)
 
 
 def test_emit_message_success(team_service: TeamService) -> None:
@@ -93,11 +100,11 @@ def test_emit_message_not_found(team_service: TeamService) -> None:
 
 
 def test_emit_message_stopped_team(team_service: TeamService) -> None:
-    """emit_message raises ValueError for stopped team."""
+    """emit_message revives a stopped team and publishes (epic 76)."""
     process = team_service.create_team("test-team", user_id="anonymous")
     team_service.stop_team(process.team_id)
-    with pytest.raises(ValueError, match="not running"):
-        team_service.emit_message(process.team_id, UserMessage(content="notice"))
+    team_service.emit_message(process.team_id, UserMessage(content="notice"))  # must NOT raise
+    _assert_running(team_service, process.team_id)
 
 
 def test_emit_message_forwards_same_instance(team_service: TeamService) -> None:

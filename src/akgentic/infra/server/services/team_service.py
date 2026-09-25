@@ -646,57 +646,54 @@ class TeamService:
         logger.info("Team deleted: team_id=%s", team_id)
 
     def emit_message(self, team_id: uuid.UUID, message: Message) -> None:
-        """Publish a pre-formed message into a running team's event record.
+        """Publish a pre-formed message into a team's event record, reviving it if stopped.
 
-        Resolves the running handle and delegates to ``handle.emitMessage``
-        — same shape as ``send_message``. The message reaches the team's
-        subscribers (durable store + live stream) with no agent processing
-        and no outbound channel dispatch (ADR-22).
+        Resolves the live handle — reviving a stopped team first — and
+        delegates to ``handle.emitMessage``, same shape as ``send_message``.
+        The message reaches the team's subscribers (durable store + live
+        stream) with no agent processing and no outbound channel dispatch
+        (ADR-22).
 
         Raises:
-            TeamNotFoundError: If the team is unknown.
-            TeamStateConflictError: If the team exists but is not running.
+            TeamNotFoundError: If the team is unknown or deleted.
         """
-        handle = self._get_running_handle(team_id)
+        handle = self._get_or_revive_handle(team_id)
         handle.emitMessage(message)
         logger.debug("Message emitted to team %s", team_id)
 
     def send_message(self, team_id: uuid.UUID, content: str | Message) -> None:
-        """Send a message to a running team.
+        """Send a message to a team, reviving it first if it is stopped.
 
         Raises:
-            TeamNotFoundError: If the team is unknown.
-            TeamStateConflictError: If the team exists but is not running.
+            TeamNotFoundError: If the team is unknown or deleted.
         """
-        handle = self._get_running_handle(team_id)
+        handle = self._get_or_revive_handle(team_id)
         handle.send(content)
         logger.debug("Message sent to team %s", team_id)
 
     def send_message_to(self, team_id: uuid.UUID, agent_name: str, content: str | Message) -> None:
-        """Send a message to a specific agent in a running team.
+        """Send a message to a specific agent of a team, reviving it first if stopped.
 
         Raises:
-            TeamNotFoundError: If the team is unknown.
-            TeamStateConflictError: If the team exists but is not running.
+            TeamNotFoundError: If the team is unknown or deleted.
             ValueError: If the agent is not found — raised inside the team
                 package, so it arrives unclassified.
         """
-        handle = self._get_running_handle(team_id)
+        handle = self._get_or_revive_handle(team_id)
         handle.send_to(agent_name, content)
         logger.debug("Message sent to agent '%s' in team %s", agent_name, team_id)
 
     def send_message_from_to(
         self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str | Message
     ) -> None:
-        """Send a message from a specific agent to another agent in a running team.
+        """Send a message from one agent to another, reviving the team first if stopped.
 
         Raises:
-            TeamNotFoundError: If the team is unknown.
-            TeamStateConflictError: If the team exists but is not running.
+            TeamNotFoundError: If the team is unknown or deleted.
             ValueError: If the sender or the recipient is not found — raised
                 inside the team package, so it arrives unclassified.
         """
-        handle = self._get_running_handle(team_id)
+        handle = self._get_or_revive_handle(team_id)
         handle.send_from_to(sender_name, recipient_name, content)
         logger.debug(
             "Message sent from '%s' to '%s' in team %s", sender_name, recipient_name, team_id
@@ -708,16 +705,20 @@ class TeamService:
         content: str,
         message_id: str,
     ) -> None:
-        """Route human input to HumanProxy for a specific message.
+        """Route human input to HumanProxy for a specific message, reviving the team if stopped.
+
+        The message is found **before** the team is revived: a request naming
+        an unknown message can only fail, and reviving first would start a
+        runtime for it — on a channel, one nobody addressed.
 
         Raises:
-            TeamNotFoundError: If the team, or the message, is unknown.
-            TeamStateConflictError: If the team exists but is not running.
+            TeamNotFoundError: If the team is unknown or deleted, or the
+                message is unknown.
         """
-        handle = self._get_running_handle(team_id)
         # _find_message resolves by inner id and returns only SentMessage, so
         # event.message is the inner Message to route (ADR-027 §Decision 1).
         event = self._find_message(team_id, message_id)
+        handle = self._get_or_revive_handle(team_id)
         handle.process_human_input(content, event.message)
         logger.debug("Human input routed to team %s, message_id=%s", team_id, message_id)
 
@@ -834,28 +835,51 @@ class TeamService:
         """
         return self._cache.get(team_id)
 
-    def _get_running_handle(self, team_id: uuid.UUID) -> TeamHandle:
-        """Look up a cached handle, verifying the team is running.
+    def _get_or_revive_handle(self, team_id: uuid.UUID) -> TeamHandle:
+        """The live handle for a delivery — reviving the team through placement if needed.
+
+        The one rule every delivery door shares (ADR-046 D1). The **record is
+        read before the cache**: a cached handle may outlive its record, and
+        reading the cache first would deliver to a team whose record already
+        says ``DELETED``. A running team with a cached handle costs one record
+        read and nothing else.
+
+        With no cached handle the placement is asked to resume — whatever the
+        record's status. A ``STOPPED`` team comes back; a ``RUNNING`` record
+        with no handle is the placement's to refuse, and its refusal propagates
+        unchanged (on community, ``ValueError`` "currently running"). The
+        service classifies nothing here.
+
+        The handle returned is the one **read back from the cache after the
+        store**, never the ``resume_team`` result: on a tier whose cache wraps
+        or proxies what it holds, the two are not the same object, and the
+        delivery must go to the one every later call will find.
 
         Raises:
-            TeamNotFoundError: If the team is unknown.
-            TeamStateConflictError: If the team exists but is not running.
-            ValueError: If the team is running but no handle is cached — a
-                server-side inconsistency rather than a state the caller can
-                reason about, so it stays unclassified.
+            TeamNotFoundError: If the team is unknown or deleted.
+            ValueError: Propagated from the placement when it refuses to
+                resume the team.
+            RuntimeError: If the placement resumed the team but the cache
+                still holds no handle for it — a wiring defect, not a state
+                the caller can act on.
         """
         process = self._services.worker_handle.get_team(team_id)
         if process is None:
             msg = f"Team {team_id} not found"
             raise TeamNotFoundError(msg)
-        if process.status != TeamStatus.RUNNING:
-            msg = f"Team {team_id} is not running"
-            raise TeamStateConflictError(msg)
-        logger.debug("Resolving running handle for team %s", team_id)
+        if process.status == TeamStatus.DELETED:
+            msg = f"Team {team_id} has been deleted"
+            raise TeamNotFoundError(msg)
+        handle = self._cache.get(team_id)
+        if handle is not None:
+            return handle
+        logger.info("Team %s has no live handle -- reviving before delivery", team_id)
+        resumed = self._services.placement.resume_team(team_id)
+        self._cache.store(resumed.team_id, resumed)
         handle = self._cache.get(team_id)
         if handle is None:
-            msg = f"Team {team_id} handle not cached"
-            raise ValueError(msg)
+            msg = f"Team {team_id} was revived but has no live handle"
+            raise RuntimeError(msg)
         return handle
 
     def _find_message(self, team_id: uuid.UUID, message_id: str) -> SentMessage:

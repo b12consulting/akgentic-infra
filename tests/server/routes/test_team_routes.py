@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from akgentic.team.models import TeamStatus
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -410,9 +411,101 @@ def test_routes_using_the_message_matcher_keep_todays_statuses(client: TestClien
     assert client.post(f"/teams/{team_id}/restore").status_code == 409  # already running
     assert client.post(f"/teams/{team_id}/stop").status_code == 204
     assert client.post(f"/teams/{team_id}/stop").status_code == 409  # already stopped
-    assert client.post(f"/teams/{team_id}/message", json={"content": "hi"}).status_code == 409
+    # A message to a stopped team revives it (epic 76) — no longer a conflict.
+    assert client.post(f"/teams/{team_id}/message", json={"content": "hi"}).status_code == 204
     assert client.post(f"/teams/{absent}/stop").status_code == 404
     assert client.post(f"/teams/{absent}/restore").status_code == 404
+
+
+# --- A message to a stopped team brings it back (Epic 76) ---
+
+
+def test_a_message_to_a_stopped_team_revives_it_and_answers_204(client: TestClient) -> None:
+    """``POST /teams/{id}/message`` on a stopped team: 204, and the team is running again.
+
+    The client no longer has to call ``/restore`` first — the delivery door
+    and the channel webhook now do the same thing for a stopped team.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    assert client.post(f"/teams/{team_id}/stop").status_code == 204
+    assert client.get(f"/teams/{team_id}").json()["status"] == "stopped"
+
+    assert client.post(f"/teams/{team_id}/message", json={"content": "hi"}).status_code == 204
+
+    assert client.get(f"/teams/{team_id}").json()["status"] == "running"
+
+
+def test_human_input_on_a_stopped_team_finds_the_message_before_it_revives(
+    client: TestClient,
+) -> None:
+    """``POST /teams/{id}/human-input`` with an unknown message id: 404, and no revive.
+
+    The message lookup runs first, so a request that can only fail never
+    starts a runtime. This is the route-level shape of that ordering; the
+    successful revive-then-route case is pinned at the service.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    assert client.post(f"/teams/{team_id}/stop").status_code == 204
+
+    resp = client.post(
+        f"/teams/{team_id}/human-input", json={"content": "yes", "message_id": "no-such-id"}
+    )
+
+    assert resp.status_code == 404
+    assert client.get(f"/teams/{team_id}").json()["status"] == "stopped"
+
+
+def test_a_message_to_a_deleted_team_is_404(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``DELETED`` record answers 404 on ``/message`` and ``/human-input``, not 409.
+
+    Community's delete purges the record, so a ``DELETED`` row is unreachable
+    through the real store; the read is patched to hand back a deleted copy of
+    a team the access gate lets through. ``model_copy`` rather than a rebuilt
+    ``Process``, so the row stays whole.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    service = client.app.state.services.team_service
+    real_get_team = service._services.worker_handle.get_team
+    process = real_get_team(uuid.UUID(team_id))
+    assert process is not None
+    deleted = process.model_copy(update={"status": TeamStatus.DELETED})
+    monkeypatch.setattr(service._services.worker_handle, "get_team", lambda _id: deleted)
+
+    message = client.post(f"/teams/{team_id}/message", json={"content": "hi"})
+    assert message.status_code == 404
+    assert "deleted" in message.json()["detail"]
+
+    human_input = client.post(
+        f"/teams/{team_id}/human-input", json={"content": "yes", "message_id": "any"}
+    )
+    assert human_input.status_code == 404
+
+
+def test_a_message_to_a_running_team_is_still_204(client: TestClient) -> None:
+    """The unchanged row: a running team with its cached handle delivers as before."""
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+
+    assert client.post(f"/teams/{team_id}/message", json={"content": "hi"}).status_code == 204
+    assert client.get(f"/teams/{team_id}").json()["status"] == "running"
+
+
+def test_a_running_team_with_no_cached_handle_still_answers_409(client: TestClient) -> None:
+    """The running-with-no-handle row keeps its 409, through the placement's refusal.
+
+    Before, "handle not cached" was the message; now it is the placement's
+    "currently running". Neither names "not found" or "deleted", so the
+    message matcher answers the same status — nothing regresses.
+    """
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    service = client.app.state.services.team_service
+    service._cache.remove(uuid.UUID(team_id))
+
+    resp = client.post(f"/teams/{team_id}/message", json={"content": "hi"})
+
+    assert resp.status_code == 409
+    assert "currently running" in resp.json()["detail"]
 
 
 # --- RequestUser identity seam (ADR-023 Story 26.1) ---

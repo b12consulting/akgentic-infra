@@ -691,7 +691,8 @@ The `409` is deliberately the same status **and the same body** as `GET /admin/c
 | Condition | Status | Body |
 |---|---|---|
 | Unknown team, or a team the caller may not see | `404` | `detail`: `Team not found`, or `Team <id> not found` on the routes that echo the service's message (404-over-403, no existence leak) |
-| The team exists but its state forbids the operation — restoring a running team, stopping a stopped one, messaging a team that is not running | `409` | `detail`: the condition, e.g. `Team <id> is already running` |
+| The team exists but its state forbids the operation — restoring a running team, stopping a stopped one | `409` | `detail`: the condition, e.g. `Team <id> is already running` |
+| Messaging a stopped team | `204` | the team is revived, then the message is delivered (ADR-046) |
 | The team has been deleted | `404` | `detail`: the message naming the deletion |
 
 `DELETE /teams/{team_id}` stops a running team before deleting it, so a running team deletes cleanly (`204`) rather than conflicting.
@@ -905,12 +906,12 @@ A channel is configured in `settings.channels` as a `ChannelConfig`: `parser_fqc
 **The route parses and routes, nothing else.** What a message *does* is the router's decision. A channel that names no router gets `DefaultChannelRouter`:
 
 1. `/new [text]` releases the binding and starts a fresh team; `/unregister` releases it; `/status` reports the bound team and its state. `/register <team-id> @Agent` binds the chat to a team the message names — see below. Any other command reaches the team as ordinary text.
-2. A bound conversation's message is sent **as the bound agent** — the binding says which agent this chat is — to the `@Name` the message **starts** with, else the first one in the message it replies to, else the team's default recipient. A name anywhere else is part of the sentence: `@Expert_1, ask a joke to @Support_0` goes to the Expert, and naming the Support is the Expert's instruction. The text is passed verbatim.
+2. A bound conversation's message is sent **as the bound agent** — the binding says which agent this chat is — to the `@Name` the message **starts** with, else the first one in the message it replies to, else the team's default recipient. A name anywhere else is part of the sentence: `@Expert_1, ask a joke to @Support_0` goes to the Expert, and naming the Support is the Expert's instruction. The text is passed verbatim. A stopped bound team is revived by the send itself, through `TeamService`, silently — the router reads no status and performs no resume of its own (ADR-046); a bound team the service no longer knows, or has deleted, is reported to the chat with a `/new` remedy and nothing is sent.
 3. An unbound conversation's message starts a team from `message.catalog_entry` (else the parser's `default_catalog_entry`), binds the conversation to it, and announces it: *"Started a new session — team `<id>` as `<agent>`."* `/new` announces the same way, through the same helper. That notice is the only place a chat learns those two names, and `/register` reads them back out of a reply.
 
 Subclass it and override one hook (`on_command`, `on_bound`, `on_unbound`) to change one rule.
 
-**The binding is the authorization, by construction.** The webhook is unauthenticated, so every payload field is untrusted. `ChannelRouteContext` holds the registry and `TeamService` privately and exposes only methods scoped to *this* conversation — `find_binding`, `release`, `initiate_team`, `send`, `bound_process`, `notify`. None of them addresses a team by id, so a router acting through the context cannot reach another chat's team. Review still checks that a router does not reach *past* the context — into its private attributes or `app.state` — for a service that takes a team id.
+**The binding is the authorization, by construction.** The webhook is unauthenticated, so every payload field is untrusted. `ChannelRouteContext` holds the registry and `TeamService` privately and exposes only methods scoped to *this* conversation — `find_binding`, `release`, `initiate_team`, `send`, `send_to`, `bound_process`, `bind_team`, `notify`. None of them addresses a team by id, so a router acting through the context cannot reach another chat's team. Review still checks that a router does not reach *past* the context — into its private attributes or `app.state` — for a service that takes a team id.
 
 **`ChannelMessage.team_id` is a creation key, never an address.** It is read only when the conversation is unbound, and passed to `PlacementStrategy.create_team`, whose contract every tier implements:
 
