@@ -1,6 +1,6 @@
 [project]
 name = "akgentic-infra"
-version = "1.13.0"
+version = "1.14.0"
 description = "Infrastructure backend: protocol abstractions and community-tier implementations for akgentic"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,7 +21,7 @@ keywords = ["agents", "ai", "akgentic", "infrastructure"]
 
 dependencies = [
     "akgentic-core>=1.5.15",
-    "akgentic-team>=1.9.0",
+    "akgentic-team>=1.10.0",
     "akgentic-catalog>=2.2.6",
     "akgentic-agent>=1.7.1",
     "akgentic-llm>=2.3.0",

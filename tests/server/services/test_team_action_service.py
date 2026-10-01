@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 from akgentic.agent.config import AgentState
 from akgentic.core.messages.message import Message, UserMessage
 from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, TeamStatus
+from akgentic.team.ports import EventStore
 
+from akgentic.infra.errors import TeamNotFoundError
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from tests.fixtures.events import build_sent_message
@@ -227,6 +230,164 @@ def test_get_agent_states_not_found(team_service: TeamService) -> None:
     """get_agent_states raises ValueError for non-existent team."""
     with pytest.raises(ValueError, match="not found"):
         team_service.get_agent_states(uuid.uuid4())
+
+
+def _save_snapshot(team_service: TeamService, team_id: uuid.UUID, agent_id: str) -> None:
+    """Persist one agent-state snapshot for ``agent_id`` into the team's snapshot store."""
+    snapshot = AgentStateSnapshot(
+        team_id=team_id,
+        agent_id=agent_id,
+        name=None,
+        state=AgentState(backstory=f"backstory of {agent_id}"),
+        updated_at=datetime.now(UTC),
+    )
+    team_service._services.event_store.save_agent_state(snapshot)
+
+
+def test_get_agent_states_without_agent_id_returns_every_snapshot(
+    team_service: TeamService,
+) -> None:
+    """With no agent_id, every persisted snapshot comes back."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+    _save_snapshot(team_service, process.team_id, agent_a)
+    _save_snapshot(team_service, process.team_id, agent_b)
+
+    states = team_service.get_agent_states(process.team_id)
+
+    assert sorted(s.agent_id for s in states) == sorted([agent_a, agent_b])
+
+
+def test_get_agent_states_with_agent_id_returns_only_that_agent(
+    team_service: TeamService,
+) -> None:
+    """agent_id narrows the list to that agent's snapshot, with another agent present."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+    _save_snapshot(team_service, process.team_id, agent_a)
+    _save_snapshot(team_service, process.team_id, agent_b)
+
+    states = team_service.get_agent_states(process.team_id, agent_id=uuid.UUID(agent_a))
+
+    assert [s.agent_id for s in states] == [agent_a]
+    assert isinstance(states[0].state, AgentState)
+    assert states[0].state.backstory == f"backstory of {agent_a}"
+
+
+def test_get_agent_states_with_unknown_agent_id_returns_empty(
+    team_service: TeamService,
+) -> None:
+    """An agent_id with no snapshot is [], not an error, even with another snapshot present."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    _save_snapshot(team_service, process.team_id, str(uuid.uuid4()))
+
+    assert team_service.get_agent_states(process.team_id, agent_id=uuid.uuid4()) == []
+
+
+def test_get_agent_states_with_agent_id_unknown_team_raises(team_service: TeamService) -> None:
+    """The team guard runs before the filter: an unknown team raises with agent_id too."""
+    with pytest.raises(TeamNotFoundError):
+        team_service.get_agent_states(uuid.uuid4(), agent_id=uuid.uuid4())
+
+
+def _spy_event_store(team_service: TeamService) -> MagicMock:
+    """Wrap the wired store so real data flows through and every call is recorded."""
+    spy = MagicMock(wraps=team_service._services.event_store)
+    team_service._services.event_store = spy  # type: ignore[assignment]
+    return spy
+
+
+def test_get_agent_states_with_agent_id_makes_the_point_read_only(
+    team_service: TeamService,
+) -> None:
+    """agent_id reads that one snapshot from the store; the full read is never made."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    agent_a, agent_b = uuid.uuid4(), uuid.uuid4()
+    _save_snapshot(team_service, process.team_id, str(agent_a))
+    _save_snapshot(team_service, process.team_id, str(agent_b))
+    spy = _spy_event_store(team_service)
+
+    states = team_service.get_agent_states(process.team_id, agent_id=agent_a)
+
+    assert [s.agent_id for s in states] == [str(agent_a)]
+    spy.load_agent_state.assert_called_once_with(process.team_id, agent_a)
+    spy.load_agent_states.assert_not_called()
+
+
+def test_get_agent_states_with_unseeded_agent_id_point_reads_to_empty(
+    team_service: TeamService,
+) -> None:
+    """An agent_id with no snapshot is one point read answering [], never the full read."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    _save_snapshot(team_service, process.team_id, str(uuid.uuid4()))
+    spy = _spy_event_store(team_service)
+    unseeded = uuid.uuid4()
+
+    assert team_service.get_agent_states(process.team_id, agent_id=unseeded) == []
+    spy.load_agent_state.assert_called_once_with(process.team_id, unseeded)
+    spy.load_agent_states.assert_not_called()
+
+
+def test_get_agent_states_without_agent_id_makes_the_full_read_only(
+    team_service: TeamService,
+) -> None:
+    """With no agent_id, the full read is made once and the point read never."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+    _save_snapshot(team_service, process.team_id, agent_a)
+    _save_snapshot(team_service, process.team_id, agent_b)
+    spy = _spy_event_store(team_service)
+
+    states = team_service.get_agent_states(process.team_id)
+
+    assert sorted(s.agent_id for s in states) == sorted([agent_a, agent_b])
+    spy.load_agent_states.assert_called_once_with(process.team_id)
+    spy.load_agent_state.assert_not_called()
+
+
+@pytest.mark.parametrize("agent_id", [None, uuid.uuid4()], ids=["full", "point"])
+def test_get_agent_states_unknown_team_reads_nothing_from_the_store(
+    team_service: TeamService, agent_id: uuid.UUID | None
+) -> None:
+    """The team guard runs first: an unknown team raises before either store read."""
+    spy = _spy_event_store(team_service)
+
+    with pytest.raises(TeamNotFoundError):
+        team_service.get_agent_states(uuid.uuid4(), agent_id=agent_id)
+
+    spy.load_agent_state.assert_not_called()
+    spy.load_agent_states.assert_not_called()
+
+
+def test_get_agent_states_maps_an_absent_snapshot_to_empty(team_service: TeamService) -> None:
+    """A store answering None for the point read comes back as []."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    store = MagicMock(spec=EventStore)
+    store.load_agent_state.return_value = None
+    team_service._services.event_store = store  # type: ignore[assignment]
+
+    assert team_service.get_agent_states(process.team_id, agent_id=uuid.uuid4()) == []
+
+
+def test_get_agent_states_maps_a_snapshot_to_a_one_entry_list(team_service: TeamService) -> None:
+    """A store answering a snapshot for the point read comes back as [that snapshot]."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    agent_id = uuid.uuid4()
+    snapshot = AgentStateSnapshot(
+        team_id=process.team_id,
+        agent_id=str(agent_id),
+        name="@Manager",
+        state=AgentState(backstory="coordinate"),
+        updated_at=datetime.now(UTC),
+    )
+    store = MagicMock(spec=EventStore)
+    store.load_agent_state.return_value = snapshot
+    team_service._services.event_store = store  # type: ignore[assignment]
+
+    states = team_service.get_agent_states(process.team_id, agent_id=agent_id)
+
+    assert len(states) == 1
+    assert states[0] is snapshot
 
 
 def test_get_events_without_cursor_returns_full_log(

@@ -387,7 +387,7 @@ def test_unclassified_value_error_keeps_its_404_on_the_flattening_routes(
     team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
     service = client.app.state.services.team_service
 
-    def _bare(_team_id: uuid.UUID) -> None:
+    def _bare(_team_id: uuid.UUID, **_kwargs: object) -> None:
         msg = "something the service never classified"
         raise ValueError(msg)
 
