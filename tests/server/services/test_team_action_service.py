@@ -267,7 +267,7 @@ def test_get_agent_states_with_agent_id_returns_only_that_agent(
     _save_snapshot(team_service, process.team_id, agent_a)
     _save_snapshot(team_service, process.team_id, agent_b)
 
-    states = team_service.get_agent_states(process.team_id, agent_id=agent_a)
+    states = team_service.get_agent_states(process.team_id, agent_id=uuid.UUID(agent_a))
 
     assert [s.agent_id for s in states] == [agent_a]
     assert isinstance(states[0].state, AgentState)
@@ -281,13 +281,13 @@ def test_get_agent_states_with_unknown_agent_id_returns_empty(
     process = team_service.create_team("test-team", user_id="anonymous")
     _save_snapshot(team_service, process.team_id, str(uuid.uuid4()))
 
-    assert team_service.get_agent_states(process.team_id, agent_id=str(uuid.uuid4())) == []
+    assert team_service.get_agent_states(process.team_id, agent_id=uuid.uuid4()) == []
 
 
 def test_get_agent_states_with_agent_id_unknown_team_raises(team_service: TeamService) -> None:
     """The team guard runs before the filter: an unknown team raises with agent_id too."""
     with pytest.raises(TeamNotFoundError):
-        team_service.get_agent_states(uuid.uuid4(), agent_id=str(uuid.uuid4()))
+        team_service.get_agent_states(uuid.uuid4(), agent_id=uuid.uuid4())
 
 
 def _spy_event_store(team_service: TeamService) -> MagicMock:

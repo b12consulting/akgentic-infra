@@ -3,6 +3,12 @@
 Covers the thin DB read of the per-agent snapshot store: snapshots are
 returned exactly as persisted (no liveness filtering, no name->UUID
 resolution), for running and stopped teams alike (Epic 35 / story 35-1).
+
+Also covers the optional ``agent_id`` query parameter (Epic 78): without it
+every snapshot comes back; with it the list narrows to that agent. An agent
+with no snapshot is 200 ``[]``, an unknown team is 404, and a non-UUID id
+(legacy name, path-shaped, empty) is 422 -- except on an unknown team, where
+the 404 wins. The OpenAPI schema documents ``agent_id`` with ``format: uuid``.
 """
 
 from __future__ import annotations
