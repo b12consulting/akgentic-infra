@@ -133,6 +133,22 @@ def test_get_agent_states_unknown_team_is_404(client: TestClient) -> None:
     assert resp.json()["detail"] == "Team not found"
 
 
+def test_get_agent_states_without_agent_id_returns_every_agent(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """With two agents seeded and no agent_id, both snapshots come back."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = uuid.UUID(create_resp.json()["team_id"])
+    agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+    _seed_snapshot(community_services, team_id, agent_id=agent_a, name="@Manager", backstory="a")
+    _seed_snapshot(community_services, team_id, agent_id=agent_b, name="@Worker", backstory="b")
+
+    resp = client.get(f"/teams/{team_id}/agent-states")
+
+    assert resp.status_code == 200
+    assert sorted(s["agent_id"] for s in resp.json()["states"]) == sorted([agent_a, agent_b])
+
+
 def test_get_agent_states_agent_id_returns_only_that_agent(
     client: TestClient, community_services: CommunityServices
 ) -> None:
@@ -176,7 +192,12 @@ def test_get_agent_states_agent_id_without_snapshot_is_200_empty(
 
 
 def test_get_agent_states_agent_id_unknown_team_is_404(client: TestClient) -> None:
-    """An unknown team is 404 with an agent_id too — the team guard runs before the filter."""
+    """An unknown team is 404 with an agent_id too, not 200 and an empty list.
+
+    The 404 comes from ``require_team_access`` before the service is called, so
+    this proves the contract, not the service's guard order — that is pinned by
+    ``test_get_agent_states_with_agent_id_unknown_team_raises``.
+    """
     resp = client.get(f"/teams/{uuid.uuid4()}/agent-states", params={"agent_id": str(uuid.uuid4())})
 
     assert resp.status_code == 404
