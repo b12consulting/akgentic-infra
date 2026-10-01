@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+import pytest
 from akgentic.agent.config import AgentState
 from akgentic.team.models import AgentStateSnapshot
 from fastapi.testclient import TestClient
@@ -204,24 +205,21 @@ def test_get_agent_states_agent_id_unknown_team_is_404(client: TestClient) -> No
     assert resp.json()["detail"] == "Team not found"
 
 
-def test_get_agent_states_agent_id_matches_legacy_name_keyed_snapshot(
+def test_get_agent_states_agent_id_legacy_name_is_422(
     client: TestClient, community_services: CommunityServices
 ) -> None:
-    """A non-UUID agent_id ("@Manager") filters to the legacy snapshot — 200, not 422."""
+    """A non-UUID agent_id ("@Manager") is rejected with 422, even with a legacy snapshot.
+
+    A legacy name-keyed snapshot is reachable only through the unfiltered list.
+    """
     create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
     team_id = uuid.UUID(create_resp.json()["team_id"])
     _seed_snapshot(community_services, team_id, agent_id="@Manager", name=None, backstory="legacy")
-    _seed_snapshot(
-        community_services, team_id, agent_id=str(uuid.uuid4()), name="@Worker", backstory="new"
-    )
 
     resp = client.get(f"/teams/{team_id}/agent-states", params={"agent_id": "@Manager"})
 
-    assert resp.status_code == 200
-    states = resp.json()["states"]
-    assert [s["agent_id"] for s in states] == ["@Manager"]
-    assert states[0]["name"] is None
-    assert states[0]["state"]["backstory"] == "legacy"
+    assert resp.status_code == 422
+    assert [e["loc"] for e in resp.json()["detail"]] == [["query", "agent_id"]]
 
 
 def test_get_agent_states_agent_id_is_documented_in_openapi(client: TestClient) -> None:
@@ -237,3 +235,19 @@ def test_get_agent_states_agent_id_is_documented_in_openapi(client: TestClient) 
     assert param["description"].strip()
     types = {branch.get("type") for branch in param["schema"].get("anyOf", [param["schema"]])}
     assert "string" in types
+
+
+@pytest.mark.parametrize("prefix", ["../", "x/"], ids=["dotdot", "slash"])
+def test_get_agent_states_path_shaped_agent_id_is_422(
+    client: TestClient, community_services: CommunityServices, prefix: str
+) -> None:
+    """A path-shaped agent_id is a 422: it never reaches the store or another agent's snapshot."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = uuid.UUID(create_resp.json()["team_id"])
+    agent_b = str(uuid.uuid4())
+    _seed_snapshot(community_services, team_id, agent_id=agent_b, name="@Worker", backstory="b")
+
+    resp = client.get(f"/teams/{team_id}/agent-states", params={"agent_id": f"{prefix}{agent_b}"})
+
+    assert resp.status_code == 422
+    assert [e["loc"] for e in resp.json()["detail"]] == [["query", "agent_id"]]

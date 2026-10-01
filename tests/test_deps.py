@@ -76,6 +76,12 @@ class FakeEventStore:
         """Return empty list."""
         return []
 
+    def load_agent_state(
+        self, team_id: uuid.UUID, agent_id: uuid.UUID
+    ) -> AgentStateSnapshot | None:
+        """Return None."""
+        return None
+
     def save_agent_cards(self, cards: list[AgentCard]) -> None:
         """No-op stub."""
 

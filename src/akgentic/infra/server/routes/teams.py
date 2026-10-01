@@ -572,11 +572,12 @@ def get_events(
 )
 def get_agent_states(
     team_id: uuid.UUID,
-    agent_id: str | None = Query(
+    agent_id: uuid.UUID | None = Query(
         default=None,
         description=(
-            "Narrow the response to the snapshot of this one agent. An agent with no "
-            "snapshot yields an empty list. Omit for every agent's snapshot."
+            "Narrow the response to the snapshot of this one agent, by its UUID. An agent "
+            "with no snapshot yields an empty list; a value that is not a UUID is a 422. "
+            "Omit for every agent's snapshot."
         ),
     ),
     service: TeamService = Depends(get_team_service),
