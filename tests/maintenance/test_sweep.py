@@ -1,0 +1,451 @@
+"""Behaviour of the orphaned team-resource sweep driver."""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+from akgentic.team.models import TeamStatus
+from akgentic.tool.workspace import SHARED_SCOPE
+
+from akgentic.infra.maintenance.models import ResourceKind
+from akgentic.infra.maintenance.sweep import live_team_ids, sweep
+from tests.maintenance.conftest import (
+    FakeEventStore,
+    FakeReaper,
+    make_claiming_store,
+    make_process,
+    make_ref,
+    make_tree_ref,
+    make_workspace_process,
+)
+
+# ---------------------------------------------------------------------------
+# The live set
+# ---------------------------------------------------------------------------
+
+
+def test_live_set_excludes_deleted_teams() -> None:
+    """A soft-deleted team is a tombstone: its resources are reapable."""
+    running, stopped, deleted = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    store = FakeEventStore(
+        [
+            make_process(running, TeamStatus.RUNNING),
+            make_process(stopped, TeamStatus.STOPPED),
+            make_process(deleted, TeamStatus.DELETED),
+        ]
+    )
+
+    assert live_team_ids(store) == {str(running), str(stopped)}
+
+
+def test_stopped_team_keeps_its_resources() -> None:
+    """STOPPED is resumable, so its vectors and its files must survive."""
+    stopped = uuid.uuid4()
+    store = FakeEventStore([make_process(stopped, TeamStatus.STOPPED)])
+    reaper = FakeReaper([make_ref(str(stopped))])
+
+    report = sweep([reaper], store, apply=True)
+
+    assert report.total_orphans == 0
+    assert reaper.purged == []
+
+
+# ---------------------------------------------------------------------------
+# The ordering invariant
+# ---------------------------------------------------------------------------
+
+
+def test_every_reaper_is_scanned_before_the_live_set_is_read() -> None:
+    """Scan-then-live is the whole safety property; assert it, don't assume it.
+
+    Reading the live set first would let a team created mid-sweep appear in
+    the scan and be absent from the live set — and be deleted minutes after
+    an operator created it.
+    """
+    journal: list[str] = []
+    store = FakeEventStore([], journal)
+    reapers = [
+        FakeReaper([], journal, kind=ResourceKind.VECTOR),
+        FakeReaper([], journal, kind=ResourceKind.WORKSPACE),
+    ]
+
+    sweep(reapers, store)
+
+    assert journal == ["scan", "scan", "list_teams"]
+
+
+def test_live_set_is_read_once_for_the_whole_sweep() -> None:
+    """All reapers decide against one snapshot, never a per-backend re-read."""
+    store = FakeEventStore([])
+    reapers = [
+        FakeReaper([], kind=ResourceKind.VECTOR),
+        FakeReaper([], kind=ResourceKind.WORKSPACE),
+    ]
+
+    sweep(reapers, store)
+
+    assert store.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Dry run vs apply
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_is_the_default_and_deletes_nothing() -> None:
+    """The plan names the orphan; nothing is purged without ``apply``."""
+    dead = uuid.uuid4()
+    reaper = FakeReaper([make_ref(str(dead))])
+
+    report = sweep([reaper], FakeEventStore([]))
+
+    assert report.applied is False
+    assert [ref.team_id for ref in report.reports[0].orphans] == [str(dead)]
+    assert report.total_purged == 0
+    assert reaper.purged == []
+
+
+def test_apply_purges_exactly_the_planned_orphans() -> None:
+    """The set decided on is the set deleted — no re-query in between."""
+    live, dead = uuid.uuid4(), uuid.uuid4()
+    store = FakeEventStore([make_process(live)])
+    reaper = FakeReaper([make_ref(str(live)), make_ref(str(dead), size=7)])
+
+    report = sweep([reaper], store, apply=True)
+
+    assert [ref.team_id for ref in reaper.purged] == [str(dead)]
+    assert report.total_purged == 7
+    assert report.reports[0].scanned == 2
+
+
+# ---------------------------------------------------------------------------
+# Grace period
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("age_seconds", "expected_orphans", "expected_young"),
+    [(30.0, 0, 1), (7200.0, 1, 0), (None, 1, 0)],
+)
+def test_grace_period_holds_back_young_resources(
+    age_seconds: float | None, expected_orphans: int, expected_young: int
+) -> None:
+    """A resource younger than the grace period survives, whatever the live set.
+
+    An unknown age (``None``) is *not* protected: the grace period is the
+    second line of defence, and the scan ordering is the first.
+    """
+    reaper = FakeReaper([make_ref(str(uuid.uuid4()), age_seconds=age_seconds)])
+
+    report = sweep([reaper], FakeEventStore([]), apply=True, force=True, grace_seconds=3600.0)
+
+    assert len(report.reports[0].orphans) == expected_orphans
+    assert report.reports[0].skipped_young == expected_young
+
+
+# ---------------------------------------------------------------------------
+# Failure isolation
+# ---------------------------------------------------------------------------
+
+
+def test_unreachable_backend_is_reported_not_reported_clean() -> None:
+    """An empty scan from a dead cluster must never read as "no orphans"."""
+    reaper = FakeReaper([], scan_error=OSError("connection refused"))
+
+    report = sweep([reaper], FakeEventStore([]))
+
+    entry = report.reports[0]
+    assert entry.available is False
+    assert entry.unavailable_reason == "connection refused"
+    assert entry.orphans == []
+
+
+def test_a_report_carries_the_backend_it_came_from() -> None:
+    """Two vector backends report under one kind, so the report must say which."""
+    reapers = [
+        FakeReaper([], kind=ResourceKind.VECTOR, backend="weaviate"),
+        FakeReaper([], kind=ResourceKind.VECTOR, backend="qdrant"),
+        FakeReaper([], kind=ResourceKind.WORKSPACE),
+    ]
+
+    report = sweep(reapers, FakeEventStore([]))
+
+    assert [entry.backend for entry in report.reports] == ["weaviate", "qdrant", None]
+
+
+def test_an_unavailable_report_still_names_its_backend() -> None:
+    """The failed-scan path builds its own report, and this is the path that
+    most needs the name: it carries no orphans to identify the cluster with."""
+    reaper = FakeReaper(
+        [], scan_error=OSError("connection refused"), kind=ResourceKind.VECTOR, backend="qdrant"
+    )
+
+    entry = sweep([reaper], FakeEventStore([])).reports[0]
+
+    assert entry.available is False
+    assert entry.backend == "qdrant"
+
+
+def test_one_unreachable_backend_does_not_stop_the_others() -> None:
+    """A dead vector cluster must not leave workspace trees leaking too."""
+    dead = uuid.uuid4()
+    broken = FakeReaper([], scan_error=OSError("down"), kind=ResourceKind.VECTOR)
+    working = FakeReaper([make_ref(str(dead))], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([broken, working], FakeEventStore([]), apply=True, force=True)
+
+    assert report.reports[0].available is False
+    assert [ref.team_id for ref in working.purged] == [str(dead)]
+
+
+def test_a_failed_purge_is_recorded_and_the_sweep_continues() -> None:
+    """One resource the backend refuses must not strand every other orphan."""
+    reaper = FakeReaper(
+        [make_ref(str(uuid.uuid4())), make_ref(str(uuid.uuid4()))],
+        purge_error=OSError("device busy"),
+    )
+
+    report = sweep([reaper], FakeEventStore([]), apply=True, force=True)
+
+    assert len(report.reports[0].failures) == 2
+    assert report.total_failures == 2
+    assert report.total_purged == 0
+
+
+# ---------------------------------------------------------------------------
+# Blast-radius guard
+# ---------------------------------------------------------------------------
+
+
+def test_an_empty_live_set_refuses_to_delete_anything() -> None:
+    """An unreadable store reports no teams and condemns every resource.
+
+    This is not hypothetical: a schema migration left every stored team
+    document unparseable on a developer machine, and the first sweep there
+    condemned the resources of all 39 live teams on it.
+    """
+    reaper = FakeReaper([make_ref(str(uuid.uuid4())) for _ in range(39)])
+
+    report = sweep([reaper], FakeEventStore([]), apply=True)
+
+    assert report.refused is True
+    assert report.applied is False
+    assert reaper.purged == []
+    assert "live team set is empty" in (report.refusal_reason or "")
+
+
+def test_the_empty_live_set_guard_is_silent_when_there_is_nothing_to_reap() -> None:
+    """A genuinely empty deployment sweeps clean rather than raising an alarm."""
+    report = sweep([FakeReaper([])], FakeEventStore([]), apply=True)
+
+    assert report.refused is False
+    assert report.applied is True
+
+
+def test_a_plan_condemning_most_of_the_scan_is_refused() -> None:
+    """One live team and forty condemned is a misread store, not a backlog."""
+    live = uuid.uuid4()
+    refs = [make_ref(str(live)), *(make_ref(str(uuid.uuid4())) for _ in range(9))]
+    reaper = FakeReaper(refs)
+
+    report = sweep([reaper], FakeEventStore([make_process(live)]), apply=True)
+
+    assert report.refused is True
+    assert "90%" in (report.refusal_reason or "")
+    assert reaper.purged == []
+
+
+def test_a_proportionate_plan_applies_untouched() -> None:
+    """Steady state: a few dead teams among many live ones reaps normally."""
+    live_ids = [uuid.uuid4() for _ in range(9)]
+    dead = uuid.uuid4()
+    reaper = FakeReaper([make_ref(str(tid)) for tid in [*live_ids, dead]])
+    store = FakeEventStore([make_process(tid) for tid in live_ids])
+
+    report = sweep([reaper], store, apply=True)
+
+    assert report.refused is False
+    assert [ref.team_id for ref in reaper.purged] == [str(dead)]
+
+
+def test_force_overrides_the_guard() -> None:
+    """An operator who has read the dry run can still reap a large backlog."""
+    reaper = FakeReaper([make_ref(str(uuid.uuid4())) for _ in range(39)])
+
+    report = sweep([reaper], FakeEventStore([]), apply=True, force=True)
+
+    assert report.refused is False
+    assert report.applied is True
+    assert len(reaper.purged) == 39
+
+
+def test_the_guard_never_fires_on_a_dry_run() -> None:
+    """A dry run deletes nothing, so there is no blast radius to guard."""
+    reaper = FakeReaper([make_ref(str(uuid.uuid4())) for _ in range(39)])
+
+    report = sweep([reaper], FakeEventStore([]))
+
+    assert report.refused is False
+    assert report.refusal_reason is None
+    assert len(report.reports[0].orphans) == 39
+
+
+# ---------------------------------------------------------------------------
+# Workspace claims
+# ---------------------------------------------------------------------------
+
+
+def test_a_live_teams_own_tree_is_protected_by_its_resolved_candidate_path() -> None:
+    """The failure this prevents is deleting a live team's files.
+
+    The claim is the path the *delete path's own reader* resolves, not a name
+    the sweep derived: a sweep that re-derived which trees a team owns would
+    drift from ``TeamService.delete_team`` silently, and in the one direction
+    that cannot be undone.
+    """
+    live = uuid.uuid4()
+    reaper = FakeReaper([make_tree_ref(str(live))], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([reaper], FakeEventStore([make_process(live)]), apply=True)
+
+    assert report.extra_claims == 1
+    assert report.total_orphans == 0
+    assert reaper.purged == []
+
+
+def test_a_live_teams_shared_tree_is_protected_in_the_shared_scope() -> None:
+    """``workspace_sharable`` moves the tree, and the claim moves with it."""
+    live = uuid.uuid4()
+    store = make_claiming_store(live, sharable=True)
+    reaper = FakeReaper([make_tree_ref(str(live), scope=SHARED_SCOPE)], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([reaper], store, apply=True)
+
+    assert report.total_orphans == 0
+    assert reaper.purged == []
+
+
+def test_a_stale_per_principal_tree_of_a_now_sharable_team_is_reclaimed() -> None:
+    """The whole value of path-keyed protection over id-keyed protection.
+
+    The team's card once resolved per-principal, so ``<owner>/_team/<id>``
+    exists on disk. The card now declares ``workspace_sharable``, so its agents
+    write to ``_shared/_team/<id>`` and nothing will ever write to the first
+    tree again. Keyed on the team id it would be protected for ever, because
+    the team is live; keyed on the path it is not in the team's candidate set,
+    and the safety net reclaims it.
+    """
+    live = uuid.uuid4()
+    store = make_claiming_store(live, sharable=True)
+    stale = make_tree_ref(str(live))
+    reaper = FakeReaper(
+        [stale, make_tree_ref(str(live), scope=SHARED_SCOPE)], kind=ResourceKind.WORKSPACE
+    )
+
+    report = sweep([reaper], store, apply=True, force=True)
+
+    assert report.total_orphans == 1
+    assert [ref.claim_key for ref in reaper.purged] == [stale.claim_key]
+
+
+def test_a_named_workspace_a_live_team_declares_is_claimed_too() -> None:
+    """The claim set is the delete path's whole candidate set, not just the team tree.
+
+    An ``_id`` tree is never *scanned* by this reaper, but it is still a path a
+    live team's deletion would consider — so it is in the protected set, and a
+    reaper that learns to see one later inherits the protection rather than
+    having to be told about it.
+    """
+    live = uuid.uuid4()
+    store = make_claiming_store(live, workspace_id="notes")
+
+    report = sweep([FakeReaper([])], store)
+
+    assert report.extra_claims == 2
+
+
+def test_a_claim_a_dead_team_made_does_not_protect_anything() -> None:
+    """Only *live* teams' claims count, or deletion would never reclaim a tree."""
+    dead = uuid.uuid4()
+    store = make_claiming_store(dead, status=TeamStatus.DELETED)
+    reaper = FakeReaper([make_tree_ref(str(dead))], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([reaper], store, apply=True, force=True)
+
+    assert report.extra_claims == 0
+    assert [ref.team_id for ref in reaper.purged] == [str(dead)]
+
+
+def test_a_reference_without_a_claim_key_is_diffed_on_its_team_id() -> None:
+    """The protected set is one set; a reaper does not get its own rules.
+
+    A vector row is addressed by a team id and nothing else, so its reference
+    carries no ``claim_key`` and the live team id alone protects it. Putting the
+    key on the reference is what keeps the driver from learning either backend's
+    layout.
+    """
+    live = uuid.uuid4()
+    reaper = FakeReaper([make_ref(str(live))], kind=ResourceKind.VECTOR)
+
+    report = sweep([reaper], FakeEventStore([make_process(live)]), apply=True)
+
+    assert report.reports[0].scanned == 1
+    assert report.total_orphans == 0
+
+
+def test_a_live_team_whose_candidates_will_not_resolve_refuses_the_whole_apply() -> None:
+    """Under-protection deletes files, so a partial answer is not acted on."""
+    store = make_claiming_store(uuid.uuid4())
+    store.cards.clear()
+    reaper = FakeReaper([make_tree_ref(str(uuid.uuid4()))], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([reaper], store, apply=True)
+
+    assert report.unreadable_teams > 0
+    assert report.refused is True
+    assert "workspace claims" in (report.refusal_reason or "")
+    assert reaper.purged == []
+
+
+def test_a_store_that_cannot_resolve_cards_at_all_refuses_too() -> None:
+    """A raising card store is the same danger as a card it does not hold."""
+    store = make_claiming_store(uuid.uuid4())
+    store.set_card_error(RuntimeError("store down"))
+    reaper = FakeReaper([make_tree_ref(str(uuid.uuid4()))], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([reaper], store, apply=True)
+
+    assert report.refused is True
+    assert reaper.purged == []
+
+
+def test_one_unreadable_team_does_not_hide_the_claims_of_the_rest() -> None:
+    """The count is per team, so one broken card cannot empty the protected set."""
+    readable, broken = uuid.uuid4(), uuid.uuid4()
+    good_process, good_cards = make_workspace_process(readable)
+    # A different declaration gives the worker card a different hash, so only
+    # this team's card is the one the store is missing.
+    bad_process, _ = make_workspace_process(broken, workspace_id="unstored")
+    store = FakeEventStore([good_process, bad_process], cards=good_cards)
+    reaper = FakeReaper([make_tree_ref(str(readable))], kind=ResourceKind.WORKSPACE)
+
+    report = sweep([reaper], store, apply=True)
+
+    assert report.unreadable_teams == 1
+    assert report.extra_claims == 1
+    assert report.total_orphans == 0
+
+
+def test_a_teams_cards_are_resolved_in_one_round_trip() -> None:
+    """``load_agent_cards`` exists to prevent an N+1 across a team's roles.
+
+    One read per live team is the deliberate price of resolving candidates
+    through the delete path's own reader; a read per *role* is the N+1 that
+    reader exists to prevent, and only a call count catches it coming back.
+    """
+    store = make_claiming_store(uuid.uuid4(), workspace_id="notes")
+
+    sweep([FakeReaper([])], store)
+
+    assert store.journal.count("load_agent_cards") == 1

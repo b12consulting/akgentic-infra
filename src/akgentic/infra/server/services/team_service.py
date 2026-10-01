@@ -27,7 +27,10 @@ from akgentic.infra.protocols.workspace_deletion import (
     WorkspaceDeletionPolicy,
 )
 from akgentic.infra.server.services._metadata_payload import validate_metadata
-from akgentic.infra.server.services._workspace_paths import deletion_candidate_paths
+from akgentic.infra.server.services._workspace_paths import (
+    WORKSPACE_PATH_SEGMENTS,
+    deletion_candidate_paths,
+)
 from akgentic.team.metadata import (
     derive_metadata_indexes,
     make_index_entry,
@@ -45,13 +48,6 @@ logger = logging.getLogger(__name__)
 
 # Maximum page size for GET /teams; the default is 250 (ADR-032 §Decision 1).
 MAX_PAGE_SIZE = 500
-
-# The number of segments a resolved workspace path has, by construction
-# (ADR-052 Decision 1: ``<scope>/<kind>/<leaf>``). Named because the containment
-# guard below tests it: depth is what makes no workspace path a proper prefix of
-# another, and a candidate of any other depth is a path this code does not
-# recognise and must not remove.
-_WORKSPACE_PATH_SEGMENTS = 3
 
 
 @dataclass(frozen=True)
@@ -135,9 +131,9 @@ def _contained_target(
     root = workspaces_root.resolve()
     target = (workspaces_root / candidate).resolve()
     if (
-        len(candidate.parts) != _WORKSPACE_PATH_SEGMENTS
+        len(candidate.parts) != WORKSPACE_PATH_SEGMENTS
         or not target.is_relative_to(root)
-        or len(target.relative_to(root).parts) != _WORKSPACE_PATH_SEGMENTS
+        or len(target.relative_to(root).parts) != WORKSPACE_PATH_SEGMENTS
     ):
         logger.warning(
             "Workspace cleanup refused, candidate is not a contained workspace path — "
