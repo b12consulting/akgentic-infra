@@ -251,3 +251,37 @@ def test_get_agent_states_path_shaped_agent_id_is_422(
 
     assert resp.status_code == 422
     assert [e["loc"] for e in resp.json()["detail"]] == [["query", "agent_id"]]
+
+
+def test_get_agent_states_empty_agent_id_is_422(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """An empty ``?agent_id=`` is not a UUID: 422, not the unfiltered list and not ``[]``."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = uuid.UUID(create_resp.json()["team_id"])
+    _seed_snapshot(
+        community_services, team_id, agent_id=str(uuid.uuid4()), name="@Manager", backstory="x"
+    )
+
+    resp = client.get(f"/teams/{team_id}/agent-states", params={"agent_id": ""})
+
+    assert resp.status_code == 422
+    assert [e["loc"] for e in resp.json()["detail"]] == [["query", "agent_id"]]
+
+
+def test_get_agent_states_non_uuid_agent_id_on_unknown_team_is_404(client: TestClient) -> None:
+    """The team check answers first: an unknown team is 404 even when agent_id is not a UUID."""
+    resp = client.get(f"/teams/{uuid.uuid4()}/agent-states", params={"agent_id": "@Manager"})
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Team not found"
+
+
+def test_get_agent_states_agent_id_is_a_uuid_in_openapi(client: TestClient) -> None:
+    """The OpenAPI schema types agent_id as a UUID string, so generated clients see the 422 rule."""
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/teams/{team_id}/agent-states"]["get"]
+    (param,) = [p for p in operation["parameters"] if p["name"] == "agent_id"]
+
+    branches = param["schema"].get("anyOf", [param["schema"]])
+    assert {"type": "string", "format": "uuid"} in branches
