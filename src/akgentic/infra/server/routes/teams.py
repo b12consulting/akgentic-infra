@@ -7,7 +7,7 @@ import logging
 import uuid
 from typing import NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from akgentic.catalog.models.errors import CatalogValidationError, EntryNotFoundError
 from akgentic.infra.errors import (
@@ -572,12 +572,23 @@ def get_events(
 )
 def get_agent_states(
     team_id: uuid.UUID,
+    agent_id: str | None = Query(
+        default=None,
+        description=(
+            "Narrow the response to the snapshot of this one agent. An agent with no "
+            "snapshot yields an empty list. Omit for every agent's snapshot."
+        ),
+    ),
     service: TeamService = Depends(get_team_service),
 ) -> AgentStateListResponse:
-    """Get the latest persisted state snapshot for each agent of a team."""
-    logger.debug("GET /teams/%s/agent-states", team_id)
+    """Get the latest persisted state snapshot for each agent of a team.
+
+    With ``agent_id``, only that agent's snapshot is returned — an empty list
+    when it has none.
+    """
+    logger.debug("GET /teams/%s/agent-states agent_id=%s", team_id, agent_id)
     try:
-        snapshots = service.get_agent_states(team_id)
+        snapshots = service.get_agent_states(team_id, agent_id=agent_id)
     except TeamNotFoundError:
         raise HTTPException(status_code=404, detail="Team not found") from None
     except TeamStateConflictError as exc:

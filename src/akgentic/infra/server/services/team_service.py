@@ -801,14 +801,23 @@ class TeamService:
         logger.debug("Loading events for team %s (after_event_id=%s)", team_id, after_event_id)
         return self._services.event_store.load_events(team_id, after_event_id=after_event_id)
 
-    def get_agent_states(self, team_id: uuid.UUID) -> list[AgentStateSnapshot]:
-        """Get all persisted agent-state snapshots for a team.
+    def get_agent_states(
+        self, team_id: uuid.UUID, agent_id: str | None = None
+    ) -> list[AgentStateSnapshot]:
+        """Get the persisted agent-state snapshots for a team, or for one of its agents.
 
-        A thin, faithful read of the snapshot store: returns every snapshot as
+        A thin, faithful read of the snapshot store: returns snapshots as
         persisted, with no liveness filtering and no name->UUID resolution. The
         team-exists guard mirrors ``get_events`` — ``get_team`` returns the
         persisted process for a stopped team too, so this fires only for a
         genuinely unknown team.
+
+        Args:
+            team_id: Team UUID.
+            agent_id: If None, return every snapshot. If given, return only the
+                snapshots whose stored ``agent_id`` equals it — zero or one, an
+                equality match with no resolution. An id with no snapshot is
+                ``[]``, not an error.
 
         Raises:
             TeamNotFoundError: If the team is unknown.
@@ -817,8 +826,11 @@ class TeamService:
         if process is None:
             msg = f"Team {team_id} not found"
             raise TeamNotFoundError(msg)
-        logger.debug("Loading agent states for team %s", team_id)
-        return self._services.event_store.load_agent_states(team_id)
+        logger.debug("Loading agent states for team %s (agent_id=%s)", team_id, agent_id)
+        snapshots = self._services.event_store.load_agent_states(team_id)
+        if agent_id is None:
+            return snapshots
+        return [s for s in snapshots if s.agent_id == agent_id]
 
     def get_event_stream(self) -> EventStream:
         """Return the tier's EventStream for cursor-based replay and fan-out."""

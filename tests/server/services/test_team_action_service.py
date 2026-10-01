@@ -11,6 +11,7 @@ from akgentic.core.messages.message import Message, UserMessage
 from akgentic.core.messages.orchestrator import SentMessage
 from akgentic.team.models import AgentStateSnapshot, PersistedEvent, TeamStatus
 
+from akgentic.infra.errors import TeamNotFoundError
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from tests.fixtures.events import build_sent_message
@@ -227,6 +228,64 @@ def test_get_agent_states_not_found(team_service: TeamService) -> None:
     """get_agent_states raises ValueError for non-existent team."""
     with pytest.raises(ValueError, match="not found"):
         team_service.get_agent_states(uuid.uuid4())
+
+
+def _save_snapshot(team_service: TeamService, team_id: uuid.UUID, agent_id: str) -> None:
+    """Persist one agent-state snapshot for ``agent_id`` into the team's snapshot store."""
+    snapshot = AgentStateSnapshot(
+        team_id=team_id,
+        agent_id=agent_id,
+        name=None,
+        state=AgentState(backstory=f"backstory of {agent_id}"),
+        updated_at=datetime.now(UTC),
+    )
+    team_service._services.event_store.save_agent_state(snapshot)
+
+
+def test_get_agent_states_without_agent_id_returns_every_snapshot(
+    team_service: TeamService,
+) -> None:
+    """With no agent_id, every persisted snapshot comes back."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+    _save_snapshot(team_service, process.team_id, agent_a)
+    _save_snapshot(team_service, process.team_id, agent_b)
+
+    states = team_service.get_agent_states(process.team_id)
+
+    assert sorted(s.agent_id for s in states) == sorted([agent_a, agent_b])
+
+
+def test_get_agent_states_with_agent_id_returns_only_that_agent(
+    team_service: TeamService,
+) -> None:
+    """agent_id narrows the list to that agent's snapshot, with another agent present."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+    _save_snapshot(team_service, process.team_id, agent_a)
+    _save_snapshot(team_service, process.team_id, agent_b)
+
+    states = team_service.get_agent_states(process.team_id, agent_id=agent_a)
+
+    assert [s.agent_id for s in states] == [agent_a]
+    assert isinstance(states[0].state, AgentState)
+    assert states[0].state.backstory == f"backstory of {agent_a}"
+
+
+def test_get_agent_states_with_unknown_agent_id_returns_empty(
+    team_service: TeamService,
+) -> None:
+    """An agent_id with no snapshot is [], not an error, even with another snapshot present."""
+    process = team_service.create_team("test-team", user_id="anonymous")
+    _save_snapshot(team_service, process.team_id, str(uuid.uuid4()))
+
+    assert team_service.get_agent_states(process.team_id, agent_id=str(uuid.uuid4())) == []
+
+
+def test_get_agent_states_with_agent_id_unknown_team_raises(team_service: TeamService) -> None:
+    """The team guard runs before the filter: an unknown team raises with agent_id too."""
+    with pytest.raises(TeamNotFoundError):
+        team_service.get_agent_states(uuid.uuid4(), agent_id=str(uuid.uuid4()))
 
 
 def test_get_events_without_cursor_returns_full_log(

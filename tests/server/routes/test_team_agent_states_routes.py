@@ -131,3 +131,88 @@ def test_get_agent_states_unknown_team_is_404(client: TestClient) -> None:
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Team not found"
+
+
+def test_get_agent_states_agent_id_returns_only_that_agent(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """With two agents seeded, ?agent_id= narrows the list to that agent's entry."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = uuid.UUID(create_resp.json()["team_id"])
+    agent_a, agent_b = str(uuid.uuid4()), str(uuid.uuid4())
+    seeded = _seed_snapshot(
+        community_services, team_id, agent_id=agent_a, name="@Manager", backstory="A's backstory"
+    )
+    _seed_snapshot(
+        community_services, team_id, agent_id=agent_b, name="@Worker", backstory="B's backstory"
+    )
+
+    resp = client.get(f"/teams/{team_id}/agent-states", params={"agent_id": agent_a})
+
+    assert resp.status_code == 200
+    states = resp.json()["states"]
+    assert len(states) == 1
+    entry = states[0]
+    assert entry["agent_id"] == agent_a
+    assert entry["name"] == "@Manager"
+    assert entry["state"]["backstory"] == "A's backstory"
+    assert datetime.fromisoformat(entry["updated_at"]) == seeded.updated_at
+
+
+def test_get_agent_states_agent_id_without_snapshot_is_200_empty(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """An agent_id with no snapshot answers 200 and an empty list, not 404."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = uuid.UUID(create_resp.json()["team_id"])
+    _seed_snapshot(
+        community_services, team_id, agent_id=str(uuid.uuid4()), name="@Manager", backstory="x"
+    )
+
+    resp = client.get(f"/teams/{team_id}/agent-states", params={"agent_id": str(uuid.uuid4())})
+
+    assert resp.status_code == 200
+    assert resp.json()["states"] == []
+
+
+def test_get_agent_states_agent_id_unknown_team_is_404(client: TestClient) -> None:
+    """An unknown team is 404 with an agent_id too — the team guard runs before the filter."""
+    resp = client.get(f"/teams/{uuid.uuid4()}/agent-states", params={"agent_id": str(uuid.uuid4())})
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Team not found"
+
+
+def test_get_agent_states_agent_id_matches_legacy_name_keyed_snapshot(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """A non-UUID agent_id ("@Manager") filters to the legacy snapshot — 200, not 422."""
+    create_resp = client.post("/teams/", json={"catalog_namespace": "test-team"})
+    team_id = uuid.UUID(create_resp.json()["team_id"])
+    _seed_snapshot(community_services, team_id, agent_id="@Manager", name=None, backstory="legacy")
+    _seed_snapshot(
+        community_services, team_id, agent_id=str(uuid.uuid4()), name="@Worker", backstory="new"
+    )
+
+    resp = client.get(f"/teams/{team_id}/agent-states", params={"agent_id": "@Manager"})
+
+    assert resp.status_code == 200
+    states = resp.json()["states"]
+    assert [s["agent_id"] for s in states] == ["@Manager"]
+    assert states[0]["name"] is None
+    assert states[0]["state"]["backstory"] == "legacy"
+
+
+def test_get_agent_states_agent_id_is_documented_in_openapi(client: TestClient) -> None:
+    """The OpenAPI schema lists agent_id as an optional, described, string query parameter."""
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/teams/{team_id}/agent-states"]["get"]
+
+    params = [p for p in operation["parameters"] if p["name"] == "agent_id"]
+    assert len(params) == 1
+    param = params[0]
+    assert param["in"] == "query"
+    assert param.get("required", False) is False
+    assert param["description"].strip()
+    types = {branch.get("type") for branch in param["schema"].get("anyOf", [param["schema"]])}
+    assert "string" in types
