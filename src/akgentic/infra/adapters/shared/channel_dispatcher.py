@@ -1,4 +1,4 @@
-"""InteractionChannelDispatcher — one shared, team-agnostic outbound dispatcher."""
+"""ChannelDispatcher — one shared, team-agnostic outbound dispatcher."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ from akgentic.core.messages import SentMessage
 
 if TYPE_CHECKING:
     from akgentic.core.messages import Message
-    from akgentic.infra.protocols.channels import ChannelRegistry, InteractionChannelAdapter
+    from akgentic.infra.protocols.channels import ChannelRegistry, ChannelAdapter
 
 logger = logging.getLogger(__name__)
 
 
-class InteractionChannelDispatcher:
+class ChannelDispatcher:
     """Routes outbound SentMessage events to the channel that answers them.
 
     Satisfies the ``EventSubscriber`` protocol from ``akgentic.core.orchestrator``
@@ -53,7 +53,7 @@ class InteractionChannelDispatcher:
 
     def __init__(
         self,
-        adapters: list[InteractionChannelAdapter],
+        adapters: list[ChannelAdapter],
         registry: ChannelRegistry,
     ) -> None:
         self._adapters = list(adapters)

@@ -16,7 +16,7 @@ from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.shared.channel_dispatcher import ChannelDispatcher
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
@@ -282,7 +282,7 @@ class TestWireCommunityChannelDispatcher:
             dispatchers = [
                 s
                 for s in services.team_manager._shared_subscribers
-                if isinstance(s, InteractionChannelDispatcher)
+                if isinstance(s, ChannelDispatcher)
             ]
             assert len(dispatchers) == 1
         finally:
@@ -300,7 +300,7 @@ class TestWireCommunityChannelDispatcher:
             dispatcher = next(
                 s
                 for s in services.team_manager._shared_subscribers
-                if isinstance(s, InteractionChannelDispatcher)
+                if isinstance(s, ChannelDispatcher)
             )
             assert dispatcher._adapters == []
         finally:
@@ -330,7 +330,7 @@ class TestWireCommunityChannelDispatcher:
             dispatcher = next(
                 s
                 for s in services.team_manager._shared_subscribers
-                if isinstance(s, InteractionChannelDispatcher)
+                if isinstance(s, ChannelDispatcher)
             )
             assert len(dispatcher._adapters) == 1
             assert isinstance(dispatcher._adapters[0], TelegramChannelAdapter)
@@ -350,7 +350,7 @@ class TestWireCommunityChannelDispatcher:
             dispatcher = next(
                 s
                 for s in services.team_manager._shared_subscribers
-                if isinstance(s, InteractionChannelDispatcher)
+                if isinstance(s, ChannelDispatcher)
             )
             assert dispatcher._registry is services.channel_registry
         finally:

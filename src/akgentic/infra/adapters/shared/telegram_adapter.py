@@ -29,7 +29,7 @@ _UNKNOWN_SENDER = "an unknown sender"
 class TelegramChannelAdapter:
     """Delivers outbound agent messages to Telegram chats via the Bot API.
 
-    Satisfies the ``InteractionChannelAdapter`` protocol via structural
+    Satisfies the ``ChannelAdapter`` protocol via structural
     subtyping.
 
     ``matches()`` returns ``True`` when the ``SentMessage`` recipient is

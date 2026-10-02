@@ -26,7 +26,7 @@ from akgentic.infra.protocols.channels import (
     ChannelAddress,
     ChannelBinding,
     ChannelParser,
-    InteractionChannelAdapter,
+    ChannelAdapter,
     JsonValue,
 )
 
@@ -66,7 +66,7 @@ class TestRegistryResolution:
 
         adapters = registry.get_adapters()
         assert len(adapters) == 1
-        assert isinstance(adapters[0], InteractionChannelAdapter)
+        assert isinstance(adapters[0], ChannelAdapter)
 
     def test_channel_names_includes_telegram(self) -> None:
         config = {

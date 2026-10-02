@@ -17,10 +17,10 @@ from akgentic.infra.adapters.community import (
 )
 from akgentic.infra.adapters.shared import (
     ChannelConfig,
+    ChannelDispatcher,
     ChannelParserRegistry,
     ChannelRouteContext,
     DefaultChannelRouter,
-    InteractionChannelDispatcher,
     NullEventStream,
     NullStreamReader,
     TelegramChannelAdapter,
@@ -33,7 +33,7 @@ __all__ = [
     "ChannelParserRegistry",
     "ChannelRouteContext",
     "DefaultChannelRouter",
-    "InteractionChannelDispatcher",
+    "ChannelDispatcher",
     "LocalPlacement",
     "LocalRuntimeCache",
     "LocalTeamHandle",

@@ -63,7 +63,7 @@ class StubChannelParser:
 
 
 class StubChannelAdapter:
-    """Stub InteractionChannelAdapter for integration tests."""
+    """Stub ChannelAdapter for integration tests."""
 
     def __init__(self) -> None:
         self.delivered: list[SentMessage] = []

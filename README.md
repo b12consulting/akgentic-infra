@@ -45,10 +45,10 @@ graph TB
         YE[YamlEventStore]
         PS["PersistenceSubscriber<br/>&lt;EventSubscriber&gt;"]
         TS["TelemetrySubscriber<br/>&lt;EventSubscriber&gt;"]
-        ICD["InteractionChannelDispatcher<br/>&lt;EventSubscriber&gt;"]
+        ICD["ChannelDispatcher<br/>&lt;EventSubscriber&gt;"]
         ESS["EventStreamSubscriber<br/>&lt;EventSubscriber&gt;"]
         LES["LocalEventStream<br/>&lt;EventStream&gt;"]
-        DCR["DefaultChannelRouter<br/>&lt;InteractionChannelRouter&gt;"]
+        DCR["DefaultChannelRouter<br/>&lt;ChannelRouter&gt;"]
         YCR["YamlChannelRegistry<br/>&lt;ChannelRegistry&gt;"]
     end
 
@@ -120,7 +120,7 @@ graph TB
         W1_RSS["RedisStreamSubscriber<br/>&lt;EventSubscriber&gt;"]
         W1_RES["RedisEventStream<br/>&lt;EventStream&gt;"]
         W1_TS["TelemetrySubscriber<br/>&lt;EventSubscriber&gt;"]
-        W1_ICD["InteractionChannelDispatcher<br/>&lt;EventSubscriber&gt;"]
+        W1_ICD["ChannelDispatcher<br/>&lt;EventSubscriber&gt;"]
     end
 
     subgraph "Infrastructure"
@@ -206,7 +206,7 @@ graph TB
         W1_DSS["DaprStreamSubscriber<br/>&lt;EventSubscriber&gt;"]
         W1_DES["DaprEventStream<br/>&lt;EventStream&gt;"]
         W1_TS["TelemetrySubscriber<br/>&lt;EventSubscriber&gt;"]
-        W1_ICD["InteractionChannelDispatcher<br/>&lt;EventSubscriber&gt;"]
+        W1_ICD["ChannelDispatcher<br/>&lt;EventSubscriber&gt;"]
         W1_DAPR[Dapr Sidecar]
     end
 
@@ -283,7 +283,7 @@ src/akgentic/infra/
     worker_handle.py    WorkerHandle
     team_handle.py      TeamHandle
     runtime_cache.py    RuntimeCache
-    channels.py         InteractionChannelAdapter, Parser, Router, Registry
+    channels.py         ChannelAdapter, Parser, Router, Registry
     health.py           HealthMonitor
     recovery.py         RecoveryPolicy
   adapters/           Protocol implementations
@@ -346,8 +346,8 @@ The **Used in** column refers to the role in the distributed (department / enter
 | `TeamHandle`                   | `team_handle.py`    | Send messages, route human input, subscribe   | Both — server-side remote handle delegates to the worker's local handle |
 | `RuntimeCache`                 | `runtime_cache.py`  | Map team IDs to live TeamHandle instances      | Both — real cache on the worker, stateless no-op resolver on the server |
 | `AuthStrategy`                 | `auth.py`           | Async `resolve_request_user(connection) -> RequestUser` (raises 401) + `get_auth_routes` — see [Authentication contract & enforcement](#authentication-contract--enforcement) | Server |
-| `InteractionChannelAdapter`    | `channels.py`       | Outbound message delivery to external channels | Worker — runs in the orchestrator's actor thread |
-| `InteractionChannelRouter`     | `channels.py`       | Decide what one inbound channel message does — see [Interaction channels](#interaction-channels) | Server |
+| `ChannelAdapter`    | `channels.py`       | Outbound message delivery to external channels | Worker — runs in the orchestrator's actor thread |
+| `ChannelRouter`     | `channels.py`       | Decide what one inbound channel message does — see [Interaction channels](#interaction-channels) | Server |
 | `ChannelParser`                | `channels.py`       | Parse channel-specific webhook payloads        | Server |
 | `ChannelRegistry`              | `channels.py`       | Bind one channel conversation to one agent of one team | Both — async reads/writes on the server, `find_binding_sync` on the worker |
 | `EventStream`                  | `event_stream.py`   | Tier-agnostic event streaming with replay and fan-out (ADR-010) | Both — worker appends, server reads / fans out |
@@ -570,7 +570,7 @@ Run it in your own CI: a framework upgrade that reorders the stack then fails yo
 - **Settings** — your own `BaseSettings` with your own `env_prefix`, constructed in your bootstrap and passed to the module's `__init__`. Never add client fields to `ServerSettings`.
 - **Services** — the module owns its collaborators. Subclassing `TierServices` is reserved for the case where your routes genuinely want them typed on the services slot; `create_app` accepts any `TierServices` subclass.
 
-**Module or channel?** Needs a URL, a header, or a policy decision → an `AppModule`. Only needs to talk to a team → a channel (`ChannelParser` / `InteractionChannelAdapter`, see [Protocols](#protocols)). A channel reaches none of the six verbs and only sees traffic that already passed identity, so it cannot carry an app extension. Most real platform integrations need one of each — a parser for the inbound messages, a module for the signature check that must run first — meeting at a registry a module publishes into state.
+**Module or channel?** Needs a URL, a header, or a policy decision → an `AppModule`. Only needs to talk to a team → a channel (`ChannelParser` / `ChannelAdapter`, see [Protocols](#protocols)). A channel reaches none of the six verbs and only sees traffic that already passed identity, so it cannot carry an app extension. Most real platform integrations need one of each — a parser for the inbound messages, a module for the signature check that must run first — meeting at a registry a module publishes into state.
 
 #### Rules for every composition
 
@@ -896,9 +896,9 @@ An external channel (Telegram today) reaches a team through one route and leaves
 
 ```
 inbound   POST /webhook/{channel} → ChannelParser.parse → ChannelMessage
-          → InteractionChannelRouter.route(message, ChannelRouteContext) → TeamService
-outbound  SentMessage → InteractionChannelDispatcher → find_binding_sync(team_id, agent_name)
-          → InteractionChannelAdapter.deliver(msg, binding)
+          → ChannelRouter.route(message, ChannelRouteContext) → TeamService
+outbound  SentMessage → ChannelDispatcher → find_binding_sync(team_id, agent_name)
+          → ChannelAdapter.deliver(msg, binding)
 ```
 
 A channel is configured in `settings.channels` as a `ChannelConfig`: `parser_fqcn`, `adapter_fqcn`, an optional `router_fqcn`, and one `config` dict passed to all three constructors (so each must tolerate keys meant for the others).
@@ -957,7 +957,7 @@ Tier-agnostic adapters that work across community, department, and enterprise de
 
 | Adapter                      | Description                                                  |
 |------------------------------|--------------------------------------------------------------|
-| `InteractionChannelDispatcher` | Per-team outbound message dispatcher — routes `SentMessage` events to registered channel adapters |
+| `ChannelDispatcher` | Per-team outbound message dispatcher — routes `SentMessage` events to registered channel adapters |
 | `TelegramChannelAdapter`     | Delivers outbound messages via the Telegram Bot API          |
 | `TelegramChannelParser`      | Parses inbound Telegram webhook payloads                     |
 | `ChannelParserRegistry`      | Resolves and holds each channel's parser, adapter and router from config |

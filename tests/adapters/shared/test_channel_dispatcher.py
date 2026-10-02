@@ -1,4 +1,4 @@
-"""Tests for InteractionChannelDispatcher — one shared, team-agnostic instance."""
+"""Tests for ChannelDispatcher — one shared, team-agnostic instance."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from akgentic.core.messages.orchestrator import ReceivedMessage, SentMessage, St
 from akgentic.core.orchestrator import EventSubscriber
 
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.shared.channel_dispatcher import ChannelDispatcher
 from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
 
 # ---------------------------------------------------------------------------
-# Stub adapters satisfying InteractionChannelAdapter protocol (structural)
+# Stub adapters satisfying ChannelAdapter protocol (structural)
 # ---------------------------------------------------------------------------
 
 
@@ -214,7 +214,7 @@ class TestOneDispatcherManyTeams:
     def test_delivers_for_two_teams_through_one_instance(self) -> None:
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A), _binding(TEAM_B))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A))
         assert adapter.deliver_binding is not None
@@ -226,7 +226,7 @@ class TestOneDispatcherManyTeams:
     def test_on_stop_for_an_unfamiliar_team_does_not_raise(self) -> None:
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_stop(TEAM_B)
 
@@ -235,7 +235,7 @@ class TestOneDispatcherManyTeams:
 
     def test_set_restoring_for_an_unfamiliar_team_does_not_raise(self) -> None:
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
 
         dispatcher.set_restoring(TEAM_B, True)
 
@@ -260,7 +260,7 @@ class TestRestoreMode:
         """
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A), _binding(TEAM_B))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.set_restoring(TEAM_A, True)
         dispatcher.on_message(_make_sent_message(TEAM_A))
@@ -273,7 +273,7 @@ class TestRestoreMode:
         """One team's replay must not mute every other team on the instance."""
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A), _binding(TEAM_B))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.set_restoring(TEAM_A, True)
         dispatcher.on_message(_make_sent_message(TEAM_B))
@@ -285,7 +285,7 @@ class TestRestoreMode:
     def test_restoring_false_resumes_dispatch(self) -> None:
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.set_restoring(TEAM_A, True)
         dispatcher.on_message(_make_sent_message(TEAM_A))
@@ -307,7 +307,7 @@ class TestSkipsNonSentMessage:
     def test_received_message_ignored(self) -> None:
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(ReceivedMessage(message_id=uuid.uuid4()))
 
@@ -319,7 +319,7 @@ class TestSkipsNonSentMessage:
 
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(StartMessage(config=BaseConfig()))
 
@@ -339,7 +339,7 @@ class TestDeliveryIsOptIn:
         """A user proxy with no binding is the WebSocket's; nothing is posted."""
         adapter = _MatchingAdapter()
         registry = _registry_for()  # no bindings at all
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A))
 
@@ -358,7 +358,7 @@ class TestDeliveryIsOptIn:
         """
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A, AGENT_B))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A, AGENT_B, is_user_proxy=False))
 
@@ -369,7 +369,7 @@ class TestDeliveryIsOptIn:
         """Intra-team traffic still stays in the team unless a binding names it."""
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A, AGENT_B))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A, "@Unbound_0", is_user_proxy=False))
 
@@ -379,7 +379,7 @@ class TestDeliveryIsOptIn:
     def test_binding_is_looked_up_by_team_and_agent_name(self) -> None:
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A, AGENT_B))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A, AGENT_B))
 
@@ -400,7 +400,7 @@ class TestDispatchToMatchingAdapter:
         adapter = _MatchingAdapter()
         bound = _binding(TEAM_A)
         registry = _registry_for(bound)
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
         sent = _make_sent_message(TEAM_A)
 
         dispatcher.on_message(sent)
@@ -419,7 +419,7 @@ class TestNoAdapterMatch:
     def test_no_match_no_exception(self) -> None:
         adapter = _NonMatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A))
 
@@ -434,7 +434,7 @@ class TestMultiChannelDelivery:
         first = _MatchingAdapter()
         second = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[first, second], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[first, second], registry=registry)
         sent = _make_sent_message(TEAM_A)
 
         dispatcher.on_message(sent)
@@ -446,7 +446,7 @@ class TestMultiChannelDelivery:
         non_match = _NonMatchingAdapter()
         match = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[non_match, match], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[non_match, match], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A))
 
@@ -459,7 +459,7 @@ class TestMultiChannelDelivery:
         non_match = _NonMatchingAdapter()
         second = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(
+        dispatcher = ChannelDispatcher(
             adapters=[first, non_match, second], registry=registry
         )
         sent = _make_sent_message(TEAM_A)
@@ -476,7 +476,7 @@ class TestEmptyAdapterList:
 
     def test_sent_message_with_no_adapters(self) -> None:
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A))  # should not raise
 
@@ -500,7 +500,7 @@ class TestOnMessageNeverAwaits:
     def test_on_message_never_awaits_the_registry(self) -> None:
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A), trap_awaits=True)
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A))
 
@@ -510,7 +510,7 @@ class TestOnMessageNeverAwaits:
 
     def test_on_message_never_awaits_when_the_agent_is_unbound(self) -> None:
         registry = _registry_for(trap_awaits=True)
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
 
         dispatcher.on_message(_make_sent_message(TEAM_A))
 
@@ -534,7 +534,7 @@ class TestOnStop:
         timeout into a lost conversation.
         """
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
 
         dispatcher.on_stop(TEAM_A)
 
@@ -547,7 +547,7 @@ class TestOnStop:
         a1 = _MatchingAdapter()
         a2 = _NonMatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[a1, a2], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[a1, a2], registry=registry)
 
         dispatcher.on_stop(TEAM_A)
 
@@ -562,7 +562,7 @@ class TestOnStop:
         """
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_stop(TEAM_B)
 
@@ -572,7 +572,7 @@ class TestOnStop:
         """A team stopped mid-restore must not leak a UUID for the process's life."""
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.set_restoring(TEAM_A, True)
         dispatcher.on_stop(TEAM_A)
@@ -592,7 +592,7 @@ class TestOnStop:
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A), trap_awaits=True)
         registry.deregister_team_raises = True
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_stop(TEAM_A)  # must not raise
 
@@ -602,7 +602,7 @@ class TestOnStop:
 
     def test_on_stop_empty_adapter_list(self) -> None:
         registry = _registry_for()
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
 
         dispatcher.on_stop(TEAM_A)  # should not raise
 
@@ -630,7 +630,7 @@ class TestOnStopAgainstARealRegistry:
         registry = YamlChannelRegistry(registry_path=tmp_path / "channels.yaml")
         asyncio.run(registry.register(_binding(TEAM_A)))
 
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
         dispatcher.on_stop(TEAM_A)
 
         assert registry.find_binding_sync(TEAM_A, AGENT_A) is not None
@@ -655,14 +655,14 @@ class TestOnStopRequest:
 
     def test_on_stop_request_returns_none(self) -> None:
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
 
         assert dispatcher.on_stop_request(TEAM_A) is None
 
     def test_on_stop_request_does_not_call_adapter_methods(self) -> None:
         adapter = _MatchingAdapter()
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[adapter], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
 
         dispatcher.on_stop_request(TEAM_A)
 
@@ -672,7 +672,7 @@ class TestOnStopRequest:
 
     def test_on_stop_request_does_not_mutate_restoring(self) -> None:
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
 
         dispatcher.on_stop_request(TEAM_A)
 
@@ -680,7 +680,7 @@ class TestOnStopRequest:
 
     def test_on_stop_request_does_not_release_bindings(self) -> None:
         registry = _registry_for(_binding(TEAM_A))
-        dispatcher = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
 
         dispatcher.on_stop_request(TEAM_A)
 
@@ -688,11 +688,11 @@ class TestOnStopRequest:
 
 
 class TestProtocolCompliance:
-    """InteractionChannelDispatcher structurally satisfies EventSubscriber."""
+    """ChannelDispatcher structurally satisfies EventSubscriber."""
 
     def test_satisfies_event_subscriber_protocol(self) -> None:
         registry = _registry_for()
-        dispatcher: EventSubscriber = InteractionChannelDispatcher(adapters=[], registry=registry)
+        dispatcher: EventSubscriber = ChannelDispatcher(adapters=[], registry=registry)
         assert callable(dispatcher.set_restoring)
         assert callable(dispatcher.on_stop_request)
         assert callable(dispatcher.on_stop)
