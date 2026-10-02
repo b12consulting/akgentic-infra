@@ -15,6 +15,7 @@ Three doors trigger (``send_message``, ``send_message_to`` and the channel's
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
@@ -383,7 +384,7 @@ class TestSeam:
             gate.set()
             generator = services.team_service._description_generator  # noqa: SLF001
             assert generator is not None
-            generator.close()
+            generator._executor.shutdown(wait=False, cancel_futures=True)  # noqa: SLF001
             services.actor_system.shutdown(timeout=5)
 
     def test_an_inner_send_that_raises_schedules_nothing(
@@ -409,8 +410,6 @@ class TestNoCapThroughTheService:
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        import logging  # noqa: PLC0415
-
         recording = RecordingModel(error=RuntimeError("provider down"))
         monkeypatch.setattr(description, "create_model", lambda _cfg, _http=None: recording.build())
         monkeypatch.setattr(description, "ThreadPoolExecutor", InlineExecutor)

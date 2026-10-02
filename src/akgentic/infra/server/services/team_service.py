@@ -733,7 +733,7 @@ class TeamService:
         Raises:
             TeamNotFoundError: If the team is unknown or deleted.
         """
-        handle = self._get_or_revive_handle(team_id)
+        _, handle = self._get_or_revive_handle(team_id)
         handle.emitMessage(message)
         logger.debug("Message emitted to team %s", team_id)
 
@@ -743,10 +743,14 @@ class TeamService:
         Raises:
             TeamNotFoundError: If the team is unknown or deleted.
         """
-        process, handle = self._resolve_for_delivery(team_id)
+        process, handle = self._get_or_revive_handle(team_id)
         handle.send(content)
         logger.debug("Message sent to team %s", team_id)
-        self._describe_if_blank(process, content)
+        # After the handle accepted the delivery, so a refused one schedules
+        # nothing; on the record already resolved, so the common case is one
+        # comparison and no I/O. The generator never raises into this path.
+        if self._description_generator is not None:
+            self._description_generator.maybe_generate(process, content)
 
     def send_message_to(self, team_id: uuid.UUID, agent_name: str, content: str | Message) -> None:
         """Send a message to a specific agent of a team, reviving it first if stopped.
@@ -756,21 +760,11 @@ class TeamService:
             ValueError: If the agent is not found — raised inside the team
                 package, so it arrives unclassified.
         """
-        process, handle = self._resolve_for_delivery(team_id)
+        process, handle = self._get_or_revive_handle(team_id)
         handle.send_to(agent_name, content)
         logger.debug("Message sent to agent '%s' in team %s", agent_name, team_id)
-        self._describe_if_blank(process, content)
-
-    def _describe_if_blank(self, process: Process, content: str | Message) -> None:
-        """Ask the generator to describe the team after a delivery it may be the first of.
-
-        Runs after the handle call returned, so a refused delivery schedules
-        nothing. The ``Process`` is the one the delivery just resolved, so the
-        common case — a team that has its description — costs one comparison
-        and no I/O. The generator never raises into the send path.
-        """
         if self._description_generator is not None:
-            self._description_generator.maybe_describe(process, content)
+            self._description_generator.maybe_generate(process, content)
 
     def send_message_from_to(
         self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str | Message
@@ -782,7 +776,7 @@ class TeamService:
             ValueError: If the sender or the recipient is not found — raised
                 inside the team package, so it arrives unclassified.
         """
-        handle = self._get_or_revive_handle(team_id)
+        _, handle = self._get_or_revive_handle(team_id)
         handle.send_from_to(sender_name, recipient_name, content)
         logger.debug(
             "Message sent from '%s' to '%s' in team %s", sender_name, recipient_name, team_id
@@ -807,7 +801,7 @@ class TeamService:
         # _find_message resolves by inner id and returns only SentMessage, so
         # event.message is the inner Message to route (ADR-027 §Decision 1).
         event = self._find_message(team_id, message_id)
-        handle = self._get_or_revive_handle(team_id)
+        _, handle = self._get_or_revive_handle(team_id)
         handle.process_human_input(content, event.message)
         logger.debug("Human input routed to team %s, message_id=%s", team_id, message_id)
 
@@ -936,11 +930,7 @@ class TeamService:
         """
         return self._cache.get(team_id)
 
-    def _get_or_revive_handle(self, team_id: uuid.UUID) -> TeamHandle:
-        """The live handle for a delivery; see ``_resolve_for_delivery``."""
-        return self._resolve_for_delivery(team_id)[1]
-
-    def _resolve_for_delivery(self, team_id: uuid.UUID) -> tuple[Process, TeamHandle]:
+    def _get_or_revive_handle(self, team_id: uuid.UUID) -> tuple[Process, TeamHandle]:
         """The record and the live handle for a delivery — reviving the team if needed.
 
         The one rule every delivery door shares (ADR-046 D1). The **record is

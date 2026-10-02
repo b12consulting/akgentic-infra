@@ -51,7 +51,7 @@ DESCRIPTION_CONTENT_TYPE = "team_description"
 
 _DESCRIPTION_INSTRUCTIONS = (
     "You are given the first message a user sent to a team of AI agents. "
-    "Answer with one plain-text line of about ten words naming what the team "
+    "Answer with one plain-text line of about 3 to 6 words naming what the team "
     "was asked to do. No quotes, no trailing period, no preamble, no explanation."
 )
 
@@ -95,10 +95,12 @@ class TeamDescriptionGenerator:
 
     The model is built lazily, the way ``SummarizingCompaction`` builds its
     summarizer, so constructing the generator needs no provider environment.
-    :meth:`maybe_describe` is the request-path half — one comparison, one
-    executor submit, never raising. :meth:`_generate` is the background unit —
-    the model call, the conditional write and the notification — and never
-    raises either.
+    :meth:`maybe_generate` is the one entry point and the request-path half —
+    one comparison, one executor submit, never raising. :meth:`_generate` is
+    the background unit — the model call, the conditional write and the
+    notification — and never raises either. The executor is shut down by
+    nobody on purpose: it is one non-daemon thread per server process, and the
+    lifespan hook that would close it is a recorded follow-up.
     """
 
     def __init__(
@@ -167,7 +169,7 @@ class TeamDescriptionGenerator:
         )
         return cls(model_cfg, event_store, emit)
 
-    def maybe_describe(self, process: Process, content: str | Message) -> bool:
+    def maybe_generate(self, process: Process, content: str | Message) -> None:
         """Schedule one generation attempt if this delivery should describe the team.
 
         Called by the service after the handle accepted the delivery, with the
@@ -178,30 +180,21 @@ class TeamDescriptionGenerator:
         Args:
             process: The record the delivery was resolved against.
             content: What was delivered; a ``Message`` contributes its ``content``.
-
-        Returns:
-            ``True`` when an attempt was scheduled.
         """
         if (
             process.team_description is not None
             or process.description_origin is not DescriptionOrigin.AUTO
         ):
-            return False
+            return
         text = _content_of(content)
         if text is None:
-            return False
+            return
         try:
             self._executor.submit(self._generate, process.team_id, text)
         except Exception:
             logger.warning(
                 "Team description scheduling failed: team_id=%s", process.team_id, exc_info=True
             )
-            return False
-        return True
-
-    def close(self) -> None:
-        """Shut the executor down without waiting on an in-flight provider call."""
-        self._executor.shutdown(wait=False, cancel_futures=True)
 
     # --- Background unit ---
 

@@ -253,9 +253,8 @@ class TestTrigger:
         generator = _generator(store, emit)
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            scheduled = generator.maybe_describe(process, MESSAGE)
+            generator.maybe_generate(process, MESSAGE)
 
-        assert scheduled is False
         assert model.calls == 0
         assert factory.call_count == 0
         update.assert_not_called()
@@ -277,9 +276,8 @@ class TestTrigger:
         update = _spy_update(store)
         emit = MagicMock()
 
-        scheduled = _generator(store, emit).maybe_describe(process, payload)
+        _generator(store, emit).maybe_generate(process, payload)
 
-        assert scheduled is False
         assert model.calls == 0
         update.assert_not_called()
         emit.assert_not_called()
@@ -291,11 +289,8 @@ class TestTrigger:
         process = _process()
         store = _store(process)
 
-        scheduled = _generator(store, MagicMock()).maybe_describe(
-            process, UserMessage(content=MESSAGE)
-        )
+        _generator(store, MagicMock()).maybe_generate(process, UserMessage(content=MESSAGE))
 
-        assert scheduled is True
         assert model.prompts == [MESSAGE]
         persisted = store.load_team(process.team_id)
         assert persisted is not None
@@ -318,9 +313,8 @@ class TestHappyPath:
         emit = MagicMock()
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            scheduled = _generator(store, emit).maybe_describe(process, MESSAGE)
+            _generator(store, emit).maybe_generate(process, MESSAGE)
 
-        assert scheduled is True
         assert model.prompts == [MESSAGE]
         assert factory.call_count == 1
         update.assert_called_once_with(process.team_id, EXPECTED, DescriptionOrigin.AUTO)
@@ -359,7 +353,7 @@ class TestHappyPath:
         monkeypatch.setattr(store, "update_team_description", slow_update)
         emit = MagicMock()
 
-        _generator(store, emit).maybe_describe(process, MESSAGE)
+        _generator(store, emit).maybe_generate(process, MESSAGE)
 
         written = store.load_team(process.team_id)
         assert written is not None
@@ -374,8 +368,8 @@ class TestHappyPath:
         store = _store(first, second)
         generator = _generator(store, MagicMock())
 
-        generator.maybe_describe(first, MESSAGE)
-        generator.maybe_describe(second, MESSAGE)
+        generator.maybe_generate(first, MESSAGE)
+        generator.maybe_generate(second, MESSAGE)
 
         assert model.calls == 2
         assert factory.call_count == 1
@@ -398,9 +392,8 @@ class TestNeverRaises:
         emit = MagicMock()
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            scheduled = _generator(store, emit).maybe_describe(process, MESSAGE)  # must not raise
+            _generator(store, emit).maybe_generate(process, MESSAGE)  # must not raise
 
-        assert scheduled is True
         assert model.calls == 1
         update.assert_not_called()
         emit.assert_not_called()
@@ -424,7 +417,7 @@ class TestNeverRaises:
         emit = MagicMock()
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            _generator(store, emit).maybe_describe(process, MESSAGE)
+            _generator(store, emit).maybe_generate(process, MESSAGE)
 
         assert model.calls == 1
         update.assert_not_called()
@@ -445,7 +438,7 @@ class TestNeverRaises:
         emit = MagicMock()
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            _generator(store, emit).maybe_describe(process, MESSAGE)  # must not raise
+            _generator(store, emit).maybe_generate(process, MESSAGE)  # must not raise
 
         assert model.calls == 1
         emit.assert_not_called()
@@ -461,7 +454,7 @@ class TestNeverRaises:
         emit = MagicMock(side_effect=RuntimeError("team vanished"))
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            _generator(store, emit).maybe_describe(process, MESSAGE)  # must not raise
+            _generator(store, emit).maybe_generate(process, MESSAGE)  # must not raise
 
         persisted = store.load_team(process.team_id)
         assert persisted is not None
@@ -477,12 +470,13 @@ class TestNeverRaises:
         process = _process()
         store = _store(process)
         generator = _generator(store, MagicMock())
-        generator.close()  # a shut executor refuses new work
+        # A shut executor refuses new work; nothing on the generator shuts it
+        # (no lifespan hook yet), so the spec reaches the pool directly.
+        generator._executor.shutdown(wait=False, cancel_futures=True)  # noqa: SLF001
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            scheduled = generator.maybe_describe(process, MESSAGE)  # must not raise
+            generator.maybe_generate(process, MESSAGE)  # must not raise
 
-        assert scheduled is False
         assert model.calls == 0
         warnings = _records(caplog, logging.WARNING)
         assert len(warnings) == 1
@@ -504,9 +498,9 @@ class TestNoCap:
         generator = _generator(store, emit)
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            results = [generator.maybe_describe(process, MESSAGE) for _ in range(4)]
+            for _ in range(4):
+                generator.maybe_generate(process, MESSAGE)
 
-        assert results == [True, True, True, True]
         assert model.calls == 4
         warnings = _records(caplog, logging.WARNING)
         assert len(warnings) == 4
@@ -537,7 +531,7 @@ class TestRace:
         emit = MagicMock()
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            _generator(store, emit).maybe_describe(seen_on_request_path, MESSAGE)
+            _generator(store, emit).maybe_generate(seen_on_request_path, MESSAGE)
 
         assert model.calls == 1
         emit.assert_not_called()
@@ -556,7 +550,7 @@ class TestRace:
         emit = MagicMock()
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            _generator(store, emit).maybe_describe(_process(cleared.team_id), MESSAGE)
+            _generator(store, emit).maybe_generate(_process(cleared.team_id), MESSAGE)
 
         emit.assert_not_called()
         assert store.load_team(cleared.team_id) == cleared
@@ -573,7 +567,7 @@ class TestRace:
         emit = MagicMock()
 
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            _generator(store, emit).maybe_describe(process, MESSAGE)
+            _generator(store, emit).maybe_generate(process, MESSAGE)
 
         assert model.calls == 1
         emit.assert_not_called()
@@ -586,7 +580,7 @@ class TestRace:
 
 
 class TestNeverOnRequestPath:
-    """AC6: ``maybe_describe`` returns while the model call is still pending."""
+    """AC6: ``maybe_generate`` returns while the model call is still pending."""
 
     def test_returns_while_the_model_call_is_still_pending(
         self, monkeypatch: pytest.MonkeyPatch
@@ -609,10 +603,9 @@ class TestNeverOnRequestPath:
         emit = MagicMock()
         generator = TeamDescriptionGenerator(_model_cfg(), store, emit)  # the real pool
         try:
-            scheduled = generator.maybe_describe(process, MESSAGE)
+            generator.maybe_generate(process, MESSAGE)
 
             # Back on the caller's thread with the model still blocked.
-            assert scheduled is True
             deadline = time.monotonic() + 5
             while not model.prompts and time.monotonic() < deadline:
                 time.sleep(0.005)
@@ -628,7 +621,7 @@ class TestNeverOnRequestPath:
                 time.sleep(0.005)
         finally:
             gate.set()
-            generator.close()
+            generator._executor.shutdown(wait=False, cancel_futures=True)  # noqa: SLF001
 
         after = store.load_team(process.team_id)
         assert after is not None
