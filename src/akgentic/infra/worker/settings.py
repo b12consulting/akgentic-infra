@@ -58,6 +58,18 @@ class WorkerSettings(BaseSettings):
         default_factory=dict,
         description="Labels for placement strategy matching (e.g. gpu=true, region=eu)",
     )
+    description_provider: str | None = Field(
+        default=None,
+        description=(
+            "Provider of the small model that writes a team's first description "
+            "from its first user message (an akgentic.llm.ModelConfig provider id). "
+            "Unset, together with description_model, turns the generator off."
+        ),
+    )
+    description_model: str | None = Field(
+        default=None,
+        description="Model id for the description generator; unset turns it off",
+    )
 
     @field_validator("log_level", mode="before")
     @classmethod

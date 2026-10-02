@@ -1,9 +1,10 @@
-"""Story 28.1 / 39.1: ``akgentic.infra.worker`` public surface contract.
+"""Story 28.1 / 39.1 / 80.2: ``akgentic.infra.worker`` public surface contract.
 
-Post-Epic 28 the surviving exports were four symbols; Story 39.1 adds the shared
-``memory_diagnostics_router``, making the contract five. The dead worker shell
-(``create_worker_app``, ``WorkerLifecycle``, the ``services/`` package) is gone —
-this test guards against regression if a contributor reintroduces it.
+Post-Epic 28 the surviving exports were four symbols; Story 39.1 added the shared
+``memory_diagnostics_router``, and Story 80.2 adds ``TeamDescriptionGenerator``,
+making the contract six. The dead worker shell (``create_worker_app``,
+``WorkerLifecycle``, the ``services/`` package) is gone — this test guards
+against regression if a contributor reintroduces it.
 """
 
 from __future__ import annotations
@@ -16,11 +17,12 @@ import akgentic.infra.worker as worker_pkg
 
 
 class TestWorkerPublicSurface:
-    """The five-symbol contract on ``akgentic.infra.worker``."""
+    """The six-symbol contract on ``akgentic.infra.worker``."""
 
-    def test_canonical_five_symbol_import_succeeds(self) -> None:
-        """Settings, services, and the three shared routers import."""
+    def test_canonical_six_symbol_import_succeeds(self) -> None:
+        """Settings, services, the generator, and the three shared routers import."""
         from akgentic.infra.worker import (  # noqa: PLC0415
+            TeamDescriptionGenerator,
             WorkerServices,
             WorkerSettings,
             memory_diagnostics_router,
@@ -30,19 +32,28 @@ class TestWorkerPublicSurface:
 
         assert WorkerSettings is not None
         assert WorkerServices is not None
+        assert TeamDescriptionGenerator is not None
         assert teams_router is not None
         assert readiness_router is not None
         assert memory_diagnostics_router is not None
 
-    def test_all_equals_sorted_five_symbol_list(self) -> None:
-        """``__all__`` is exactly the five surviving symbols (sorted comparison)."""
+    def test_all_equals_sorted_six_symbol_list(self) -> None:
+        """``__all__`` is exactly the six symbols (sorted comparison)."""
         assert sorted(worker_pkg.__all__) == [
+            "TeamDescriptionGenerator",
             "WorkerServices",
             "WorkerSettings",
             "memory_diagnostics_router",
             "readiness_router",
             "teams_router",
         ]
+
+    def test_describing_team_handle_is_not_re_exported(self) -> None:
+        """The wrapper is importable from its module but is not part of the contract."""
+        from akgentic.infra.worker.description import DescribingTeamHandle  # noqa: PLC0415
+
+        assert DescribingTeamHandle is not None
+        assert "DescribingTeamHandle" not in worker_pkg.__all__
 
     def test_worker_lifecycle_is_not_an_attribute(self) -> None:
         """``WorkerLifecycle`` is gone — no attribute on ``akgentic.infra.worker``."""

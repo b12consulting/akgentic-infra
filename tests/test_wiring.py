@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from akgentic.team.manager import TeamManager
@@ -13,6 +14,7 @@ from akgentic.team.repositories.yaml import YamlEventStore
 
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
+from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
@@ -27,7 +29,12 @@ from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
+from akgentic.infra.worker import description
 from akgentic.infra.worker.deps import WorkerServices
+from akgentic.infra.worker.description import DescribingTeamHandle
+from akgentic.infra.worker.settings import WorkerSettings
+
+DESCRIPTION_LOGGER = "akgentic.infra.worker.description"
 
 
 class TestWireCommunityLogging:
@@ -355,3 +362,71 @@ class TestWireCommunityChannelDispatcher:
             assert dispatcher._registry is services.channel_registry
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
+
+
+class TestWireCommunityDescriptionGenerator:
+    """Story 80.2 AC12: the community wiring reads the worker's two description settings."""
+
+    def test_unset_is_off_said_once_and_the_cache_holds_plain_handles(
+        self,
+        seeded_settings: CommunitySettings,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """``worker_settings=None`` reads the environment, where both are unset."""
+        monkeypatch.delenv("AKGENTIC_WORKER_DESCRIPTION_PROVIDER", raising=False)
+        monkeypatch.delenv("AKGENTIC_WORKER_DESCRIPTION_MODEL", raising=False)
+        with caplog.at_level(logging.INFO, logger=DESCRIPTION_LOGGER):
+            services = wire_community(seeded_settings)
+        try:
+            records = [
+                r
+                for r in caplog.records
+                if r.name == DESCRIPTION_LOGGER and r.levelno == logging.INFO
+            ]
+            assert len(records) == 1
+            assert "disabled" in records[0].getMessage()
+
+            assert services.team_service is not None
+            process = services.team_service.create_team("test-team", user_id="alice")
+            cached = services.runtime_cache.get(process.team_id)
+            assert isinstance(cached, LocalTeamHandle)
+        finally:
+            services.actor_system.shutdown(timeout=5)
+
+    def test_set_is_on_said_once_and_the_cache_holds_describing_handles(
+        self,
+        seeded_settings: CommunitySettings,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Nothing reaches a provider: ``create_model`` is patched and never called here."""
+        from pydantic_ai.models.test import TestModel  # noqa: PLC0415
+
+        factory = MagicMock(return_value=TestModel(custom_output_text="x"))
+        monkeypatch.setattr(description, "create_model", factory)
+        worker_settings = WorkerSettings(
+            description_provider="openai-chat", description_model="gpt-4o-mini"
+        )
+        with caplog.at_level(logging.INFO, logger=DESCRIPTION_LOGGER):
+            services = wire_community(seeded_settings, worker_settings=worker_settings)
+        try:
+            records = [
+                r
+                for r in caplog.records
+                if r.name == DESCRIPTION_LOGGER and r.levelno == logging.INFO
+            ]
+            assert len(records) == 1
+            assert "enabled" in records[0].getMessage()
+            assert "openai-chat" in records[0].getMessage()
+            assert "gpt-4o-mini" in records[0].getMessage()
+
+            assert services.team_service is not None
+            process = services.team_service.create_team("test-team", user_id="alice")
+            cached = services.runtime_cache.get(process.team_id)
+            assert isinstance(cached, DescribingTeamHandle)
+            assert cached.team_id == process.team_id
+            # Lazy: wiring and creating a team construct no model.
+            factory.assert_not_called()
+        finally:
+            services.actor_system.shutdown(timeout=5)

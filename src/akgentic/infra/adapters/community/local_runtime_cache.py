@@ -12,6 +12,7 @@ from akgentic.infra.protocols.team_handle import TeamHandle
 if TYPE_CHECKING:
     from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
     from akgentic.infra.protocols.placement import PlacementStrategy
+    from akgentic.infra.worker.description import TeamDescriptionGenerator
     from akgentic.team.repositories.yaml import YamlEventStore
 
 logger = logging.getLogger(__name__)
@@ -28,14 +29,32 @@ class LocalRuntimeCache(RuntimeCache):
 
     Call ``warm()`` after construction to auto-restore teams that were
     running before a server restart (community tier only).
+
+    This cache is the one place every live handle passes through on every
+    tier that runs teams — the community wiring, the worker create and resume
+    routes, and ``warm()`` all ``store()`` here and every delivery reads back
+    through ``get()``. That is why the team description generator is installed
+    here, as a wrapping handle on ``store()``, rather than at the four sites
+    that construct handles: one line at the chokepoint, no Protocol change.
+    With no generator the cache holds exactly what it was given.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, description_generator: TeamDescriptionGenerator | None = None) -> None:
+        """Start empty, optionally wrapping every stored handle for description generation.
+
+        Args:
+            description_generator: When set, ``store()`` wraps each handle so a
+                team's first delivery can generate its description. ``None``
+                keeps the cache a plain map.
+        """
         self._handles: dict[uuid.UUID, TeamHandle] = {}
+        self._description_generator = description_generator
 
     def store(self, team_id: uuid.UUID, handle: TeamHandle) -> None:
-        """Store a team handle in the cache."""
+        """Store a team handle in the cache, wrapped when a generator is configured."""
         logger.debug("Cache store: team_id=%s", team_id)
+        if self._description_generator is not None:
+            handle = self._description_generator.wrap(handle)
         self._handles[team_id] = handle
 
     def get(self, team_id: uuid.UUID) -> TeamHandle | None:

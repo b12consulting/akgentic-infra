@@ -21,6 +21,8 @@ from akgentic.infra.server.auth_loader import load_auth_strategy
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
+from akgentic.infra.worker.description import TeamDescriptionGenerator
+from akgentic.infra.worker.settings import WorkerSettings
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import NullServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
@@ -32,6 +34,7 @@ def wire_community(
     settings: CommunitySettings,
     *,
     team_access_policy: TeamAccessPolicy | None = None,
+    worker_settings: WorkerSettings | None = None,
 ) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
 
@@ -43,6 +46,10 @@ def wire_community(
         settings: Community-tier configuration
         team_access_policy: Per-team authorization rule. Defaults to the
             shared owner-or-admin policy.
+        worker_settings: The worker-side settings the embedded runtime reads —
+            today the two team-description variables. ``None`` reads them from
+            the environment under the worker's own ``AKGENTIC_WORKER_`` prefix,
+            so one variable name turns the generator on across every tier.
 
     Returns:
         Fully wired CommunityServices container
@@ -84,9 +91,15 @@ def wire_community(
     )
 
     # Worker-side handles — local adapters wrapping the embedded TeamManager.
+    # The description generator is the worker's: on this tier the worker is
+    # embedded, so its settings are read here and the generator is handed to
+    # the cache, which wraps every handle it stores.
+    description_generator = TeamDescriptionGenerator.from_settings(
+        worker_settings if worker_settings is not None else WorkerSettings(), team_manager
+    )
     placement = LocalPlacement(team_manager, service_registry)
     worker_handle = LocalWorkerHandle(team_manager, service_registry, actor_system)
-    runtime_cache = LocalRuntimeCache()
+    runtime_cache = LocalRuntimeCache(description_generator=description_generator)
     runtime_cache.warm(worker_handle, event_store, placement)
 
     resolved_team_access_policy = (
