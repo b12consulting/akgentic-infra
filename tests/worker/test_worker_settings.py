@@ -48,9 +48,7 @@ class TestEnvVarOverride:
         monkeypatch.setenv("AKGENTIC_WORKER_LOG_LEVEL", "DEBUG")
         monkeypatch.setenv("AKGENTIC_WORKER_SHUTDOWN_DRAIN_TIMEOUT", "60")
         monkeypatch.setenv("AKGENTIC_WORKER_SHUTDOWN_PRE_DRAIN_DELAY", "5")
-        monkeypatch.setenv(
-            "AKGENTIC_WORKER_WORKER_LABELS", '{"gpu": "true", "region": "eu"}'
-        )
+        monkeypatch.setenv("AKGENTIC_WORKER_WORKER_LABELS", '{"gpu": "true", "region": "eu"}')
 
         settings = WorkerSettings()
         assert settings.host == "127.0.0.1"
@@ -97,16 +95,12 @@ class TestTheRetiredWorkspacesRootVariableIsHarmless:
 class TestLogLevelNormalization:
     """Log level validator must normalize case and reject invalid values."""
 
-    def test_log_level_normalizes_to_uppercase(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_log_level_normalizes_to_uppercase(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AKGENTIC_WORKER_LOG_LEVEL", "debug")
         settings = WorkerSettings()
         assert settings.log_level == "DEBUG"
 
-    def test_log_level_invalid_falls_back_to_info(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_log_level_invalid_falls_back_to_info(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AKGENTIC_WORKER_LOG_LEVEL", "bogus")
         with pytest.warns(UserWarning, match="Invalid AKGENTIC_WORKER_LOG_LEVEL"):
             settings = WorkerSettings()

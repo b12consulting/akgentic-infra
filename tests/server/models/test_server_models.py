@@ -10,15 +10,32 @@ from akgentic.core.messages.message import UserMessage
 from pydantic import ValidationError
 
 from akgentic.infra.server.models import (
+    MAX_TEAM_DESCRIPTION_LENGTH,
     CreateTeamRequest,
     EmitMessageRequest,
     EventListResponse,
     EventResponse,
     HumanInputRequest,
     SendMessageRequest,
+    TeamDescriptionResponse,
     TeamListResponse,
     TeamResponse,
+    UpdateTeamDescriptionRequest,
 )
+
+
+def _team_response(**overrides: object) -> TeamResponse:
+    """A minimal valid ``TeamResponse``; ``overrides`` set the optional tail fields."""
+    now = datetime.now(tz=UTC)
+    return TeamResponse(
+        team_id=uuid.uuid4(),
+        name="Test",
+        status="running",
+        user_id="anonymous",
+        created_at=now,
+        updated_at=now,
+        **overrides,  # type: ignore[arg-type]
+    )
 
 
 def test_create_team_request_minimal() -> None:
@@ -141,7 +158,109 @@ def test_team_response_field_order_appends_catalog_namespace_last() -> None:
         "updated_at",
         "metadata",
         "catalog_namespace",
+        "description",
     ]
+
+
+# --- Story 80.1: TeamResponse.description, the wire field ---
+
+
+def test_team_response_description_defaults_to_none() -> None:
+    """A team that never set a description reads ``null``, never ``""``."""
+    resp = _team_response()
+    assert resp.description is None
+    dumped = resp.model_dump(mode="json")
+    assert dumped["description"] is None
+    assert dumped["description"] != ""
+
+
+def test_team_response_description_round_trips() -> None:
+    """A populated description survives serialization unchanged."""
+    resp = _team_response(description="Triage inbound acme cases")
+    assert resp.model_dump(mode="json")["description"] == "Triage inbound acme cases"
+
+
+def test_team_response_description_is_appended_last_on_every_surface() -> None:
+    """AC11: appended after ``catalog_namespace`` on the model, the dump and the schema.
+
+    Three surfaces because a client may read any of them: the field registry is
+    what Pydantic iterates, the dump is the JSON body, the schema is the OpenAPI
+    document. An insert in the middle fails all three; a reorder of one fails
+    that one.
+    """
+    tail = ["catalog_namespace", "description"]
+    assert list(TeamResponse.model_fields)[-2:] == tail
+    assert list(_team_response().model_dump())[-2:] == tail
+    assert list(TeamResponse.model_json_schema()["properties"])[-2:] == tail
+
+
+def test_team_response_does_not_carry_the_origin() -> None:
+    """Only the PATCH response says who wrote the description."""
+    assert "origin" not in TeamResponse.model_fields
+
+
+# --- Story 80.1: UpdateTeamDescriptionRequest normalisation ---
+
+
+def test_update_description_request_strips_surrounding_whitespace() -> None:
+    req = UpdateTeamDescriptionRequest(description="  Triage inbound acme cases  ")
+    assert req.description == "Triage inbound acme cases"
+
+
+def test_update_description_request_maps_blank_to_none() -> None:
+    """All-whitespace is a clear, not an empty string that would read as a description."""
+    assert UpdateTeamDescriptionRequest(description="   \n\t ").description is None
+    assert UpdateTeamDescriptionRequest(description="").description is None
+
+
+def test_update_description_request_passes_none_through() -> None:
+    assert UpdateTeamDescriptionRequest(description=None).description is None
+
+
+def test_update_description_request_accepts_exactly_the_cap_after_trimming() -> None:
+    body = " " + "x" * MAX_TEAM_DESCRIPTION_LENGTH + " "
+    assert UpdateTeamDescriptionRequest(description=body).description == "x" * 500
+
+
+def test_update_description_request_rejects_one_over_the_cap_after_trimming() -> None:
+    """Measured after trimming: surrounding whitespace neither helps nor hurts."""
+    with pytest.raises(ValidationError, match=str(MAX_TEAM_DESCRIPTION_LENGTH)):
+        UpdateTeamDescriptionRequest(description=" " + "x" * 501 + " ")
+
+
+def test_update_description_request_requires_the_key() -> None:
+    """``{}`` is not a clear: an accidental empty body cannot wipe a description."""
+    with pytest.raises(ValidationError):
+        UpdateTeamDescriptionRequest()  # type: ignore[call-arg]
+
+
+def test_update_description_request_cap_is_five_hundred() -> None:
+    """The decision names the number; the constant is where it lives."""
+    assert MAX_TEAM_DESCRIPTION_LENGTH == 500
+
+
+# --- Story 80.1: TeamDescriptionResponse ---
+
+
+def test_team_description_response_requires_all_three_fields() -> None:
+    now = datetime.now(tz=UTC)
+    with pytest.raises(ValidationError):
+        TeamDescriptionResponse(description="x", origin="user")  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        TeamDescriptionResponse(description="x", updated_at=now)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        TeamDescriptionResponse(origin="user", updated_at=now)  # type: ignore[call-arg]
+
+
+def test_team_description_response_carries_a_null_description_and_the_stamp() -> None:
+    """A clear is a real answer: ``null`` with an owner and the stamp the write set."""
+    now = datetime.now(tz=UTC)
+    resp = TeamDescriptionResponse(description=None, origin="user", updated_at=now)
+    assert resp.model_dump(mode="json") == {
+        "description": None,
+        "origin": "user",
+        "updated_at": now.isoformat().replace("+00:00", "Z"),
+    }
 
 
 def test_team_response_serialization() -> None:

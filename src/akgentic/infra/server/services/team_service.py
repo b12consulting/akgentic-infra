@@ -26,14 +26,23 @@ from akgentic.infra.protocols.workspace_deletion import (
     WorkspaceDeletionContext,
     WorkspaceDeletionPolicy,
 )
+from akgentic.infra.server.description import TeamDescriptionGenerator
 from akgentic.infra.server.services._metadata_payload import validate_metadata
 from akgentic.infra.server.services._workspace_paths import deletion_candidate_paths
+from akgentic.infra.server.settings import ServerSettings
 from akgentic.team.metadata import (
     derive_metadata_indexes,
     make_index_entry,
     make_index_prefix_groups,
 )
-from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamCard, TeamStatus
+from akgentic.team.models import (
+    AgentStateSnapshot,
+    DescriptionOrigin,
+    PersistedEvent,
+    Process,
+    TeamCard,
+    TeamStatus,
+)
 from akgentic.team.ports import AgentCardNotFoundError
 from akgentic.tool.workspace import git_dir_for, meta_dir_for
 
@@ -252,7 +261,13 @@ class TeamService:
     RuntimeCache/TeamHandle protocols.
     """
 
-    def __init__(self, services: TierServices, *, workspaces_root: Path) -> None:
+    def __init__(
+        self,
+        services: TierServices,
+        *,
+        workspaces_root: Path,
+        settings: ServerSettings | None = None,
+    ) -> None:
         """Construct a TeamService.
 
         Args:
@@ -261,10 +276,20 @@ class TeamService:
                 workspace tree lives, at ``<scope>/<kind>/<leaf>`` (ADR-052).
                 Used by ``delete_team`` for best-effort FS cleanup, and as the
                 containment anchor no deletion candidate may resolve outside of.
+            settings: The tier's server settings; only the two description
+                fields are read. ``None`` reads them from the environment
+                through ``ServerSettings()``, which is how the department and
+                enterprise servers — which build this service without passing
+                settings — inherit the generator with no wiring of their own.
         """
         self._services = services
         self._cache: RuntimeCache = services.runtime_cache
         self._workspaces_root = workspaces_root
+        self._description_generator = TeamDescriptionGenerator.from_settings(
+            settings if settings is not None else ServerSettings(),
+            services.event_store,
+            self.emit_message,
+        )
 
     def create_team(
         self,
@@ -542,6 +567,57 @@ class TeamService:
         logger.info("Team metadata updated: team_id=%s", team_id)
         return updated.metadata
 
+    def update_team_description(self, team_id: uuid.UUID, description: str | None) -> Process:
+        """Set, replace or clear a team's description on behalf of its user.
+
+        A **server-side write to the event store on the request path**. This
+        and the generator's ``AUTO`` write are the two writers of these fields,
+        both through the same conditional store method rather than a worker
+        verb. It is safe only because the store method is a field-level,
+        conditional update of three keys and not a ``save_team``: no whole
+        document is serialised from memory, so a worker writing any other field
+        at the same instant is never overwritten, and the ownership rule is the
+        write's own filter rather than a check made here. There is deliberately
+        no read-then-check-then-replace around it.
+
+        The endpoint always writes as ``USER``: the value lands whatever the
+        stored origin, and it latches the record so the generator can never
+        overwrite or resurrect it — a clear included.
+
+        The ``get_team`` read is a lifecycle answer, not a concurrency guard:
+        it is what tells an unknown team (404) from a deleted one (409). The
+        value arrives already trimmed and capped by the request model; nothing
+        here inspects the text, and nothing logs it.
+
+        Args:
+            team_id: The team whose description is being written.
+            description: The normalised text, or ``None`` to clear it.
+
+        Returns:
+            The ``Process`` the store returned — what was persisted, not a
+            re-read and not the input.
+
+        Raises:
+            TeamNotFoundError: If the team is unknown, or vanished between the
+                lifecycle read and the write.
+            TeamStateConflictError: If the record says ``DELETED``.
+        """
+        process = self._services.worker_handle.get_team(team_id)
+        if process is None:
+            msg = f"Team {team_id} not found"
+            raise TeamNotFoundError(msg)
+        if process.status == TeamStatus.DELETED:
+            msg = f"Team {team_id} has been deleted"
+            raise TeamStateConflictError(msg)
+        updated = self._services.event_store.update_team_description(
+            team_id, description, DescriptionOrigin.USER
+        )
+        if updated is None:
+            msg = f"Team {team_id} not found"
+            raise TeamNotFoundError(msg)
+        logger.info("Team description updated: team_id=%s", team_id)
+        return updated
+
     def _deletion_candidates(self, process: Process) -> list[PurePosixPath]:
         """The trees this team's deletion may consider, or an empty list and a WARNING.
 
@@ -657,7 +733,7 @@ class TeamService:
         Raises:
             TeamNotFoundError: If the team is unknown or deleted.
         """
-        handle = self._get_or_revive_handle(team_id)
+        _, handle = self._get_or_revive_handle(team_id)
         handle.emitMessage(message)
         logger.debug("Message emitted to team %s", team_id)
 
@@ -667,9 +743,14 @@ class TeamService:
         Raises:
             TeamNotFoundError: If the team is unknown or deleted.
         """
-        handle = self._get_or_revive_handle(team_id)
+        process, handle = self._get_or_revive_handle(team_id)
         handle.send(content)
         logger.debug("Message sent to team %s", team_id)
+        # After the handle accepted the delivery, so a refused one schedules
+        # nothing; on the record already resolved, so the common case is one
+        # comparison and no I/O. The generator never raises into this path.
+        if self._description_generator is not None:
+            self._description_generator.maybe_generate(process, content)
 
     def send_message_to(self, team_id: uuid.UUID, agent_name: str, content: str | Message) -> None:
         """Send a message to a specific agent of a team, reviving it first if stopped.
@@ -679,9 +760,11 @@ class TeamService:
             ValueError: If the agent is not found — raised inside the team
                 package, so it arrives unclassified.
         """
-        handle = self._get_or_revive_handle(team_id)
+        process, handle = self._get_or_revive_handle(team_id)
         handle.send_to(agent_name, content)
         logger.debug("Message sent to agent '%s' in team %s", agent_name, team_id)
+        if self._description_generator is not None:
+            self._description_generator.maybe_generate(process, content)
 
     def send_message_from_to(
         self, team_id: uuid.UUID, sender_name: str, recipient_name: str, content: str | Message
@@ -693,7 +776,7 @@ class TeamService:
             ValueError: If the sender or the recipient is not found — raised
                 inside the team package, so it arrives unclassified.
         """
-        handle = self._get_or_revive_handle(team_id)
+        _, handle = self._get_or_revive_handle(team_id)
         handle.send_from_to(sender_name, recipient_name, content)
         logger.debug(
             "Message sent from '%s' to '%s' in team %s", sender_name, recipient_name, team_id
@@ -718,7 +801,7 @@ class TeamService:
         # _find_message resolves by inner id and returns only SentMessage, so
         # event.message is the inner Message to route (ADR-027 §Decision 1).
         event = self._find_message(team_id, message_id)
-        handle = self._get_or_revive_handle(team_id)
+        _, handle = self._get_or_revive_handle(team_id)
         handle.process_human_input(content, event.message)
         logger.debug("Human input routed to team %s, message_id=%s", team_id, message_id)
 
@@ -847,14 +930,15 @@ class TeamService:
         """
         return self._cache.get(team_id)
 
-    def _get_or_revive_handle(self, team_id: uuid.UUID) -> TeamHandle:
-        """The live handle for a delivery — reviving the team through placement if needed.
+    def _get_or_revive_handle(self, team_id: uuid.UUID) -> tuple[Process, TeamHandle]:
+        """The record and the live handle for a delivery — reviving the team if needed.
 
         The one rule every delivery door shares (ADR-046 D1). The **record is
         read before the cache**: a cached handle may outlive its record, and
         reading the cache first would deliver to a team whose record already
         says ``DELETED``. A running team with a cached handle costs one record
-        read and nothing else.
+        read and nothing else. The record is returned alongside the handle so
+        a door that needs it — the description trigger — reads nothing twice.
 
         With no cached handle the placement is asked to resume — whatever the
         record's status. A ``STOPPED`` team comes back; a ``RUNNING`` record
@@ -884,7 +968,7 @@ class TeamService:
             raise TeamNotFoundError(msg)
         handle = self._cache.get(team_id)
         if handle is not None:
-            return handle
+            return process, handle
         logger.info("Team %s has no live handle -- reviving before delivery", team_id)
         resumed = self._services.placement.resume_team(team_id)
         self._cache.store(resumed.team_id, resumed)
@@ -892,7 +976,7 @@ class TeamService:
         if handle is None:
             msg = f"Team {team_id} was revived but has no live handle"
             raise RuntimeError(msg)
-        return handle
+        return process, handle
 
     def _find_message(self, team_id: uuid.UUID, message_id: str) -> SentMessage:
         """Find a SentMessage by its inner ``message.id`` in persisted events.

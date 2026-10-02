@@ -72,6 +72,7 @@ _EXPECTED_ROUTES = [
     "GET,HEAD /docs/oauth2-redirect",
     "GET,HEAD /openapi.json",
     "GET,HEAD /redoc",
+    "PATCH /teams/{team_id}/description",
     "PATCH /teams/{team_id}/metadata",
     "POST /admin/catalog/clone",
     "POST /admin/catalog/namespace/import",

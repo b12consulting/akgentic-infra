@@ -6,7 +6,11 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# The cap a user's description is held to, measured after trimming. The store
+# writes what it is handed, so this is the only place the limit is enforced.
+MAX_TEAM_DESCRIPTION_LENGTH = 500
 
 
 class CreateTeamRequest(BaseModel):
@@ -71,6 +75,14 @@ class TeamResponse(BaseModel):
             "GET /teams, where it matches exactly."
         ),
     )
+    description: str | None = Field(
+        default=None,
+        description=(
+            "The team's description as persisted, or null when none has been set. "
+            "Who wrote it is not carried here; only PATCH /teams/{team_id}/description "
+            "answers that."
+        ),
+    )
 
 
 class UpdateTeamMetadataRequest(BaseModel):
@@ -120,6 +132,69 @@ class TeamMetadataResponse(BaseModel):
             "persistence concern, and this value is accepted verbatim back on "
             "create/update."
         )
+    )
+
+
+class UpdateTeamDescriptionRequest(BaseModel):
+    """Request body for PATCH /teams/{team_id}/description.
+
+    The key is required and nullable: ``null`` clears the description, while an
+    empty body ``{}`` is a 422 rather than a clear, so an accidental empty
+    request cannot wipe what a user wrote.
+    """
+
+    description: str | None = Field(
+        description=(
+            "The new description, or null to clear it. Surrounding whitespace is "
+            "trimmed, an all-whitespace value is a clear, and more than 500 "
+            "characters after trimming is rejected with 422."
+        )
+    )
+
+    @field_validator("description")
+    @classmethod
+    def _normalise(cls, value: str | None) -> str | None:
+        """Trim the text, map a blank result to ``None`` and enforce the cap.
+
+        Normalised here so the service and the store receive the value exactly
+        as it will be persisted: the store writes byte for byte and performs no
+        validation of its own. The ``ValueError`` surfaces as FastAPI's standard
+        422 body, before anything is written.
+        """
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        if len(trimmed) > MAX_TEAM_DESCRIPTION_LENGTH:
+            msg = (
+                f"description is {len(trimmed)} characters after trimming; "
+                f"the maximum is {MAX_TEAM_DESCRIPTION_LENGTH}"
+            )
+            raise ValueError(msg)
+        return trimmed
+
+
+class TeamDescriptionResponse(BaseModel):
+    """Response body for PATCH /teams/{team_id}/description.
+
+    Carries what was persisted, never the input echoed: all three fields are
+    read off the ``Process`` the store returned — ``description`` after
+    trimming, ``origin`` as the owner the store recorded, and ``updated_at``
+    as the stamp the write set. The stamp travels so a client that saves
+    locally can keep its cached team as fresh as the record; a replay guard
+    comparing notification timestamps against the cached ``updated_at`` is
+    only correct if this response carries the moved stamp.
+    """
+
+    description: str | None = Field(
+        description="The persisted description after the update, or null when it was cleared"
+    )
+    origin: str = Field(
+        description="Who owns the persisted description: 'user' for this endpoint's writes"
+    )
+    updated_at: datetime = Field(
+        description="The team's updated_at stamp as set by this write, from the persisted record"
     )
 
 

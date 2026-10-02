@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from akgentic.team.manager import TeamManager
@@ -23,11 +24,16 @@ from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPol
 from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.protocols.channels import ChannelAddress
+from akgentic.infra.server import description
 from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.description import TeamDescriptionGenerator
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 from akgentic.infra.worker.deps import WorkerServices
+from tests.conftest import _seed_catalog
+
+DESCRIPTION_LOGGER = "akgentic.infra.server.description"
 
 
 class TestWireCommunityLogging:
@@ -218,9 +224,7 @@ class TestWireCommunityTeamService:
         )
 
     @pytest.fixture()
-    def services(
-        self, settings: CommunitySettings
-    ) -> Generator[CommunityServices, None, None]:
+    def services(self, settings: CommunitySettings) -> Generator[CommunityServices, None, None]:
         svc = wire_community(settings)
         yield svc
         svc.team_manager._actor_system.shutdown(timeout=5)
@@ -355,3 +359,70 @@ class TestWireCommunityChannelDispatcher:
             assert dispatcher._registry is services.channel_registry
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
+
+
+class TestWireCommunityDescriptionGenerator:
+    """Story 80.3 AC3: the wiring hands its settings to ``TeamService``, the generator's owner."""
+
+    def test_unset_is_off_said_once(
+        self,
+        seeded_settings: CommunitySettings,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The suite's autouse fixture keeps both variables unset; the settings carry none."""
+        with caplog.at_level(logging.INFO, logger=DESCRIPTION_LOGGER):
+            services = wire_community(seeded_settings)
+        try:
+            records = [
+                r
+                for r in caplog.records
+                if r.name == DESCRIPTION_LOGGER and r.levelno == logging.INFO
+            ]
+            assert len(records) == 1
+            assert "disabled" in records[0].getMessage()
+
+            assert services.team_service is not None
+            assert services.team_service._description_generator is None  # noqa: SLF001
+        finally:
+            services.actor_system.shutdown(timeout=5)
+
+    def test_set_is_on_said_once_and_builds_no_model(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Nothing reaches a provider: ``create_model`` is patched and never called here."""
+        from pydantic_ai.models.test import TestModel  # noqa: PLC0415
+
+        factory = MagicMock(return_value=TestModel(custom_output_text="x"))
+        monkeypatch.setattr(description, "create_model", factory)
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+            description_provider="openai-chat",
+            description_model="gpt-4o-mini",
+        )
+        _seed_catalog(settings.catalog_path)
+        with caplog.at_level(logging.INFO, logger=DESCRIPTION_LOGGER):
+            services = wire_community(settings)
+        try:
+            records = [
+                r
+                for r in caplog.records
+                if r.name == DESCRIPTION_LOGGER and r.levelno == logging.INFO
+            ]
+            assert len(records) == 1
+            assert "enabled" in records[0].getMessage()
+            assert "openai-chat" in records[0].getMessage()
+            assert "gpt-4o-mini" in records[0].getMessage()
+
+            assert services.team_service is not None
+            generator = services.team_service._description_generator  # noqa: SLF001
+            assert isinstance(generator, TeamDescriptionGenerator)
+            services.team_service.create_team("test-team", user_id="alice")
+            # Lazy: wiring and creating a team construct no model.
+            factory.assert_not_called()
+        finally:
+            services.actor_system.shutdown(timeout=5)

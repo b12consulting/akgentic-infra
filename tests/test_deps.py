@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import get_type_hints
 from unittest.mock import MagicMock
 
@@ -13,7 +14,10 @@ from akgentic.catalog import Catalog
 from akgentic.core.agent_card import AgentCard
 from akgentic.team.models import (
     AgentCardEntry,
+    AgentCardRef,
+    AgentRef,
     AgentStateSnapshot,
+    DescriptionOrigin,
     PersistedEvent,
     Process,
     TeamStatus,
@@ -35,7 +39,14 @@ class FakeEventStore:
     Does NOT inherit from EventStore -- validates that Pydantic accepts
     protocol-typed fields through structural subtyping when
     arbitrary_types_allowed=True and SkipValidation is used.
+
+    Team snapshots are the one thing it actually stores: the description write
+    is conditional on what is already there, so a fake that remembered nothing
+    could not honour the port's contract.
     """
+
+    def __init__(self) -> None:
+        self._teams: dict[uuid.UUID, Process] = {}
 
     def save_event(self, event: PersistedEvent) -> None:
         """No-op stub."""
@@ -47,11 +58,38 @@ class FakeEventStore:
         return []
 
     def save_team(self, process: Process) -> None:
-        """No-op stub."""
+        """Store the snapshot under its team id."""
+        self._teams[process.team_id] = process
+
+    def update_team_description(
+        self,
+        team_id: uuid.UUID,
+        description: str | None,
+        origin: DescriptionOrigin,
+    ) -> Process | None:
+        """The port's conditional write: USER lands and latches, AUTO yields to USER.
+
+        Derived by ``model_copy`` so a field this fake has never heard of
+        survives the write, as it does on every real backend.
+        """
+        stored = self._teams.get(team_id)
+        if stored is None:
+            return None
+        if origin is DescriptionOrigin.AUTO and stored.description_origin is DescriptionOrigin.USER:
+            return stored
+        updated = stored.model_copy(
+            update={
+                "team_description": description,
+                "description_origin": origin,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        self._teams[team_id] = updated
+        return updated
 
     def load_team(self, team_id: uuid.UUID) -> Process | None:
-        """Return None."""
-        return None
+        """Return the stored snapshot, or None for an unknown team."""
+        return self._teams.get(team_id)
 
     def delete_team(self, team_id: uuid.UUID) -> None:
         """No-op stub."""
@@ -206,3 +244,123 @@ class TestFakeEventStoreProtocolShape:
         ``@runtime_checkable``, so the check goes through the MRO instead.
         """
         assert EventStore not in FakeEventStore.__mro__
+
+
+def _process(
+    *,
+    team_description: str | None = None,
+    description_origin: DescriptionOrigin = DescriptionOrigin.AUTO,
+    model_class: type[Process] = Process,
+) -> Process:
+    """A minimal persisted ``Process`` whose stamps sit safely in the past.
+
+    ``updated_at`` is a day old so "the stamp moved" and "the stamp did not
+    move" are both assertable without racing the clock. ``model_class`` lets the
+    copy-not-rebuild guard construct a subclass through the same path.
+    """
+    then = datetime.now(UTC) - timedelta(days=1)
+    return model_class(
+        team_id=uuid.uuid4(),
+        status=TeamStatus.RUNNING,
+        user_id="user-1",
+        created_at=then,
+        updated_at=then,
+        entry_point=AgentRef(name="@Manager", role="Manager"),
+        agent_cards=[AgentCardRef(role="Manager", card_hash="0" * 64)],
+        team_description=team_description,
+        description_origin=description_origin,
+    )
+
+
+class _ProcessWithExtraField(Process):
+    """A ``Process`` carrying a field the fake's write path has never heard of."""
+
+    extra_field: str = "sentinel"
+
+
+class TestFakeEventStoreDescriptionSemantics:
+    """AC13: the fake honours the port's conditional-write contract, not just its shape.
+
+    A fake that always wrote would satisfy the signature guard above and still
+    let a service test pass against semantics the real stores do not have.
+    """
+
+    def test_a_user_write_lands_and_sets_the_origin_to_user(self) -> None:
+        store = FakeEventStore()
+        process = _process()
+        store.save_team(process)
+
+        updated = store.update_team_description(
+            process.team_id, "Triage inbound acme cases", DescriptionOrigin.USER
+        )
+
+        assert updated is not None
+        assert updated.team_description == "Triage inbound acme cases"
+        assert updated.description_origin is DescriptionOrigin.USER
+        assert updated.updated_at > process.updated_at
+        assert store.load_team(process.team_id) == updated
+
+    def test_an_auto_write_against_a_fresh_record_lands(self) -> None:
+        store = FakeEventStore()
+        process = _process()
+        store.save_team(process)
+
+        updated = store.update_team_description(
+            process.team_id, "Generated summary", DescriptionOrigin.AUTO
+        )
+
+        assert updated is not None
+        assert updated.team_description == "Generated summary"
+        assert updated.description_origin is DescriptionOrigin.AUTO
+
+    def test_an_auto_write_against_a_user_owned_record_is_a_no_op(self) -> None:
+        store = FakeEventStore()
+        owned = _process(team_description="Mine", description_origin=DescriptionOrigin.USER)
+        store.save_team(owned)
+
+        result = store.update_team_description(
+            owned.team_id, "Generated summary", DescriptionOrigin.AUTO
+        )
+
+        assert result == owned
+        assert result.team_description == "Mine"
+        assert result.updated_at == owned.updated_at
+        assert store.load_team(owned.team_id) == owned
+
+    def test_a_user_clear_keeps_the_latch_so_a_later_auto_write_is_still_a_no_op(
+        self,
+    ) -> None:
+        store = FakeEventStore()
+        owned = _process(team_description="Mine", description_origin=DescriptionOrigin.USER)
+        store.save_team(owned)
+
+        cleared = store.update_team_description(owned.team_id, None, DescriptionOrigin.USER)
+        assert cleared is not None
+        assert cleared.team_description is None
+        assert cleared.description_origin is DescriptionOrigin.USER
+
+        later = store.update_team_description(
+            owned.team_id, "Generated summary", DescriptionOrigin.AUTO
+        )
+        assert later == cleared
+        assert later.team_description is None
+
+    def test_an_unknown_team_id_returns_none(self) -> None:
+        store = FakeEventStore()
+
+        assert store.update_team_description(uuid.uuid4(), "x", DescriptionOrigin.USER) is None
+
+    def test_the_write_survives_a_field_the_fake_has_never_heard_of(self) -> None:
+        """The record is derived by copy, not rebuilt field by field.
+
+        An enumerated reconstruction returns a plain ``Process`` and drops the
+        sentinel; only ``model_copy(update=...)`` keeps both.
+        """
+        store = FakeEventStore()
+        process = _process(model_class=_ProcessWithExtraField)
+        store.save_team(process)
+
+        updated = store.update_team_description(process.team_id, "x", DescriptionOrigin.USER)
+
+        assert isinstance(updated, _ProcessWithExtraField)
+        assert updated.extra_field == "sentinel"
