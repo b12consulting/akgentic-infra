@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import yaml
 from pydantic import ValidationError
 
-from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
+from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding, ChannelRegistry
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class YamlChannelRegistry:
+class YamlChannelRegistry(ChannelRegistry):
     """Persists ``ChannelBinding`` records in a YAML file.
 
     File format — one record per ``(channel, channel_user_id)``, written as the

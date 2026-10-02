@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from akgentic.infra.protocols.authz import (
     TeamAccessContext,
+    TeamAccessPolicy,
     TeamListFilter,
     UserAccessContext,
 )
@@ -19,7 +20,7 @@ from akgentic.infra.server.auth import RequestUser
 _ADMIN_ROLE = "admin"
 
 
-class OwnerOrAdminPolicy:
+class OwnerOrAdminPolicy(TeamAccessPolicy):
     """The default owner-or-admin :class:`TeamAccessPolicy`.
 
     Reproduces the historical ``require_team_access`` rule byte-identically:

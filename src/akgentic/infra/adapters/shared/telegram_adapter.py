@@ -8,9 +8,14 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from akgentic.infra.protocols.channels import (
+    ChannelAdapter,
+    ChannelAddress,
+    ChannelBinding,
+)
+
 if TYPE_CHECKING:
     from akgentic.core.messages import SentMessage
-    from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +31,10 @@ TELEGRAM_CHANNEL = "telegram"
 _UNKNOWN_SENDER = "an unknown sender"
 
 
-class TelegramChannelAdapter:
+class TelegramChannelAdapter(ChannelAdapter):
     """Delivers outbound agent messages to Telegram chats via the Bot API.
 
-    Satisfies the ``ChannelAdapter`` protocol via structural
-    subtyping.
+    Implements the ``ChannelAdapter`` protocol.
 
     ``matches()`` returns ``True`` when the ``SentMessage`` recipient is
     structurally a ``UserProxy`` actor — or a subclass such as

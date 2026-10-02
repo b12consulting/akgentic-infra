@@ -7,21 +7,22 @@ import uuid
 from typing import TYPE_CHECKING
 
 from akgentic.core.messages import SentMessage
+from akgentic.core.orchestrator import EventSubscriber
 
 if TYPE_CHECKING:
     from akgentic.core.messages import Message
-    from akgentic.infra.protocols.channels import ChannelRegistry, ChannelAdapter
+    from akgentic.infra.protocols.channels import ChannelAdapter, ChannelRegistry
 
 logger = logging.getLogger(__name__)
 
 
-class ChannelDispatcher:
+class ChannelDispatcher(EventSubscriber):
     """Routes outbound SentMessage events to the channel that answers them.
 
-    Satisfies the ``EventSubscriber`` protocol from ``akgentic.core.orchestrator``
-    via structural subtyping. **One instance is shared by every team** in the
-    process: the team is read off the message (``SentMessage.recipient.team_id``)
-    and off the lifecycle hooks, exactly as that Protocol's docstring intends.
+    Implements the ``EventSubscriber`` protocol from ``akgentic.core.orchestrator``.
+    **One instance is shared by every team** in the process: the team is read off
+    the message (``SentMessage.recipient.team_id``) and off the lifecycle hooks,
+    exactly as that Protocol's docstring intends.
 
     Delivery is **opt-in**. A message is only ever delivered to an agent the
     registry holds a ``ChannelBinding`` for; an unbound agent's message is left
@@ -122,9 +123,9 @@ class ChannelDispatcher:
         """No-op — dispatcher has no work to do on the inactivity-timer signal.
 
         Channel-side teardown happens on ``on_stop()`` once the team actually
-        stops. Present to satisfy the ``EventSubscriber`` Protocol: a
-        structurally-typed subscriber that drops the method is silently skipped,
-        which reads as working code.
+        stops. Present to satisfy the ``EventSubscriber`` Protocol: a subscriber
+        that dropped the method would inherit the Protocol's empty body and be
+        silently skipped, which reads as working code.
 
         Args:
             team_id: ``team_id`` from the orchestrator. Accepted to satisfy the

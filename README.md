@@ -279,13 +279,16 @@ graph TB
 src/akgentic/infra/
   protocols/          Protocol definitions (the contracts)
     auth.py             AuthStrategy
+    authz.py            TeamAccessPolicy
     placement.py        PlacementStrategy
     worker_handle.py    WorkerHandle
     team_handle.py      TeamHandle
     runtime_cache.py    RuntimeCache
-    channels.py         ChannelAdapter, Parser, Router, Registry
+    channels.py         ChannelAdapter, ChannelParser, ChannelRouter, ChannelRegistry(ReadSync)
+    event_stream.py     EventStream, StreamReader
     health.py           HealthMonitor
     recovery.py         RecoveryPolicy
+    workspace_deletion.py  WorkspaceDeletionPolicy
   adapters/           Protocol implementations
     community/          Single-process adapters (NoAuth, LocalPlacement, etc.)
     shared/             Tier-agnostic adapters (Telegram, telemetry, WebSocket)
@@ -294,8 +297,10 @@ src/akgentic/infra/
     services/           TeamService (tier-agnostic orchestrator)
     settings.py         Pydantic-settings configuration classes
     state_keys.py       Typed app.state key declarations (server tier)
+    assembly.py         AppModule (the module contract), BaseAppModule, build_app
     app.py              Application factory (create_app)
   cli/                Typer-based CLI (ak-infra)
+    auth/token_provider.py  TokenProvider (bearer-token contract), OidcTokenProvider
   utils.py            StateKey[T] — typed app.state handle factory
   wiring.py           Dependency injection — wires adapters into services
   worker/             Worker module (planned for department/enterprise tiers)
@@ -335,25 +340,52 @@ ak-infra chat --create agent-team
 
 ## Protocols
 
-These are the contracts that department/enterprise tiers must implement. All use structural subtyping (`typing.Protocol`) — no inheritance required.
+These are the contracts a tier implements. Every one is a `typing.Protocol`, so any class with the right members satisfies it structurally — but **every implementation in this package declares the protocol as an explicit base, and a tier implementation must do the same**:
 
-The **Used in** column refers to the role in the distributed (department / enterprise) tiers; in the community tier the server and worker run in a single process.
+```python
+from akgentic.team.ports import EventStore
 
-| Protocol                       | File                | Abstracts                                     | Used in |
-|--------------------------------|---------------------|-----------------------------------------------|---------|
-| `PlacementStrategy`            | `placement.py`      | Worker selection and team creation             | Server |
-| `WorkerHandle`                 | `worker_handle.py`  | Team stop / delete / resume / get             | Both — server-side remote handle delegates to the worker's local handle |
-| `TeamHandle`                   | `team_handle.py`    | Send messages, route human input, subscribe   | Both — server-side remote handle delegates to the worker's local handle |
-| `RuntimeCache`                 | `runtime_cache.py`  | Map team IDs to live TeamHandle instances      | Both — real cache on the worker, stateless no-op resolver on the server |
-| `AuthStrategy`                 | `auth.py`           | Async `resolve_request_user(connection) -> RequestUser` (raises 401) + `get_auth_routes` — see [Authentication contract & enforcement](#authentication-contract--enforcement) | Server |
-| `ChannelAdapter`    | `channels.py`       | Outbound message delivery to external channels | Worker — runs in the orchestrator's actor thread |
-| `ChannelRouter`     | `channels.py`       | Decide what one inbound channel message does — see [Interaction channels](#interaction-channels) | Server |
-| `ChannelParser`                | `channels.py`       | Parse channel-specific webhook payloads        | Server |
-| `ChannelRegistry`              | `channels.py`       | Bind one channel conversation to one agent of one team | Both — async reads/writes on the server, `find_binding_sync` on the worker |
-| `EventStream`                  | `event_stream.py`   | Tier-agnostic event streaming with replay and fan-out (ADR-010) | Both — worker appends, server reads / fans out |
-| `StreamReader`                 | `event_stream.py`   | Cursor-based blocking reader for a team's event stream | Server — read side of the WebSocket fan-out |
-| `HealthMonitor`                | `health.py`         | Worker liveness detection                      | Server |
-| `RecoveryPolicy`               | `recovery.py`       | Recovery behavior on worker failure            | Server |
+class MongoEventStore(EventStore):   # never `class MongoEventStore:`
+    ...
+```
+
+Explicit inheritance costs nothing at runtime and buys three things. The dependency is visible to AST tooling — import graphs, impact analysis, dead-code sweeps — instead of being inferable only by comparing member names. mypy checks every override's signature against the contract at definition time, not at the one call site that happens to pass the instance. And a member the implementation forgot makes the class abstract, so mypy rejects its instantiation; without the base, the orchestrator silently skips the missing hook and the gap reads as working code. The one class that cannot inherit a Protocol is a Pydantic `BaseModel` (its metaclass conflicts with `Protocol`'s); no implementation in this package is one, and a tier that needs one should wrap the model rather than make it the implementor.
+
+### Infra-owned protocols
+
+Files are under `src/akgentic/infra/protocols/` unless a path is given. The **Used in** column is the role in the distributed (department / enterprise) tiers; in the community tier the server and worker run in a single process.
+
+| Protocol                  | File                        | Abstracts                                                                 | Community implementation                                       | Used in |
+|---------------------------|-----------------------------|---------------------------------------------------------------------------|----------------------------------------------------------------|---------|
+| `PlacementStrategy`       | `placement.py`              | Worker selection and team creation / resumption                           | `LocalPlacement` (`adapters/community`)                        | Server |
+| `WorkerHandle`            | `worker_handle.py`          | Team stop / delete / get / metadata update / stop-all                     | `LocalWorkerHandle` (`adapters/community`)                     | Both — server-side remote handle delegates to the worker's local handle |
+| `TeamHandle`              | `team_handle.py`            | Send messages, route human input, subscribe                               | `LocalTeamHandle` (`adapters/community`)                       | Both — server-side remote handle delegates to the worker's local handle |
+| `RuntimeCache`            | `runtime_cache.py`          | Map team IDs to live `TeamHandle` instances                               | `LocalRuntimeCache` (`adapters/community`)                     | Both — real cache on the worker, stateless no-op resolver on the server |
+| `AuthStrategy`            | `auth.py`                   | Async `resolve_request_user(connection) -> RequestUser` (raises 401) + `get_auth_routes` — see [Authentication contract & enforcement](#authentication-contract--enforcement) | `NoAuth` (`adapters/community`)                                | Server |
+| `TeamAccessPolicy`        | `authz.py`                  | Per-team authorization: list filters plus `can_*` checks for create / get / stop / delete / restore / update-metadata; all async so a tier may consult an RBAC store | `OwnerOrAdminPolicy` (`adapters/shared`) — allow iff owner or `admin` role | Server |
+| `WorkspaceDeletionPolicy` | `workspace_deletion.py`     | *May this workspace tree go with the team?* — one sync `may_delete(ctx)` called from `TeamService.delete_team` | `TeamTreeOnlyPolicy` (`adapters/shared`) — the team's own `_team/<team_id>` tree, nothing else | Server |
+| `ChannelAdapter`          | `channels.py`               | Outbound message delivery to external channels                            | `TelegramChannelAdapter` (`adapters/shared`)                   | Worker — runs in the orchestrator's actor thread |
+| `ChannelRouter`| `channels.py`               | Decide what one inbound channel message does — see [Interaction channels](#interaction-channels) | `DefaultChannelRouter` (`adapters/shared`)                     | Server |
+| `ChannelParser`           | `channels.py`               | Parse channel-specific webhook payloads                                   | `TelegramChannelParser` (`adapters/shared`)                    | Server |
+| `ChannelRegistry`         | `channels.py`               | Bind one channel conversation to one agent of one team (async read/write) | `YamlChannelRegistry` (`adapters/community`)                   | Both — async reads/writes on the server, `find_binding_sync` on the worker |
+| `ChannelRegistryReadSync` | `channels.py`               | The sync read face of `ChannelRegistry` — `find_binding_sync`, answered from memory because the outbound path runs in an actor thread with no event loop | satisfied by `YamlChannelRegistry` (`ChannelRegistry` extends it) | Worker |
+| `EventStream`             | `event_stream.py`           | Tier-agnostic event streaming with replay and fan-out                     | `LocalEventStream` (`adapters/community`)                      | Both — worker appends, server reads / fans out |
+| `StreamReader`            | `event_stream.py`           | Cursor-based blocking reader for a team's event stream                    | `LocalStreamReader` (`adapters/community`)                     | Server — read side of the WebSocket fan-out |
+| `HealthMonitor`           | `health.py`                 | Worker liveness detection                                                 | none — single process. Department `RedisHealthMonitor`, enterprise `DaprHealthMonitor` | Server |
+| `RecoveryPolicy`          | `recovery.py`               | Recovery behavior on worker failure                                       | none — single process. Department `MarkStoppedRecovery`, enterprise `AutoRestoreRecovery` | Server |
+| `AppModule`               | `server/assembly.py`        | The module contract `create_app` composes: routes, middleware, allowlist, exception handlers, state, lifespan — see [Assembling a server from modules](#assembling-a-server-from-modules) | `BaseAppModule` (no-op defaults; subclass it, never implement the Protocol by hand) | Server |
+| `TokenProvider`           | `cli/auth/token_provider.py`| Source of bearer tokens for authenticated CLI requests — `get_access_token()` on every outgoing call | `OidcTokenProvider` (device-code + refresh)                    | CLI |
+
+### Framework protocols the tier wires
+
+These are defined in the framework packages, not in infra, but a tier chooses or writes their implementation in its wiring. The same inheritance rule applies: a tier's `MongoEventStore` declares `EventStore` as a base.
+
+| Protocol          | Defined in                                        | Abstracts                                                   | Community implementation                                                                 | Wired at |
+|-------------------|---------------------------------------------------|-------------------------------------------------------------|------------------------------------------------------------------------------------------|----------|
+| `EventStore`      | `akgentic.team.ports`                             | Durable storage for events, team process state, agent state | `YamlEventStore` (`akgentic-team`)                                                       | `wiring.py` |
+| `ServiceRegistry` | `akgentic.team.ports`                             | Which worker instances are live and which teams each hosts  | `NullServiceRegistry` (`akgentic-team`)                                                  | `wiring.py` |
+| `EntryRepository` | `akgentic.catalog.repositories.base`              | Storage backend for unified catalog `Entry` rows            | `YamlEntryRepository` (`akgentic-catalog`)                                               | `wiring.py` |
+| `EventSubscriber` | `akgentic.core.orchestrator`                      | Orchestrator lifecycle and message hooks                    | `TelemetrySubscriber`, `EventStreamSubscriber`, `ChannelDispatcher`, `RuntimeCacheEvictionSubscriber` (`adapters/shared`) | `wiring.py` → `TeamManager(subscribers=...)` |
 
 ## Server Architecture
 

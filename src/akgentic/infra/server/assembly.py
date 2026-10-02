@@ -321,7 +321,7 @@ class AppModule(Protocol):
         ...
 
 
-class BaseAppModule:
+class BaseAppModule(AppModule):
     """No-op defaults for every ``AppModule`` member.
 
     Subclass and override only what the module contributes; the composed

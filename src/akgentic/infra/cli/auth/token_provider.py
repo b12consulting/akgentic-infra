@@ -127,7 +127,7 @@ def _default_on_user_code(auth: DeviceAuthorizationResponse) -> None:
     sys.stderr.flush()
 
 
-class OidcTokenProvider:
+class OidcTokenProvider(TokenProvider):
     """OIDC device-code + refresh-token provider.
 
     Construct with the active :class:`ProfileConfig` and profile name. The

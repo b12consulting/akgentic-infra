@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import logging
 
-from akgentic.infra.protocols.channels import ChannelCommand, ChannelMessage, JsonValue
+from akgentic.infra.protocols.channels import (
+    ChannelCommand,
+    ChannelMessage,
+    ChannelParser,
+    JsonValue,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +83,10 @@ def _quoted_text(reply_to_message: JsonValue) -> str | None:
     return text if isinstance(text, str) else None
 
 
-class TelegramChannelParser:
+class TelegramChannelParser(ChannelParser):
     """Parses inbound Telegram webhook Update payloads into normalized ChannelMessage.
 
-    Satisfies the ``ChannelParser`` protocol via structural subtyping.
+    Implements the ``ChannelParser`` protocol.
 
     Telegram sends Updates as JSON POST to the configured webhook URL.
     This parser extracts the text message content, chat ID (used as the

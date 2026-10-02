@@ -6,6 +6,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 
 if TYPE_CHECKING:
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class LocalRuntimeCache:
+class LocalRuntimeCache(RuntimeCache):
     """In-process dict-backed cache mapping team IDs to live TeamHandle instances.
 
     Starts empty on construction — teams are only cached after explicit
