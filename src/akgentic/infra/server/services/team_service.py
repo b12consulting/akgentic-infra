@@ -33,7 +33,14 @@ from akgentic.team.metadata import (
     make_index_entry,
     make_index_prefix_groups,
 )
-from akgentic.team.models import AgentStateSnapshot, PersistedEvent, Process, TeamCard, TeamStatus
+from akgentic.team.models import (
+    AgentStateSnapshot,
+    DescriptionOrigin,
+    PersistedEvent,
+    Process,
+    TeamCard,
+    TeamStatus,
+)
 from akgentic.team.ports import AgentCardNotFoundError
 from akgentic.tool.workspace import git_dir_for, meta_dir_for
 
@@ -541,6 +548,56 @@ class TeamService:
         updated = self._services.worker_handle.update_team_metadata(team_id, validated)
         logger.info("Team metadata updated: team_id=%s", team_id)
         return updated.metadata
+
+    def update_team_description(self, team_id: uuid.UUID, description: str | None) -> Process:
+        """Set, replace or clear a team's description on behalf of its user.
+
+        A **server-side write to the event store on the request path** — the one
+        place this service writes the store directly rather than through a
+        worker verb. It is safe only because the store method is a field-level,
+        conditional update of three keys and not a ``save_team``: no whole
+        document is serialised from memory, so a worker writing any other field
+        at the same instant is never overwritten, and the ownership rule is the
+        write's own filter rather than a check made here. There is deliberately
+        no read-then-check-then-replace around it.
+
+        The endpoint always writes as ``USER``: the value lands whatever the
+        stored origin, and it latches the record so the worker-side generator
+        can never overwrite or resurrect it — a clear included.
+
+        The ``get_team`` read is a lifecycle answer, not a concurrency guard:
+        it is what tells an unknown team (404) from a deleted one (409). The
+        value arrives already trimmed and capped by the request model; nothing
+        here inspects the text, and nothing logs it.
+
+        Args:
+            team_id: The team whose description is being written.
+            description: The normalised text, or ``None`` to clear it.
+
+        Returns:
+            The ``Process`` the store returned — what was persisted, not a
+            re-read and not the input.
+
+        Raises:
+            TeamNotFoundError: If the team is unknown, or vanished between the
+                lifecycle read and the write.
+            TeamStateConflictError: If the record says ``DELETED``.
+        """
+        process = self._services.worker_handle.get_team(team_id)
+        if process is None:
+            msg = f"Team {team_id} not found"
+            raise TeamNotFoundError(msg)
+        if process.status == TeamStatus.DELETED:
+            msg = f"Team {team_id} has been deleted"
+            raise TeamStateConflictError(msg)
+        updated = self._services.event_store.update_team_description(
+            team_id, description, DescriptionOrigin.USER
+        )
+        if updated is None:
+            msg = f"Team {team_id} not found"
+            raise TeamNotFoundError(msg)
+        logger.info("Team description updated: team_id=%s", team_id)
+        return updated
 
     def _deletion_candidates(self, process: Process) -> list[PurePosixPath]:
         """The trees this team's deletion may consider, or an empty list and a WARNING.

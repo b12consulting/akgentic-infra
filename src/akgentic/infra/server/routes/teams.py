@@ -26,9 +26,11 @@ from akgentic.infra.server.models import (
     EventResponse,
     HumanInputRequest,
     SendMessageRequest,
+    TeamDescriptionResponse,
     TeamListResponse,
     TeamMetadataResponse,
     TeamResponse,
+    UpdateTeamDescriptionRequest,
     UpdateTeamMetadataRequest,
 )
 from akgentic.infra.server.routes._message_payload import decode_message, resolve_send_payload
@@ -66,6 +68,7 @@ def _process_to_response(process: Process) -> TeamResponse:
         updated_at=process.updated_at,
         metadata=dump_metadata(process.metadata),
         catalog_namespace=process.catalog_namespace,
+        description=process.team_description,
     )
 
 
@@ -369,6 +372,53 @@ def update_team_metadata(
     except ValueError as exc:
         _raise_action_error(exc)
     return TeamMetadataResponse(metadata=dump_metadata(metadata))
+
+
+@router.patch(
+    "/{team_id}/description",
+    status_code=200,
+    response_model=TeamDescriptionResponse,
+    dependencies=[Depends(require_team_access)],
+)
+def update_team_description(
+    team_id: uuid.UUID,
+    body: UpdateTeamDescriptionRequest,
+    service: TeamService = Depends(get_team_service),
+) -> TeamDescriptionResponse:
+    """Set, replace or clear a team's description; the user owns it from then on.
+
+    ``body.description`` arrives trimmed and capped by the request model —
+    blank is a clear, over 500 characters is a 422 that writes nothing. The
+    service writes the server's own store directly through a conditional,
+    field-level update, so a running worker is never raced on another field.
+
+    The response carries what was persisted, who owns it and the ``updated_at``
+    stamp the write set, never the input echoed. Any status other than
+    ``DELETED`` is writable; a deleted record is
+    a **409**, mapped by type through ``_raise_state_conflict`` — deliberately
+    not ``_raise_action_error``, which reads the word "deleted" in a message as
+    a 404. Both typed errors subclass ``ValueError``, so no ``ValueError`` arm
+    may precede them here.
+
+    Ownership comes from ``require_team_access`` — the request identity seam
+    and the wired policy, never the body — and a team the caller may not see is
+    a 404, identical to one that does not exist.
+
+    Sync on purpose, like ``update_team_metadata``: the store write is blocking
+    I/O and belongs on the threadpool.
+    """
+    logger.info("PATCH /teams/%s/description", team_id)  # never the body: user-authored text
+    try:
+        process = service.update_team_description(team_id, body.description)
+    except TeamNotFoundError:
+        raise HTTPException(status_code=404, detail="Team not found") from None
+    except TeamStateConflictError as exc:
+        _raise_state_conflict(exc)
+    return TeamDescriptionResponse(
+        description=process.team_description,
+        origin=process.description_origin.value,
+        updated_at=process.updated_at,
+    )
 
 
 # --- Action Endpoints ---
