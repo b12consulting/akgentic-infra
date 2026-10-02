@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from akgentic.infra.protocols.auth import AuthStrategy
+from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.protocols.channels import (
     ChannelAdapter,
     ChannelAddress,
@@ -28,6 +29,7 @@ from akgentic.infra.protocols.recovery import RecoveryPolicy
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
 from akgentic.infra.protocols.team_handle import TeamHandle
 from akgentic.infra.protocols.worker_handle import WorkerHandle
+from akgentic.infra.protocols.workspace_deletion import WorkspaceDeletionPolicy
 
 __all__ = [
     "AuthStrategy",
@@ -52,6 +54,8 @@ __all__ = [
     "RuntimeCache",
     "StreamClosed",
     "StreamReader",
+    "TeamAccessPolicy",
     "TeamHandle",
     "WorkerHandle",
+    "WorkspaceDeletionPolicy",
 ]

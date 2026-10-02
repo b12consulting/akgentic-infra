@@ -45,9 +45,11 @@ from akgentic.infra.protocols import (
     RuntimeCache,
     StreamClosed,
     StreamReader,
+    TeamAccessPolicy,
     TeamHandle,
     WorkerHandle,
     WorkerRejectedError,
+    WorkspaceDeletionPolicy,
 )
 from akgentic.infra.server.app import configure_process, create_app, create_server_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
@@ -94,8 +96,10 @@ __all__ = [
     "ServerError",
     "StreamClosed",
     "StreamReader",
+    "TeamAccessPolicy",
     "TeamHandle",
     "WorkerHandle",
+    "WorkspaceDeletionPolicy",
     "WorkerRejectedError",
     # Adapters
     "ChannelConfig",
