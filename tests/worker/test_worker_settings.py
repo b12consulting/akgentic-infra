@@ -30,8 +30,6 @@ class TestDefaultValues:
         monkeypatch.delenv("AKGENTIC_WORKER_SHUTDOWN_DRAIN_TIMEOUT", raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_SHUTDOWN_PRE_DRAIN_DELAY", raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_WORKER_LABELS", raising=False)
-        monkeypatch.delenv("AKGENTIC_WORKER_DESCRIPTION_PROVIDER", raising=False)
-        monkeypatch.delenv("AKGENTIC_WORKER_DESCRIPTION_MODEL", raising=False)
         settings = WorkerSettings()
         assert settings.host == "0.0.0.0"
         assert settings.port == 8001
@@ -39,8 +37,6 @@ class TestDefaultValues:
         assert settings.shutdown_drain_timeout == 30
         assert settings.shutdown_pre_drain_delay == 0
         assert settings.worker_labels == {}
-        assert settings.description_provider is None
-        assert settings.description_model is None
 
 
 class TestEnvVarOverride:
@@ -52,11 +48,7 @@ class TestEnvVarOverride:
         monkeypatch.setenv("AKGENTIC_WORKER_LOG_LEVEL", "DEBUG")
         monkeypatch.setenv("AKGENTIC_WORKER_SHUTDOWN_DRAIN_TIMEOUT", "60")
         monkeypatch.setenv("AKGENTIC_WORKER_SHUTDOWN_PRE_DRAIN_DELAY", "5")
-        monkeypatch.setenv(
-            "AKGENTIC_WORKER_WORKER_LABELS", '{"gpu": "true", "region": "eu"}'
-        )
-        monkeypatch.setenv("AKGENTIC_WORKER_DESCRIPTION_PROVIDER", "openai-chat")
-        monkeypatch.setenv("AKGENTIC_WORKER_DESCRIPTION_MODEL", "gpt-4o-mini")
+        monkeypatch.setenv("AKGENTIC_WORKER_WORKER_LABELS", '{"gpu": "true", "region": "eu"}')
 
         settings = WorkerSettings()
         assert settings.host == "127.0.0.1"
@@ -65,8 +57,6 @@ class TestEnvVarOverride:
         assert settings.shutdown_drain_timeout == 60
         assert settings.shutdown_pre_drain_delay == 5
         assert settings.worker_labels == {"gpu": "true", "region": "eu"}
-        assert settings.description_provider == "openai-chat"
-        assert settings.description_model == "gpt-4o-mini"
 
 
 class TestTheRetiredWorkspacesRootVariableIsHarmless:
@@ -105,16 +95,12 @@ class TestTheRetiredWorkspacesRootVariableIsHarmless:
 class TestLogLevelNormalization:
     """Log level validator must normalize case and reject invalid values."""
 
-    def test_log_level_normalizes_to_uppercase(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_log_level_normalizes_to_uppercase(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AKGENTIC_WORKER_LOG_LEVEL", "debug")
         settings = WorkerSettings()
         assert settings.log_level == "DEBUG"
 
-    def test_log_level_invalid_falls_back_to_info(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_log_level_invalid_falls_back_to_info(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AKGENTIC_WORKER_LOG_LEVEL", "bogus")
         with pytest.warns(UserWarning, match="Invalid AKGENTIC_WORKER_LOG_LEVEL"):
             settings = WorkerSettings()
@@ -153,9 +139,6 @@ class TestModelStructure:
         ``AKGENTIC_WORKSPACES_ROOT``, so it was a differently-named knob nothing
         could ever have read, with exactly one reference in ``src/`` — its own
         declaration. Loosening this to a subset check would let it come back.
-
-        The two description fields are the generator's only configuration;
-        they are listed here deliberately rather than by widening the check.
         """
         fields = set(WorkerSettings.model_fields.keys())
         expected = {
@@ -165,8 +148,6 @@ class TestModelStructure:
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "worker_labels",
-            "description_provider",
-            "description_model",
         }
         assert fields == expected, (
             f"WorkerSettings fields mismatch: got {fields}, expected {expected}"

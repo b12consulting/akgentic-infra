@@ -3,7 +3,7 @@
 ``RecordingModel`` keeps every model call fake and observable; ``InlineExecutor``
 makes a generation complete before ``send`` returns, so a spec needs no polling.
 Both are installed by patching the names the generator imports on
-``akgentic.infra.worker.description``.
+``akgentic.infra.server.description``.
 """
 
 from __future__ import annotations

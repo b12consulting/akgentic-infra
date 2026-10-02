@@ -35,6 +35,14 @@ class TestServerSettingsDefaults:
     def test_admin_list_all_teams_defaults_false(self) -> None:
         assert ServerSettings().admin_list_all_teams is False
 
+    def test_description_settings_default_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both description fields are unset by default — the generator is off."""
+        monkeypatch.delenv("AKGENTIC_DESCRIPTION_PROVIDER", raising=False)
+        monkeypatch.delenv("AKGENTIC_DESCRIPTION_MODEL", raising=False)
+        settings = ServerSettings()
+        assert settings.description_provider is None
+        assert settings.description_model is None
+
 
 class TestServerSettingsEnvOverride:
     """ServerSettings loads from AKGENTIC_ prefixed env vars."""
@@ -62,9 +70,17 @@ class TestServerSettingsEnvOverride:
 
         assert ServerSettings().admin_list_all_teams is True
 
-    def test_stray_frontend_adapter_env_is_ignored(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_description_settings_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """AKGENTIC_DESCRIPTION_PROVIDER / _MODEL bind the two description fields."""
+        monkeypatch.setenv("AKGENTIC_DESCRIPTION_PROVIDER", "openai-chat")
+        monkeypatch.setenv("AKGENTIC_DESCRIPTION_MODEL", "gpt-4o-mini")
+
+        settings = ServerSettings()
+
+        assert settings.description_provider == "openai-chat"
+        assert settings.description_model == "gpt-4o-mini"
+
+    def test_stray_frontend_adapter_env_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A leftover AKGENTIC_FRONTEND_ADAPTER env var can never break boot.
 
         The frontend-adapter plugin system is removed. pydantic-settings
@@ -146,7 +162,12 @@ class TestSettingsHierarchy:
     """Verify ServerSettings / CommunitySettings hierarchy."""
 
     def test_server_settings_has_only_tier_agnostic_fields(self) -> None:
-        """ServerSettings has only tier-agnostic fields."""
+        """ServerSettings has only tier-agnostic fields.
+
+        The exact field set, kept an equality. The two description fields are
+        the generator's only configuration; they are listed here deliberately
+        rather than by widening the check.
+        """
         server_fields = set(ServerSettings.model_fields.keys())
         expected = {
             "host",
@@ -159,6 +180,8 @@ class TestSettingsHierarchy:
             "channels",
             "admin_list_all_teams",
             "catalog_model_type_prefixes",
+            "description_provider",
+            "description_model",
         }
         assert server_fields == expected, (
             f"ServerSettings fields mismatch: got {server_fields}, expected {expected}"

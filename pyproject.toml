@@ -26,7 +26,7 @@ dependencies = [
     "akgentic-agent>=1.7.1",
     "akgentic-llm>=2.3.0",
     "akgentic-tool>=1.10.0",
-    # The worker's team description generator builds a pydantic_ai.Agent directly;
+    # The server's team description generator builds a pydantic_ai.Agent directly;
     # the floor is the one akgentic-llm declares. Floor only, never a ceiling.
     "pydantic-ai-slim>=2.38",
     # Pin away from the Starlette 1.3 / FastAPI 0.137 line: Starlette 1.3 changed

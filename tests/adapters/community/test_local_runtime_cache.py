@@ -8,80 +8,10 @@ from collections.abc import Mapping
 from unittest.mock import MagicMock
 
 import pytest
-from akgentic.llm import ModelConfig
 from akgentic.team.models import Process, TeamStatus
 
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.protocols.runtime_cache import RuntimeCache
-from akgentic.infra.protocols.team_handle import TeamHandle
-from akgentic.infra.worker.description import DescribingTeamHandle, TeamDescriptionGenerator
-
-
-def _generator() -> TeamDescriptionGenerator:
-    """A generator that builds nothing: the cache only ever calls ``wrap``."""
-    return TeamDescriptionGenerator(
-        ModelConfig(provider="openai-chat", model="gpt-4o-mini"), MagicMock()
-    )
-
-
-def _handle(team_id: uuid.UUID) -> MagicMock:
-    handle = MagicMock(spec=TeamHandle)
-    handle.team_id = team_id
-    return handle
-
-
-class TestLocalRuntimeCacheWrapsOnStore:
-    """Story 80.2 AC3: the cache is the one seam, and it wraps only when told to."""
-
-    def test_without_a_generator_get_returns_the_very_object_stored(self) -> None:
-        cache = LocalRuntimeCache(description_generator=None)
-        team_id = uuid.uuid4()
-        handle = _handle(team_id)
-        cache.store(team_id, handle)
-        assert cache.get(team_id) is handle
-
-    def test_with_a_generator_get_returns_a_describing_handle(self) -> None:
-        cache = LocalRuntimeCache(description_generator=_generator())
-        team_id = uuid.uuid4()
-        cache.store(team_id, _handle(team_id))
-
-        cached = cache.get(team_id)
-
-        assert isinstance(cached, DescribingTeamHandle)
-        assert isinstance(cached, TeamHandle)
-        assert cached.team_id == team_id
-
-    def test_storing_an_already_wrapped_handle_does_not_double_wrap(self) -> None:
-        cache = LocalRuntimeCache(description_generator=_generator())
-        team_id = uuid.uuid4()
-        cache.store(team_id, _handle(team_id))
-        wrapped = cache.get(team_id)
-        assert wrapped is not None
-
-        cache.store(team_id, wrapped)
-
-        assert cache.get(team_id) is wrapped
-
-    def test_remove_is_unchanged(self) -> None:
-        cache = LocalRuntimeCache(description_generator=_generator())
-        team_id = uuid.uuid4()
-        cache.store(team_id, _handle(team_id))
-        cache.remove(team_id)
-        assert cache.get(team_id) is None
-
-    def test_warm_stores_wrapped_handles(self) -> None:
-        cache = LocalRuntimeCache(description_generator=_generator())
-        team_id = uuid.uuid4()
-        worker = MagicMock()
-        placement = MagicMock()
-        placement.resume_team.return_value = _handle(team_id)
-        event_store = _filtering_store(_make_process(team_id, TeamStatus.RUNNING))
-
-        cache.warm(worker, event_store, placement)
-
-        cached = cache.get(team_id)
-        assert isinstance(cached, DescribingTeamHandle)
-        assert cached.team_id == team_id
 
 
 class TestLocalRuntimeCacheProtocolConformance:

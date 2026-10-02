@@ -14,7 +14,6 @@ from akgentic.team.repositories.yaml import YamlEventStore
 
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
-from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.no_auth import NoAuth
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
@@ -25,16 +24,16 @@ from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPol
 from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.protocols.channels import ChannelAddress
+from akgentic.infra.server import description
 from akgentic.infra.server.deps import CommunityServices
+from akgentic.infra.server.description import TeamDescriptionGenerator
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
-from akgentic.infra.worker import description
 from akgentic.infra.worker.deps import WorkerServices
-from akgentic.infra.worker.description import DescribingTeamHandle
-from akgentic.infra.worker.settings import WorkerSettings
+from tests.conftest import _seed_catalog
 
-DESCRIPTION_LOGGER = "akgentic.infra.worker.description"
+DESCRIPTION_LOGGER = "akgentic.infra.server.description"
 
 
 class TestWireCommunityLogging:
@@ -225,9 +224,7 @@ class TestWireCommunityTeamService:
         )
 
     @pytest.fixture()
-    def services(
-        self, settings: CommunitySettings
-    ) -> Generator[CommunityServices, None, None]:
+    def services(self, settings: CommunitySettings) -> Generator[CommunityServices, None, None]:
         svc = wire_community(settings)
         yield svc
         svc.team_manager._actor_system.shutdown(timeout=5)
@@ -365,17 +362,14 @@ class TestWireCommunityChannelDispatcher:
 
 
 class TestWireCommunityDescriptionGenerator:
-    """Story 80.2 AC12: the community wiring reads the worker's two description settings."""
+    """Story 80.3 AC3: the wiring hands its settings to ``TeamService``, the generator's owner."""
 
-    def test_unset_is_off_said_once_and_the_cache_holds_plain_handles(
+    def test_unset_is_off_said_once(
         self,
         seeded_settings: CommunitySettings,
-        monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """``worker_settings=None`` reads the environment, where both are unset."""
-        monkeypatch.delenv("AKGENTIC_WORKER_DESCRIPTION_PROVIDER", raising=False)
-        monkeypatch.delenv("AKGENTIC_WORKER_DESCRIPTION_MODEL", raising=False)
+        """The suite's autouse fixture keeps both variables unset; the settings carry none."""
         with caplog.at_level(logging.INFO, logger=DESCRIPTION_LOGGER):
             services = wire_community(seeded_settings)
         try:
@@ -388,15 +382,13 @@ class TestWireCommunityDescriptionGenerator:
             assert "disabled" in records[0].getMessage()
 
             assert services.team_service is not None
-            process = services.team_service.create_team("test-team", user_id="alice")
-            cached = services.runtime_cache.get(process.team_id)
-            assert isinstance(cached, LocalTeamHandle)
+            assert services.team_service._description_generator is None  # noqa: SLF001
         finally:
             services.actor_system.shutdown(timeout=5)
 
-    def test_set_is_on_said_once_and_the_cache_holds_describing_handles(
+    def test_set_is_on_said_once_and_builds_no_model(
         self,
-        seeded_settings: CommunitySettings,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -405,11 +397,16 @@ class TestWireCommunityDescriptionGenerator:
 
         factory = MagicMock(return_value=TestModel(custom_output_text="x"))
         monkeypatch.setattr(description, "create_model", factory)
-        worker_settings = WorkerSettings(
-            description_provider="openai-chat", description_model="gpt-4o-mini"
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+            description_provider="openai-chat",
+            description_model="gpt-4o-mini",
         )
+        _seed_catalog(settings.catalog_path)
         with caplog.at_level(logging.INFO, logger=DESCRIPTION_LOGGER):
-            services = wire_community(seeded_settings, worker_settings=worker_settings)
+            services = wire_community(settings)
         try:
             records = [
                 r
@@ -422,10 +419,9 @@ class TestWireCommunityDescriptionGenerator:
             assert "gpt-4o-mini" in records[0].getMessage()
 
             assert services.team_service is not None
-            process = services.team_service.create_team("test-team", user_id="alice")
-            cached = services.runtime_cache.get(process.team_id)
-            assert isinstance(cached, DescribingTeamHandle)
-            assert cached.team_id == process.team_id
+            generator = services.team_service._description_generator  # noqa: SLF001
+            assert isinstance(generator, TeamDescriptionGenerator)
+            services.team_service.create_team("test-team", user_id="alice")
             # Lazy: wiring and creating a team construct no model.
             factory.assert_not_called()
         finally:
