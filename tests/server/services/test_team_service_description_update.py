@@ -148,6 +148,28 @@ def test_unknown_team_raises_not_found(team_service: TeamService) -> None:
         team_service.update_team_description(uuid.uuid4(), DESCRIPTION)
 
 
+def test_a_team_that_vanishes_between_the_read_and_the_write_raises_not_found(
+    team_service: TeamService,
+) -> None:
+    """The store answering ``None`` after the lifecycle read passed is a typed 404.
+
+    The read and the write are two store round trips, and the port returns
+    ``None`` when the conditional write matches no record — a delete landing in
+    between. That ``None`` must become the same error an unknown team raises,
+    never an ``AttributeError`` on the way to building the response.
+    """
+    team_id = _create(team_service)
+    store = _spy_event_store(team_service)
+    store.update_team_description.return_value = None
+
+    with pytest.raises(TeamNotFoundError, match="not found"):
+        team_service.update_team_description(team_id, DESCRIPTION)
+
+    store.update_team_description.assert_called_once_with(
+        team_id, DESCRIPTION, DescriptionOrigin.USER
+    )
+
+
 def test_deleted_record_raises_a_state_conflict_and_writes_nothing(
     team_service: TeamService,
 ) -> None:
