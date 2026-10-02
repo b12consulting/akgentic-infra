@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from akgentic.infra.protocols.event_stream import StreamClosed
+from akgentic.infra.protocols.event_stream import EventStream, StreamClosed, StreamReader
 
 if TYPE_CHECKING:
     from akgentic.core.messages import Message
@@ -46,7 +46,7 @@ class _TeamStream:
     closed: bool = False
 
 
-class LocalStreamReader:
+class LocalStreamReader(StreamReader):
     """Cursor-based blocking reader for a single team's event stream.
 
     Each reader holds its own ``threading.Event`` for wake-up signaling
@@ -148,10 +148,10 @@ class LocalStreamReader:
             self._team_stream.signals.discard(self._signal)
 
 
-class LocalEventStream:
+class LocalEventStream(EventStream):
     """In-memory EventStream for the community tier.
 
-    Satisfies the ``EventStream`` protocol (runtime-checkable). Backed by
+    Implements the ``EventStream`` protocol (runtime-checkable). Backed by
     ``dict[UUID, _TeamStream]`` with a ``threading.Lock`` for thread safety.
     """
 

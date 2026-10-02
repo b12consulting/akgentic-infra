@@ -8,7 +8,7 @@ without modification.
 
 from __future__ import annotations
 
-from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.shared.channel_dispatcher import ChannelDispatcher
 from akgentic.infra.adapters.shared.channel_parser_registry import (
     ChannelConfig,
     ChannelParserRegistry,
@@ -29,7 +29,7 @@ __all__ = [
     "ChannelRouteContext",
     "DefaultChannelRouter",
     "EventStreamSubscriber",
-    "InteractionChannelDispatcher",
+    "ChannelDispatcher",
     "NullEventStream",
     "NullStreamReader",
     "RuntimeCacheEvictionSubscriber",

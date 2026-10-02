@@ -6,13 +6,14 @@ import uuid
 from typing import TYPE_CHECKING
 
 from akgentic.core.orchestrator import EventSubscriber
+from akgentic.infra.protocols.team_handle import TeamHandle
 
 if TYPE_CHECKING:
     from akgentic.core.messages.message import Message
     from akgentic.team.models import TeamRuntime
 
 
-class LocalTeamHandle:
+class LocalTeamHandle(TeamHandle):
     """Community-tier adapter that delegates TeamHandle methods to a TeamRuntime.
 
     Wraps an in-process ``TeamRuntime`` and exposes the tier-agnostic

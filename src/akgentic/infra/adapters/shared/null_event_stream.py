@@ -5,11 +5,13 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
+from akgentic.infra.protocols.event_stream import EventStream, StreamReader
+
 if TYPE_CHECKING:
     from akgentic.core.messages import Message
 
 
-class NullStreamReader:
+class NullStreamReader(StreamReader):
     """No-op StreamReader — always returns None and never raises."""
 
     def read_next(self, timeout: float = 0.5) -> Message | None:
@@ -20,7 +22,7 @@ class NullStreamReader:
         """No-op — nothing to release."""
 
 
-class NullEventStream:
+class NullEventStream(EventStream):
     """No-op EventStream stub for use until a real implementation is wired.
 
     All writes are discarded, reads return empty, subscribe returns a

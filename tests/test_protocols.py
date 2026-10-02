@@ -105,18 +105,18 @@ def test_health_monitor_has_check_health() -> None:
     assert len(sig.parameters) == 1
 
 
-# --- InteractionChannelAdapter ---
+# --- ChannelAdapter ---
 
 
 def test_interaction_channel_adapter_is_protocol() -> None:
-    """InteractionChannelAdapter uses typing.Protocol base."""
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    """ChannelAdapter uses typing.Protocol base."""
+    from akgentic.infra.protocols import ChannelAdapter
 
-    assert Protocol in inspect.getmro(InteractionChannelAdapter)
+    assert Protocol in inspect.getmro(ChannelAdapter)
 
 
 def test_interaction_channel_adapter_has_matches() -> None:
-    """InteractionChannelAdapter defines matches taking exactly msg and binding.
+    """ChannelAdapter defines matches taking exactly msg and binding.
 
     The binding names the destination chat, which the address cannot. An
     ``isinstance`` check compares method *names* only, so this signature
@@ -124,19 +124,19 @@ def test_interaction_channel_adapter_has_matches() -> None:
     membership check would survive an extra parameter being appended, so the
     whole list is compared.
     """
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    from akgentic.infra.protocols import ChannelAdapter
 
-    assert hasattr(InteractionChannelAdapter, "matches")
-    sig = inspect.signature(InteractionChannelAdapter.matches)
+    assert hasattr(ChannelAdapter, "matches")
+    sig = inspect.signature(ChannelAdapter.matches)
     assert list(sig.parameters) == ["self", "msg", "binding"]
 
 
 def test_interaction_channel_adapter_has_deliver() -> None:
-    """InteractionChannelAdapter defines deliver taking exactly msg and binding."""
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    """ChannelAdapter defines deliver taking exactly msg and binding."""
+    from akgentic.infra.protocols import ChannelAdapter
 
-    assert hasattr(InteractionChannelAdapter, "deliver")
-    sig = inspect.signature(InteractionChannelAdapter.deliver)
+    assert hasattr(ChannelAdapter, "deliver")
+    sig = inspect.signature(ChannelAdapter.deliver)
     assert list(sig.parameters) == ["self", "msg", "binding"]
 
 
@@ -148,54 +148,54 @@ def test_interaction_channel_adapter_has_deliver_notice() -> None:
     parameter could only be satisfied by fabricating a team id. The type is the
     guard: an unbound path literally cannot name a team.
     """
-    from akgentic.infra.protocols import ChannelAddress, InteractionChannelAdapter
+    from akgentic.infra.protocols import ChannelAddress, ChannelAdapter
 
-    assert hasattr(InteractionChannelAdapter, "deliver_notice")
-    sig = inspect.signature(InteractionChannelAdapter.deliver_notice)
+    assert hasattr(ChannelAdapter, "deliver_notice")
+    sig = inspect.signature(ChannelAdapter.deliver_notice)
     assert list(sig.parameters) == ["self", "address", "text"]
 
-    hints = get_type_hints(InteractionChannelAdapter.deliver_notice)
+    hints = get_type_hints(ChannelAdapter.deliver_notice)
     assert hints["address"] is ChannelAddress
     assert hints["text"] is str
     assert hints["return"] is type(None)
 
 
 def test_interaction_channel_adapter_has_on_stop() -> None:
-    """InteractionChannelAdapter defines on_stop with team_id parameter."""
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    """ChannelAdapter defines on_stop with team_id parameter."""
+    from akgentic.infra.protocols import ChannelAdapter
 
-    assert hasattr(InteractionChannelAdapter, "on_stop")
-    sig = inspect.signature(InteractionChannelAdapter.on_stop)
+    assert hasattr(ChannelAdapter, "on_stop")
+    sig = inspect.signature(ChannelAdapter.on_stop)
     assert "team_id" in sig.parameters
 
 
 def test_interaction_channel_adapter_matches_returns_bool() -> None:
-    """InteractionChannelAdapter.matches has bool return annotation."""
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    """ChannelAdapter.matches has bool return annotation."""
+    from akgentic.infra.protocols import ChannelAdapter
 
-    sig = inspect.signature(InteractionChannelAdapter.matches)
+    sig = inspect.signature(ChannelAdapter.matches)
     assert sig.return_annotation is bool or sig.return_annotation == "bool"
 
 
 def test_interaction_channel_adapter_deliver_returns_none() -> None:
-    """InteractionChannelAdapter.deliver has None return annotation."""
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    """ChannelAdapter.deliver has None return annotation."""
+    from akgentic.infra.protocols import ChannelAdapter
 
-    sig = inspect.signature(InteractionChannelAdapter.deliver)
+    sig = inspect.signature(ChannelAdapter.deliver)
     assert sig.return_annotation is None or sig.return_annotation == "None"
 
 
 def test_interaction_channel_adapter_on_stop_returns_none() -> None:
-    """InteractionChannelAdapter.on_stop returns None."""
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    """ChannelAdapter.on_stop returns None."""
+    from akgentic.infra.protocols import ChannelAdapter
 
-    hints = get_type_hints(InteractionChannelAdapter.on_stop)
+    hints = get_type_hints(ChannelAdapter.on_stop)
     assert hints["return"] is type(None)
 
 
 def test_interaction_channel_adapter_structural_subtyping() -> None:
-    """A concrete class satisfying InteractionChannelAdapter is recognized."""
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    """A concrete class satisfying ChannelAdapter is recognized."""
+    from akgentic.infra.protocols import ChannelAdapter
 
     class FakeAdapter:
         def matches(self, msg: object, binding: object) -> bool:
@@ -210,7 +210,7 @@ def test_interaction_channel_adapter_structural_subtyping() -> None:
         def on_stop(self, team_id: uuid.UUID) -> None:
             pass
 
-    assert isinstance(FakeAdapter(), InteractionChannelAdapter)
+    assert isinstance(FakeAdapter(), ChannelAdapter)
 
 
 def test_an_adapter_without_deliver_notice_is_not_an_adapter() -> None:
@@ -220,7 +220,7 @@ def test_an_adapter_without_deliver_notice_is_not_an_adapter() -> None:
     Protocol — every fake would simply carry one method more than required. This
     is what pins ``deliver_notice`` as a *requirement* rather than a convention.
     """
-    from akgentic.infra.protocols import InteractionChannelAdapter
+    from akgentic.infra.protocols import ChannelAdapter
 
     class AdapterMissingDeliverNotice:
         def matches(self, msg: object, binding: object) -> bool:
@@ -232,7 +232,7 @@ def test_an_adapter_without_deliver_notice_is_not_an_adapter() -> None:
         def on_stop(self, team_id: uuid.UUID) -> None:
             pass
 
-    assert not isinstance(AdapterMissingDeliverNotice(), InteractionChannelAdapter)
+    assert not isinstance(AdapterMissingDeliverNotice(), ChannelAdapter)
 
 
 # --- ChannelParser ---

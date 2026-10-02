@@ -9,7 +9,7 @@ from concurrent.futures import Future
 from typing import TYPE_CHECKING
 
 from akgentic.infra.adapters.community.local_team_handle import LocalTeamHandle
-from akgentic.infra.protocols.placement import PlacementError
+from akgentic.infra.protocols.placement import PlacementError, PlacementStrategy
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
 
@@ -33,10 +33,10 @@ def _team_id_conflict(detail: str) -> PlacementError:
     return PlacementError(detail, status_code=409, code="team_id_conflict")
 
 
-class LocalPlacement:
+class LocalPlacement(PlacementStrategy):
     """Places teams in the current process instance — new ones and returning ones.
 
-    Satisfies the PlacementStrategy protocol via structural subtyping.
+    Implements the ``PlacementStrategy`` protocol.
     Delegates team creation and resumption to ``TeamManager`` and wraps the
     result in a ``LocalTeamHandle``.
 

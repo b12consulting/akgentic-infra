@@ -7,6 +7,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from akgentic.core import ActorSystem
+from akgentic.infra.protocols.worker_handle import WorkerHandle
 from akgentic.team.manager import TeamManager
 from akgentic.team.ports import ServiceRegistry
 
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class LocalWorkerHandle:
+class LocalWorkerHandle(WorkerHandle):
     """Community-tier adapter delegating WorkerHandle methods to TeamManager.
 
     Wraps an in-process ``TeamManager`` and ``ServiceRegistry`` to provide

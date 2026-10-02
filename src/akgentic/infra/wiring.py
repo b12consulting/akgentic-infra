@@ -11,7 +11,7 @@ from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.channel_dispatcher import InteractionChannelDispatcher
+from akgentic.infra.adapters.shared.channel_dispatcher import ChannelDispatcher
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
@@ -71,7 +71,7 @@ def wire_community(
     shared_subscribers: list[EventSubscriber] = [
         TelemetrySubscriber(),
         EventStreamSubscriber(event_stream=event_stream),
-        InteractionChannelDispatcher(
+        ChannelDispatcher(
             adapters=channel_parser_registry.get_adapters(),
             registry=channel_registry,
         ),

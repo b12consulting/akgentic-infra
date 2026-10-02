@@ -29,7 +29,7 @@ from akgentic.infra.protocols.channels import (
     ChannelBinding,
     ChannelCommand,
     ChannelMessage,
-    InteractionChannelRouter,
+    ChannelRouter,
     JsonValue,
 )
 from akgentic.infra.server.routes.webhook import router as webhook_router
@@ -71,7 +71,7 @@ class OtherStubParser(StubParser):
 
 
 class StubAdapter:
-    """InteractionChannelAdapter recording its notices."""
+    """ChannelAdapter recording its notices."""
 
     def __init__(self, **config: str) -> None:
         self.notices: list[tuple[ChannelAddress, str]] = []
@@ -258,7 +258,7 @@ def test_a_named_router_is_built_with_the_channel_config() -> None:
 
 
 def test_a_class_without_route_is_refused_at_wiring() -> None:
-    with pytest.raises(TypeError, match="InteractionChannelRouter"):
+    with pytest.raises(TypeError, match="ChannelRouter"):
         ChannelParserRegistry(_config(f"{_THIS_MODULE}.NotARouter"))
 
 
@@ -271,7 +271,7 @@ def test_the_default_router_accepts_config_meant_for_the_other_two() -> None:
 
 
 def test_the_default_router_satisfies_the_protocol() -> None:
-    assert isinstance(DefaultChannelRouter(), InteractionChannelRouter)
+    assert isinstance(DefaultChannelRouter(), ChannelRouter)
 
 
 # --- The route delegates ---

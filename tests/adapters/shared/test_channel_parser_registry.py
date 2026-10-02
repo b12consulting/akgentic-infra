@@ -35,7 +35,7 @@ class StubWhatsAppParser:
 
 
 class StubWhatsAppAdapter:
-    """Test stub satisfying InteractionChannelAdapter protocol."""
+    """Test stub satisfying ChannelAdapter protocol."""
 
     def matches(self, msg: object, binding: object) -> bool:
         return False
@@ -212,7 +212,7 @@ class _NotAParser:
 
 
 class _NotAnAdapter:
-    """Deliberately does NOT satisfy InteractionChannelAdapter protocol."""
+    """Deliberately does NOT satisfy ChannelAdapter protocol."""
 
     pass
 
@@ -230,14 +230,14 @@ def test_registry_rejects_non_parser_protocol() -> None:
 
 
 def test_registry_rejects_non_adapter_protocol() -> None:
-    """ChannelParserRegistry raises TypeError for non-InteractionChannelAdapter."""
+    """ChannelParserRegistry raises TypeError for non-ChannelAdapter."""
     config = {
         "bad": ChannelConfig(
             parser_fqcn="tests.adapters.shared.test_channel_parser_registry.StubWhatsAppParser",
             adapter_fqcn="tests.adapters.shared.test_channel_parser_registry._NotAnAdapter",
         ),
     }
-    with pytest.raises(TypeError, match="InteractionChannelAdapter"):
+    with pytest.raises(TypeError, match="ChannelAdapter"):
         ChannelParserRegistry(config)
 
 

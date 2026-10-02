@@ -5,10 +5,11 @@ from __future__ import annotations
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute
 
+from akgentic.infra.protocols.auth import AuthStrategy
 from akgentic.infra.server.auth import RequestUser
 
 
-class NoAuth:
+class NoAuth(AuthStrategy):
     """Community-tier strategy: the trivial anonymous resolver.
 
     Community identity is the anonymous principal; ``resolve_request_user``

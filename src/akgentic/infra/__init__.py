@@ -6,10 +6,10 @@ from pkgutil import extend_path
 
 from akgentic.infra.adapters import (
     ChannelConfig,
+    ChannelDispatcher,
     ChannelParserRegistry,
     ChannelRouteContext,
     DefaultChannelRouter,
-    InteractionChannelDispatcher,
     LocalPlacement,
     LocalRuntimeCache,
     LocalTeamHandle,
@@ -25,6 +25,7 @@ from akgentic.infra.adapters import (
 from akgentic.infra.errors import PlacementConsistencyError, ServerError
 from akgentic.infra.protocols import (
     AuthStrategy,
+    ChannelAdapter,
     ChannelAddress,
     ChannelBinding,
     ChannelCommand,
@@ -32,10 +33,9 @@ from akgentic.infra.protocols import (
     ChannelParser,
     ChannelRegistry,
     ChannelRegistryReadSync,
+    ChannelRouter,
     EventStream,
     HealthMonitor,
-    InteractionChannelAdapter,
-    InteractionChannelRouter,
     JsonValue,
     NoCapacityError,
     NoSandboxCapacityError,
@@ -45,9 +45,11 @@ from akgentic.infra.protocols import (
     RuntimeCache,
     StreamClosed,
     StreamReader,
+    TeamAccessPolicy,
     TeamHandle,
     WorkerHandle,
     WorkerRejectedError,
+    WorkspaceDeletionPolicy,
 )
 from akgentic.infra.server.app import configure_process, create_app, create_server_app
 from akgentic.infra.server.deps import CommunityServices, TierServices
@@ -81,8 +83,8 @@ __all__ = [
     "ChannelRegistryReadSync",
     "EventStream",
     "HealthMonitor",
-    "InteractionChannelAdapter",
-    "InteractionChannelRouter",
+    "ChannelAdapter",
+    "ChannelRouter",
     "JsonValue",
     "NoCapacityError",
     "NoSandboxCapacityError",
@@ -94,15 +96,17 @@ __all__ = [
     "ServerError",
     "StreamClosed",
     "StreamReader",
+    "TeamAccessPolicy",
     "TeamHandle",
     "WorkerHandle",
+    "WorkspaceDeletionPolicy",
     "WorkerRejectedError",
     # Adapters
     "ChannelConfig",
     "ChannelParserRegistry",
     "ChannelRouteContext",
     "DefaultChannelRouter",
-    "InteractionChannelDispatcher",
+    "ChannelDispatcher",
     "LocalPlacement",
     "LocalRuntimeCache",
     "LocalTeamHandle",

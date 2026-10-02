@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field
 
 from akgentic.infra.adapters.shared.channel_router import DefaultChannelRouter
 from akgentic.infra.protocols.channels import (
+    ChannelAdapter,
     ChannelParser,
-    InteractionChannelAdapter,
-    InteractionChannelRouter,
+    ChannelRouter,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,12 +24,12 @@ class ChannelConfig(BaseModel):
     router_fqcn: str | None = Field(
         default=None,
         description=(
-            "Fully-qualified class name of the InteractionChannelRouter; "
+            "Fully-qualified class name of the ChannelRouter; "
             "DefaultChannelRouter when unset"
         ),
     )
     adapter_fqcn: str = Field(
-        description="Fully-qualified class name of the InteractionChannelAdapter"
+        description="Fully-qualified class name of the ChannelAdapter"
     )
     config: dict[str, str] = Field(
         default_factory=dict,
@@ -66,11 +66,11 @@ def import_class(fqcn: str) -> type:
         raise ImportError(msg) from exc
 
 
-def _load_router(fqcn: str, config: dict[str, str]) -> InteractionChannelRouter:
+def _load_router(fqcn: str, config: dict[str, str]) -> ChannelRouter:
     """Resolve and instantiate the router a channel names."""
     router = import_class(fqcn)(**config)
-    if not isinstance(router, InteractionChannelRouter):
-        msg = f"Class '{fqcn}' does not satisfy InteractionChannelRouter protocol"
+    if not isinstance(router, ChannelRouter):
+        msg = f"Class '{fqcn}' does not satisfy ChannelRouter protocol"
         raise TypeError(msg)
     return router
 
@@ -79,14 +79,14 @@ class ChannelParserRegistry:
     """Resolves FQCNs from channel configuration and holds parsers/routers/adapters.
 
     Parsers and routers are indexed by ``channel_name``; adapters are collected
-    into a list for use by ``InteractionChannelDispatcher`` (story 4.2).
+    into a list for use by ``ChannelDispatcher`` (story 4.2).
     """
 
     def __init__(self, channels_config: dict[str, ChannelConfig]) -> None:
         self._parsers: dict[str, ChannelParser] = {}
-        self._routers: dict[str, InteractionChannelRouter] = {}
-        self._adapters: list[InteractionChannelAdapter] = []
-        self._default_router: InteractionChannelRouter = DefaultChannelRouter()
+        self._routers: dict[str, ChannelRouter] = {}
+        self._adapters: list[ChannelAdapter] = []
+        self._default_router: ChannelRouter = DefaultChannelRouter()
         self._load(channels_config)
 
     def _load(self, channels_config: dict[str, ChannelConfig]) -> None:
@@ -108,10 +108,10 @@ class ChannelParserRegistry:
                 raise TypeError(msg)
 
             adapter = adapter_cls(**cfg.config)
-            if not isinstance(adapter, InteractionChannelAdapter):
+            if not isinstance(adapter, ChannelAdapter):
                 msg = (
                     f"Class '{cfg.adapter_fqcn}' does not satisfy "
-                    f"InteractionChannelAdapter protocol"
+                    f"ChannelAdapter protocol"
                 )
                 raise TypeError(msg)
 
@@ -135,7 +135,7 @@ class ChannelParserRegistry:
         logger.debug("Parser lookup: channel=%s, found=%s", channel_name, parser is not None)
         return parser
 
-    def get_router(self, channel_name: str) -> InteractionChannelRouter:
+    def get_router(self, channel_name: str) -> ChannelRouter:
         """Return the channel's router, or the default router when it names none.
 
         Never None: a channel with a parser always routes. A subclass that
@@ -149,7 +149,7 @@ class ChannelParserRegistry:
         """
         return self._routers.get(channel_name, self._default_router)
 
-    def get_adapters(self) -> list[InteractionChannelAdapter]:
+    def get_adapters(self) -> list[ChannelAdapter]:
         """Return all resolved adapters."""
         return list(self._adapters)
 

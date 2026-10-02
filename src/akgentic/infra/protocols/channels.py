@@ -138,7 +138,7 @@ class ChannelBinding(ChannelAddress):
 
 
 @runtime_checkable
-class InteractionChannelAdapter(Protocol):
+class ChannelAdapter(Protocol):
     """Delivers outbound messages to humans via an external channel.
 
     Implementations: ``TelegramChannelAdapter`` (in
@@ -162,7 +162,7 @@ class InteractionChannelAdapter(Protocol):
 
     Threading constraint:
         ``deliver()`` runs inside a Pykka actor thread (called from
-        ``InteractionChannelDispatcher.on_message``). Implementations
+        ``ChannelDispatcher.on_message``). Implementations
         must not block and must not perform unguarded async I/O.
         If async delivery is needed, use a thread-safe bridge (e.g.
         enqueue to a ``queue.Queue`` consumed by an asyncio task).
@@ -281,7 +281,7 @@ class ChannelParser(Protocol):
 
 
 @runtime_checkable
-class InteractionChannelRouter(Protocol):
+class ChannelRouter(Protocol):
     """Decides what one parsed inbound message does: reply, start a team, or nothing.
 
     The webhook route only parses and routes; every rule about *what happens

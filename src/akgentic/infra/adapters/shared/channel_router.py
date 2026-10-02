@@ -10,13 +10,13 @@ from typing import TYPE_CHECKING
 
 from akgentic.infra.errors import TeamNotFoundError
 from akgentic.infra.protocols.channels import (
+    ChannelAdapter,
     ChannelAddress,
     ChannelBinding,
     ChannelCommand,
     ChannelMessage,
     ChannelRegistry,
-    InteractionChannelAdapter,
-    InteractionChannelRouter,
+    ChannelRouter,
     JsonValue,
 )
 from akgentic.team.models import TeamStatus
@@ -144,7 +144,7 @@ class ChannelRouteContext:
         address: ChannelAddress,
         registry: ChannelRegistry,
         team_service: TeamService,
-        adapters: list[InteractionChannelAdapter],
+        adapters: list[ChannelAdapter],
         default_catalog_entry: str,
     ) -> None:
         self.address = address
@@ -430,7 +430,7 @@ class ChannelRouteContext:
             adapter.deliver_notice(self.address, text)
 
 
-class DefaultChannelRouter(InteractionChannelRouter):
+class DefaultChannelRouter(ChannelRouter):
     """The routing rules a channel gets when its config names no router.
 
     1. A ``new`` / ``unregister`` / ``status`` command is consumed (ADR-043

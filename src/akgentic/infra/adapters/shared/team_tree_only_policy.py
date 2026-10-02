@@ -10,11 +10,14 @@ mirroring ``OwnerOrAdminPolicy`` beside it.
 
 from __future__ import annotations
 
-from akgentic.infra.protocols.workspace_deletion import WorkspaceDeletionContext
+from akgentic.infra.protocols.workspace_deletion import (
+    WorkspaceDeletionContext,
+    WorkspaceDeletionPolicy,
+)
 from akgentic.tool.workspace import TEAM_KIND
 
 
-class TeamTreeOnlyPolicy:
+class TeamTreeOnlyPolicy(WorkspaceDeletionPolicy):
     """Approve the team's own tree, in either scope, and nothing else.
 
     **The rule is the kind and the leaf, not the sharing.** A candidate is
