@@ -584,6 +584,51 @@ class TestNeverOnRequestPath:
         inner.send.assert_called_once_with(MESSAGE)
         assert len(_records(caplog, logging.WARNING)) == 1
 
+    def test_an_attempt_cancelled_by_close_releases_the_handle(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A queued attempt that ``close()`` cancels must not leave its handle in flight.
+
+        One handle's attempt blocks the single worker thread; a second handle's
+        attempt is queued behind it when the pool shuts down, so its future is
+        cancelled rather than run. Had the cancellation left the second handle
+        in flight, its next send would be dropped silently; instead the slot is
+        released and the next send reaches the shut executor, which refuses it
+        with the one WARNING a scheduling failure always logs.
+        """
+        gate = threading.Event()
+        model = RecordingModel(gate=gate)
+        _install_model(monkeypatch, model)
+        blocking, queued = _process(), _process()
+        manager, store = _team_side(blocking)
+        store.save_team(queued)
+        generator = TeamDescriptionGenerator(_model_cfg(), manager)  # the real pool
+        blocking_handle = generator.wrap(_inner_handle(blocking.team_id))
+        queued_inner = _inner_handle(queued.team_id)
+        queued_handle = generator.wrap(queued_inner)
+        try:
+            blocking_handle.send(MESSAGE)
+            deadline = time.monotonic() + 5
+            while not model.prompts and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert model.calls == 1  # the worker thread is held on the gate
+            queued_handle.send(MESSAGE)  # queued behind it, never started
+
+            generator.close()  # cancels the queued future; its callback runs here
+
+            with caplog.at_level(logging.DEBUG, logger=LOGGER):
+                queued_handle.send(MESSAGE)
+        finally:
+            gate.set()
+
+        assert queued_inner.send.call_count == 2
+        queued_inner.emitMessage.assert_not_called()
+        warnings = _records(caplog, logging.WARNING)
+        assert len(warnings) == 1
+        assert "scheduling failed" in warnings[0].getMessage()
+        assert str(queued.team_id) in warnings[0].getMessage()
+        assert model.calls == 1  # the queued attempt never reached the model
+
 
 # --- AC 7: attempt cap ---
 
