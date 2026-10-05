@@ -21,6 +21,15 @@ from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
+DEFAULT_LLM_PROVIDER = "openai"
+DEFAULT_LLM_MODEL = "gpt-6-luna"
+"""The small model used by default for the platform's utility calls.
+
+One pair is the default of both the server's team-description generator and the
+worker's document-reader settings. The provider is an ``akgentic.llm.ModelConfig``
+provider id; the reader serves ``openai`` / ``openai-chat`` and ``azure`` /
+``azure-chat`` (on Azure the model is the deployment name)."""
+
 
 def _is_string_sequence(v: object) -> TypeGuard[Sequence[str]]:
     """Report whether ``v`` is a non-string sequence whose items are all strings."""
@@ -152,16 +161,16 @@ class ServerSettings(BaseSettings):
         )
 
     description_provider: str | None = Field(
-        default=None,
+        default=DEFAULT_LLM_PROVIDER,
         description=(
             "Provider of the small model that writes a team's first description "
             "from its first user message (an akgentic.llm.ModelConfig provider id). "
-            "Unset, together with description_model, turns the generator off."
+            "An empty value, or an empty description_model, turns the generator off."
         ),
     )
     description_model: str | None = Field(
-        default=None,
-        description="Model id for the description generator; unset turns it off",
+        default=DEFAULT_LLM_MODEL,
+        description="Model id for the description generator; empty turns it off",
     )
 
 

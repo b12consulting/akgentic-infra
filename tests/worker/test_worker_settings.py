@@ -39,6 +39,29 @@ class TestDefaultValues:
         assert settings.worker_labels == {}
 
 
+class TestDocumentReaderSettings:
+    """The reader fields default to the server's shared constants and read the tool's names."""
+
+    def test_defaults_are_the_shared_constants(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from akgentic.infra.server.settings import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER
+
+        monkeypatch.delenv("AKGENTIC_DOCUMENT_READER_PROVIDER", raising=False)
+        monkeypatch.delenv("AKGENTIC_DOCUMENT_READER_MODEL", raising=False)
+        settings = WorkerSettings()
+        assert settings.document_reader_provider == DEFAULT_LLM_PROVIDER
+        assert settings.document_reader_model == DEFAULT_LLM_MODEL
+
+    def test_reads_the_tools_variables_not_a_worker_prefix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AKGENTIC_DOCUMENT_READER_PROVIDER", "azure")
+        monkeypatch.setenv("AKGENTIC_DOCUMENT_READER_MODEL", "my-deployment")
+        monkeypatch.setenv("AKGENTIC_WORKER_DOCUMENT_READER_MODEL", "ignored")
+        settings = WorkerSettings()
+        assert settings.document_reader_provider == "azure"
+        assert settings.document_reader_model == "my-deployment"
+
+
 class TestEnvVarOverride:
     """WorkerSettings must load overrides from AKGENTIC_WORKER_ prefixed env vars."""
 
@@ -148,6 +171,8 @@ class TestModelStructure:
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "worker_labels",
+            "document_reader_provider",
+            "document_reader_model",
         }
         assert fields == expected, (
             f"WorkerSettings fields mismatch: got {fields}, expected {expected}"

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import warnings
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from akgentic.infra.server.settings import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
@@ -25,6 +27,10 @@ class WorkerSettings(BaseSettings):
     tool's variable on every service from one source. An undeclared
     ``AKGENTIC_WORKER_``-prefixed variable left over in a tier's chart is simply
     ignored, which is what keeps removing the field safe.
+
+    **The two document-reader fields are the exception, by alias.** They read
+    the tool's own ``AKGENTIC_DOCUMENT_READER_*`` names rather than an
+    ``AKGENTIC_WORKER_`` spelling, so the setting and the tool see one variable.
     """
 
     model_config = SettingsConfigDict(env_prefix="AKGENTIC_WORKER_")
@@ -57,6 +63,26 @@ class WorkerSettings(BaseSettings):
     worker_labels: dict[str, str] = Field(
         default_factory=dict,
         description="Labels for placement strategy matching (e.g. gpu=true, region=eu)",
+    )
+
+    document_reader_provider: str = Field(
+        default=DEFAULT_LLM_PROVIDER,
+        validation_alias=AliasChoices(
+            "AKGENTIC_DOCUMENT_READER_PROVIDER", "document_reader_provider"
+        ),
+        description=(
+            "Provider of the workspace document reader's vision fallback: openai, "
+            "openai-chat, azure or azure-chat. Read from AKGENTIC_DOCUMENT_READER_PROVIDER, "
+            "the variable akgentic-tool's DocumentReader itself reads."
+        ),
+    )
+    document_reader_model: str = Field(
+        default=DEFAULT_LLM_MODEL,
+        validation_alias=AliasChoices("AKGENTIC_DOCUMENT_READER_MODEL", "document_reader_model"),
+        description=(
+            "Model of the document reader's vision fallback (the deployment name on Azure). "
+            "Read from AKGENTIC_DOCUMENT_READER_MODEL, the tool's own variable."
+        ),
     )
 
     @field_validator("log_level", mode="before")
