@@ -116,6 +116,8 @@ def wire_community(
     # TeamService needs the finished container, so it is built last and assigned
     # onto it. The channel router reaches it through the container too, so there
     # is no second object to hand it to afterwards.
-    team_service = TeamService(services, workspaces_root=settings.workspaces_root)
+    team_service = TeamService(
+        services, workspaces_root=settings.workspaces_root, settings=settings
+    )
     services.team_service = team_service
     return services

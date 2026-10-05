@@ -211,6 +211,24 @@ def _isolate_catalog_model_type_prefixes(
     reset_allowed_prefixes()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_team_description_generator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's environment from switching the description generator on.
+
+    ``TeamService`` reads ``AKGENTIC_DESCRIPTION_PROVIDER`` and
+    ``AKGENTIC_DESCRIPTION_MODEL`` through a ``ServerSettings()`` built from
+    the environment when it is constructed without settings, and every
+    ``CommunitySettings(...)`` fixture in this suite reads them too. With both
+    exported — which is how the feature is turned on — every wired fixture
+    would install the generator and every message sent through it would
+    schedule a real provider call on a background thread against the dummy key
+    above. Specs that want the generator set the two fields on their settings
+    object.
+    """
+    monkeypatch.delenv("AKGENTIC_DESCRIPTION_PROVIDER", raising=False)
+    monkeypatch.delenv("AKGENTIC_DESCRIPTION_MODEL", raising=False)
+
+
 @pytest.fixture()
 def server_settings(tmp_path: Path) -> CommunitySettings:
     """Server settings with tmp_path-based workspaces."""

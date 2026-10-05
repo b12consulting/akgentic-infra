@@ -851,6 +851,9 @@ def test_list_teams_without_meta_params_is_unchanged_field_by_field(client: Test
     # whole so "the body is what it was plus one key" is pinned in both
     # directions: a field quietly dropped fails here too.
     assert entry["catalog_namespace"] == "test-team"
+    # ...and the one additive change of Story 80.1, null for a team that never
+    # set a description.
+    assert entry["description"] is None
     assert set(entry) == {
         "team_id",
         "name",
@@ -860,6 +863,7 @@ def test_list_teams_without_meta_params_is_unchanged_field_by_field(client: Test
         "updated_at",
         "metadata",
         "catalog_namespace",
+        "description",
     }
 
 

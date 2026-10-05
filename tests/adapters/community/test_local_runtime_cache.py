@@ -85,9 +85,7 @@ class TestLocalRuntimeCacheStoreCycle:
         assert cache.get(id2) is h2
 
 
-def _make_process(
-    team_id: uuid.UUID, status: TeamStatus = TeamStatus.RUNNING
-) -> Process:
+def _make_process(team_id: uuid.UUID, status: TeamStatus = TeamStatus.RUNNING) -> Process:
     """Create a minimal Process fixture using model_construct to skip validation."""
     from datetime import UTC, datetime
 
