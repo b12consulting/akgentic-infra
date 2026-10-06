@@ -222,11 +222,12 @@ def _isolate_team_description_generator(monkeypatch: pytest.MonkeyPatch) -> None
     exported — which is how the feature is turned on — every wired fixture
     would install the generator and every message sent through it would
     schedule a real provider call on a background thread against the dummy key
-    above. Specs that want the generator set the two fields on their settings
-    object.
+    above. ``ServerSettings`` defaults both fields on, so they are set empty
+    (which turns the generator off) rather than deleted. Specs that want the
+    generator set the two fields on their settings object.
     """
-    monkeypatch.delenv("AKGENTIC_DESCRIPTION_PROVIDER", raising=False)
-    monkeypatch.delenv("AKGENTIC_DESCRIPTION_MODEL", raising=False)
+    monkeypatch.setenv("AKGENTIC_DESCRIPTION_PROVIDER", "")
+    monkeypatch.setenv("AKGENTIC_DESCRIPTION_MODEL", "")
 
 
 @pytest.fixture()

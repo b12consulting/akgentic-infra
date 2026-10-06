@@ -136,8 +136,9 @@ class TestFromSettings:
         self, caplog: pytest.LogCaptureFixture, wired: tuple[RecordingModel, MagicMock]
     ) -> None:
         _model, factory = wired
+        settings = ServerSettings(description_provider=None, description_model=None)
         with caplog.at_level(logging.DEBUG, logger=LOGGER):
-            result = TeamDescriptionGenerator.from_settings(ServerSettings(), _store(), MagicMock())
+            result = TeamDescriptionGenerator.from_settings(settings, _store(), MagicMock())
 
         assert result is None
         infos = _records(caplog, logging.INFO)
@@ -149,8 +150,19 @@ class TestFromSettings:
     @pytest.mark.parametrize(
         "settings",
         [
-            ServerSettings(description_provider="openai-chat"),
-            ServerSettings(description_model="gpt-4o-mini"),
+            ServerSettings(description_provider="", description_model="gpt-4o-mini"),
+            ServerSettings(description_provider="openai-chat", description_model=""),
+        ],
+        ids=["empty-provider", "empty-model"],
+    )
+    def test_an_empty_value_turns_it_off(self, settings: ServerSettings) -> None:
+        assert TeamDescriptionGenerator.from_settings(settings, _store(), MagicMock()) is None
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            ServerSettings(description_provider="openai-chat", description_model=None),
+            ServerSettings(description_provider=None, description_model="gpt-4o-mini"),
         ],
         ids=["provider-only", "model-only"],
     )

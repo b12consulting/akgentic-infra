@@ -148,15 +148,15 @@ class TeamDescriptionGenerator:
             emit: The service's notification path.
 
         Returns:
-            A generator when both settings are set, else ``None``.
+            A generator when both settings are set and non-empty, else ``None``.
 
         Raises:
             pydantic.ValidationError: If the provider is not one ``ModelConfig`` knows.
         """
-        if settings.description_provider is None or settings.description_model is None:
+        if not settings.description_provider or not settings.description_model:
             logger.info(
-                "Team description generator disabled: set "
-                "AKGENTIC_DESCRIPTION_PROVIDER and AKGENTIC_DESCRIPTION_MODEL to enable it"
+                "Team description generator disabled: set AKGENTIC_DESCRIPTION_PROVIDER and "
+                "AKGENTIC_DESCRIPTION_MODEL to non-empty values to enable it"
             )
             return None
         model_cfg = ModelConfig.model_validate(

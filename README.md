@@ -1107,6 +1107,8 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_LOG_LEVEL`           | `INFO`        | Log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Invalid values fall back to `INFO`. |
 | `AKGENTIC_CORS_ORIGINS`        | `["*"]`       | Allowed CORS origins (JSON list) |
 | `AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES` | `[]` | Extra module prefixes a catalog `Entry.model_type` may name, on top of the always-present `akgentic.`. Comma-separated or JSON list. Startup-only — see [Catalog model_type prefixes](#catalog-model_type-prefixes) below. |
+| `AKGENTIC_DESCRIPTION_PROVIDER` | `openai` (`DEFAULT_LLM_PROVIDER`) | Provider of the team-description generator (an `akgentic.llm.ModelConfig` provider id). Empty turns the generator off. |
+| `AKGENTIC_DESCRIPTION_MODEL`   | `gpt-6-luna` (`DEFAULT_LLM_MODEL`) | Model of the team-description generator. Empty turns the generator off. |
 
 ### Community Settings (extends server)
 
@@ -1116,6 +1118,34 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_EVENT_STORE_PATH`    | `data/event_store` | Root directory for event store persistence |
 | `AKGENTIC_CATALOG_PATH`        | `data/catalog` | Catalog directory for team/agent/tool/template definitions |
 | `AKGENTIC_CHANNEL_REGISTRY_PATH` | `None`      | Path to channel registry YAML; disabled when unset |
+
+### Worker Settings (all tiers)
+
+Worker settings use the `AKGENTIC_WORKER_` prefix (`AKGENTIC_WORKER_HOST`, `_PORT`,
+`_LOG_LEVEL`, `_SHUTDOWN_DRAIN_TIMEOUT`, `_SHUTDOWN_PRE_DRAIN_DELAY`, `_WORKER_LABELS`) —
+except the two document-reader fields, which read the variables akgentic-tool's
+`DocumentReader` itself reads, so the setting and the tool always see one value:
+
+| Variable                       | Default        | Description                        |
+|--------------------------------|----------------|------------------------------------|
+| `AKGENTIC_DOCUMENT_READER_PROVIDER` | `openai` (`DEFAULT_LLM_PROVIDER`) | Client of the document reader's vision fallback: `openai` / `openai-chat` → `OpenAI()`, `azure` / `azure-chat` → `AzureOpenAI()`. |
+| `AKGENTIC_DOCUMENT_READER_MODEL` | `gpt-6-luna` (`DEFAULT_LLM_MODEL`) | Model of that fallback — the deployment name on Azure. |
+
+### Utility model defaults
+
+`akgentic.infra.server.settings` defines one pair, `DEFAULT_LLM_PROVIDER = "openai"`
+and `DEFAULT_LLM_MODEL = "gpt-6-luna"`, that is the default of both the server's
+team-description generator and the worker's document-reader settings. Change the
+pair to move both at once; override either side through its variables.
+
+- **The description generator is on by default.** Set `AKGENTIC_DESCRIPTION_PROVIDER`
+  or `AKGENTIC_DESCRIPTION_MODEL` to an empty string to turn it off.
+- **The reader settings are read, not pushed.** The worker's two fields read the
+  tool's own `AKGENTIC_DOCUMENT_READER_*` variables; nothing exports the settings'
+  defaults into the process environment. Without the variables, the tool falls back
+  to its own defaults, which today are the same `openai` / `gpt-6-luna`.
+- **Azure** additionally needs `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY` and
+  `OPENAI_API_VERSION` — the same variables the `akgentic.llm` `azure` provider reads.
 
 ### Catalog `model_type` prefixes
 

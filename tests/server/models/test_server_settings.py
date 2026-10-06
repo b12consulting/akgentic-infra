@@ -35,13 +35,18 @@ class TestServerSettingsDefaults:
     def test_admin_list_all_teams_defaults_false(self) -> None:
         assert ServerSettings().admin_list_all_teams is False
 
-    def test_description_settings_default_to_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Both description fields are unset by default — the generator is off."""
+    def test_description_settings_default_to_the_shared_constants(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both description fields default to DEFAULT_LLM_PROVIDER / DEFAULT_LLM_MODEL."""
+        from akgentic.infra.server.settings import DEFAULT_LLM_MODEL, DEFAULT_LLM_PROVIDER
+
         monkeypatch.delenv("AKGENTIC_DESCRIPTION_PROVIDER", raising=False)
         monkeypatch.delenv("AKGENTIC_DESCRIPTION_MODEL", raising=False)
         settings = ServerSettings()
-        assert settings.description_provider is None
-        assert settings.description_model is None
+        assert (DEFAULT_LLM_PROVIDER, DEFAULT_LLM_MODEL) == ("openai", "gpt-6-luna")
+        assert settings.description_provider == DEFAULT_LLM_PROVIDER
+        assert settings.description_model == DEFAULT_LLM_MODEL
 
 
 class TestServerSettingsEnvOverride:
