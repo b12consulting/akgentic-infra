@@ -21,11 +21,10 @@ from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
+# The small model the server's team-description generator uses by default:
+# an ``akgentic.llm.ModelConfig`` provider id and a model id.
 DEFAULT_LLM_PROVIDER = "openai"
 DEFAULT_LLM_MODEL = "gpt-6-luna"
-"""The small model the server's team-description generator uses by default.
-
-The provider is an ``akgentic.llm.ModelConfig`` provider id."""
 
 
 def _is_string_sequence(v: object) -> TypeGuard[Sequence[str]]:

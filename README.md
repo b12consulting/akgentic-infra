@@ -1149,8 +1149,12 @@ counts as unset, and a value set explicitly on a reader card wins over the varia
 and `DEFAULT_LLM_MODEL = "gpt-6-luna"`, the default of the server's team-description
 generator. Override it through `AKGENTIC_DESCRIPTION_PROVIDER` / `_MODEL`.
 
-- **The description generator is on by default.** Set `AKGENTIC_DESCRIPTION_PROVIDER`
-  or `AKGENTIC_DESCRIPTION_MODEL` to an empty string to turn it off.
+- **The description generator is on by default.** On every tier that does not opt out,
+  each new team makes one LLM call, billed to the deployment's `OPENAI_API_KEY` (or to
+  whichever provider the two variables select). Department and Enterprise inherit this
+  through `ServerSettings`, so their deployment configuration must set
+  `AKGENTIC_DESCRIPTION_PROVIDER` or `AKGENTIC_DESCRIPTION_MODEL` to an empty string to
+  turn it off.
 
 ### Catalog `model_type` prefixes
 
