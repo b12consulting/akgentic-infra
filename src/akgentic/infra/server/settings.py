@@ -23,12 +23,9 @@ _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 DEFAULT_LLM_PROVIDER = "openai"
 DEFAULT_LLM_MODEL = "gpt-6-luna"
-"""The small model used by default for the platform's utility calls.
+"""The small model the server's team-description generator uses by default.
 
-One pair is the default of both the server's team-description generator and the
-worker's document-reader settings. The provider is an ``akgentic.llm.ModelConfig``
-provider id; the reader serves ``openai`` / ``openai-chat`` and ``azure`` /
-``azure-chat`` (on Azure the model is the deployment name)."""
+The provider is an ``akgentic.llm.ModelConfig`` provider id."""
 
 
 def _is_string_sequence(v: object) -> TypeGuard[Sequence[str]]:

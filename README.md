@@ -1122,30 +1122,33 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 ### Worker Settings (all tiers)
 
 Worker settings use the `AKGENTIC_WORKER_` prefix (`AKGENTIC_WORKER_HOST`, `_PORT`,
-`_LOG_LEVEL`, `_SHUTDOWN_DRAIN_TIMEOUT`, `_SHUTDOWN_PRE_DRAIN_DELAY`, `_WORKER_LABELS`) —
-except the two document-reader fields, which read the variables akgentic-tool's
-`DocumentReader` itself reads, so the setting and the tool always see one value:
+`_LOG_LEVEL`, `_SHUTDOWN_DRAIN_TIMEOUT`, `_SHUTDOWN_PRE_DRAIN_DELAY`, `_WORKER_LABELS`).
 
-| Variable                       | Default        | Description                        |
-|--------------------------------|----------------|------------------------------------|
-| `AKGENTIC_DOCUMENT_READER_PROVIDER` | `openai` (`DEFAULT_LLM_PROVIDER`) | Client of the document reader's vision fallback: `openai` / `openai-chat` → `OpenAI()`, `azure` / `azure-chat` → `AzureOpenAI()`. |
-| `AKGENTIC_DOCUMENT_READER_MODEL` | `gpt-6-luna` (`DEFAULT_LLM_MODEL`) | Model of that fallback — the deployment name on Azure. |
+### Document reader (tool-owned variables)
+
+akgentic-tool's `DocumentReader` reads these variables directly. The worker declares
+none of them; a deployment configures the reader by exporting them on the worker.
+
+| Variable | Tool default | Effect |
+|---|---|---|
+| `AKGENTIC_DOCUMENT_READER_PROVIDER` | `openai` | `openai`/`openai-chat` → `OpenAI()`, `azure`/`azure-chat` → `AzureOpenAI()`; anything else logs a WARNING and keeps `openai` |
+| `AKGENTIC_DOCUMENT_READER_MODEL` | `gpt-6-luna` | Vision-fallback model; the deployment name on Azure |
+| `AKGENTIC_DOCUMENT_READER_DOCINTEL_ENDPOINT` | unset | Azure Document Intelligence for Pass 2: the only path that OCRs scanned PDFs |
+| `AKGENTIC_DOCUMENT_READER_DOCINTEL_KEY` | unset | Document Intelligence key, read at call time; unset means `DefaultAzureCredential` (managed identity) |
+
+- **Azure OpenAI** additionally needs `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY` and
+  `OPENAI_API_VERSION` — the same variables the `akgentic.llm` `azure` provider reads.
+- **The two Document Intelligence variables** need an akgentic-tool release that includes
+  b12consulting/akgentic-tool#435, installed with the `[docs]` extra.
 
 ### Utility model defaults
 
 `akgentic.infra.server.settings` defines one pair, `DEFAULT_LLM_PROVIDER = "openai"`
-and `DEFAULT_LLM_MODEL = "gpt-6-luna"`, that is the default of both the server's
-team-description generator and the worker's document-reader settings. Change the
-pair to move both at once; override either side through its variables.
+and `DEFAULT_LLM_MODEL = "gpt-6-luna"`, the default of the server's team-description
+generator. Override it through `AKGENTIC_DESCRIPTION_PROVIDER` / `_MODEL`.
 
 - **The description generator is on by default.** Set `AKGENTIC_DESCRIPTION_PROVIDER`
   or `AKGENTIC_DESCRIPTION_MODEL` to an empty string to turn it off.
-- **The reader settings are read, not pushed.** The worker's two fields read the
-  tool's own `AKGENTIC_DOCUMENT_READER_*` variables; nothing exports the settings'
-  defaults into the process environment. Without the variables, the tool falls back
-  to its own defaults, which today are the same `openai` / `gpt-6-luna`.
-- **Azure** additionally needs `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY` and
-  `OPENAI_API_VERSION` — the same variables the `akgentic.llm` `azure` provider reads.
 
 ### Catalog `model_type` prefixes
 
