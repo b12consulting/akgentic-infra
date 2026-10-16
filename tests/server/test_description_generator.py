@@ -155,7 +155,37 @@ class TestFromSettings:
         ],
         ids=["empty-provider", "empty-model"],
     )
-    def test_an_empty_value_turns_it_off(self, settings: ServerSettings) -> None:
+    def test_an_empty_value_turns_it_off(
+        self, settings: ServerSettings, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger=LOGGER):
+            result = TeamDescriptionGenerator.from_settings(settings, _store(), MagicMock())
+
+        assert result is None
+        infos = _records(caplog, logging.INFO)
+        assert len(infos) == 1
+        assert "disabled" in infos[0].getMessage()
+        assert "non-empty" in infos[0].getMessage()
+
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [("", "gpt-4o-mini"), ("openai-chat", "")],
+        ids=["empty-provider", "empty-model"],
+    )
+    def test_an_empty_environment_variable_turns_it_off(
+        self, monkeypatch: pytest.MonkeyPatch, provider: str, model: str
+    ) -> None:
+        """The operator's off switch is the environment, not a keyword argument.
+
+        An empty variable must reach the field as ``""``; were the settings to
+        ignore empty values, it would fall back to the default pair and turn the
+        generator back on in every tier.
+        """
+        monkeypatch.setenv("AKGENTIC_DESCRIPTION_PROVIDER", provider)
+        monkeypatch.setenv("AKGENTIC_DESCRIPTION_MODEL", model)
+
+        settings = ServerSettings()
+
         assert TeamDescriptionGenerator.from_settings(settings, _store(), MagicMock()) is None
 
     @pytest.mark.parametrize(

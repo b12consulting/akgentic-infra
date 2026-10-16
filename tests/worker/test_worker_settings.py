@@ -103,15 +103,22 @@ class TestTheToolsReaderVariableIsIgnored:
     spec catches the field itself.
     """
 
-    def test_constructing_with_the_variable_set_succeeds(
+    def test_constructing_with_the_variables_set_succeeds(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("AKGENTIC_DOCUMENT_READER_MODEL", "my-deployment")
+        reader_values = {
+            "AKGENTIC_DOCUMENT_READER_PROVIDER": "reader-provider-sentinel",
+            "AKGENTIC_DOCUMENT_READER_MODEL": "reader-model-sentinel",
+            "AKGENTIC_DOCUMENT_READER_DOCINTEL_ENDPOINT": "reader-endpoint-sentinel",
+            "AKGENTIC_DOCUMENT_READER_DOCINTEL_KEY": "reader-key-sentinel",
+        }
+        for name, value in reader_values.items():
+            monkeypatch.setenv(name, value)
 
         settings = WorkerSettings()
 
-        assert "my-deployment" not in settings.model_dump().values()
-        assert settings.model_extra in (None, {})
+        dumped = set(map(str, settings.model_dump().values()))
+        assert dumped.isdisjoint(reader_values.values())
 
 
 class TestLogLevelNormalization:
