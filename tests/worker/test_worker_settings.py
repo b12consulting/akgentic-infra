@@ -96,10 +96,11 @@ class TestTheToolsReaderVariableIsIgnored:
     """The document reader is configured by akgentic-tool's own variables, not this model.
 
     A deployment configures the reader by exporting ``AKGENTIC_DOCUMENT_READER_*``
-    on the worker for the tool to read, so the worker must start with them set
-    and must not pick them up. A reader field coming back under ``extra="forbid"`` would turn
-    the variable into a startup crash; the exact-field-set spec catches the
-    field itself.
+    in the process that runs the teams, for the tool to read, so the worker must
+    start with them set and no field may take their value. A field brought back
+    under an alias of the tool's name would read the variable again, whatever the
+    field is called; the value check below catches that, and the exact-field-set
+    spec catches the field itself.
     """
 
     def test_constructing_with_the_variable_set_succeeds(
@@ -109,7 +110,7 @@ class TestTheToolsReaderVariableIsIgnored:
 
         settings = WorkerSettings()
 
-        assert set(settings.model_dump()) == set(WorkerSettings.model_fields)
+        assert "my-deployment" not in settings.model_dump().values()
         assert settings.model_extra in (None, {})
 
 

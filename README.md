@@ -1127,14 +1127,16 @@ Worker settings use the `AKGENTIC_WORKER_` prefix (`AKGENTIC_WORKER_HOST`, `_POR
 ### Document reader (tool-owned variables)
 
 akgentic-tool's `DocumentReader` reads these variables directly. The worker declares
-none of them; a deployment configures the reader by exporting them on the worker.
+none of them; a deployment configures the reader by exporting them in the process that
+runs the teams (the worker, or the single process on the community tier). An empty value
+counts as unset, and a value set explicitly on a reader card wins over the variable.
 
 | Variable | Tool default | Effect |
 |---|---|---|
 | `AKGENTIC_DOCUMENT_READER_PROVIDER` | `openai` | `openai`/`openai-chat` → `OpenAI()`, `azure`/`azure-chat` → `AzureOpenAI()`; anything else logs a WARNING and keeps `openai` |
 | `AKGENTIC_DOCUMENT_READER_MODEL` | `gpt-6-luna` | Vision-fallback model; the deployment name on Azure |
 | `AKGENTIC_DOCUMENT_READER_DOCINTEL_ENDPOINT` | unset | Azure Document Intelligence for Pass 2: the only path that OCRs scanned PDFs |
-| `AKGENTIC_DOCUMENT_READER_DOCINTEL_KEY` | unset | Document Intelligence key, read at call time; unset means `DefaultAzureCredential` (managed identity) |
+| `AKGENTIC_DOCUMENT_READER_DOCINTEL_KEY` | unset | Document Intelligence key, read from the environment when the reader builds Pass 2 and never serialised; unset means `DefaultAzureCredential` (managed identity) |
 
 - **Azure OpenAI** additionally needs `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY` and
   `OPENAI_API_VERSION` — the same variables the `akgentic.llm` `azure` provider reads.
