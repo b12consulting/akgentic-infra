@@ -13,14 +13,15 @@ _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 # The one variable the record half of a deletion is read from, by the server
 # and the worker alike — deliberately without the worker's prefix.
-TEAM_DELETE_MODE_ENV = "AKGENTIC_TEAM_DELETE_MODE"
+_TEAM_DELETE_MODE_ENV = "AKGENTIC_TEAM_DELETE_MODE"
 
 
 class WorkerSettings(BaseSettings):
     """Tier-agnostic worker configuration loaded from environment variables.
 
     Contains only settings common to all deployment tiers.
-    All fields can be overridden via environment variables prefixed with ``AKGENTIC_WORKER_``.
+    All fields can be overridden via environment variables prefixed with ``AKGENTIC_WORKER_``,
+    except ``team_delete_mode``, which reads the un-prefixed ``AKGENTIC_TEAM_DELETE_MODE``.
 
     **There is no workspaces-root knob here, deliberately.** The tree's location
     is the tool's own ``AKGENTIC_WORKSPACES_ROOT``, read wherever a card binds.
@@ -93,7 +94,7 @@ class WorkerSettings(BaseSettings):
     # ``AKGENTIC_WORKER_TEAM_DELETE_MODE`` this field must not read.
     team_delete_mode: DeleteMode = Field(
         default=DeleteMode.HARD,
-        validation_alias=TEAM_DELETE_MODE_ENV,
+        validation_alias=_TEAM_DELETE_MODE_ENV,
         description=(
             "What deleting a team does to its record (Process, events, agent "
             "states): 'hard' purges it, 'soft' retires it with status DELETED. "
@@ -134,5 +135,5 @@ class WorkerSettings(BaseSettings):
         """
         if isinstance(data, dict) and "team_delete_mode" in data:
             data = dict(data)
-            data[TEAM_DELETE_MODE_ENV] = data.pop("team_delete_mode")
+            data[_TEAM_DELETE_MODE_ENV] = data.pop("team_delete_mode")
         return data

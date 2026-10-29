@@ -617,11 +617,13 @@ class TeamService:
         stored origin, and it latches the record so the generator can never
         overwrite or resurrect it — a clear included.
 
-        The ``get_team`` read is a lifecycle answer, not a concurrency guard:
-        it is what tells an unknown team (404) from a deleted one (409). The
-        409 is reachable only by a direct service caller: an HTTP caller meets
-        the team-access gate first, which answers a deleted team 404 because
-        ``get_team`` does not find it. The value arrives already trimmed and
+        The ``worker_handle.get_team`` read is a lifecycle answer, not a
+        concurrency guard: it is what tells an unknown team (404) from a
+        deleted one (409). It is deliberately the raw read, not
+        ``self.get_team``, which hides a deleted team and would turn the 409
+        into a 404. The 409 is reachable only by a direct service caller: an
+        HTTP caller meets the team-access gate first, which answers a deleted
+        team 404 because ``self.get_team`` does not find it. The value arrives already trimmed and
         capped by the request model; nothing here inspects the text, and
         nothing logs it.
 
