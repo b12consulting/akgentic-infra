@@ -16,6 +16,7 @@ import uuid
 import pytest
 from akgentic.team.models import DeleteMode
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings
@@ -47,3 +48,22 @@ def test_a_retired_team_is_not_found_and_deleting_it_twice_is_a_404(
     assert team_id in _team_ids(client, "?status=deleted")
     # Retired, not purged: the store still holds the record.
     assert community_services.event_store.load_team(uuid.UUID(team_id)) is not None
+
+
+def test_every_gated_route_and_the_websocket_do_not_find_a_retired_team(
+    client: TestClient, community_services: CommunityServices
+) -> None:
+    """The retired record's events are still in the store, yet no read reaches them."""
+    team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
+    assert client.post(f"/teams/{team_id}/stop").status_code == 204
+    assert client.delete(f"/teams/{team_id}").status_code == 204
+    assert community_services.event_store.load_events(uuid.UUID(team_id))
+
+    assert client.get(f"/teams/{team_id}/events").status_code == 404
+    assert client.get(f"/teams/{team_id}/agent-states").status_code == 404
+    assert client.post(f"/teams/{team_id}/restore").status_code == 404
+    assert client.post(f"/teams/{team_id}/message", json={"content": "hi"}).status_code == 404
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/{team_id}"):
+            pass
+    assert exc_info.value.code == 4004
