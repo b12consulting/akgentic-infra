@@ -16,6 +16,7 @@ from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParser
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
+from akgentic.infra.adapters.shared.workspace_deletion_mode import workspace_deletion_policy_for
 from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.server.auth_loader import load_auth_strategy
 from akgentic.infra.server.deps import CommunityServices
@@ -58,7 +59,11 @@ def wire_community(
     catalog = Catalog(repository=YamlEntryRepository(root=settings.catalog_path))
 
     # Shared backends — persistence and the event bus, used by server and worker alike.
-    event_store = YamlEventStore(data_dir=settings.event_store_path)
+    # ``team_delete_mode`` is the record half of a deletion (purge or retire);
+    # ``workspace_delete_mode``, passed to the container below, is the trees half.
+    event_store = YamlEventStore(
+        data_dir=settings.event_store_path, delete_mode=settings.team_delete_mode
+    )
     service_registry = NullServiceRegistry()
     event_stream = LocalEventStream()
 
@@ -111,6 +116,7 @@ def wire_community(
         placement=placement,
         worker_handle=worker_handle,
         runtime_cache=runtime_cache,
+        workspace_deletion_policy=workspace_deletion_policy_for(settings.workspace_delete_mode),
     )
 
     # TeamService needs the finished container, so it is built last and assigned

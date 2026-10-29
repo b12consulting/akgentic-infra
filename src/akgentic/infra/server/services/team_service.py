@@ -450,11 +450,12 @@ class TeamService:
         namespace narrows it in Python. That is a performance property, not a
         correctness one. Nothing filters after the slice.
 
-        ``status=None``, ``metadata=None`` and ``catalog_namespace=None`` each
-        mean *no such filter*, so a caller passing none of them gets exactly the
-        result set it got before. The three the store understands are forwarded
-        unconditionally: a branch that omits a kwarg when it is ``None`` is how a
-        filter later gets silently dropped.
+        ``metadata=None`` and ``catalog_namespace=None`` each mean *no such
+        filter*. ``status=None`` means the store's default: every status
+        **except** ``DELETED``, so a retired team never appears unless asked
+        for; ``status=DELETED`` still lists retired teams. The three the store
+        understands are forwarded unconditionally: a branch that omits a kwarg
+        when it is ``None`` is how a filter later gets silently dropped.
 
         ``metadata`` maps an indexed field name to a list of **prefix terms** —
         terms within one key OR-combine, distinct keys AND-combine, and matching
@@ -494,7 +495,11 @@ class TeamService:
         page: int = 1,
         size: int = 250,
     ) -> tuple[list[Process], int]:
-        """Union policy clauses, then narrow by caller search before pagination."""
+        """Union policy clauses, then narrow by caller search before pagination.
+
+        ``status=None`` is the store's default — every status except
+        ``DELETED`` — exactly as in ``list_teams``.
+        """
         candidates: dict[uuid.UUID, Process] = {}
         for clause in filters:
             pushed_metadata = metadata if clause.metadata is None else clause.metadata
@@ -517,9 +522,41 @@ class TeamService:
         start = (page - 1) * size
         return rows[start : start + size], total
 
+    def _load_live(self, team_id: uuid.UUID) -> Process | None:
+        """The team's record, or ``None`` when it is unknown **or retired**.
+
+        A retired record — status ``DELETED``, kept by a store built with
+        ``delete_mode=soft`` — is, to the server, a team that does not exist.
+        ``load_team`` still returns it (the store keeps it for audit and
+        recovery), so the translation is made here, once, and every read that
+        must treat a deleted team as missing goes through this loader.
+        """
+        process = self._services.worker_handle.get_team(team_id)
+        if process is None or process.status == TeamStatus.DELETED:
+            return None
+        return process
+
+    def _require_live(self, team_id: uuid.UUID) -> Process:
+        """The team's record, or ``TeamNotFoundError`` when it is unknown or retired.
+
+        The message keeps the ``not found`` wording the server routes map to 404.
+        """
+        process = self._load_live(team_id)
+        if process is None:
+            msg = f"Team {team_id} not found"
+            raise TeamNotFoundError(msg)
+        return process
+
     def get_team(self, team_id: uuid.UUID) -> Process | None:
-        """Get a single team by ID."""
-        return self._services.worker_handle.get_team(team_id)
+        """Get a single team by ID.
+
+        Returns:
+            The team's ``Process``, or ``None`` when the team is unknown **or
+            retired** (status ``DELETED``). A retired team is not found, so the
+            access gate, every ``/teams/{id}`` route and the WebSocket answer
+            it as they answer an unknown one.
+        """
+        return self._load_live(team_id)
 
     def update_team_metadata(
         self, team_id: uuid.UUID, raw: dict[str, Any]
@@ -551,17 +588,13 @@ class TeamService:
             what was persisted, not what was sent.
 
         Raises:
-            TeamNotFoundError: If the team is unknown.
-            ValueError: Propagated from the write path for a deleted team.
+            TeamNotFoundError: If the team is unknown or deleted.
             MetadataValidationError: If the body carries a ``__model__`` key at
                 any depth, if the team declares no metadata contract, or if the
                 body fails the declared schema. Raised before the write path is
                 reached, so a rejected body changes nothing.
         """
-        process = self._services.worker_handle.get_team(team_id)
-        if process is None:
-            msg = f"Team {team_id} not found"
-            raise TeamNotFoundError(msg)
+        process = self._require_live(team_id)
         validated = validate_metadata(process.metadata_type, raw)
         updated = self._services.worker_handle.update_team_metadata(team_id, validated)
         logger.info("Team metadata updated: team_id=%s", team_id)
@@ -584,10 +617,15 @@ class TeamService:
         stored origin, and it latches the record so the generator can never
         overwrite or resurrect it — a clear included.
 
-        The ``get_team`` read is a lifecycle answer, not a concurrency guard:
-        it is what tells an unknown team (404) from a deleted one (409). The
-        value arrives already trimmed and capped by the request model; nothing
-        here inspects the text, and nothing logs it.
+        The ``worker_handle.get_team`` read is a lifecycle answer, not a
+        concurrency guard: it is what tells an unknown team (404) from a
+        deleted one (409). It is deliberately the raw read, not
+        ``self.get_team``, which hides a deleted team and would turn the 409
+        into a 404. The 409 is reachable only by a direct service caller: an
+        HTTP caller meets the team-access gate first, which answers a deleted
+        team 404 because ``self.get_team`` does not find it. The value arrives already trimmed and
+        capped by the request model; nothing here inspects the text, and
+        nothing logs it.
 
         Args:
             team_id: The team whose description is being written.
@@ -691,15 +729,18 @@ class TeamService:
         silently revert to the per-principal default, and this story's defect
         would return with nothing failing. Resolution moves; deletion does not.
 
+        **A team already deleted is not found.** The record is read through the
+        same loader as ``get_team``, so a retired record raises here before any
+        stop, cache or stream removal, worker call or filesystem work. Reading
+        the worker handle directly would let a second delete reach a tier
+        whose store silently no-ops it, and answer 204.
+
         Raises:
-            TeamNotFoundError: If the team is unknown. Raised before any
-                filesystem work, so a missing team never triggers FS cleanup.
-            ValueError: Propagated from the worker for a team already deleted.
+            TeamNotFoundError: If the team is unknown or already deleted.
+                Raised before any other work, so a missing team never triggers
+                a worker call or FS cleanup.
         """
-        process = self._services.worker_handle.get_team(team_id)
-        if process is None:
-            msg = f"Team {team_id} not found"
-            raise TeamNotFoundError(msg)
+        process = self._require_live(team_id)
         if process.status == TeamStatus.RUNNING:
             self._services.worker_handle.stop_team(team_id)
         candidates = self._deletion_candidates(process)
@@ -873,14 +914,11 @@ class TeamService:
                 event — anchor excluded. If None, return the full log.
 
         Raises:
-            TeamNotFoundError: If the team is unknown.
+            TeamNotFoundError: If the team is unknown or deleted.
             EventNotFoundError: Propagated from the store when after_event_id
                 does not resolve to an event of this team.
         """
-        process = self._services.worker_handle.get_team(team_id)
-        if process is None:
-            msg = f"Team {team_id} not found"
-            raise TeamNotFoundError(msg)
+        self._require_live(team_id)
         logger.debug("Loading events for team %s (after_event_id=%s)", team_id, after_event_id)
         return self._services.event_store.load_events(team_id, after_event_id=after_event_id)
 
@@ -892,8 +930,8 @@ class TeamService:
         A thin, faithful read of the snapshot store: returns snapshots as
         persisted, with no liveness filtering and no name->UUID resolution. The
         team-exists guard mirrors ``get_events`` — ``get_team`` returns the
-        persisted process for a stopped team too, so this fires only for a
-        genuinely unknown team.
+        persisted process for a stopped team too, so this fires only for an
+        unknown or deleted team.
 
         Args:
             team_id: Team UUID.
@@ -903,12 +941,9 @@ class TeamService:
                 error.
 
         Raises:
-            TeamNotFoundError: If the team is unknown.
+            TeamNotFoundError: If the team is unknown or deleted.
         """
-        process = self._services.worker_handle.get_team(team_id)
-        if process is None:
-            msg = f"Team {team_id} not found"
-            raise TeamNotFoundError(msg)
+        self._require_live(team_id)
         logger.debug("Loading agent states for team %s (agent_id=%s)", team_id, agent_id)
         if agent_id is None:
             return self._services.event_store.load_agent_states(team_id)

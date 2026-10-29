@@ -230,6 +230,26 @@ def _isolate_team_description_generator(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("AKGENTIC_DESCRIPTION_MODEL", "")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_delete_modes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's environment from switching team deletion to ``soft``.
+
+    Every ``CommunitySettings(...)`` fixture — and ``WorkerSettings()`` — reads
+    the environment, so a shell exporting ``AKGENTIC_TEAM_DELETE_MODE=soft`` or
+    ``AKGENTIC_WORKSPACE_DELETE_MODE=soft`` would silently flip every wired
+    test from purge to retire. The worker-prefixed spelling is cleared too, so
+    the spec proving it is ignored is not the only thing that would notice.
+    Specs that want a mode set it on their settings object or in their own
+    ``monkeypatch``.
+    """
+    for name in (
+        "AKGENTIC_TEAM_DELETE_MODE",
+        "AKGENTIC_WORKSPACE_DELETE_MODE",
+        "AKGENTIC_WORKER_TEAM_DELETE_MODE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture()
 def server_settings(tmp_path: Path) -> CommunitySettings:
     """Server settings with tmp_path-based workspaces."""
