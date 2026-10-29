@@ -460,10 +460,11 @@ def test_a_message_to_a_deleted_team_is_404(
 ) -> None:
     """A ``DELETED`` record answers 404 on ``/message`` and ``/human-input``, not 409.
 
-    Community's delete purges the record, so a ``DELETED`` row is unreachable
-    through the real store; the read is patched to hand back a deleted copy of
-    a team the access gate lets through. ``model_copy`` rather than a rebuilt
-    ``Process``, so the row stays whole.
+    The fixture's store purges on delete (``team_delete_mode`` defaults to
+    ``hard``), so the read is patched to hand back a deleted copy of the team
+    instead. The access gate does not find a retired team, so the 404 is the
+    gate's "Team not found" rather than the delivery path's own. ``model_copy``
+    rather than a rebuilt ``Process``, so the row stays whole.
     """
     team_id = client.post("/teams/", json={"catalog_namespace": "test-team"}).json()["team_id"]
     service = client.app.state.services.team_service
@@ -475,7 +476,6 @@ def test_a_message_to_a_deleted_team_is_404(
 
     message = client.post(f"/teams/{team_id}/message", json={"content": "hi"})
     assert message.status_code == 404
-    assert "deleted" in message.json()["detail"]
 
     human_input = client.post(
         f"/teams/{team_id}/human-input", json={"content": "yes", "message_id": "any"}

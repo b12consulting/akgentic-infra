@@ -197,17 +197,18 @@ def test_stopped_team_accepts_the_patch_and_persists(
     assert _stored(community_services, team_id).team_description == DESCRIPTION
 
 
-# --- AC8: a DELETED record is a 409 ---
+# --- AC8: a DELETED record is not found ---
 
 
-def test_deleted_record_is_409_and_unchanged(
+def test_deleted_record_is_404_and_unchanged(
     client: TestClient, community_services: CommunityServices
 ) -> None:
-    """A soft-deleted record is a conflict, not a missing team, and stays as it was.
+    """A retired record is a missing team over HTTP, and stays as it was.
 
-    The community tier purges on delete, so the ``DELETED`` record is written by
-    hand: stop, read, re-save with only the status flipped. The access gate
-    still passes (the owner matches), so the answer comes from the route body.
+    The fixture's store purges on delete, so the ``DELETED`` record is written
+    by hand: stop, read, re-save with only the status flipped. The access gate
+    does not find a retired team, so it answers 404 before the route body runs
+    — the service's own 409 is reachable only by a direct service caller.
     """
     team_id = _create(client)
     assert client.post(f"/teams/{team_id}/stop").status_code == 204
@@ -216,8 +217,7 @@ def test_deleted_record_is_409_and_unchanged(
 
     resp = _patch(client, team_id, DESCRIPTION)
 
-    assert resp.status_code == 409
-    assert "deleted" in resp.json()["detail"]
+    assert resp.status_code == 404
     assert _stored(community_services, team_id) == deleted
 
 

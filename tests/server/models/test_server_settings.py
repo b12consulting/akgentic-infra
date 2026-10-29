@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from akgentic.catalog import ENV_VAR as CATALOG_PREFIXES_ENV_VAR
+from akgentic.team.models import DeleteMode
 from pydantic import ValidationError
 
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
@@ -187,6 +188,8 @@ class TestSettingsHierarchy:
             "catalog_model_type_prefixes",
             "description_provider",
             "description_model",
+            "team_delete_mode",
+            "workspace_delete_mode",
         }
         assert server_fields == expected, (
             f"ServerSettings fields mismatch: got {server_fields}, expected {expected}"
@@ -611,3 +614,48 @@ class TestServerSettingsChannels:
     def test_community_settings_inherits_channels(self) -> None:
         """The field is tier-agnostic — it lives on ServerSettings."""
         assert "channels" in CommunitySettings.model_fields
+
+
+class TestDeleteModeSettings:
+    """``team_delete_mode`` and ``workspace_delete_mode``: two independent halves."""
+
+    def test_both_default_to_hard(self) -> None:
+        settings = ServerSettings()
+        assert settings.team_delete_mode is DeleteMode.HARD
+        assert settings.workspace_delete_mode is DeleteMode.HARD
+
+    def test_team_delete_mode_from_env_leaves_workspace_hard(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AKGENTIC_TEAM_DELETE_MODE", "soft")
+        settings = ServerSettings()
+        assert settings.team_delete_mode is DeleteMode.SOFT
+        assert settings.workspace_delete_mode is DeleteMode.HARD
+
+    def test_workspace_delete_mode_from_env_leaves_team_hard(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AKGENTIC_WORKSPACE_DELETE_MODE", "soft")
+        settings = ServerSettings()
+        assert settings.workspace_delete_mode is DeleteMode.SOFT
+        assert settings.team_delete_mode is DeleteMode.HARD
+
+    @pytest.mark.parametrize(
+        "env_var", ["AKGENTIC_TEAM_DELETE_MODE", "AKGENTIC_WORKSPACE_DELETE_MODE"]
+    )
+    def test_invalid_value_fails_at_construction(
+        self, monkeypatch: pytest.MonkeyPatch, env_var: str
+    ) -> None:
+        monkeypatch.setenv(env_var, "archive")
+        with pytest.raises(ValidationError):
+            ServerSettings()
+
+    def test_community_settings_inherits_both(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AKGENTIC_TEAM_DELETE_MODE", "soft")
+        monkeypatch.setenv("AKGENTIC_WORKSPACE_DELETE_MODE", "soft")
+        settings = CommunitySettings()
+        assert settings.team_delete_mode is DeleteMode.SOFT
+        assert settings.workspace_delete_mode is DeleteMode.SOFT
+        assert "team_delete_mode" not in set(CommunitySettings.model_fields) - set(
+            ServerSettings.model_fields
+        )

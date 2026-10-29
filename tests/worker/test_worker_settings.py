@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from akgentic.team.models import DeleteMode
 from pydantic import ValidationError
 
 from akgentic.infra.worker.settings import WorkerSettings
@@ -30,6 +31,8 @@ class TestDefaultValues:
         monkeypatch.delenv("AKGENTIC_WORKER_SHUTDOWN_DRAIN_TIMEOUT", raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_SHUTDOWN_PRE_DRAIN_DELAY", raising=False)
         monkeypatch.delenv("AKGENTIC_WORKER_WORKER_LABELS", raising=False)
+        monkeypatch.delenv("AKGENTIC_TEAM_DELETE_MODE", raising=False)
+        monkeypatch.delenv("AKGENTIC_WORKER_TEAM_DELETE_MODE", raising=False)
         settings = WorkerSettings()
         assert settings.host == "0.0.0.0"
         assert settings.port == 8001
@@ -37,6 +40,7 @@ class TestDefaultValues:
         assert settings.shutdown_drain_timeout == 30
         assert settings.shutdown_pre_drain_delay == 0
         assert settings.worker_labels == {}
+        assert settings.team_delete_mode is DeleteMode.HARD
 
 
 class TestEnvVarOverride:
@@ -177,7 +181,46 @@ class TestModelStructure:
             "shutdown_drain_timeout",
             "shutdown_pre_drain_delay",
             "worker_labels",
+            "team_delete_mode",
         }
         assert fields == expected, (
             f"WorkerSettings fields mismatch: got {fields}, expected {expected}"
         )
+
+
+class TestTeamDeleteMode:
+    """The record half of a deletion, read from the server's un-prefixed variable."""
+
+    def test_reads_the_unprefixed_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AKGENTIC_TEAM_DELETE_MODE", "soft")
+        assert WorkerSettings().team_delete_mode is DeleteMode.SOFT
+
+    def test_the_prefixed_variable_is_not_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AKGENTIC_TEAM_DELETE_MODE", raising=False)
+        monkeypatch.setenv("AKGENTIC_WORKER_TEAM_DELETE_MODE", "soft")
+        assert WorkerSettings().team_delete_mode is DeleteMode.HARD
+
+    def test_a_bare_field_name_variable_is_not_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AKGENTIC_TEAM_DELETE_MODE", raising=False)
+        monkeypatch.setenv("TEAM_DELETE_MODE", "soft")
+        assert WorkerSettings().team_delete_mode is DeleteMode.HARD
+
+    def test_construction_by_field_name_still_works(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("AKGENTIC_TEAM_DELETE_MODE", raising=False)
+        settings = WorkerSettings(team_delete_mode=DeleteMode.SOFT)
+        assert settings.team_delete_mode is DeleteMode.SOFT
+
+    def test_construction_by_field_name_wins_over_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AKGENTIC_TEAM_DELETE_MODE", "soft")
+        settings = WorkerSettings(team_delete_mode=DeleteMode.HARD)
+        assert settings.team_delete_mode is DeleteMode.HARD
+
+    def test_invalid_value_fails_at_construction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AKGENTIC_TEAM_DELETE_MODE", "archive")
+        with pytest.raises(ValidationError):
+            WorkerSettings()
+
+    def test_has_no_workspace_delete_mode(self) -> None:
+        assert "workspace_delete_mode" not in WorkerSettings.model_fields

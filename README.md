@@ -1109,6 +1109,8 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_CATALOG_MODEL_TYPE_PREFIXES` | `[]` | Extra module prefixes a catalog `Entry.model_type` may name, on top of the always-present `akgentic.`. Comma-separated or JSON list. Startup-only — see [Catalog model_type prefixes](#catalog-model_type-prefixes) below. |
 | `AKGENTIC_DESCRIPTION_PROVIDER` | `openai` (`DEFAULT_LLM_PROVIDER`) | Provider of the team-description generator (an `akgentic.llm.ModelConfig` provider id). Empty turns the generator off. |
 | `AKGENTIC_DESCRIPTION_MODEL`   | `gpt-6-luna` (`DEFAULT_LLM_MODEL`) | Model of the team-description generator. Empty turns the generator off. |
+| `AKGENTIC_TEAM_DELETE_MODE`    | `hard`        | What deleting a team does to its **record** (`Process`, events, agent states): `hard` purges it, `soft` retires it with status `DELETED`. The workspace trees are the other half — `AKGENTIC_WORKSPACE_DELETE_MODE`. Workers read the same variable. A retired team answers 404 like a purged one. |
+| `AKGENTIC_WORKSPACE_DELETE_MODE` | `hard`      | What deleting a team does to its **workspace trees**: `hard` removes the team's own tree, `soft` keeps every tree on disk. Independent of `AKGENTIC_TEAM_DELETE_MODE` by design: soft record + hard workspace keeps a recoverable record whose files are gone; hard record + soft workspace leaves trees on disk with no record pointing at them, and nothing reclaims them later. |
 
 ### Community Settings (extends server)
 
@@ -1123,6 +1125,12 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 
 Worker settings use the `AKGENTIC_WORKER_` prefix (`AKGENTIC_WORKER_HOST`, `_PORT`,
 `_LOG_LEVEL`, `_SHUTDOWN_DRAIN_TIMEOUT`, `_SHUTDOWN_PRE_DRAIN_DELAY`, `_WORKER_LABELS`).
+One worker setting is the exception and reads an **un-prefixed** variable, the same one
+the server reads, so the two processes cannot disagree:
+
+| Variable | Default | Description |
+|---|---|---|
+| `AKGENTIC_TEAM_DELETE_MODE` | `hard` | The record half of a team deletion (`hard` purges, `soft` retires). `AKGENTIC_WORKER_TEAM_DELETE_MODE` is **not** read. The worker has no workspace setting: only the server removes trees. |
 
 ### Document reader (tool-owned variables)
 
