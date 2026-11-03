@@ -216,7 +216,8 @@ async def list_teams(
 
     ``status`` is validated by FastAPI against ``TeamStatus``; an unknown value
     is a 422 raised by the framework, not handled here. Omitting it returns
-    every status, ``DELETED`` included.
+    every status except ``DELETED`` (the store's default), so a retired team is
+    not listed; ``?status=deleted`` still lists retired teams.
 
     Repeated ``?meta.<key>=<term>`` parameters add a prefix filter on the team's
     business metadata: terms within one key OR-combine, distinct keys
@@ -394,8 +395,10 @@ def update_team_description(
 
     The response carries what was persisted, who owns it and the ``updated_at``
     stamp the write set, never the input echoed. Any status other than
-    ``DELETED`` is writable; a deleted record is
-    a **409**, mapped by type through ``_raise_state_conflict`` — deliberately
+    ``DELETED`` is writable. A deleted record never reaches this body: the
+    access gate does not find it and answers 404. The service's own **409**
+    for a deleted record is still mapped by type through
+    ``_raise_state_conflict`` for a race past the gate — deliberately
     not ``_raise_action_error``, which reads the word "deleted" in a message as
     a 404. Both typed errors subclass ``ValueError``, so no ``ValueError`` arm
     may precede them here.

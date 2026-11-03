@@ -47,11 +47,12 @@ def _spy_worker_handle(service: TeamService) -> MagicMock:
 
 
 def _save_as_deleted(service: TeamService, team_id: uuid.UUID) -> Process:
-    """Hold a ``DELETED`` record in the store, the only way the community tier can.
+    """Hold a ``DELETED`` record in the store this fixture's purging store cannot write.
 
-    ``TeamManager.delete_team`` purges the document, so a soft-deleted record
-    has to be written by hand: stop the team, then re-save its ``Process`` with
-    the status flipped and nothing else touched.
+    The fixture's store is built with the default ``team_delete_mode=hard``, so
+    ``TeamManager.delete_team`` purges the document and a retired record has to
+    be written by hand: stop the team, then re-save its ``Process`` with the
+    status flipped and nothing else touched.
     """
     service.stop_team(team_id)
     process = service.get_team(team_id)
@@ -182,7 +183,8 @@ def test_deleted_record_raises_a_state_conflict_and_writes_nothing(
         team_service.update_team_description(team_id, DESCRIPTION)
 
     store.update_team_description.assert_not_called()
-    assert team_service.get_team(team_id) == deleted
+    # Read the store, not ``get_team``: a retired record is not found by the service.
+    assert team_service._services.event_store.load_team(team_id) == deleted  # noqa: SLF001
 
 
 def test_clear_is_a_user_write_of_none(team_service: TeamService) -> None:

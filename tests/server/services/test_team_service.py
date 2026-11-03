@@ -2021,3 +2021,74 @@ def test_filtered_page_followable_on_a_fresh_service_instance() -> None:
     ids2 = {p.team_id for p in page2}
     assert ids1.isdisjoint(ids2)
     assert len(ids1 | ids2) == 6
+
+
+# --- A retired record is not found (team_delete_mode=soft) ---
+
+
+def test_deleting_a_retired_team_is_not_found_before_any_work(team_service: TeamService) -> None:
+    """The second delete of a retired team raises before stop, cache, stream, worker or FS work.
+
+    The worker handle here behaves like the department and enterprise ones: its
+    ``get_team`` hands back the retired record and its ``delete_team`` silently
+    no-ops a second delete. Read straight from the handle, the record would
+    carry the service all the way to that no-op — and the route would answer
+    204. The team's own tree is seeded where the default policy would approve
+    removing it, so a delete that got that far would also take it.
+    """
+    process = team_service.create_team(catalog_namespace="test-team", user_id="alice")
+    team_service.stop_team(process.team_id)
+    stored = team_service._services.worker_handle.get_team(process.team_id)
+    assert stored is not None
+    retired = stored.model_copy(update={"status": TeamStatus.DELETED})
+    tree = team_service._workspaces_root / "alice" / TEAM_KIND / str(process.team_id)
+    tree.mkdir(parents=True)
+    worker_handle = MagicMock()
+    worker_handle.get_team.return_value = retired
+    worker_handle.delete_team.return_value = None
+    event_stream = MagicMock()
+    cache = MagicMock()
+    team_service._services.worker_handle = worker_handle  # type: ignore[assignment]
+    team_service._services.event_stream = event_stream  # type: ignore[assignment]
+    team_service._cache = cache
+
+    with pytest.raises(TeamNotFoundError, match="not found"):
+        team_service.delete_team(process.team_id)
+
+    worker_handle.delete_team.assert_not_called()
+    worker_handle.stop_team.assert_not_called()
+    cache.remove.assert_not_called()
+    event_stream.remove.assert_not_called()
+    assert tree.is_dir()
+
+
+def test_get_team_is_none_for_a_retired_record() -> None:
+    service, services, _ = _delivery_service_over(TeamStatus.DELETED)
+    team_id = services.worker_handle.get_team.return_value.team_id
+
+    assert service.get_team(team_id) is None
+
+
+@pytest.mark.parametrize("status", [TeamStatus.RUNNING, TeamStatus.STOPPED])
+def test_get_team_returns_a_live_record(status: TeamStatus) -> None:
+    service, services, _ = _delivery_service_over(status)
+    process = services.worker_handle.get_team.return_value
+
+    assert service.get_team(process.team_id) is process
+
+
+def test_reads_of_a_retired_record_are_not_found_and_reach_no_store() -> None:
+    """``get_events``, ``get_agent_states`` and ``update_team_metadata`` all refuse it."""
+    service, services, _ = _delivery_service_over(TeamStatus.DELETED)
+    team_id = services.worker_handle.get_team.return_value.team_id
+
+    with pytest.raises(TeamNotFoundError, match="not found"):
+        service.get_events(team_id)
+    with pytest.raises(TeamNotFoundError, match="not found"):
+        service.get_agent_states(team_id)
+    with pytest.raises(TeamNotFoundError, match="not found"):
+        service.update_team_metadata(team_id, {})
+
+    services.event_store.load_events.assert_not_called()
+    services.event_store.load_agent_states.assert_not_called()
+    services.worker_handle.update_team_metadata.assert_not_called()

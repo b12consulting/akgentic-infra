@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from akgentic.team.manager import TeamManager
+from akgentic.team.models import DeleteMode, Process, TeamStatus
 from akgentic.team.ports import NullServiceRegistry, ServiceRegistry
 from akgentic.team.repositories.yaml import YamlEventStore
 
@@ -20,7 +21,9 @@ from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelR
 from akgentic.infra.adapters.shared.channel_dispatcher import ChannelDispatcher
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
+from akgentic.infra.adapters.shared.keep_every_tree_policy import KeepEveryTreePolicy
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
+from akgentic.infra.adapters.shared.team_tree_only_policy import TeamTreeOnlyPolicy
 from akgentic.infra.adapters.shared.telegram_adapter import TelegramChannelAdapter
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.protocols.channels import ChannelAddress
@@ -426,3 +429,54 @@ class TestWireCommunityDescriptionGenerator:
             factory.assert_not_called()
         finally:
             services.actor_system.shutdown(timeout=5)
+
+
+class TestWireCommunityDeleteModes:
+    """The two delete-mode settings reach the store and the container."""
+
+    @staticmethod
+    def _wire(tmp_path: Path, **modes: DeleteMode) -> CommunityServices:
+        settings = CommunitySettings(
+            workspaces_root=tmp_path / "workspaces",
+            event_store_path=tmp_path / "event_store",
+            catalog_path=tmp_path / "catalog",
+            **modes,
+        )
+        _seed_catalog(settings.catalog_path)
+        return wire_community(settings)
+
+    @staticmethod
+    def _create_stop_and_delete_in_store(services: CommunityServices) -> Process | None:
+        """Create a team, stop it, and delete it through the store itself."""
+        assert services.team_service is not None
+        process = services.team_service.create_team(catalog_namespace="test-team", user_id="u")
+        services.team_service.stop_team(process.team_id)
+        services.event_store.delete_team(process.team_id)
+        return services.event_store.load_team(process.team_id)
+
+    def test_soft_team_delete_mode_builds_a_store_that_retires(self, tmp_path: Path) -> None:
+        services = self._wire(tmp_path, team_delete_mode=DeleteMode.SOFT)
+        try:
+            retired = self._create_stop_and_delete_in_store(services)
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+        assert retired is not None
+        assert retired.status == TeamStatus.DELETED
+
+    def test_default_team_delete_mode_builds_a_store_that_purges(self, tmp_path: Path) -> None:
+        services = self._wire(tmp_path)
+        try:
+            purged = self._create_stop_and_delete_in_store(services)
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+        assert purged is None
+
+    def test_default_workspace_policy_is_team_tree_only(self, tmp_path: Path) -> None:
+        services = self._wire(tmp_path)
+        services.team_manager._actor_system.shutdown(timeout=5)
+        assert type(services.workspace_deletion_policy) is TeamTreeOnlyPolicy
+
+    def test_soft_workspace_delete_mode_wires_keep_every_tree(self, tmp_path: Path) -> None:
+        services = self._wire(tmp_path, workspace_delete_mode=DeleteMode.SOFT)
+        services.team_manager._actor_system.shutdown(timeout=5)
+        assert type(services.workspace_deletion_policy) is KeepEveryTreePolicy

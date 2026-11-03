@@ -18,6 +18,7 @@ from akgentic.catalog import parse_prefixes
 # ``sys.modules`` but only partially executed. Importing the submodule resolves;
 # reading ``ChannelConfig`` off the half-built parent package would not.
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
+from akgentic.team.models import DeleteMode
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
@@ -37,6 +38,26 @@ class ServerSettings(BaseSettings):
 
     Contains only settings common to all deployment tiers.
     All fields can be overridden via environment variables prefixed with ``AKGENTIC_``.
+
+    **Deleting a team has two halves, and each has its own setting.**
+    ``team_delete_mode`` (``AKGENTIC_TEAM_DELETE_MODE``) decides what happens to
+    the team's record — its ``Process``, events and agent states: ``hard`` purges
+    it, ``soft`` retires it (status ``DELETED``, everything kept).
+    ``workspace_delete_mode`` (``AKGENTIC_WORKSPACE_DELETE_MODE``) decides what
+    happens to its workspace trees: ``hard`` removes the team's own tree, ``soft``
+    keeps every tree on disk. Both default to ``hard``, which is the historical
+    behaviour.
+
+    The two are independent by design, so all four combinations are valid —
+    including the two that are easy to get wrong:
+
+    - **soft record + hard workspace**: the record can be recovered, but its
+      files are gone.
+    - **hard record + soft workspace**: the trees are left on disk with no record
+      pointing at them, and nothing reclaims them later.
+
+    Either way, a retired team is not found by the server: it answers 404 exactly
+    as for a purged one.
     """
 
     model_config = SettingsConfigDict(env_prefix="AKGENTIC_")
@@ -167,6 +188,34 @@ class ServerSettings(BaseSettings):
     description_model: str | None = Field(
         default=DEFAULT_LLM_MODEL,
         description="Model id for the description generator; empty turns it off",
+    )
+    team_delete_mode: DeleteMode = Field(
+        default=DeleteMode.HARD,
+        description=(
+            "What deleting a team does to its record (Process, events, agent "
+            "states): 'hard' purges it, 'soft' retires it with status DELETED and "
+            "keeps it for audit or recovery. The workspace trees are the other "
+            "half, controlled by workspace_delete_mode "
+            "(AKGENTIC_WORKSPACE_DELETE_MODE). The two are independent by design: "
+            "soft record + hard workspace means the record can be recovered but "
+            "its files are gone; hard record + soft workspace leaves the trees on "
+            "disk with no record pointing at them, and nothing reclaims them "
+            "later. Workers read the same AKGENTIC_TEAM_DELETE_MODE variable."
+        ),
+    )
+    workspace_delete_mode: DeleteMode = Field(
+        default=DeleteMode.HARD,
+        description=(
+            "What deleting a team does to its workspace trees: 'hard' removes the "
+            "team's own tree (with its .git and .index siblings), 'soft' keeps "
+            "every tree on disk. The team record is the other half, controlled by "
+            "team_delete_mode (AKGENTIC_TEAM_DELETE_MODE). The two are independent "
+            "by design: soft record + hard workspace means the record can be "
+            "recovered but its files are gone; hard record + soft workspace leaves "
+            "the trees on disk with no record pointing at them, and nothing "
+            "reclaims them later. Read by the server only — the server is the "
+            "process that removes trees."
+        ),
     )
 
 

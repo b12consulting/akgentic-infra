@@ -23,9 +23,13 @@ class WorkerHandle(Protocol):
     Error contract:
         - ``stop_team()`` raises ``ValueError`` if the team is not running
           or has been deleted.
-        - ``delete_team()`` raises ``ValueError`` if the team has already
-          been deleted.
-        - ``get_team()`` returns ``None`` for unknown team IDs (never raises).
+        - ``delete_team()`` on a team that has already been deleted is
+          implementation-defined: ``LocalWorkerHandle`` raises ``ValueError``,
+          while a handle that deletes through a soft-mode event store is a
+          silent no-op. Callers must not rely on it to detect a repeat delete.
+        - ``get_team()`` returns ``None`` for unknown team IDs (never raises),
+          and returns a retired team's record with status ``DELETED``.
+          ``TeamService`` is the layer that treats that record as not found.
         - ``update_team_metadata()`` raises ``ValueError`` for an unknown or
           deleted team, and ``pydantic.ValidationError`` for a value that does
           not match the team's declared ``metadata_type``. A failed push of the
