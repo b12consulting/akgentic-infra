@@ -9,7 +9,6 @@ stores only record the DSN at construction, so these tests need the
 
 from __future__ import annotations
 
-import builtins
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -173,42 +172,61 @@ class TestBuildersPostgres:
         assert not (tmp_path / "catalog").exists()
 
 
+_ALL_POSTGRES_MODULES = ("nagra", "psycopg", "psycopg_pool")
+
+
+def _hide_modules(monkeypatch: pytest.MonkeyPatch, hidden: tuple[str, ...]) -> None:
+    """Make ``persistence``'s dependency probe see exactly ``hidden`` as missing.
+
+    The probe answers for every Postgres module itself — missing if hidden,
+    present otherwise — and never reaches the real import, so the result does not
+    depend on what the running environment has installed: CI installs ``.[dev]``
+    without the extra, a developer venv usually has it.
+    """
+
+    def fake_import_module(name: str) -> object:
+        if name in hidden:
+            raise ImportError(f"No module named {name!r}")
+        if name in _ALL_POSTGRES_MODULES:
+            return object()
+        raise AssertionError(f"unexpected probe of {name!r}")
+
+    monkeypatch.setattr(persistence.importlib, "import_module", fake_import_module)
+
+
 @pytest.mark.usefixtures("clean_env")
 class TestMissingPostgresExtra:
     """Selecting postgres without the extra fails at wire time, naming the fix."""
 
     @pytest.fixture()
-    def without_nagra(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        real_import = builtins.__import__
+    def without_extra(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _hide_modules(monkeypatch, _ALL_POSTGRES_MODULES)
 
-        def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
-            if name == "nagra" or name.startswith("nagra."):
-                raise ImportError(f"No module named {name!r}")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
-        monkeypatch.setattr(
-            persistence.importlib,
-            "import_module",
-            lambda name: fake_import(name),
-        )
-
-    @pytest.mark.usefixtures("without_nagra")
+    @pytest.mark.usefixtures("without_extra")
     @pytest.mark.parametrize("builder", [build_event_store, build_catalog_repository])
     def test_builder_raises_with_install_hint(self, tmp_path: Path, builder: Any) -> None:
         with pytest.raises(PersistenceBackendUnavailableError) as exc_info:
             builder(_postgres_settings(tmp_path))
         message = str(exc_info.value)
-        assert "nagra is not installed" in message
+        assert "nagra, psycopg, psycopg_pool are not installed" in message
         assert "akgentic-infra[postgres]" in message
         assert "s3cret-pw" not in message
 
-    @pytest.mark.usefixtures("without_nagra")
+    def test_names_only_the_module_that_is_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A half-installed extra (Nagra present, no pool) is caught at wire time too."""
+        _hide_modules(monkeypatch, ("psycopg_pool",))
+        with pytest.raises(PersistenceBackendUnavailableError) as exc_info:
+            build_event_store(_postgres_settings(tmp_path))
+        assert "but psycopg_pool is not installed" in str(exc_info.value)
+
+    @pytest.mark.usefixtures("without_extra")
     def test_wire_community_raises_before_starting_anything(self, tmp_path: Path) -> None:
         with pytest.raises(PersistenceBackendUnavailableError):
             wire_community(_postgres_settings(tmp_path))
 
-    @pytest.mark.usefixtures("without_nagra")
+    @pytest.mark.usefixtures("without_extra")
     def test_yaml_backend_does_not_need_the_extra(self, tmp_path: Path) -> None:
         assert isinstance(build_event_store(_yaml_settings(tmp_path)), YamlEventStore)
 
