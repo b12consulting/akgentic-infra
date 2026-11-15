@@ -23,6 +23,7 @@ import logging
 
 from akgentic.catalog import YamlEntryRepository
 from akgentic.catalog.repositories.base import EntryRepository
+from akgentic.infra.adapters.community.postgres_instance_lock import PostgresInstanceLock
 from akgentic.infra.server.settings import CommunitySettings, PersistenceBackend
 from akgentic.team.ports import EventStore
 from akgentic.team.repositories.yaml import YamlEventStore
@@ -40,6 +41,7 @@ __all__ = [
     "PersistenceBackendUnavailableError",
     "build_catalog_repository",
     "build_event_store",
+    "prepare_postgres",
 ]
 
 
@@ -96,6 +98,79 @@ def build_catalog_repository(settings: CommunitySettings) -> EntryRepository:
 
     logger.info("Catalog repository: PostgreSQL")
     return PostgresEntryRepository(_conn_string(settings))
+
+
+def prepare_postgres(
+    settings: CommunitySettings,
+    *,
+    event_store_from_settings: bool,
+    catalog_from_settings: bool,
+) -> PostgresInstanceLock | None:
+    """Run the startup steps a Postgres-backed community server needs.
+
+    Called by ``wire_community`` before it builds anything that reads the
+    database — in particular before ``LocalRuntimeCache.warm`` restores teams.
+
+    1. **Single-instance lock** — when the team store is built from the
+       settings, take :class:`PostgresInstanceLock`, so a second server on the
+       same database fails here instead of running the same teams twice.
+    2. **Schema** — when ``postgres_init_db`` is set, run ``init_db`` for each
+       store built from the settings. Both are idempotent.
+
+    A store the caller injected is the caller's business: neither step runs
+    for it. With the YAML backend this does nothing and returns ``None``.
+
+    Args:
+        settings: Community settings.
+        event_store_from_settings: The team store comes from the settings.
+        catalog_from_settings: The catalog repository comes from the settings.
+
+    Returns:
+        The held lock — the caller releases it at shutdown — or ``None`` when
+        no lock was taken.
+
+    Raises:
+        PersistenceBackendUnavailableError: The ``[postgres]`` extra is missing.
+        InstanceLockedError: Another community server holds the database.
+    """
+    if settings.persistence_backend is not PersistenceBackend.POSTGRES:
+        return None
+    if not (event_store_from_settings or catalog_from_settings):
+        return None
+    _require_postgres_modules()
+    conn_string = _conn_string(settings)
+
+    lock: PostgresInstanceLock | None = None
+    if event_store_from_settings:
+        lock = PostgresInstanceLock(conn_string)
+        lock.acquire()
+    try:
+        if settings.postgres_init_db:
+            _init_schema(
+                conn_string,
+                team=event_store_from_settings,
+                catalog=catalog_from_settings,
+            )
+    except BaseException:
+        if lock is not None:
+            lock.release()
+        raise
+    return lock
+
+
+def _init_schema(conn_string: str, *, team: bool, catalog: bool) -> None:
+    """Create missing tables and indexes — the same calls the init_db scripts make."""
+    if team:
+        from akgentic.team.repositories.postgres import init_db as init_team_db
+
+        init_team_db(conn_string)
+        logger.info("Team event store schema initialised")
+    if catalog:
+        from akgentic.catalog.repositories.postgres import PostgresCatalogConfig
+        from akgentic.catalog.repositories.postgres import init_db as init_catalog_db
+
+        init_catalog_db(PostgresCatalogConfig(connection_string=conn_string))
+        logger.info("Catalog schema initialised")
 
 
 def _require_postgres_modules() -> None:

@@ -18,7 +18,11 @@ from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSu
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.adapters.shared.workspace_deletion_mode import workspace_deletion_policy_for
-from akgentic.infra.persistence import build_catalog_repository, build_event_store
+from akgentic.infra.persistence import (
+    build_catalog_repository,
+    build_event_store,
+    prepare_postgres,
+)
 from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.server.auth_loader import load_auth_strategy
 from akgentic.infra.server.deps import CommunityServices
@@ -48,6 +52,12 @@ def wire_community(
     settings cannot describe passes it instead; an override wins over the
     setting for that store only.
 
+    On PostgreSQL, before anything reads the database, the server takes the
+    single-instance lock (one community server per database) and, with
+    ``postgres_init_db``, creates missing tables. The lock is released by the
+    container's shutdown hooks — run by the server lifespan after every team is
+    stopped — or right away if wiring fails.
+
     Args:
         settings: Community-tier configuration
         team_access_policy: Per-team authorization rule. Defaults to the
@@ -63,7 +73,38 @@ def wire_community(
     Raises:
         PersistenceBackendUnavailableError: ``postgres`` is selected, no
             override covers it, and the ``[postgres]`` extra is not installed.
+        InstanceLockedError: Another community server already uses the
+            PostgreSQL database.
     """
+    lock = prepare_postgres(
+        settings,
+        event_store_from_settings=event_store is None,
+        catalog_from_settings=catalog_repository is None,
+    )
+    try:
+        services = _assemble(
+            settings,
+            team_access_policy=team_access_policy,
+            event_store=event_store,
+            catalog_repository=catalog_repository,
+        )
+    except BaseException:
+        if lock is not None:
+            lock.release()
+        raise
+    if lock is not None:
+        services.shutdown_hooks.append(lock.release)
+    return services
+
+
+def _assemble(
+    settings: CommunitySettings,
+    *,
+    team_access_policy: TeamAccessPolicy | None,
+    event_store: EventStore | None,
+    catalog_repository: EntryRepository | None,
+) -> CommunityServices:
+    """Build every adapter and the container; see :func:`wire_community`."""
     logger.info("Wiring community services")
 
     # Server services — request handling, auth, and catalog (no worker-runtime deps).

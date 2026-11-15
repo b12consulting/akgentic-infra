@@ -258,7 +258,7 @@ class TestSignatureAndImports:
 
 
 class TestLifespanShutdownOrder:
-    """Full shutdown ordering: pre-drain delay, disconnect, stop, pool (AC 3).
+    """Full shutdown ordering: pre-drain delay, disconnect, stop, pool, hooks (AC 3).
 
     Existing lifespan tests assert pairwise facts (disconnect before stop,
     sleep called, pool released); this pins the complete sequence.
@@ -279,7 +279,10 @@ class TestLifespanShutdownOrder:
 
         worker_handle = MagicMock()
         worker_handle.stop_all = MagicMock()
-        services = SimpleNamespace(worker_handle=worker_handle)
+        services = SimpleNamespace(
+            worker_handle=worker_handle,
+            shutdown_hooks=[lambda: call_order.append("shutdown_hook")],
+        )
 
         app = MagicMock()
         app.state = SimpleNamespace(
@@ -315,4 +318,5 @@ class TestLifespanShutdownOrder:
             "disconnect_all",
             "stop_all",
             "shutdown_reader_pool",
+            "shutdown_hook",
         ]

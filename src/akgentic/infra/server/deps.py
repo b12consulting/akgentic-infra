@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from akgentic.catalog import Catalog
@@ -59,6 +61,16 @@ class TierServices(BaseModel):
         description="Registry binding a channel conversation to a team and its entry-point agent"
     )
     catalog: Catalog = Field(description="v2 unified catalog service")
+    shutdown_hooks: list[Callable[[], None]] = Field(
+        default_factory=list,
+        description=(
+            "Zero-argument callables the server lifespan runs at shutdown, in "
+            "order, after every team is stopped and the WebSocket reader pool is "
+            "down. For resources wiring acquired that must outlive the teams — "
+            "the community tier's PostgreSQL single-instance lock. A hook that "
+            "raises is logged and the rest still run"
+        ),
+    )
     team_service: TeamService | None = Field(
         default=None,
         description=(

@@ -25,7 +25,7 @@ def _make_app_state(
 
     worker_handle = MagicMock()
     worker_handle.stop_all = MagicMock()
-    services = SimpleNamespace(worker_handle=worker_handle)
+    services = SimpleNamespace(worker_handle=worker_handle, shutdown_hooks=[])
 
     app = MagicMock()
     state = SimpleNamespace(
@@ -150,3 +150,40 @@ class TestLifespanShutdown:
                 c for c in mock_logger.warning.call_args_list if "exceeded" in str(c).lower()
             ]
             assert len(warning_calls) == 1
+
+
+class TestLifespanShutdownHooks:
+    """``services.shutdown_hooks`` run last, in order, and one failure stops none."""
+
+    @pytest.mark.asyncio
+    async def test_hooks_run_in_order_after_stop_all(self) -> None:
+        app = _make_app_state()
+        calls: list[str] = []
+        app.state.services.worker_handle.stop_all.side_effect = lambda: calls.append("stop_all")
+        app.state.services.shutdown_hooks.extend(
+            [lambda: calls.append("first"), lambda: calls.append("second")]
+        )
+
+        ctx = _lifespan(app)
+        await ctx.__aenter__()
+        await ctx.__aexit__(None, None, None)
+
+        assert calls == ["stop_all", "first", "second"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_hook_is_logged_and_the_rest_still_run(self) -> None:
+        app = _make_app_state()
+        calls: list[str] = []
+
+        def boom() -> None:
+            raise RuntimeError("hook failed")
+
+        app.state.services.shutdown_hooks.extend([boom, lambda: calls.append("after")])
+
+        with patch("akgentic.infra.server.modules.core.logger") as mock_logger:
+            ctx = _lifespan(app)
+            await ctx.__aenter__()
+            await ctx.__aexit__(None, None, None)
+
+        assert calls == ["after"]
+        assert mock_logger.exception.call_count == 1
