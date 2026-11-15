@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, TypeGuard
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from akgentic.catalog import parse_prefixes
@@ -21,6 +22,16 @@ from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
 from akgentic.team.models import DeleteMode
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+_POSTGRES_SCHEME = "postgresql://"
+
+
+class PersistenceBackend(StrEnum):
+    """Storage backend for the community tier's event store and catalog."""
+
+    YAML = "yaml"
+    POSTGRES = "postgres"
+
 
 # The small model the server's team-description generator uses by default:
 # an ``akgentic.llm.ModelConfig`` provider id and a model id.
@@ -224,7 +235,14 @@ class CommunitySettings(ServerSettings):
 
     Adds filesystem-backed workspace and catalog configuration
     specific to the community (single-process) deployment tier.
+
+    Validation errors omit the rejected input (``hide_input_in_errors``):
+    ``postgres_conn_string`` carries a password, and pydantic would otherwise
+    print the raw DSN in the ``ValidationError`` raised at startup. The field
+    name and the reason are still reported.
     """
+
+    model_config = SettingsConfigDict(env_prefix="AKGENTIC_", hide_input_in_errors=True)
 
     workspaces_root: Path = Field(
         default=Path("workspaces"),
@@ -256,3 +274,55 @@ class CommunitySettings(ServerSettings):
             "matching extra to be installed; an unknown name fails loud."
         ),
     )
+    persistence_backend: PersistenceBackend = Field(
+        default=PersistenceBackend.YAML,
+        description=(
+            "Where the community tier keeps team state and the catalog: 'yaml' "
+            "(the default — event_store_path and catalog_path on the local "
+            "filesystem) or 'postgres' (NagraEventStore and "
+            "PostgresEntryRepository against postgres_conn_string; needs the "
+            "akgentic-infra[postgres] extra). Both stores move together. The "
+            "channel registry and workspaces stay on the filesystem either way."
+        ),
+    )
+    postgres_conn_string: SecretStr | None = Field(
+        default=None,
+        description=(
+            "libpq DSN (postgresql://user:password@host:port/db) used when "
+            "persistence_backend is 'postgres'; required then, ignored otherwise. "
+            "The tables must already exist: run "
+            "'python -m akgentic.team.scripts.init_db' and "
+            "'python -m akgentic.catalog.scripts.init_db' (both read "
+            "DB_CONN_STRING_PERSISTENCE) once per database before starting the "
+            "server."
+        ),
+    )
+
+    @field_validator("postgres_conn_string")
+    @classmethod
+    def _validate_postgres_scheme(cls, v: SecretStr | None) -> SecretStr | None:
+        """Reject a DSN Nagra cannot open, without echoing it.
+
+        Only ``postgresql://`` is accepted. Nagra's ``Transaction`` dispatches on
+        that exact prefix and raises ``ValueError(f"Invalid dsn string: {dsn}")``
+        for anything else — ``postgres://`` included — which would surface on the
+        first database call and print the password into the log. Failing here,
+        with a message that names the scheme only, avoids both.
+        """
+        if v is not None and not v.get_secret_value().startswith(_POSTGRES_SCHEME):
+            raise ValueError("postgres_conn_string must start with 'postgresql://'")
+        return v
+
+    @model_validator(mode="after")
+    def _require_conn_string_for_postgres(self) -> CommunitySettings:
+        """Fail at settings construction, not at the first database call."""
+        # An empty DSN never gets here: the scheme check above rejects it.
+        if (
+            self.persistence_backend is PersistenceBackend.POSTGRES
+            and self.postgres_conn_string is None
+        ):
+            raise ValueError(
+                "persistence_backend is 'postgres' but postgres_conn_string "
+                "(AKGENTIC_POSTGRES_CONN_STRING) is not set"
+            )
+        return self
