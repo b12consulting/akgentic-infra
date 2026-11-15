@@ -21,15 +21,31 @@ operator who meets :class:`InstanceLockedError` can find the holder::
 
 from __future__ import annotations
 
+import importlib
 import logging
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import psycopg
+from typing import Protocol
 
 __all__ = ["LOCK_NAME", "InstanceLockedError", "PostgresInstanceLock"]
 
 logger = logging.getLogger(__name__)
+
+
+class _Cursor(Protocol):
+    def fetchone(self) -> tuple[object, ...] | None: ...
+
+
+class _Connection(Protocol):
+    """The three calls the lock makes on a psycopg connection.
+
+    Typed here rather than as ``psycopg.Connection`` so the module type-checks
+    without the ``[postgres]`` extra: CI runs mypy on an install that has no
+    psycopg, and this is the only module in ``src`` that would need it.
+    """
+
+    def execute(self, query: str, params: tuple[object, ...]) -> _Cursor: ...
+
+    def close(self) -> None: ...
+
 
 #: The advisory-lock key, hashed in Postgres with ``hashtext``. Database-scoped:
 #: two databases on one server do not contend.
@@ -51,7 +67,7 @@ class PostgresInstanceLock:
 
     def __init__(self, conn_string: str) -> None:
         self._conn_string = conn_string
-        self._conn: psycopg.Connection[tuple[object, ...]] | None = None
+        self._conn: _Connection | None = None
 
     @property
     def held(self) -> bool:
@@ -69,9 +85,10 @@ class PostgresInstanceLock:
         """
         if self._conn is not None:
             return
-        import psycopg
-
-        conn = psycopg.connect(
+        # Loaded at call time, by name: nothing here is imported on a YAML
+        # install, and mypy does not need psycopg's stubs (see _Connection).
+        psycopg = importlib.import_module("psycopg")
+        conn: _Connection = psycopg.connect(
             self._conn_string, autocommit=True, application_name=APPLICATION_NAME
         )
         try:
