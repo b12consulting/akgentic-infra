@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from akgentic.catalog import Catalog, YamlEntryRepository
+from akgentic.catalog import Catalog
+from akgentic.catalog.repositories.base import EntryRepository
 from akgentic.core import ActorSystem, EventSubscriber
 from akgentic.infra.adapters.community.local_event_stream import LocalEventStream
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
@@ -17,14 +18,14 @@ from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSu
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.adapters.shared.workspace_deletion_mode import workspace_deletion_policy_for
+from akgentic.infra.persistence import build_catalog_repository, build_event_store
 from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.server.auth_loader import load_auth_strategy
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
 from akgentic.infra.server.settings import CommunitySettings
 from akgentic.team.manager import TeamManager
-from akgentic.team.ports import NullServiceRegistry
-from akgentic.team.repositories.yaml import YamlEventStore
+from akgentic.team.ports import EventStore, NullServiceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ def wire_community(
     settings: CommunitySettings,
     *,
     team_access_policy: TeamAccessPolicy | None = None,
+    event_store: EventStore | None = None,
+    catalog_repository: EntryRepository | None = None,
 ) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
 
@@ -40,13 +43,26 @@ def wire_community(
     because it needs the finished container, and assigned onto it. No caller has
     any wiring left to do.
 
+    Persistence follows ``settings.persistence_backend`` (YAML by default,
+    PostgreSQL with the ``[postgres]`` extra). A caller that needs a store the
+    settings cannot describe passes it instead; an override wins over the
+    setting for that store only.
+
     Args:
         settings: Community-tier configuration
         team_access_policy: Per-team authorization rule. Defaults to the
             shared owner-or-admin policy.
+        event_store: Team event store to use instead of the one
+            ``settings.persistence_backend`` selects.
+        catalog_repository: Catalog repository to use instead of the one
+            ``settings.persistence_backend`` selects.
 
     Returns:
         Fully wired CommunityServices container
+
+    Raises:
+        PersistenceBackendUnavailableError: ``postgres`` is selected, no
+            override covers it, and the ``[postgres]`` extra is not installed.
     """
     logger.info("Wiring community services")
 
@@ -56,14 +72,18 @@ def wire_community(
     auth = load_auth_strategy(settings.auth_strategy)
     channel_registry = YamlChannelRegistry(registry_path=settings.channel_registry_path)
     channel_parser_registry = ChannelParserRegistry(channels_config=settings.channels)
-    catalog = Catalog(repository=YamlEntryRepository(root=settings.catalog_path))
+    catalog = Catalog(
+        repository=catalog_repository
+        if catalog_repository is not None
+        else build_catalog_repository(settings)
+    )
 
     # Shared backends — persistence and the event bus, used by server and worker alike.
     # ``team_delete_mode`` is the record half of a deletion (purge or retire);
     # ``workspace_delete_mode``, passed to the container below, is the trees half.
-    event_store = YamlEventStore(
-        data_dir=settings.event_store_path, delete_mode=settings.team_delete_mode
-    )
+    # An injected store carries its own delete mode.
+    if event_store is None:
+        event_store = build_event_store(settings)
     service_registry = NullServiceRegistry()
     event_stream = LocalEventStream()
 
