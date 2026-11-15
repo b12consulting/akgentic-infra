@@ -21,7 +21,7 @@ from akgentic.infra.adapters.shared.workspace_deletion_mode import workspace_del
 from akgentic.infra.persistence import (
     build_catalog_repository,
     build_event_store,
-    prepare_postgres,
+    prepare_persistence,
 )
 from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.server.auth_loader import load_auth_strategy
@@ -76,7 +76,7 @@ def wire_community(
         InstanceLockedError: Another community server already uses the
             PostgreSQL database.
     """
-    lock = prepare_postgres(
+    lock = prepare_persistence(
         settings,
         event_store_from_settings=event_store is None,
         catalog_from_settings=catalog_repository is None,

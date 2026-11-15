@@ -41,7 +41,7 @@ __all__ = [
     "PersistenceBackendUnavailableError",
     "build_catalog_repository",
     "build_event_store",
-    "prepare_postgres",
+    "prepare_persistence",
 ]
 
 
@@ -100,16 +100,21 @@ def build_catalog_repository(settings: CommunitySettings) -> EntryRepository:
     return PostgresEntryRepository(_conn_string(settings))
 
 
-def prepare_postgres(
+def prepare_persistence(
     settings: CommunitySettings,
     *,
     event_store_from_settings: bool,
     catalog_from_settings: bool,
 ) -> PostgresInstanceLock | None:
-    """Run the startup steps a Postgres-backed community server needs.
+    """Run the startup steps the selected persistence backend needs.
 
     Called by ``wire_community`` before it builds anything that reads the
-    database — in particular before ``LocalRuntimeCache.warm`` restores teams.
+    store — in particular before ``LocalRuntimeCache.warm`` restores teams.
+
+    **YAML** needs none: it has no schema, and its directories are created on
+    first write. This returns ``None`` without importing anything.
+
+    **PostgreSQL** needs two:
 
     1. **Single-instance lock** — when the team store is built from the
        settings, take :class:`PostgresInstanceLock`, so a second server on the

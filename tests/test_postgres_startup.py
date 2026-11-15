@@ -139,7 +139,7 @@ class TestPostgresInstanceLock:
 
 
 class _RecordingLock:
-    """Stands in for PostgresInstanceLock inside ``prepare_postgres``."""
+    """Stands in for PostgresInstanceLock inside ``prepare_persistence``."""
 
     instances: list[_RecordingLock] = []
     fail_acquire: Exception | None = None
@@ -198,9 +198,9 @@ def _pg_settings(tmp_path: Path, **overrides: Any) -> CommunitySettings:
     )
 
 
-class TestPreparePostgres:
+class TestPreparePersistence:
     def test_yaml_backend_does_nothing(self, tmp_path: Path, recorded: dict[str, Any]) -> None:
-        lock = persistence.prepare_postgres(
+        lock = persistence.prepare_persistence(
             _settings(tmp_path), event_store_from_settings=True, catalog_from_settings=True
         )
         assert lock is None
@@ -210,7 +210,7 @@ class TestPreparePostgres:
     def test_postgres_takes_the_lock_and_skips_init_by_default(
         self, tmp_path: Path, recorded: dict[str, Any]
     ) -> None:
-        lock = persistence.prepare_postgres(
+        lock = persistence.prepare_persistence(
             _pg_settings(tmp_path), event_store_from_settings=True, catalog_from_settings=True
         )
         assert isinstance(lock, _RecordingLock)
@@ -220,7 +220,7 @@ class TestPreparePostgres:
     def test_init_db_runs_for_both_stores_when_enabled(
         self, tmp_path: Path, recorded: dict[str, Any]
     ) -> None:
-        persistence.prepare_postgres(
+        persistence.prepare_persistence(
             _pg_settings(tmp_path, postgres_init_db=True),
             event_store_from_settings=True,
             catalog_from_settings=True,
@@ -230,7 +230,7 @@ class TestPreparePostgres:
     def test_injected_stores_get_neither_lock_nor_init(
         self, tmp_path: Path, recorded: dict[str, Any]
     ) -> None:
-        lock = persistence.prepare_postgres(
+        lock = persistence.prepare_persistence(
             _pg_settings(tmp_path, postgres_init_db=True),
             event_store_from_settings=False,
             catalog_from_settings=False,
@@ -243,7 +243,7 @@ class TestPreparePostgres:
         self, tmp_path: Path, recorded: dict[str, Any]
     ) -> None:
         """The lock guards the team store; with an injected one it is not ours to guard."""
-        lock = persistence.prepare_postgres(
+        lock = persistence.prepare_persistence(
             _pg_settings(tmp_path, postgres_init_db=True),
             event_store_from_settings=False,
             catalog_from_settings=True,
@@ -256,7 +256,7 @@ class TestPreparePostgres:
     ) -> None:
         recorded["init_error"] = RuntimeError("permission denied for schema public")
         with pytest.raises(RuntimeError, match="permission denied"):
-            persistence.prepare_postgres(
+            persistence.prepare_persistence(
                 _pg_settings(tmp_path, postgres_init_db=True),
                 event_store_from_settings=True,
                 catalog_from_settings=True,
