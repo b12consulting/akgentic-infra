@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -239,6 +239,19 @@ async def _drain_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Shut down the dedicated WS reader thread pool — see issue #227.
     shutdown_reader_pool()
     logger.info("WebSocket reader pool shut down")
+
+    # Last: resources wiring acquired for the life of the server (the community
+    # PostgreSQL lock), released only once no team can still write.
+    _run_shutdown_hooks(SERVICES.require(app).shutdown_hooks)
+
+
+def _run_shutdown_hooks(hooks: list[Callable[[], None]]) -> None:
+    """Run each hook in order; one that raises is logged, the rest still run."""
+    for hook in hooks:
+        try:
+            hook()
+        except Exception:
+            logger.exception("Shutdown hook %r failed", hook)
 
 
 def _build_admin_catalog_router() -> APIRouter:

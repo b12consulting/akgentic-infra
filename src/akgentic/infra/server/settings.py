@@ -298,6 +298,18 @@ class CommunitySettings(ServerSettings):
         ),
     )
 
+    postgres_init_db: bool = Field(
+        default=False,
+        description=(
+            "Create missing tables and indexes for the team store and the catalog "
+            "at startup, before any team is restored. Only used when "
+            "persistence_backend is 'postgres'. Convenient for a single server or "
+            "local setup; deployments with a separate init step (Kubernetes "
+            "initContainer, Nomad prestart) leave it off and run the two init_db "
+            "scripts there. Safe either way: both init_db calls are idempotent."
+        ),
+    )
+
     @field_validator("postgres_conn_string")
     @classmethod
     def _validate_postgres_scheme(cls, v: SecretStr | None) -> SecretStr | None:

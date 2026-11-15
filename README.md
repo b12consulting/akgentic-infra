@@ -1122,6 +1122,7 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_CHANNEL_REGISTRY_PATH` | `None`      | Path to channel registry YAML; disabled when unset |
 | `AKGENTIC_PERSISTENCE_BACKEND` | `yaml`         | `yaml` or `postgres`. Selects the backend for **both** the team event store and the catalog; see [PostgreSQL persistence](#postgresql-persistence-community-tier) |
 | `AKGENTIC_POSTGRES_CONN_STRING` | `None`        | `postgresql://user:password@host:port/db`. Required when the backend is `postgres`, ignored otherwise. Held as a secret: it never appears in the settings' `repr` |
+| `AKGENTIC_POSTGRES_INIT_DB`    | `false`        | With the `postgres` backend, create missing tables and indexes for both stores at startup, before any team is restored. Idempotent. Leave off when a separate init step runs the `init_db` scripts |
 
 #### PostgreSQL persistence (community tier)
 
@@ -1132,8 +1133,10 @@ and the catalog under `AKGENTIC_CATALOG_PATH`, as YAML files. With
 `akgentic-catalog` — and the two path settings are ignored.
 
 1. Install the extra: `pip install "akgentic-infra[postgres]"`.
-2. Create the tables once per database. Both scripts are idempotent and read
-   `DB_CONN_STRING_PERSISTENCE`:
+2. Create the tables once per database — either set
+   `AKGENTIC_POSTGRES_INIT_DB=true` and let the server do it at startup, or run
+   the two scripts (an init container, a deploy step). Both scripts are
+   idempotent and read `DB_CONN_STRING_PERSISTENCE`:
 
    ```bash
    export DB_CONN_STRING_PERSISTENCE=postgresql://akgentic:secret@localhost:5432/akgentic
@@ -1156,11 +1159,28 @@ Notes:
   `PersistenceBackendUnavailableError`, naming the missing modules.
 - The channel registry (`AKGENTIC_CHANNEL_REGISTRY_PATH`) and workspaces
   (`AKGENTIC_WORKSPACES_ROOT`) stay on the filesystem.
-- This does not make the community tier multi-instance: run **one** server per
-  database. Each server restores the teams it finds `RUNNING` at boot, so two
-  servers on one database would run the same team twice.
+- **One server per database, enforced.** The community tier is not
+  multi-instance: each server restores the teams it finds `RUNNING` at boot, so
+  two servers on one database would run the same teams twice. At startup —
+  before any team is restored — the server takes a PostgreSQL advisory lock
+  (`pg_try_advisory_lock`, key `akgentic.infra.community.server`) on a
+  dedicated connection, and a second server on the same database fails with
+  `InstanceLockedError` instead. The lock is released after every team is
+  stopped on shutdown, and by Postgres itself when the holder's connection
+  drops, so a crashed server never leaves the database locked. Find the holder
+  with `SELECT pid, client_addr, backend_start FROM pg_stat_activity WHERE
+  application_name = 'akgentic-community-server';`. The lock is per database:
+  two servers on two databases of one Postgres do not contend.
+- If the Postgres server restarts while the community server runs, the lock's
+  connection is gone and the lock with it; restart the community server to take
+  it again.
 - Code that composes its own server can bypass the setting for one store with
-  `wire_community(settings, event_store=..., catalog_repository=...)`.
+  `wire_community(settings, event_store=..., catalog_repository=...)`. An
+  injected team store is the caller's to guard: no lock is taken for it, and
+  `AKGENTIC_POSTGRES_INIT_DB` initialises only the stores built from settings.
+- Live tests for the lock and startup schema run against a real server when
+  `AKGENTIC_TEST_POSTGRES_DSN` is set (see `tests/test_postgres_live.py`);
+  they are skipped otherwise.
 
 ### Worker Settings (all tiers)
 
