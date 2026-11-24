@@ -1,14 +1,16 @@
 """Tests for the community-tier persistence switch (YAML, MongoDB or PostgreSQL).
 
-Covers the persistence settings, ``build_stores`` in ``akgentic.infra.persistence``
-and the ``event_store`` / ``catalog_repository`` overrides on ``wire_community``.
-Nothing here opens a database connection: the Postgres stores only record the
-DSN at construction (these tests need the ``[postgres]`` extra but no server),
-and the Mongo stores run against ``mongomock``.
+Covers the persistence settings, the per-backend builders ``mongo_stores`` and
+``postgres_stores`` and the community ``build_stores`` in
+``akgentic.infra.persistence``, and the ``event_store`` / ``catalog_repository``
+overrides on ``wire_community``. Nothing here opens a database connection: the
+Postgres stores only record the DSN at construction (these tests need the
+``[postgres]`` extra but no server), and the Mongo stores run against ``mongomock``.
 """
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -23,7 +25,10 @@ from akgentic.infra import persistence
 from akgentic.infra.persistence import (
     CATALOG_COLLECTION,
     PersistenceBackendUnavailableError,
+    PersistenceStores,
     build_stores,
+    mongo_stores,
+    postgres_stores,
 )
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings, PersistenceBackend
@@ -60,6 +65,26 @@ def _mongo_settings(tmp_path: Path, **overrides: Any) -> CommunitySettings:
         "mongodb_uri": MONGODB_URI,
     }
     return _yaml_settings(tmp_path, **{**defaults, **overrides})
+
+
+class _BuilderSpy:
+    """Records each call to a public builder, then delegates to the real one."""
+
+    def __init__(self, real: Callable[..., PersistenceStores]) -> None:
+        self._signature = inspect.signature(real)
+        self._real = real
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> PersistenceStores:
+        # Explicit arguments only: a parameter left at its default is absent.
+        self.calls.append(dict(self._signature.bind(*args, **kwargs).arguments))
+        return self._real(*args, **kwargs)
+
+
+def _spy_on(monkeypatch: pytest.MonkeyPatch, name: str) -> _BuilderSpy:
+    spy = _BuilderSpy(getattr(persistence, name))
+    monkeypatch.setattr(persistence, name, spy)
+    return spy
 
 
 class TestPersistenceSettings:
@@ -167,6 +192,125 @@ class TestPersistenceSettings:
         assert settings.persistence_backend is PersistenceBackend.YAML
 
 
+def _mongomock_database(name: str = "tenant_a") -> Any:
+    # ``Any``: mongomock's ``Database`` stands in for pymongo's and is not a subclass of it.
+    pytest.importorskip("pymongo")
+    mongomock = pytest.importorskip("mongomock")
+    return mongomock.MongoClient()[name]
+
+
+class TestMongoStores:
+    """``mongo_stores`` builds both Mongo stores in the caller's database (mongomock)."""
+
+    @pytest.fixture()
+    def db(self) -> Any:
+        # ``Any``: see ``_mongomock_database``.
+        return _mongomock_database("tenant_a")
+
+    def test_event_store_is_mongo_on_the_given_database(self, db: Any) -> None:
+        from akgentic.team.repositories.mongo import MongoEventStore
+
+        stores = mongo_stores(db, delete_mode=DeleteMode.HARD, auto_create_indexes=False)
+        assert isinstance(stores, PersistenceStores)
+        assert isinstance(stores.event_store, MongoEventStore)
+        assert stores.event_store._db is db
+
+    def test_catalog_repository_is_mongo_on_the_catalog_collection(self, db: Any) -> None:
+        from akgentic.catalog.repositories.mongo import MongoEntryRepository
+
+        repo = mongo_stores(db, delete_mode=DeleteMode.HARD).catalog_repository
+        assert isinstance(repo, MongoEntryRepository)
+        assert repo._collection.name == CATALOG_COLLECTION
+        assert repo._collection.database.name == "tenant_a"
+
+    @pytest.mark.parametrize("mode", [DeleteMode.SOFT, DeleteMode.HARD])
+    def test_event_store_carries_the_delete_mode(self, db: Any, mode: DeleteMode) -> None:
+        stores = mongo_stores(db, delete_mode=mode, auto_create_indexes=False)
+        assert stores.event_store._delete_mode is mode  # type: ignore[attr-defined]
+
+    def test_auto_create_indexes_true_provisions_the_teams_indexes(self, db: Any) -> None:
+        mongo_stores(db, delete_mode=DeleteMode.HARD, auto_create_indexes=True)
+        assert "teams_status_idx" in db["teams"].index_information()
+
+    def test_auto_create_indexes_false_leaves_the_teams_indexes_out(self, db: Any) -> None:
+        mongo_stores(db, delete_mode=DeleteMode.HARD, auto_create_indexes=False)
+        assert "teams_status_idx" not in db["teams"].index_information()
+
+
+class TestPostgresStores:
+    """``postgres_stores`` builds both Nagra stores on the DSN without a database."""
+
+    @pytest.fixture(autouse=True)
+    def _needs_postgres_extra(self) -> None:
+        pytest.importorskip("nagra")
+        pytest.importorskip("psycopg_pool")
+
+    def test_both_stores_are_nagra_on_the_dsn(self) -> None:
+        from akgentic.catalog.repositories.postgres import PostgresEntryRepository
+        from akgentic.team.repositories.postgres import NagraEventStore
+
+        stores = postgres_stores(DSN, delete_mode=DeleteMode.HARD)
+        assert isinstance(stores, PersistenceStores)
+        assert isinstance(stores.event_store, NagraEventStore)
+        assert stores.event_store._conn_string == DSN
+        assert isinstance(stores.catalog_repository, PostgresEntryRepository)
+        assert stores.catalog_repository._conn_string == DSN
+
+    @pytest.mark.parametrize("mode", [DeleteMode.SOFT, DeleteMode.HARD])
+    def test_event_store_carries_the_delete_mode(self, mode: DeleteMode) -> None:
+        stores = postgres_stores(DSN, delete_mode=mode)
+        assert stores.event_store._delete_mode is mode  # type: ignore[attr-defined]
+
+
+def test_public_builders_do_not_probe_for_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The install hint names ``akgentic-infra[...]``, wrong advice for another tier."""
+    pytest.importorskip("nagra")
+    pytest.importorskip("psycopg_pool")
+    db = _mongomock_database()
+
+    def probe_forbidden(backend: PersistenceBackend) -> None:
+        raise AssertionError(f"a public builder probed for the {backend} extra")
+
+    monkeypatch.setattr(persistence, "_require_backend_modules", probe_forbidden)
+    mongo_pair = mongo_stores(db, delete_mode=DeleteMode.HARD, auto_create_indexes=False)
+    assert isinstance(mongo_pair, PersistenceStores)
+    assert isinstance(postgres_stores(DSN, delete_mode=DeleteMode.HARD), PersistenceStores)
+
+
+class TestBuildStoresGoesThroughTheSharedBuilders:
+    """``build_stores`` resolves settings to the public builders, once each."""
+
+    def test_mongo_settings_reach_mongo_stores(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pytest.importorskip("pymongo")
+        mongomock = pytest.importorskip("mongomock")
+        monkeypatch.setattr("pymongo.MongoClient", mongomock.MongoClient)
+        spy = _spy_on(monkeypatch, "mongo_stores")
+        build_stores(
+            _mongo_settings(
+                tmp_path, mongodb_database_name="tenant_a", team_delete_mode=DeleteMode.SOFT
+            )
+        )
+        assert len(spy.calls) == 1
+        (call,) = spy.calls
+        assert call["db"].name == "tenant_a"
+        assert call["delete_mode"] is DeleteMode.SOFT
+        assert "auto_create_indexes" not in call
+
+    def test_postgres_settings_reach_postgres_stores(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pytest.importorskip("nagra")
+        pytest.importorskip("psycopg_pool")
+        spy = _spy_on(monkeypatch, "postgres_stores")
+        build_stores(_postgres_settings(tmp_path, team_delete_mode=DeleteMode.SOFT))
+        assert len(spy.calls) == 1
+        (call,) = spy.calls
+        assert call["dsn"] == DSN
+        assert call["delete_mode"] is DeleteMode.SOFT
+
+
 class TestBuildStoresYaml:
     """The default branch builds exactly what wire_community built before."""
 
@@ -215,6 +359,18 @@ class TestBuildStoresPostgres:
         assert not (tmp_path / "event_store").exists()
         assert not (tmp_path / "catalog").exists()
 
+    def test_an_injected_catalog_replaces_the_one_the_pair_builds(self, tmp_path: Path) -> None:
+        from akgentic.team.repositories.postgres import NagraEventStore
+
+        injected = YamlEntryRepository(root=tmp_path / "injected_catalog")
+        stores = build_stores(
+            _postgres_settings(tmp_path, team_delete_mode=DeleteMode.SOFT),
+            catalog_repository=injected,
+        )
+        assert stores.catalog_repository is injected
+        assert isinstance(stores.event_store, NagraEventStore)
+        assert stores.event_store._delete_mode is DeleteMode.SOFT
+
 
 class TestBuildStoresMongo:
     """The mongo branch builds both Mongo stores over one client (mongomock)."""
@@ -255,13 +411,18 @@ class TestBuildStoresMongo:
         assert not (tmp_path / "event_store").exists()
         assert not (tmp_path / "catalog").exists()
 
-    def test_an_injected_event_store_leaves_only_the_catalog_to_build(self, tmp_path: Path) -> None:
+    def test_an_injected_event_store_replaces_the_one_the_pair_builds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from akgentic.catalog.repositories.mongo import MongoEntryRepository
 
+        spy = _spy_on(monkeypatch, "mongo_stores")
         injected = YamlEventStore(data_dir=tmp_path / "injected_events")
         stores = build_stores(_mongo_settings(tmp_path), event_store=injected)
         assert stores.event_store is injected
         assert isinstance(stores.catalog_repository, MongoEntryRepository)
+        assert stores.catalog_repository._collection.name == CATALOG_COLLECTION
+        assert len(spy.calls) == 1
 
 
 _POSTGRES_MODULES = ("nagra", "psycopg", "psycopg_pool")
