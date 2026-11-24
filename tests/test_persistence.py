@@ -11,6 +11,8 @@ Postgres stores only record the DSN at construction (these tests need the
 from __future__ import annotations
 
 import inspect
+import subprocess
+import sys
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -311,6 +313,73 @@ class TestBuildStoresGoesThroughTheSharedBuilders:
         assert call["delete_mode"] is DeleteMode.SOFT
 
 
+class _FalsyEventStore(YamlEventStore):
+    """A valid store that is falsy, as one defining ``__len__`` on an empty log would be."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
+class _FalsyEntryRepository(YamlEntryRepository):
+    """A valid catalog repository that is falsy."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
+class TestInjectedStoreIsKeptEvenWhenFalsy:
+    """The overlay tests ``is not None``: a falsy injected store still wins."""
+
+    def test_a_falsy_injected_event_store_is_kept(self, tmp_path: Path) -> None:
+        injected = _FalsyEventStore(data_dir=tmp_path / "injected_events")
+        stores = build_stores(_yaml_settings(tmp_path), event_store=injected)
+        assert stores.event_store is injected
+
+    def test_a_falsy_injected_catalog_is_kept(self, tmp_path: Path) -> None:
+        injected = _FalsyEntryRepository(root=tmp_path / "injected_catalog")
+        stores = build_stores(_yaml_settings(tmp_path), catalog_repository=injected)
+        assert stores.catalog_repository is injected
+
+
+# A plain install, simulated in a fresh interpreter: every database driver is made
+# unimportable before anything loads. ``sys.modules`` absence cannot be the check,
+# because ``akgentic.catalog`` and ``akgentic.team.repositories`` import their own
+# Mongo / Postgres stores eagerly whenever the driver is installed, as in ``[dev]``.
+_LAZY_IMPORT_SCRIPT = """
+import sys
+import tempfile
+from pathlib import Path
+
+for driver in ("pymongo", "nagra", "psycopg", "psycopg_pool"):
+    sys.modules[driver] = None
+
+from akgentic.infra.persistence import build_stores
+from akgentic.infra.server.settings import CommunitySettings
+
+tmp = Path(tempfile.mkdtemp())
+build_stores(
+    CommunitySettings(
+        workspaces_root=tmp / "ws", event_store_path=tmp / "es", catalog_path=tmp / "cat"
+    )
+)
+print("OK")
+"""
+
+
+def test_a_plain_install_imports_and_builds_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without any database driver, the module imports and the YAML default builds."""
+    for name in ("AKGENTIC_PERSISTENCE_BACKEND", "AKGENTIC_POSTGRES_DSN", "AKGENTIC_MONGODB_URI"):
+        monkeypatch.delenv(name, raising=False)
+    result = subprocess.run(
+        [sys.executable, "-c", _LAZY_IMPORT_SCRIPT],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert result.stdout.strip().endswith("OK"), result.stdout
+
+
 class TestBuildStoresYaml:
     """The default branch builds exactly what wire_community built before."""
 
@@ -359,9 +428,12 @@ class TestBuildStoresPostgres:
         assert not (tmp_path / "event_store").exists()
         assert not (tmp_path / "catalog").exists()
 
-    def test_an_injected_catalog_replaces_the_one_the_pair_builds(self, tmp_path: Path) -> None:
+    def test_an_injected_catalog_replaces_the_one_the_pair_builds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from akgentic.team.repositories.postgres import NagraEventStore
 
+        spy = _spy_on(monkeypatch, "postgres_stores")
         injected = YamlEntryRepository(root=tmp_path / "injected_catalog")
         stores = build_stores(
             _postgres_settings(tmp_path, team_delete_mode=DeleteMode.SOFT),
@@ -370,6 +442,7 @@ class TestBuildStoresPostgres:
         assert stores.catalog_repository is injected
         assert isinstance(stores.event_store, NagraEventStore)
         assert stores.event_store._delete_mode is DeleteMode.SOFT
+        assert len(spy.calls) == 1
 
 
 class TestBuildStoresMongo:

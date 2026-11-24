@@ -21,7 +21,8 @@ time, rather than an ``ImportError`` from deep inside the first request.
 Neither database builder creates tables. Postgres schema creation is a
 deployment step, kept out of the constructors by both packages
 (``akgentic.team.scripts.init_db`` and ``akgentic.catalog.scripts.init_db``).
-Mongo needs none: ``MongoEventStore`` provisions its indexes at construction and
+Mongo needs none: ``MongoEventStore`` provisions its indexes at construction (the
+``teams`` ones unless ``auto_create_indexes`` turns them off) and
 ``MongoEntryRepository`` on its first write.
 """
 
@@ -87,15 +88,16 @@ def mongo_stores(
 ) -> PersistenceStores:
     """Both Mongo stores in ``db``, over the caller's client.
 
-    Creates, closes and configures no client. ``MongoEventStore`` provisions its
-    indexes at construction; ``MongoEntryRepository`` touches nothing until its
-    first write.
+    Creates, closes and configures no client. ``MongoEventStore`` always creates
+    its ``events`` / ``agent_states`` / ``agent_cards`` indexes at construction;
+    ``MongoEntryRepository`` touches nothing until its first write.
 
     Args:
         db: The database both stores live in.
         delete_mode: How the event store deletes a team (soft retire or purge).
-        auto_create_indexes: Passed straight to ``MongoEventStore``; ``None``
-            defers to its ``MONGO_TEAM_AUTO_INDEX`` default.
+        auto_create_indexes: Passed straight to ``MongoEventStore``, where it
+            gates the ``teams`` collection's indexes only; ``None`` defers to
+            its ``MONGO_TEAM_AUTO_INDEX`` default.
 
     Returns:
         ``MongoEventStore`` on ``db`` and ``MongoEntryRepository`` on
