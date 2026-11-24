@@ -33,12 +33,8 @@ from tests.conftest import _seed_catalog
 DSN = "postgresql://akgentic:s3cret-pw@localhost:5432/akgentic"
 MONGODB_URI = "mongodb://akgentic:s3cret-pw@localhost:27017"
 
-_PERSISTENCE_ENV = (
-    "AKGENTIC_PERSISTENCE_BACKEND",
-    "AKGENTIC_POSTGRES_DSN",
-    "AKGENTIC_MONGODB_URI",
-    "AKGENTIC_MONGODB_DATABASE_NAME",
-)
+# The suite-wide ``_isolate_persistence_backend`` fixture (tests/conftest.py)
+# keeps an operator's AKGENTIC_PERSISTENCE_* / connection-string exports out.
 
 
 def _yaml_settings(tmp_path: Path, **overrides: Any) -> CommunitySettings:
@@ -66,14 +62,6 @@ def _mongo_settings(tmp_path: Path, **overrides: Any) -> CommunitySettings:
     return _yaml_settings(tmp_path, **{**defaults, **overrides})
 
 
-@pytest.fixture()
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep an operator's shell from leaking into the settings under test."""
-    for name in _PERSISTENCE_ENV:
-        monkeypatch.delenv(name, raising=False)
-
-
-@pytest.mark.usefixtures("clean_env")
 class TestPersistenceSettings:
     """The persistence fields on CommunitySettings."""
 
@@ -179,7 +167,6 @@ class TestPersistenceSettings:
         assert settings.persistence_backend is PersistenceBackend.YAML
 
 
-@pytest.mark.usefixtures("clean_env")
 class TestBuildStoresYaml:
     """The default branch builds exactly what wire_community built before."""
 
@@ -197,7 +184,6 @@ class TestBuildStoresYaml:
         assert isinstance(repo, YamlEntryRepository)
 
 
-@pytest.mark.usefixtures("clean_env")
 class TestBuildStoresPostgres:
     """The postgres branch builds the Nagra stores without touching a database."""
 
@@ -230,7 +216,6 @@ class TestBuildStoresPostgres:
         assert not (tmp_path / "catalog").exists()
 
 
-@pytest.mark.usefixtures("clean_env")
 class TestBuildStoresMongo:
     """The mongo branch builds both Mongo stores over one client (mongomock)."""
 
@@ -301,7 +286,6 @@ def _hide_modules(monkeypatch: pytest.MonkeyPatch, hidden: tuple[str, ...]) -> N
     monkeypatch.setattr(persistence.importlib, "import_module", fake_import_module)
 
 
-@pytest.mark.usefixtures("clean_env")
 class TestMissingBackendExtra:
     """Selecting a database without its extra fails at wire time, naming the fix."""
 
@@ -361,7 +345,6 @@ class _RecordingEventStore(YamlEventStore):
     """A real store with a distinct type, so the test can tell it was the one used."""
 
 
-@pytest.mark.usefixtures("clean_env")
 class TestWireCommunityOverrides:
     """Injected stores win over the setting, one store at a time."""
 
@@ -414,7 +397,6 @@ class TestWireCommunityOverrides:
 _SettingsFactory = Callable[..., CommunitySettings]
 
 
-@pytest.mark.usefixtures("clean_env")
 class TestTeamDeleteModeOnEveryBackend:
     """``team_delete_mode`` retires or purges on whichever store the backend builds.
 

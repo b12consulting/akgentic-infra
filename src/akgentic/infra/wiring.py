@@ -45,9 +45,8 @@ def wire_community(
 
     Persistence follows ``settings.persistence_backend`` (YAML by default,
     MongoDB with the ``[mongo]`` extra, PostgreSQL with the ``[postgres]``
-    extra). A caller that needs a store the
-    settings cannot describe passes it instead; an override wins over the
-    setting for that store only.
+    extra). A caller that needs a store the settings cannot describe passes it
+    instead; an override wins over the setting for that store only.
 
     Args:
         settings: Community-tier configuration
