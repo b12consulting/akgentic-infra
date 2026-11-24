@@ -18,7 +18,7 @@ from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSu
 from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscriber
 from akgentic.infra.adapters.shared.workspace_deletion_mode import workspace_deletion_policy_for
-from akgentic.infra.persistence import build_catalog_repository, build_event_store
+from akgentic.infra.persistence import build_stores
 from akgentic.infra.protocols.authz import TeamAccessPolicy
 from akgentic.infra.server.auth_loader import load_auth_strategy
 from akgentic.infra.server.deps import CommunityServices
@@ -44,7 +44,8 @@ def wire_community(
     any wiring left to do.
 
     Persistence follows ``settings.persistence_backend`` (YAML by default,
-    PostgreSQL with the ``[postgres]`` extra). A caller that needs a store the
+    MongoDB with the ``[mongo]`` extra, PostgreSQL with the ``[postgres]``
+    extra). A caller that needs a store the
     settings cannot describe passes it instead; an override wins over the
     setting for that store only.
 
@@ -61,8 +62,8 @@ def wire_community(
         Fully wired CommunityServices container
 
     Raises:
-        PersistenceBackendUnavailableError: ``postgres`` is selected, no
-            override covers it, and the ``[postgres]`` extra is not installed.
+        PersistenceBackendUnavailableError: A database backend is selected, a
+            store is not injected, and the backend's extra is not installed.
     """
     logger.info("Wiring community services")
 
@@ -72,18 +73,14 @@ def wire_community(
     auth = load_auth_strategy(settings.auth_strategy)
     channel_registry = YamlChannelRegistry(registry_path=settings.channel_registry_path)
     channel_parser_registry = ChannelParserRegistry(channels_config=settings.channels)
-    catalog = Catalog(
-        repository=catalog_repository
-        if catalog_repository is not None
-        else build_catalog_repository(settings)
-    )
 
     # Shared backends — persistence and the event bus, used by server and worker alike.
     # ``team_delete_mode`` is the record half of a deletion (purge or retire);
     # ``workspace_delete_mode``, passed to the container below, is the trees half.
     # An injected store carries its own delete mode.
-    if event_store is None:
-        event_store = build_event_store(settings)
+    stores = build_stores(settings, event_store=event_store, catalog_repository=catalog_repository)
+    event_store = stores.event_store
+    catalog = Catalog(repository=stores.catalog_repository)
     service_registry = NullServiceRegistry()
     event_stream = LocalEventStream()
 

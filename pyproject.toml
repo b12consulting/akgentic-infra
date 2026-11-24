@@ -56,8 +56,12 @@ dependencies = [
 ak-infra = "akgentic.infra.cli.main:app"
 
 [project.optional-dependencies]
-# PostgreSQL for the community tier's event store and catalog
-# (AKGENTIC_PERSISTENCE_BACKEND=postgres). Floors match the core deps above.
+# Database persistence for the community tier's event store and catalog
+# (AKGENTIC_PERSISTENCE_BACKEND=mongo | postgres). Floors match the core deps above.
+mongo = [
+    "akgentic-team[mongo]>=1.12.0",
+    "akgentic-catalog[mongo]>=2.2.7",
+]
 postgres = [
     "akgentic-team[postgres]>=1.12.0",
     "akgentic-catalog[postgres]>=2.2.7",
@@ -71,6 +75,8 @@ dev = [
     "ruff>=0.1.0",
     "python-dotenv>=1.0.0",
     "types-PyYAML>=6.0",
+    "pymongo>=4.0.0",
+    "mongomock>=4.0.0",
 ]
 
 [build-system]

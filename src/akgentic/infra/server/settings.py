@@ -24,13 +24,27 @@ from akgentic.team.models import DeleteMode
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
 _POSTGRES_SCHEME = "postgresql://"
+_MONGODB_SCHEMES = ("mongodb://", "mongodb+srv://")
+# The same database-name rule enterprise applies to ``mongodb_database_name``.
+_MONGODB_DB_NAME_PATTERN = r'^[^/\\. "$*<>:|?\x00]{1,63}$'
 
 
 class PersistenceBackend(StrEnum):
-    """Storage backend for the community tier's event store and catalog."""
+    """Storage backend for the community tier's event store and catalog.
+
+    The database values match enterprise's ``persistence_backend``.
+    """
 
     YAML = "yaml"
+    MONGO = "mongo"
     POSTGRES = "postgres"
+
+
+#: The connection-string field each database backend requires.
+_CONNECTION_FIELD = {
+    PersistenceBackend.MONGO: "mongodb_uri",
+    PersistenceBackend.POSTGRES: "postgres_dsn",
+}
 
 
 # The small model the server's team-description generator uses by default:
@@ -236,9 +250,13 @@ class CommunitySettings(ServerSettings):
     Adds filesystem-backed workspace and catalog configuration
     specific to the community (single-process) deployment tier.
 
+    The persistence fields use enterprise's names (``persistence_backend``,
+    ``postgres_dsn``, ``mongodb_uri``, ``mongodb_database_name``), read here
+    under the tier's ``AKGENTIC_`` prefix.
+
     Validation errors omit the rejected input (``hide_input_in_errors``):
-    ``postgres_conn_string`` carries a password, and pydantic would otherwise
-    print the raw DSN in the ``ValidationError`` raised at startup. The field
+    ``postgres_dsn`` and ``mongodb_uri`` carry a password, and pydantic would
+    otherwise print it in the ``ValidationError`` raised at startup. The field
     name and the reason are still reported.
     """
 
@@ -279,13 +297,15 @@ class CommunitySettings(ServerSettings):
         description=(
             "Where the community tier keeps team state and the catalog: 'yaml' "
             "(the default — event_store_path and catalog_path on the local "
-            "filesystem) or 'postgres' (NagraEventStore and "
-            "PostgresEntryRepository against postgres_conn_string; needs the "
-            "akgentic-infra[postgres] extra). Both stores move together. The "
-            "channel registry and workspaces stay on the filesystem either way."
+            "filesystem), 'mongo' (MongoEventStore and MongoEntryRepository in "
+            "mongodb_database_name at mongodb_uri; needs the akgentic-infra[mongo] "
+            "extra) or 'postgres' (NagraEventStore and PostgresEntryRepository "
+            "against postgres_dsn; needs the akgentic-infra[postgres] extra). Both "
+            "stores move together. The channel registry and workspaces stay on "
+            "the filesystem under every backend."
         ),
     )
-    postgres_conn_string: SecretStr | None = Field(
+    postgres_dsn: SecretStr | None = Field(
         default=None,
         description=(
             "libpq DSN (postgresql://user:password@host:port/db) used when "
@@ -297,8 +317,24 @@ class CommunitySettings(ServerSettings):
             "server."
         ),
     )
+    mongodb_uri: SecretStr | None = Field(
+        default=None,
+        description=(
+            "MongoDB connection URI (mongodb:// or mongodb+srv://) used when "
+            "persistence_backend is 'mongo'; required then, ignored otherwise. "
+            "No setup step is needed: the stores create their own indexes."
+        ),
+    )
+    mongodb_database_name: str = Field(
+        default="akgentic",
+        pattern=_MONGODB_DB_NAME_PATTERN,
+        description=(
+            "MongoDB database holding the team events and the catalog "
+            "(collection 'catalog_entries') when persistence_backend is 'mongo'."
+        ),
+    )
 
-    @field_validator("postgres_conn_string")
+    @field_validator("postgres_dsn")
     @classmethod
     def _validate_postgres_scheme(cls, v: SecretStr | None) -> SecretStr | None:
         """Reject a DSN Nagra cannot open, without echoing it.
@@ -310,19 +346,25 @@ class CommunitySettings(ServerSettings):
         with a message that names the scheme only, avoids both.
         """
         if v is not None and not v.get_secret_value().startswith(_POSTGRES_SCHEME):
-            raise ValueError("postgres_conn_string must start with 'postgresql://'")
+            raise ValueError("postgres_dsn must start with 'postgresql://'")
+        return v
+
+    @field_validator("mongodb_uri")
+    @classmethod
+    def _validate_mongodb_scheme(cls, v: SecretStr | None) -> SecretStr | None:
+        """Reject a URI pymongo cannot open, naming the schemes only."""
+        if v is not None and not v.get_secret_value().startswith(_MONGODB_SCHEMES):
+            raise ValueError("mongodb_uri must start with 'mongodb://' or 'mongodb+srv://'")
         return v
 
     @model_validator(mode="after")
-    def _require_conn_string_for_postgres(self) -> CommunitySettings:
+    def _require_connection_for_backend(self) -> CommunitySettings:
         """Fail at settings construction, not at the first database call."""
-        # An empty DSN never gets here: the scheme check above rejects it.
-        if (
-            self.persistence_backend is PersistenceBackend.POSTGRES
-            and self.postgres_conn_string is None
-        ):
+        # An empty value never gets here: the scheme checks above reject it.
+        field = _CONNECTION_FIELD.get(self.persistence_backend)
+        if field is not None and getattr(self, field) is None:
             raise ValueError(
-                "persistence_backend is 'postgres' but postgres_conn_string "
-                "(AKGENTIC_POSTGRES_CONN_STRING) is not set"
+                f"persistence_backend is '{self.persistence_backend}' but {field} "
+                f"(AKGENTIC_{field.upper()}) is not set"
             )
         return self

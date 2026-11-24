@@ -1,35 +1,44 @@
-"""Tests for the community-tier persistence switch (YAML or PostgreSQL).
+"""Tests for the community-tier persistence switch (YAML, MongoDB or PostgreSQL).
 
-Covers the two settings, the store builders in ``akgentic.infra.persistence``
-and the ``event_store`` / ``catalog_repository`` overrides on
-``wire_community``. Nothing here opens a database connection: both Postgres
-stores only record the DSN at construction, so these tests need the
-``[postgres]`` extra installed but no running server.
+Covers the persistence settings, ``build_stores`` in ``akgentic.infra.persistence``
+and the ``event_store`` / ``catalog_repository`` overrides on ``wire_community``.
+Nothing here opens a database connection: the Postgres stores only record the
+DSN at construction (these tests need the ``[postgres]`` extra but no server),
+and the Mongo stores run against ``mongomock``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from akgentic.catalog import YamlEntryRepository
-from akgentic.team.models import DeleteMode
+from akgentic.team.models import DeleteMode, TeamStatus
 from akgentic.team.repositories.yaml import YamlEventStore
 from pydantic import ValidationError
 
 from akgentic.infra import persistence
 from akgentic.infra.persistence import (
+    CATALOG_COLLECTION,
     PersistenceBackendUnavailableError,
-    build_catalog_repository,
-    build_event_store,
+    build_stores,
 )
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings, PersistenceBackend
 from akgentic.infra.wiring import wire_community
+from tests.conftest import _seed_catalog
 
 DSN = "postgresql://akgentic:s3cret-pw@localhost:5432/akgentic"
+MONGODB_URI = "mongodb://akgentic:s3cret-pw@localhost:27017"
+
+_PERSISTENCE_ENV = (
+    "AKGENTIC_PERSISTENCE_BACKEND",
+    "AKGENTIC_POSTGRES_DSN",
+    "AKGENTIC_MONGODB_URI",
+    "AKGENTIC_MONGODB_DATABASE_NAME",
+)
 
 
 def _yaml_settings(tmp_path: Path, **overrides: Any) -> CommunitySettings:
@@ -42,50 +51,73 @@ def _yaml_settings(tmp_path: Path, **overrides: Any) -> CommunitySettings:
 
 
 def _postgres_settings(tmp_path: Path, **overrides: Any) -> CommunitySettings:
-    return _yaml_settings(
-        tmp_path,
-        persistence_backend=PersistenceBackend.POSTGRES,
-        postgres_conn_string=DSN,
-        **overrides,
-    )
+    defaults: dict[str, Any] = {
+        "persistence_backend": PersistenceBackend.POSTGRES,
+        "postgres_dsn": DSN,
+    }
+    return _yaml_settings(tmp_path, **{**defaults, **overrides})
+
+
+def _mongo_settings(tmp_path: Path, **overrides: Any) -> CommunitySettings:
+    defaults: dict[str, Any] = {
+        "persistence_backend": PersistenceBackend.MONGO,
+        "mongodb_uri": MONGODB_URI,
+    }
+    return _yaml_settings(tmp_path, **{**defaults, **overrides})
 
 
 @pytest.fixture()
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep an operator's shell from leaking into the settings under test."""
-    monkeypatch.delenv("AKGENTIC_PERSISTENCE_BACKEND", raising=False)
-    monkeypatch.delenv("AKGENTIC_POSTGRES_CONN_STRING", raising=False)
+    for name in _PERSISTENCE_ENV:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.mark.usefixtures("clean_env")
 class TestPersistenceSettings:
-    """``persistence_backend`` and ``postgres_conn_string`` on CommunitySettings."""
+    """The persistence fields on CommunitySettings."""
 
-    def test_default_backend_is_yaml_without_a_dsn(self, tmp_path: Path) -> None:
+    def test_default_backend_is_yaml_without_connection_strings(self, tmp_path: Path) -> None:
         settings = _yaml_settings(tmp_path)
         assert settings.persistence_backend is PersistenceBackend.YAML
-        assert settings.postgres_conn_string is None
+        assert settings.postgres_dsn is None
+        assert settings.mongodb_uri is None
+        assert settings.mongodb_database_name == "akgentic"
 
-    def test_backend_and_dsn_read_from_the_environment(
+    def test_postgres_backend_and_dsn_read_from_the_environment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("AKGENTIC_PERSISTENCE_BACKEND", "postgres")
-        monkeypatch.setenv("AKGENTIC_POSTGRES_CONN_STRING", DSN)
+        monkeypatch.setenv("AKGENTIC_POSTGRES_DSN", DSN)
         settings = _yaml_settings(tmp_path)
         assert settings.persistence_backend is PersistenceBackend.POSTGRES
-        assert settings.postgres_conn_string is not None
-        assert settings.postgres_conn_string.get_secret_value() == DSN
+        assert settings.postgres_dsn is not None
+        assert settings.postgres_dsn.get_secret_value() == DSN
+
+    def test_mongo_backend_uri_and_database_read_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AKGENTIC_PERSISTENCE_BACKEND", "mongo")
+        monkeypatch.setenv("AKGENTIC_MONGODB_URI", MONGODB_URI)
+        monkeypatch.setenv("AKGENTIC_MONGODB_DATABASE_NAME", "tenant_a")
+        settings = _yaml_settings(tmp_path)
+        assert settings.persistence_backend is PersistenceBackend.MONGO
+        assert settings.mongodb_uri is not None
+        assert settings.mongodb_uri.get_secret_value() == MONGODB_URI
+        assert settings.mongodb_database_name == "tenant_a"
 
     def test_postgres_without_a_dsn_fails_at_construction(self, tmp_path: Path) -> None:
-        with pytest.raises(ValidationError, match="AKGENTIC_POSTGRES_CONN_STRING"):
+        with pytest.raises(ValidationError, match="AKGENTIC_POSTGRES_DSN"):
             _yaml_settings(tmp_path, persistence_backend=PersistenceBackend.POSTGRES)
+
+    def test_mongo_without_a_uri_fails_at_construction(self, tmp_path: Path) -> None:
+        with pytest.raises(ValidationError, match="AKGENTIC_MONGODB_URI"):
+            _yaml_settings(tmp_path, persistence_backend=PersistenceBackend.MONGO)
 
     def test_postgres_with_an_empty_dsn_fails_at_construction(self, tmp_path: Path) -> None:
         with pytest.raises(ValidationError, match="must start with 'postgresql://'"):
             _yaml_settings(
-                tmp_path,
-                persistence_backend=PersistenceBackend.POSTGRES,
-                postgres_conn_string="",
+                tmp_path, persistence_backend=PersistenceBackend.POSTGRES, postgres_dsn=""
             )
 
     def test_unknown_backend_is_rejected(self, tmp_path: Path) -> None:
@@ -105,40 +137,68 @@ class TestPersistenceSettings:
         self, tmp_path: Path, dsn: str
     ) -> None:
         with pytest.raises(ValidationError) as exc_info:
-            _yaml_settings(tmp_path, postgres_conn_string=dsn)
+            _yaml_settings(tmp_path, postgres_dsn=dsn)
         assert "s3cret-pw" not in str(exc_info.value)
 
-    def test_dsn_is_a_secret_in_repr(self, tmp_path: Path) -> None:
-        settings = _postgres_settings(tmp_path)
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "http://akgentic:s3cret-pw@localhost:27017",
+            "postgresql://akgentic:s3cret-pw@localhost/akgentic",
+        ],
+    )
+    def test_non_mongodb_scheme_is_rejected_without_echoing_the_uri(
+        self, tmp_path: Path, uri: str
+    ) -> None:
+        with pytest.raises(ValidationError, match="must start with 'mongodb://'") as exc_info:
+            _yaml_settings(tmp_path, mongodb_uri=uri)
+        assert "s3cret-pw" not in str(exc_info.value)
+
+    def test_mongodb_srv_scheme_is_accepted(self, tmp_path: Path) -> None:
+        uri = "mongodb+srv://akgentic:s3cret-pw@cluster.example.net"
+        settings = _mongo_settings(tmp_path, mongodb_uri=uri)
+        assert settings.mongodb_uri is not None
+        assert settings.mongodb_uri.get_secret_value() == uri
+
+    @pytest.mark.parametrize("name", ["", "has.dot", "has space", "a" * 64])
+    def test_invalid_mongodb_database_name_is_rejected(self, tmp_path: Path, name: str) -> None:
+        with pytest.raises(ValidationError):
+            _mongo_settings(tmp_path, mongodb_database_name=name)
+
+    @pytest.mark.parametrize("factory", [_postgres_settings, _mongo_settings])
+    def test_connection_string_is_a_secret_in_repr(self, tmp_path: Path, factory: Any) -> None:
+        settings = factory(tmp_path)
         assert "s3cret-pw" not in repr(settings)
         assert "s3cret-pw" not in str(settings.model_dump())
 
-    def test_dsn_is_allowed_alongside_the_yaml_backend(self, tmp_path: Path) -> None:
-        """A DSN left in the environment must not stop a YAML deployment from booting."""
-        settings = _yaml_settings(tmp_path, postgres_conn_string=DSN)
+    def test_connection_strings_are_allowed_alongside_the_yaml_backend(
+        self, tmp_path: Path
+    ) -> None:
+        """A connection string left in the environment must not stop a YAML boot."""
+        settings = _yaml_settings(tmp_path, postgres_dsn=DSN, mongodb_uri=MONGODB_URI)
         assert settings.persistence_backend is PersistenceBackend.YAML
 
 
 @pytest.mark.usefixtures("clean_env")
-class TestBuildersYaml:
+class TestBuildStoresYaml:
     """The default branch builds exactly what wire_community built before."""
 
     def test_event_store_is_yaml_at_the_configured_path(self, tmp_path: Path) -> None:
-        store = build_event_store(_yaml_settings(tmp_path))
+        store = build_stores(_yaml_settings(tmp_path)).event_store
         assert isinstance(store, YamlEventStore)
         assert store._data_dir == tmp_path / "event_store"
 
     def test_event_store_carries_the_team_delete_mode(self, tmp_path: Path) -> None:
-        store = build_event_store(_yaml_settings(tmp_path, team_delete_mode=DeleteMode.SOFT))
-        assert store._delete_mode is DeleteMode.SOFT  # type: ignore[attr-defined]
+        stores = build_stores(_yaml_settings(tmp_path, team_delete_mode=DeleteMode.SOFT))
+        assert stores.event_store._delete_mode is DeleteMode.SOFT  # type: ignore[attr-defined]
 
     def test_catalog_repository_is_yaml_at_the_configured_path(self, tmp_path: Path) -> None:
-        repo = build_catalog_repository(_yaml_settings(tmp_path))
+        repo = build_stores(_yaml_settings(tmp_path)).catalog_repository
         assert isinstance(repo, YamlEntryRepository)
 
 
 @pytest.mark.usefixtures("clean_env")
-class TestBuildersPostgres:
+class TestBuildStoresPostgres:
     """The postgres branch builds the Nagra stores without touching a database."""
 
     @pytest.fixture(autouse=True)
@@ -149,45 +209,92 @@ class TestBuildersPostgres:
     def test_event_store_is_nagra_with_the_dsn(self, tmp_path: Path) -> None:
         from akgentic.team.repositories.postgres import NagraEventStore
 
-        store = build_event_store(_postgres_settings(tmp_path))
+        store = build_stores(_postgres_settings(tmp_path)).event_store
         assert isinstance(store, NagraEventStore)
         assert store._conn_string == DSN
 
     def test_event_store_carries_the_team_delete_mode(self, tmp_path: Path) -> None:
-        store = build_event_store(_postgres_settings(tmp_path, team_delete_mode=DeleteMode.SOFT))
-        assert store._delete_mode is DeleteMode.SOFT  # type: ignore[attr-defined]
+        stores = build_stores(_postgres_settings(tmp_path, team_delete_mode=DeleteMode.SOFT))
+        assert stores.event_store._delete_mode is DeleteMode.SOFT  # type: ignore[attr-defined]
 
     def test_catalog_repository_is_postgres_with_the_dsn(self, tmp_path: Path) -> None:
         from akgentic.catalog.repositories.postgres import PostgresEntryRepository
 
-        repo = build_catalog_repository(_postgres_settings(tmp_path))
+        repo = build_stores(_postgres_settings(tmp_path)).catalog_repository
         assert isinstance(repo, PostgresEntryRepository)
         assert repo._conn_string == DSN
 
     def test_postgres_backend_writes_nothing_under_the_yaml_paths(self, tmp_path: Path) -> None:
-        settings = _postgres_settings(tmp_path)
-        build_event_store(settings)
-        build_catalog_repository(settings)
+        build_stores(_postgres_settings(tmp_path))
         assert not (tmp_path / "event_store").exists()
         assert not (tmp_path / "catalog").exists()
 
 
-_ALL_POSTGRES_MODULES = ("nagra", "psycopg", "psycopg_pool")
+@pytest.mark.usefixtures("clean_env")
+class TestBuildStoresMongo:
+    """The mongo branch builds both Mongo stores over one client (mongomock)."""
+
+    @pytest.fixture(autouse=True)
+    def _mongomock_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("pymongo")
+        mongomock = pytest.importorskip("mongomock")
+        monkeypatch.setattr("pymongo.MongoClient", mongomock.MongoClient)
+
+    def test_event_store_is_mongo_in_the_configured_database(self, tmp_path: Path) -> None:
+        from akgentic.team.repositories.mongo import MongoEventStore
+
+        store = build_stores(_mongo_settings(tmp_path, mongodb_database_name="tenant_a"))
+        assert isinstance(store.event_store, MongoEventStore)
+        assert store.event_store._db.name == "tenant_a"
+
+    def test_event_store_carries_the_team_delete_mode(self, tmp_path: Path) -> None:
+        stores = build_stores(_mongo_settings(tmp_path, team_delete_mode=DeleteMode.SOFT))
+        assert stores.event_store._delete_mode is DeleteMode.SOFT  # type: ignore[attr-defined]
+
+    def test_catalog_repository_is_mongo_on_the_catalog_collection(self, tmp_path: Path) -> None:
+        from akgentic.catalog.repositories.mongo import MongoEntryRepository
+
+        repo = build_stores(_mongo_settings(tmp_path)).catalog_repository
+        assert isinstance(repo, MongoEntryRepository)
+        assert repo._collection.name == CATALOG_COLLECTION
+        assert repo._collection.database.name == "akgentic"
+
+    def test_both_stores_share_one_client(self, tmp_path: Path) -> None:
+        stores = build_stores(_mongo_settings(tmp_path))
+        event_client = stores.event_store._db.client  # type: ignore[attr-defined]
+        catalog_client = stores.catalog_repository._collection.database.client  # type: ignore[attr-defined]
+        assert event_client is catalog_client
+
+    def test_mongo_backend_writes_nothing_under_the_yaml_paths(self, tmp_path: Path) -> None:
+        build_stores(_mongo_settings(tmp_path))
+        assert not (tmp_path / "event_store").exists()
+        assert not (tmp_path / "catalog").exists()
+
+    def test_an_injected_event_store_leaves_only_the_catalog_to_build(self, tmp_path: Path) -> None:
+        from akgentic.catalog.repositories.mongo import MongoEntryRepository
+
+        injected = YamlEventStore(data_dir=tmp_path / "injected_events")
+        stores = build_stores(_mongo_settings(tmp_path), event_store=injected)
+        assert stores.event_store is injected
+        assert isinstance(stores.catalog_repository, MongoEntryRepository)
+
+
+_POSTGRES_MODULES = ("nagra", "psycopg", "psycopg_pool")
+_ALL_BACKEND_MODULES = (*_POSTGRES_MODULES, "pymongo")
 
 
 def _hide_modules(monkeypatch: pytest.MonkeyPatch, hidden: tuple[str, ...]) -> None:
     """Make ``persistence``'s dependency probe see exactly ``hidden`` as missing.
 
-    The probe answers for every Postgres module itself — missing if hidden,
+    The probe answers for every backend module itself — missing if hidden,
     present otherwise — and never reaches the real import, so the result does not
-    depend on what the running environment has installed: CI installs ``.[dev]``
-    without the extra, a developer venv usually has it.
+    depend on what the running environment has installed.
     """
 
     def fake_import_module(name: str) -> object:
         if name in hidden:
             raise ImportError(f"No module named {name!r}")
-        if name in _ALL_POSTGRES_MODULES:
+        if name in _ALL_BACKEND_MODULES:
             return object()
         raise AssertionError(f"unexpected probe of {name!r}")
 
@@ -195,21 +302,29 @@ def _hide_modules(monkeypatch: pytest.MonkeyPatch, hidden: tuple[str, ...]) -> N
 
 
 @pytest.mark.usefixtures("clean_env")
-class TestMissingPostgresExtra:
-    """Selecting postgres without the extra fails at wire time, naming the fix."""
+class TestMissingBackendExtra:
+    """Selecting a database without its extra fails at wire time, naming the fix."""
 
     @pytest.fixture()
-    def without_extra(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _hide_modules(monkeypatch, _ALL_POSTGRES_MODULES)
+    def without_extras(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _hide_modules(monkeypatch, _ALL_BACKEND_MODULES)
 
-    @pytest.mark.usefixtures("without_extra")
-    @pytest.mark.parametrize("builder", [build_event_store, build_catalog_repository])
-    def test_builder_raises_with_install_hint(self, tmp_path: Path, builder: Any) -> None:
+    @pytest.mark.usefixtures("without_extras")
+    @pytest.mark.parametrize(
+        ("factory", "missing", "extra"),
+        [
+            (_postgres_settings, "nagra, psycopg, psycopg_pool are", "akgentic-infra[postgres]"),
+            (_mongo_settings, "pymongo is", "akgentic-infra[mongo]"),
+        ],
+    )
+    def test_build_raises_with_install_hint(
+        self, tmp_path: Path, factory: Any, missing: str, extra: str
+    ) -> None:
         with pytest.raises(PersistenceBackendUnavailableError) as exc_info:
-            builder(_postgres_settings(tmp_path))
+            build_stores(factory(tmp_path))
         message = str(exc_info.value)
-        assert "nagra, psycopg, psycopg_pool are not installed" in message
-        assert "akgentic-infra[postgres]" in message
+        assert f"{missing} not installed" in message
+        assert extra in message
         assert "s3cret-pw" not in message
 
     def test_names_only_the_module_that_is_missing(
@@ -218,17 +333,28 @@ class TestMissingPostgresExtra:
         """A half-installed extra (Nagra present, no pool) is caught at wire time too."""
         _hide_modules(monkeypatch, ("psycopg_pool",))
         with pytest.raises(PersistenceBackendUnavailableError) as exc_info:
-            build_event_store(_postgres_settings(tmp_path))
+            build_stores(_postgres_settings(tmp_path))
         assert "but psycopg_pool is not installed" in str(exc_info.value)
 
-    @pytest.mark.usefixtures("without_extra")
-    def test_wire_community_raises_before_starting_anything(self, tmp_path: Path) -> None:
+    @pytest.mark.usefixtures("without_extras")
+    @pytest.mark.parametrize("factory", [_postgres_settings, _mongo_settings])
+    def test_wire_community_raises_before_starting_anything(
+        self, tmp_path: Path, factory: Any
+    ) -> None:
         with pytest.raises(PersistenceBackendUnavailableError):
-            wire_community(_postgres_settings(tmp_path))
+            wire_community(factory(tmp_path))
 
-    @pytest.mark.usefixtures("without_extra")
-    def test_yaml_backend_does_not_need_the_extra(self, tmp_path: Path) -> None:
-        assert isinstance(build_event_store(_yaml_settings(tmp_path)), YamlEventStore)
+    @pytest.mark.usefixtures("without_extras")
+    def test_yaml_backend_needs_no_extra(self, tmp_path: Path) -> None:
+        assert isinstance(build_stores(_yaml_settings(tmp_path)).event_store, YamlEventStore)
+
+    @pytest.mark.usefixtures("without_extras")
+    def test_both_stores_injected_needs_no_extra(self, tmp_path: Path) -> None:
+        store = YamlEventStore(data_dir=tmp_path / "injected_events")
+        repo = YamlEntryRepository(root=tmp_path / "injected_catalog")
+        stores = build_stores(_mongo_settings(tmp_path), event_store=store, catalog_repository=repo)
+        assert stores.event_store is store
+        assert stores.catalog_repository is repo
 
 
 class _RecordingEventStore(YamlEventStore):
@@ -262,13 +388,14 @@ class TestWireCommunityOverrides:
         services, _, repo = injected
         assert services.catalog._repository is repo
 
-    def test_injected_stores_win_over_a_postgres_setting(self, tmp_path: Path) -> None:
-        """With both stores injected, postgres is never built — no extra, no DSN use."""
+    @pytest.mark.parametrize("factory", [_postgres_settings, _mongo_settings])
+    def test_injected_stores_win_over_a_database_setting(
+        self, tmp_path: Path, factory: Any
+    ) -> None:
+        """With both stores injected, no database store is built."""
         store = _RecordingEventStore(data_dir=tmp_path / "injected_events")
         repo = YamlEntryRepository(root=tmp_path / "injected_catalog")
-        services = wire_community(
-            _postgres_settings(tmp_path), event_store=store, catalog_repository=repo
-        )
+        services = wire_community(factory(tmp_path), event_store=store, catalog_repository=repo)
         try:
             assert services.event_store is store
             assert services.catalog._repository is repo
@@ -280,5 +407,78 @@ class TestWireCommunityOverrides:
         try:
             assert type(services.event_store) is YamlEventStore
             assert isinstance(services.catalog._repository, YamlEntryRepository)
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+
+_SettingsFactory = Callable[..., CommunitySettings]
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestTeamDeleteModeOnEveryBackend:
+    """``team_delete_mode`` retires or purges on whichever store the backend builds.
+
+    The team is created, then deleted through ``TeamService.delete_team`` on the
+    wired stack, so the mode travels the operator's path: settings → store →
+    service. The catalog is a seeded YAML repository, injected so the Mongo case
+    needs no catalog of its own; the event store is the backend's. Postgres is
+    covered by the store's own contract tests in ``akgentic-team``, which need a
+    database; here it is covered down to the mode reaching ``NagraEventStore``.
+    """
+
+    @pytest.fixture(params=["yaml", "mongo"])
+    def backend(
+        self, request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[_SettingsFactory, str]:
+        if request.param == "yaml":
+            return _yaml_settings, "YamlEventStore"
+        pytest.importorskip("pymongo")
+        mongomock = pytest.importorskip("mongomock")
+        monkeypatch.setattr("pymongo.MongoClient", mongomock.MongoClient)
+        return _mongo_settings, "MongoEventStore"
+
+    @staticmethod
+    def _create_then_delete(
+        tmp_path: Path, backend: tuple[_SettingsFactory, str], mode: DeleteMode
+    ) -> tuple[CommunityServices, Any]:
+        factory, store_type = backend
+        catalog_root = tmp_path / "seeded_catalog"
+        _seed_catalog(catalog_root)
+        services = wire_community(
+            factory(tmp_path, team_delete_mode=mode),
+            catalog_repository=YamlEntryRepository(root=catalog_root),
+        )
+        assert type(services.event_store).__name__ == store_type
+        assert services.team_service is not None
+        process = services.team_service.create_team(catalog_namespace="test-team", user_id="u")
+        services.team_service.delete_team(process.team_id)
+        return services, process.team_id
+
+    def test_soft_retires_the_team(
+        self, tmp_path: Path, backend: tuple[_SettingsFactory, str]
+    ) -> None:
+        services, team_id = self._create_then_delete(tmp_path, backend, DeleteMode.SOFT)
+        try:
+            assert services.team_service is not None
+            retired = services.event_store.load_team(team_id)
+            assert retired is not None
+            assert retired.status == TeamStatus.DELETED
+            assert services.team_service.get_team(team_id) is None
+            listed, _total = services.team_service.list_teams(user_id="u")
+            assert team_id not in [p.team_id for p in listed]
+            retired_only = services.event_store.list_teams(status=TeamStatus.DELETED)
+            assert [p.team_id for p in retired_only] == [team_id]
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_hard_purges_the_team(
+        self, tmp_path: Path, backend: tuple[_SettingsFactory, str]
+    ) -> None:
+        services, team_id = self._create_then_delete(tmp_path, backend, DeleteMode.HARD)
+        try:
+            assert services.team_service is not None
+            assert services.event_store.load_team(team_id) is None
+            assert services.team_service.get_team(team_id) is None
+            assert services.event_store.list_teams(status=TeamStatus.DELETED) == []
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
