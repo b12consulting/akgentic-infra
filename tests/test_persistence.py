@@ -10,7 +10,6 @@ Postgres stores only record the DSN at construction (these tests need the
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import subprocess
 import sys
@@ -86,13 +85,6 @@ class _BuilderSpy:
         # Explicit arguments only: a parameter left at its default is absent.
         self.calls.append(dict(self._signature.bind(*args, **kwargs).arguments))
         return self._real(*args, **kwargs)
-
-
-class _NoopOffload:
-    """A distinct offload, so a test can tell it reached the registry."""
-
-    async def __call__(self, fn: Callable[..., Any], *args: Any) -> Any:
-        return fn(*args)
 
 
 def _spy_on(monkeypatch: pytest.MonkeyPatch, name: str) -> _BuilderSpy:
@@ -264,19 +256,6 @@ class TestMongoStores:
         mongo_stores(db, delete_mode=DeleteMode.HARD, auto_create_indexes=False)
         assert set(db["channel_users"].index_information()) <= {"_id_"}
 
-    def test_an_injected_offload_reaches_the_channel_registry(self, db: Any) -> None:
-        offload = _NoopOffload()
-        registry = mongo_stores(
-            db, delete_mode=DeleteMode.HARD, auto_create_indexes=False, offload=offload
-        ).channel_registry
-        assert registry._offload is offload  # type: ignore[attr-defined]
-
-    def test_without_an_offload_the_registry_uses_to_thread(self, db: Any) -> None:
-        registry = mongo_stores(
-            db, delete_mode=DeleteMode.HARD, auto_create_indexes=False
-        ).channel_registry
-        assert registry._offload is asyncio.to_thread  # type: ignore[attr-defined]
-
 
 class TestPostgresStores:
     """``postgres_stores`` builds both Nagra stores on the DSN without a database."""
@@ -311,14 +290,6 @@ class TestPostgresStores:
         assert isinstance(registry, ChannelRegistry)
         assert isinstance(registry, PostgresChannelRegistry)
         assert registry._dsn == DSN
-        assert registry._offload is asyncio.to_thread
-
-    def test_an_injected_offload_reaches_the_channel_registry(self) -> None:
-        offload = _NoopOffload()
-        registry = postgres_stores(
-            DSN, delete_mode=DeleteMode.HARD, offload=offload
-        ).channel_registry
-        assert registry._offload is offload  # type: ignore[attr-defined]
 
 
 def test_public_builders_do_not_probe_for_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:

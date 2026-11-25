@@ -338,34 +338,3 @@ async def test_a_driver_error_keeps_its_type_through_the_offload(
     registry._collection = _RaisingCollection()  # type: ignore[assignment]
     with pytest.raises(DuplicateKeyError):
         await registry.register(_binding())
-
-
-class _RecordingOffload:
-    """An injected offload that runs ``fn`` inline and records each call."""
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    async def __call__(self, fn: Any, *args: Any) -> Any:
-        self.calls.append(fn.__name__)
-        return fn(*args)
-
-
-async def test_an_injected_offload_carries_each_async_method_once(mongo_client: Any) -> None:
-    """AC 16 — one offload call per async method; the sync read never offloads."""
-    offload = _RecordingOffload()
-    registry = MongoChannelRegistry(mongo_client[_TEST_DB], offload=offload)
-    binding = _binding()
-
-    await registry.register(binding)
-    await registry.find_binding(binding)
-    await registry.deregister(binding)
-    await registry.deregister_team(binding.team_id)
-    registry.find_binding_sync(binding.team_id, binding.agent_name)
-
-    assert offload.calls == [
-        "_register_blocking",
-        "_find_binding_blocking",
-        "_deregister_blocking",
-        "_deregister_team_blocking",
-    ]

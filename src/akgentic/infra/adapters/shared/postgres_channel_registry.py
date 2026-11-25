@@ -21,10 +21,9 @@ A database the script has not run against has no table: every channel
 operation fails with ``relation "channel_users" does not exist``.
 
 Threading: each async method runs its synchronous Nagra work through **one**
-call of the registry's offload (``asyncio.to_thread`` unless the caller injects
-another), so no driver call runs on the event loop. ``find_binding_sync`` stays
-one direct point read on the caller's thread (a Pykka actor thread in
-production), which the protocol permits.
+``asyncio.to_thread`` call, so no driver call runs on the event loop.
+``find_binding_sync`` stays one direct point read on the caller's thread (a
+Pykka actor thread in production), which the protocol permits.
 
 Nagra is imported only inside the functions that use it, so importing this
 module needs no driver. Every method opens its own ``nagra.Transaction(dsn)``;
@@ -43,7 +42,6 @@ from pathlib import Path
 from typing import Any
 
 from akgentic.infra.adapters.shared._stored_channel_binding import read_stored_binding
-from akgentic.infra.adapters.shared.offload import Offload
 from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding, ChannelRegistry
 
 logger = logging.getLogger(__name__)
@@ -119,21 +117,17 @@ class PostgresChannelRegistry(ChannelRegistry):
     created by :func:`init_db`, never by this class or the server.
 
     Construction does no I/O and imports no driver. Every async method runs its
-    Nagra work through one call of ``offload``; ``find_binding_sync`` is one
-    point read through the ``(team_id, agent_name)`` index on the caller's
+    Nagra work through one ``asyncio.to_thread`` call; ``find_binding_sync`` is
+    one point read through the ``(team_id, agent_name)`` index on the caller's
     thread, never offloaded.
 
     Args:
         dsn: A ``postgresql://`` connection string — the caller's, so the
             bindings share the database with the teams they name.
-        offload: Runs each async method's blocking work off the event loop.
-            ``None`` means ``asyncio.to_thread``. A tier with a dedicated store
-            pool passes its own.
     """
 
-    def __init__(self, dsn: str, *, offload: Offload | None = None) -> None:
+    def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._offload: Offload = offload if offload is not None else asyncio.to_thread
 
     def _execute(self, sql: str, params: tuple[str, ...]) -> None:
         from nagra import Transaction
@@ -152,7 +146,7 @@ class PostgresChannelRegistry(ChannelRegistry):
 
     async def register(self, binding: ChannelBinding) -> None:
         """Store the whole binding, replacing any existing one for its address."""
-        await self._offload(self._register_blocking, binding)
+        await asyncio.to_thread(self._register_blocking, binding)
         logger.debug(
             "Registered channel binding: channel=%s, channel_user_id=%s, team_id=%s, agent=%s",
             binding.channel,
@@ -173,14 +167,14 @@ class PostgresChannelRegistry(ChannelRegistry):
 
     async def find_binding(self, address: ChannelAddress) -> ChannelBinding | None:
         """Return the binding for ``address``, or ``None``."""
-        return await self._offload(self._find_binding_blocking, address)
+        return await asyncio.to_thread(self._find_binding_blocking, address)
 
     def _find_binding_blocking(self, address: ChannelAddress) -> ChannelBinding | None:
         return self._fetch_binding(_FIND_BY_ADDRESS_SQL, (address.channel, address.channel_user_id))
 
     async def deregister(self, address: ChannelAddress) -> None:
         """Remove the binding for ``address``; a no-op when absent."""
-        await self._offload(self._deregister_blocking, address)
+        await asyncio.to_thread(self._deregister_blocking, address)
         logger.debug(
             "Deregistered channel binding: channel=%s, channel_user_id=%s",
             address.channel,
@@ -192,7 +186,7 @@ class PostgresChannelRegistry(ChannelRegistry):
 
     async def deregister_team(self, team_id: uuid.UUID) -> None:
         """Remove every binding for ``team_id``, across channels; a no-op when none."""
-        await self._offload(self._deregister_team_blocking, team_id)
+        await asyncio.to_thread(self._deregister_team_blocking, team_id)
         logger.debug("Deregistered channel bindings of team_id=%s", team_id)
 
     def _deregister_team_blocking(self, team_id: uuid.UUID) -> None:

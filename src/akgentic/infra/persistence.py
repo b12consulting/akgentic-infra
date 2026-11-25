@@ -39,7 +39,6 @@ from pydantic import SecretStr
 from akgentic.catalog import YamlEntryRepository
 from akgentic.catalog.repositories.base import EntryRepository
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
-from akgentic.infra.adapters.shared.offload import Offload
 from akgentic.infra.protocols.channels import ChannelRegistry
 from akgentic.infra.server.settings import CommunitySettings, PersistenceBackend
 from akgentic.team.models import DeleteMode
@@ -95,7 +94,6 @@ def mongo_stores(
     *,
     delete_mode: DeleteMode,
     auto_create_indexes: bool | None = None,
-    offload: Offload | None = None,
 ) -> PersistenceStores:
     """The three Mongo stores in ``db``, over the caller's client.
 
@@ -110,8 +108,6 @@ def mongo_stores(
         auto_create_indexes: Passed straight to ``MongoEventStore``, where it
             gates the ``teams`` collection's indexes only; ``None`` defers to
             its ``MONGO_TEAM_AUTO_INDEX`` default.
-        offload: Passed to ``MongoChannelRegistry``, which runs its async
-            methods' driver work through it; ``None`` means ``asyncio.to_thread``.
 
     Returns:
         ``MongoEventStore`` on ``db``, ``MongoEntryRepository`` on
@@ -125,13 +121,11 @@ def mongo_stores(
     return PersistenceStores(
         MongoEventStore(db, auto_create_indexes=auto_create_indexes, delete_mode=delete_mode),
         MongoEntryRepository(db[CATALOG_COLLECTION]),
-        MongoChannelRegistry(db, offload=offload),
+        MongoChannelRegistry(db),
     )
 
 
-def postgres_stores(
-    dsn: str, *, delete_mode: DeleteMode, offload: Offload | None = None
-) -> PersistenceStores:
+def postgres_stores(dsn: str, *, delete_mode: DeleteMode) -> PersistenceStores:
     """The three Nagra stores against ``dsn``. Opens no connection, creates no table.
 
     The tables come from the three ``init_db`` scripts, run once per database
@@ -141,8 +135,6 @@ def postgres_stores(
     Args:
         dsn: A ``postgresql://`` connection string.
         delete_mode: How the event store deletes a team (soft retire or purge).
-        offload: Passed to ``PostgresChannelRegistry``, which runs its async
-            methods' driver work through it; ``None`` means ``asyncio.to_thread``.
 
     Returns:
         ``NagraEventStore``, ``PostgresEntryRepository`` and
@@ -157,7 +149,7 @@ def postgres_stores(
     return PersistenceStores(
         NagraEventStore(dsn, delete_mode=delete_mode),
         PostgresEntryRepository(dsn),
-        PostgresChannelRegistry(dsn, offload=offload),
+        PostgresChannelRegistry(dsn),
     )
 
 

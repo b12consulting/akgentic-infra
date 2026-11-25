@@ -14,12 +14,11 @@ Two indexes, created together and lazily on the first async operation:
   outbound ``find_binding_sync`` one indexed point read rather than a scan, and
   serves ``deregister_team``.
 
-Threading: each async method runs its synchronous pymongo work — the index
-creation included — through one call of the registry's offload
-(``asyncio.to_thread`` unless the caller injects another), so no driver call
-runs on the event loop. ``find_binding_sync`` stays a direct call on the
-caller's thread (a Pykka actor thread in production), which the protocol permits
-for one indexed point read.
+Threading: the async methods run their synchronous pymongo work — the index
+creation included — through ``asyncio.to_thread``, so no driver call runs on the
+event loop. ``find_binding_sync`` stays a direct call on the caller's thread (a
+Pykka actor thread in production), which the protocol permits for one indexed
+point read.
 
 A document without ``agent_name`` — written before bindings named an agent —
 reads as absent: the next message starts a team and ``register`` overwrites it.
@@ -33,7 +32,6 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from akgentic.infra.adapters.shared._stored_channel_binding import read_stored_binding
-from akgentic.infra.adapters.shared.offload import Offload
 from akgentic.infra.protocols.channels import ChannelAddress, ChannelBinding, ChannelRegistry
 
 if TYPE_CHECKING:
@@ -53,23 +51,19 @@ class MongoChannelRegistry(ChannelRegistry):
 
     Construction does no I/O. The first async operation creates the unique
     ``(channel, channel_user_id)`` index and the ``(team_id, agent_name)`` index
-    that ``find_binding_sync`` reads through. Every async method runs its driver
-    calls through one call of ``offload``; ``find_binding_sync`` does not.
+    that ``find_binding_sync`` reads through. Every async method offloads its
+    driver calls with ``asyncio.to_thread``; ``find_binding_sync`` does not.
 
     Args:
         db: The database holding the ``channel_users`` collection — the
             caller's, so the bindings share it with the teams they name. The
             registry creates, configures and closes no client.
-        offload: Runs each async method's blocking work off the event loop.
-            ``None`` means ``asyncio.to_thread``. A tier with a dedicated store
-            pool passes its own.
     """
 
     # ``Any``: a BSON document has no static shape at the driver boundary.
-    def __init__(self, db: Database[Any], *, offload: Offload | None = None) -> None:
+    def __init__(self, db: Database[Any]) -> None:
         # ``Any``: a BSON document has no static shape at the driver boundary.
         self._collection: Collection[Any] = db[_COLLECTION_NAME]
-        self._offload: Offload = offload if offload is not None else asyncio.to_thread
         # A plain bool that worker threads may race on: two concurrent first
         # calls both run ``create_index``, which is idempotent, so no lock.
         self._index_ensured: bool = False
@@ -94,7 +88,7 @@ class MongoChannelRegistry(ChannelRegistry):
 
     async def register(self, binding: ChannelBinding) -> None:
         """Store the whole binding, replacing any existing one for its address."""
-        await self._offload(self._register_blocking, binding)
+        await asyncio.to_thread(self._register_blocking, binding)
         logger.debug(
             "Registered channel binding: channel=%s, channel_user_id=%s, team_id=%s, agent=%s",
             binding.channel,
@@ -113,7 +107,7 @@ class MongoChannelRegistry(ChannelRegistry):
 
     async def find_binding(self, address: ChannelAddress) -> ChannelBinding | None:
         """Return the binding for ``address``, or ``None``."""
-        return await self._offload(self._find_binding_blocking, address)
+        return await asyncio.to_thread(self._find_binding_blocking, address)
 
     def _find_binding_blocking(self, address: ChannelAddress) -> ChannelBinding | None:
         self._ensure_index()
@@ -122,7 +116,7 @@ class MongoChannelRegistry(ChannelRegistry):
 
     async def deregister(self, address: ChannelAddress) -> None:
         """Remove the binding for ``address``; a no-op when absent."""
-        await self._offload(self._deregister_blocking, address)
+        await asyncio.to_thread(self._deregister_blocking, address)
         logger.debug(
             "Deregistered channel binding: channel=%s, channel_user_id=%s",
             address.channel,
@@ -135,7 +129,7 @@ class MongoChannelRegistry(ChannelRegistry):
 
     async def deregister_team(self, team_id: uuid.UUID) -> None:
         """Remove every binding for ``team_id``, across channels; a no-op when none."""
-        await self._offload(self._deregister_team_blocking, team_id)
+        await asyncio.to_thread(self._deregister_team_blocking, team_id)
         logger.debug("Deregistered channel bindings of team_id=%s", team_id)
 
     def _deregister_team_blocking(self, team_id: uuid.UUID) -> None:

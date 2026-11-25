@@ -114,17 +114,6 @@ def registry(recorder: _Recorder) -> PostgresChannelRegistry:
     return PostgresChannelRegistry(DSN)
 
 
-class _RecordingOffload:
-    """An injected offload that runs ``fn`` inline and records each call."""
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    async def __call__(self, fn: Callable[..., Any], *args: Any) -> Any:
-        self.calls.append(fn.__name__)
-        return fn(*args)
-
-
 # -- AC 1: the class ------------------------------------------------------------
 
 
@@ -400,38 +389,6 @@ class TestThreads:
         recorder.error = psycopg.OperationalError("connection refused")
         with pytest.raises(psycopg.OperationalError):
             await registry.register(_binding())
-
-
-# -- AC 16: the injectable offload --------------------------------------------------
-
-
-class TestInjectedOffload:
-    async def test_each_async_method_goes_through_one_offload_call(
-        self, recorder: _Recorder
-    ) -> None:
-        offload = _RecordingOffload()
-        registry = PostgresChannelRegistry(DSN, offload=offload)
-        binding = _binding()
-
-        await registry.register(binding)
-        await registry.find_binding(binding)
-        await registry.deregister(binding)
-        await registry.deregister_team(binding.team_id)
-
-        assert offload.calls == [
-            "_register_blocking",
-            "_find_binding_blocking",
-            "_deregister_blocking",
-            "_deregister_team_blocking",
-        ]
-        assert len(recorder.calls) == 4
-
-    def test_find_binding_sync_never_offloads(self, recorder: _Recorder) -> None:
-        offload = _RecordingOffload()
-        registry = PostgresChannelRegistry(DSN, offload=offload)
-        registry.find_binding_sync(uuid.uuid4(), "@Human")
-        assert offload.calls == []
-        assert len(recorder.calls) == 1
 
 
 # -- AC 14: live, opt-in -------------------------------------------------------------
