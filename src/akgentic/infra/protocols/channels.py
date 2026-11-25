@@ -328,12 +328,16 @@ class ChannelRegistryReadSync(Protocol):
 
     Declares the one read the **outbound** delivery path performs.
     ``EventSubscriber.on_message`` is synchronous and runs in a Pykka actor
-    thread with no event loop, so that path cannot await the registry; it needs
-    an answer from memory, or none (ADR-043 §D5).
+    thread with no event loop, so that path cannot await the registry (ADR-043
+    §D5).
 
-    Implementations answer from an in-process index and must not perform I/O:
-    a missed delivery is recoverable, a stalled actor thread is not. The
-    precedent is ``akgentic-infra-department``'s ``ServiceRegistryReadSync``.
+    Implementations answer from an in-process index, **or with one indexed
+    point read** — never a scan, never async I/O. A missed delivery is
+    recoverable, a stalled actor thread is not, so the read must be bounded. The
+    point read is allowed because a database registry has to answer a binding
+    another process wrote: on department the server writes the binding and the
+    worker reads it, and no in-process index of the reader's can have seen it.
+    The precedent is ``akgentic-infra-department``'s ``ServiceRegistryReadSync``.
     """
 
     def find_binding_sync(self, team_id: uuid.UUID, agent_name: str) -> ChannelBinding | None:
@@ -345,8 +349,8 @@ class ChannelRegistryReadSync(Protocol):
 
         Returns:
             The binding if the agent is bound to a channel conversation, None
-            otherwise — including when the registry is disabled or the index has
-            not yet seen the binding.
+            otherwise — including when the registry is disabled or an
+            in-process index has not yet seen the binding.
         """
         ...
 
@@ -362,9 +366,12 @@ class ChannelRegistry(ChannelRegistryReadSync, Protocol):
 
     Implementations:
 
-    - **Community** (``YamlChannelRegistry``): YAML file on disk; channels are
-      disabled when no registry path is configured.
-    - **Department** (``MongoChannelRegistry``): MongoDB ``channel_users`` collection.
+    - ``YamlChannelRegistry`` (``akgentic.infra.adapters.community``): YAML file
+      on disk, for the community ``yaml`` backend; channels are disabled when no
+      registry path is configured.
+    - ``MongoChannelRegistry`` (``akgentic.infra.adapters.shared``): the
+      ``channel_users`` collection in the deployment's database, for any tier
+      on Mongo; ``find_binding_sync`` is one indexed point read.
     - **Enterprise** (``DaprChannelRegistry``): Dapr state store.
     """
 

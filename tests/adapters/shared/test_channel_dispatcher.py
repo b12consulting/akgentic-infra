@@ -297,6 +297,37 @@ class TestRestoreMode:
 
 
 # ---------------------------------------------------------------------------
+# No channel configured: no registry lookup at all
+# ---------------------------------------------------------------------------
+
+
+class TestNoAdapterMeansNoLookup:
+    """A deployment with no channel pays no registry read per message.
+
+    On a database registry ``find_binding_sync`` is a query, so the empty
+    adapter list must short-circuit before it.
+    """
+
+    def test_no_adapter_skips_the_registry(self) -> None:
+        registry = _registry_for(_binding(TEAM_A))
+        dispatcher = ChannelDispatcher(adapters=[], registry=registry)
+
+        dispatcher.on_message(_make_sent_message(TEAM_A))
+
+        assert registry.sync_lookups == []
+
+    def test_an_adapter_means_the_registry_is_consulted(self) -> None:
+        adapter = _MatchingAdapter()
+        registry = _registry_for(_binding(TEAM_A))
+        dispatcher = ChannelDispatcher(adapters=[adapter], registry=registry)
+
+        dispatcher.on_message(_make_sent_message(TEAM_A))
+
+        assert registry.sync_lookups == [(TEAM_A, AGENT_A)]
+        assert adapter.deliver_called
+
+
+# ---------------------------------------------------------------------------
 # AC 3: non-SentMessage events are skipped
 # ---------------------------------------------------------------------------
 

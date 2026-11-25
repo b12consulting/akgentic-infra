@@ -13,6 +13,7 @@ from __future__ import annotations
 import inspect
 import subprocess
 import sys
+import uuid
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ from akgentic.team.repositories.yaml import YamlEventStore
 from pydantic import ValidationError
 
 from akgentic.infra import persistence
+from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.shared.channel_dispatcher import ChannelDispatcher
 from akgentic.infra.persistence import (
     CATALOG_COLLECTION,
     PersistenceBackendUnavailableError,
@@ -32,6 +35,7 @@ from akgentic.infra.persistence import (
     mongo_stores,
     postgres_stores,
 )
+from akgentic.infra.protocols.channels import ChannelBinding, ChannelRegistry
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.settings import CommunitySettings, PersistenceBackend
 from akgentic.infra.wiring import wire_community
@@ -238,6 +242,20 @@ class TestMongoStores:
         mongo_stores(db, delete_mode=DeleteMode.HARD, auto_create_indexes=False)
         assert "teams_status_idx" not in db["teams"].index_information()
 
+    def test_channel_registry_is_mongo_on_the_same_database(self, db: Any) -> None:
+        from akgentic.infra.adapters.shared.mongo_channel_registry import MongoChannelRegistry
+
+        registry = mongo_stores(
+            db, delete_mode=DeleteMode.HARD, auto_create_indexes=False
+        ).channel_registry
+        assert isinstance(registry, MongoChannelRegistry)
+        assert registry._collection.name == "channel_users"
+        assert registry._collection.database is db
+
+    def test_building_the_channel_registry_does_no_io(self, db: Any) -> None:
+        mongo_stores(db, delete_mode=DeleteMode.HARD, auto_create_indexes=False)
+        assert set(db["channel_users"].index_information()) <= {"_id_"}
+
 
 class TestPostgresStores:
     """``postgres_stores`` builds both Nagra stores on the DSN without a database."""
@@ -262,6 +280,14 @@ class TestPostgresStores:
     def test_event_store_carries_the_delete_mode(self, mode: DeleteMode) -> None:
         stores = postgres_stores(DSN, delete_mode=mode)
         assert stores.event_store._delete_mode is mode  # type: ignore[attr-defined]
+
+    def test_channel_registry_is_the_disabled_interim(self) -> None:
+        """Interim until the Postgres registry lands in the same release."""
+        registry = postgres_stores(DSN, delete_mode=DeleteMode.HARD).channel_registry
+        assert registry is not None
+        assert isinstance(registry, ChannelRegistry)
+        assert isinstance(registry, YamlChannelRegistry)
+        assert registry._path is None
 
 
 def test_public_builders_do_not_probe_for_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -327,8 +353,23 @@ class _FalsyEntryRepository(YamlEntryRepository):
         return False
 
 
+class _FalsyChannelRegistry(YamlChannelRegistry):
+    """A valid channel registry that is falsy."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
 class TestInjectedStoreIsKeptEvenWhenFalsy:
     """The overlay tests ``is not None``: a falsy injected store still wins."""
+
+    def test_a_falsy_injected_channel_registry_is_kept(self, tmp_path: Path) -> None:
+        injected = _FalsyChannelRegistry(registry_path=tmp_path / "injected.yaml")
+        stores = build_stores(
+            _yaml_settings(tmp_path, channel_registry_path=tmp_path / "configured.yaml"),
+            channel_registry=injected,
+        )
+        assert stores.channel_registry is injected
 
     def test_a_falsy_injected_event_store_is_kept(self, tmp_path: Path) -> None:
         injected = _FalsyEventStore(data_dir=tmp_path / "injected_events")
@@ -355,6 +396,7 @@ for driver in ("pymongo", "nagra", "psycopg", "psycopg_pool"):
 
 from akgentic.infra.persistence import build_stores
 from akgentic.infra.server.settings import CommunitySettings
+import akgentic.infra.adapters.shared.mongo_channel_registry
 
 tmp = Path(tempfile.mkdtemp())
 build_stores(
@@ -396,6 +438,19 @@ class TestBuildStoresYaml:
         repo = build_stores(_yaml_settings(tmp_path)).catalog_repository
         assert isinstance(repo, YamlEntryRepository)
 
+    def test_channel_registry_is_yaml_at_the_configured_path(self, tmp_path: Path) -> None:
+        path = tmp_path / "channels.yaml"
+        registry = build_stores(
+            _yaml_settings(tmp_path, channel_registry_path=path)
+        ).channel_registry
+        assert isinstance(registry, YamlChannelRegistry)
+        assert registry._path == path
+
+    def test_channel_registry_is_disabled_without_a_path(self, tmp_path: Path) -> None:
+        registry = build_stores(_yaml_settings(tmp_path)).channel_registry
+        assert isinstance(registry, YamlChannelRegistry)
+        assert registry._path is None
+
 
 class TestBuildStoresPostgres:
     """The postgres branch builds the Nagra stores without touching a database."""
@@ -427,6 +482,15 @@ class TestBuildStoresPostgres:
         build_stores(_postgres_settings(tmp_path))
         assert not (tmp_path / "event_store").exists()
         assert not (tmp_path / "catalog").exists()
+
+    def test_channel_registry_stays_in_the_yaml_file_for_now(self, tmp_path: Path) -> None:
+        """Interim: bindings keep living in the YAML file until the Postgres registry lands."""
+        path = tmp_path / "channels.yaml"
+        registry = build_stores(
+            _postgres_settings(tmp_path, channel_registry_path=path)
+        ).channel_registry
+        assert isinstance(registry, YamlChannelRegistry)
+        assert registry._path == path
 
     def test_an_injected_catalog_replaces_the_one_the_pair_builds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -483,6 +547,25 @@ class TestBuildStoresMongo:
         build_stores(_mongo_settings(tmp_path))
         assert not (tmp_path / "event_store").exists()
         assert not (tmp_path / "catalog").exists()
+
+    def test_channel_registry_shares_the_event_stores_client_and_database(
+        self, tmp_path: Path
+    ) -> None:
+        from akgentic.infra.adapters.shared.mongo_channel_registry import MongoChannelRegistry
+
+        stores = build_stores(
+            _mongo_settings(
+                tmp_path,
+                mongodb_database_name="tenant_a",
+                channel_registry_path=tmp_path / "ignored.yaml",
+            )
+        )
+        registry = stores.channel_registry
+        assert isinstance(registry, MongoChannelRegistry)
+        event_db = stores.event_store._db  # type: ignore[attr-defined]
+        assert registry._collection.database.name == "tenant_a"
+        assert registry._collection.database.client is event_db.client
+        assert not (tmp_path / "ignored.yaml").exists()
 
     def test_an_injected_event_store_replaces_the_one_the_pair_builds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -568,15 +651,40 @@ class TestMissingBackendExtra:
 
     @pytest.mark.usefixtures("without_extras")
     def test_both_stores_injected_needs_no_extra(self, tmp_path: Path) -> None:
+        """All three stores injected: nothing is built and no extra is probed."""
         store = YamlEventStore(data_dir=tmp_path / "injected_events")
         repo = YamlEntryRepository(root=tmp_path / "injected_catalog")
-        stores = build_stores(_mongo_settings(tmp_path), event_store=store, catalog_repository=repo)
+        registry = YamlChannelRegistry(registry_path=tmp_path / "injected.yaml")
+        stores = build_stores(
+            _mongo_settings(tmp_path),
+            event_store=store,
+            catalog_repository=repo,
+            channel_registry=registry,
+        )
         assert stores.event_store is store
         assert stores.catalog_repository is repo
+        assert stores.channel_registry is registry
+
+    @pytest.mark.usefixtures("without_extras")
+    @pytest.mark.parametrize("factory", [_postgres_settings, _mongo_settings])
+    def test_two_stores_injected_still_builds_the_registry(
+        self, tmp_path: Path, factory: Any
+    ) -> None:
+        """Without an injected registry the backend must build one, so its extra is needed."""
+        store = YamlEventStore(data_dir=tmp_path / "injected_events")
+        repo = YamlEntryRepository(root=tmp_path / "injected_catalog")
+        with pytest.raises(PersistenceBackendUnavailableError):
+            build_stores(factory(tmp_path), event_store=store, catalog_repository=repo)
 
 
 class _RecordingEventStore(YamlEventStore):
     """A real store with a distinct type, so the test can tell it was the one used."""
+
+
+def _dispatcher(services: CommunityServices) -> ChannelDispatcher:
+    return next(
+        s for s in services.team_manager._shared_subscribers if isinstance(s, ChannelDispatcher)
+    )
 
 
 class TestWireCommunityOverrides:
@@ -609,13 +717,34 @@ class TestWireCommunityOverrides:
     def test_injected_stores_win_over_a_database_setting(
         self, tmp_path: Path, factory: Any
     ) -> None:
-        """With both stores injected, no database store is built."""
+        """With all three stores injected, no database store is built."""
         store = _RecordingEventStore(data_dir=tmp_path / "injected_events")
         repo = YamlEntryRepository(root=tmp_path / "injected_catalog")
-        services = wire_community(factory(tmp_path), event_store=store, catalog_repository=repo)
+        registry = YamlChannelRegistry(registry_path=tmp_path / "injected.yaml")
+        services = wire_community(
+            factory(tmp_path),
+            event_store=store,
+            catalog_repository=repo,
+            channel_registry=registry,
+        )
         try:
             assert services.event_store is store
             assert services.catalog._repository is repo
+            assert services.channel_registry is registry
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+    def test_injected_channel_registry_reaches_container_and_dispatcher(
+        self, tmp_path: Path
+    ) -> None:
+        registry = YamlChannelRegistry(registry_path=tmp_path / "injected.yaml")
+        services = wire_community(
+            _yaml_settings(tmp_path, channel_registry_path=tmp_path / "configured.yaml"),
+            channel_registry=registry,
+        )
+        try:
+            assert services.channel_registry is registry
+            assert _dispatcher(services)._registry is registry
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
 
@@ -624,6 +753,39 @@ class TestWireCommunityOverrides:
         try:
             assert type(services.event_store) is YamlEventStore
             assert isinstance(services.catalog._repository, YamlEntryRepository)
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+
+class TestWireCommunityOnMongoBindsInTheDatabase:
+    """Community on ``mongo``: the bindings live beside the teams, one instance serves both legs."""
+
+    @pytest.fixture(autouse=True)
+    def _mongomock_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("pymongo")
+        mongomock = pytest.importorskip("mongomock")
+        monkeypatch.setattr("pymongo.MongoClient", mongomock.MongoClient)
+
+    async def test_registry_is_mongo_on_the_event_stores_client(self, tmp_path: Path) -> None:
+        from akgentic.infra.adapters.shared.mongo_channel_registry import MongoChannelRegistry
+
+        services = wire_community(_mongo_settings(tmp_path, mongodb_database_name="tenant_a"))
+        try:
+            registry = services.channel_registry
+            assert isinstance(registry, MongoChannelRegistry)
+            assert registry._collection.database.name == "tenant_a"
+            event_client = services.event_store._db.client  # type: ignore[attr-defined]
+            assert registry._collection.database.client is event_client
+            assert _dispatcher(services)._registry is registry
+
+            binding = ChannelBinding(
+                channel="telegram",
+                channel_user_id="U1",
+                team_id=uuid.uuid4(),
+                agent_name="@HumanProxy_0",
+            )
+            await registry.register(binding)
+            assert registry.find_binding_sync(binding.team_id, binding.agent_name) == binding
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
 

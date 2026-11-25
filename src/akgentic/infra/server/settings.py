@@ -277,8 +277,10 @@ class CommunitySettings(ServerSettings):
     channel_registry_path: Path | None = Field(
         default=None,
         description=(
-            "Path to channel registry YAML file; "
-            "when unset, the channel registry is disabled (no-op lookups)"
+            "Path to channel registry YAML file, used by the 'yaml' persistence "
+            "backend (and by 'postgres' until its Postgres channel registry lands); "
+            "when unset there, the channel registry is disabled (no-op lookups). "
+            "Ignored on 'mongo', which keeps the bindings in the database"
         ),
     )
     auth_strategy: str = Field(
