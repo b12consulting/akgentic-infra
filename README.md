@@ -18,7 +18,7 @@ Infrastructure backend for the [Akgentic](https://github.com/b12consulting/akgen
 | Worker lifecycle  | `LocalWorkerHandle`    | `HttpWorkerHandle`            | `DaprWorkerHandle`                 |
 | Team interaction  | `LocalTeamHandle`      | `HttpTeamHandle`              | `RemoteTeamHandle`                 |
 | Runtime cache     | `LocalRuntimeCache`    | worker `LocalRuntimeCache` + server `HttpRuntimeCache` (no-op) | worker `LocalRuntimeCache` + server `RemoteRuntimeCache` (no-op) |
-| Persistence       | `YamlEventStore`       | MongoDB                       | MongoDB + Dapr State               |
+| Persistence       | `YamlEventStore` (default), `MongoEventStore` or `NagraEventStore` (PostgreSQL) | MongoDB                       | MongoDB + Dapr State               |
 | Health monitoring | None (single process)  | `RedisHealthMonitor`          | `DaprHealthMonitor`                |
 | Recovery          | None (single process)  | `MarkStoppedRecovery`         | `AutoRestoreRecovery` / `NotifyOnlyRecovery` |
 | Channels          | `YamlChannelRegistry`  | `MongoChannelRegistry`        | `DaprChannelRegistry`              |
@@ -382,9 +382,9 @@ These are defined in the framework packages, not in infra, but a tier chooses or
 
 | Protocol          | Defined in                                        | Abstracts                                                   | Community implementation                                                                 | Wired at |
 |-------------------|---------------------------------------------------|-------------------------------------------------------------|------------------------------------------------------------------------------------------|----------|
-| `EventStore`      | `akgentic.team.ports`                             | Durable storage for events, team process state, agent state | `YamlEventStore` (`akgentic-team`)                                                       | `wiring.py` |
+| `EventStore`      | `akgentic.team.ports`                             | Durable storage for events, team process state, agent state | `YamlEventStore`, or `MongoEventStore` / `NagraEventStore` with `AKGENTIC_PERSISTENCE_BACKEND=mongo` / `postgres` (`akgentic-team`) | `persistence.py` via `wiring.py` |
 | `ServiceRegistry` | `akgentic.team.ports`                             | Which worker instances are live and which teams each hosts  | `NullServiceRegistry` (`akgentic-team`)                                                  | `wiring.py` |
-| `EntryRepository` | `akgentic.catalog.repositories.base`              | Storage backend for unified catalog `Entry` rows            | `YamlEntryRepository` (`akgentic-catalog`)                                               | `wiring.py` |
+| `EntryRepository` | `akgentic.catalog.repositories.base`              | Storage backend for unified catalog `Entry` rows            | `YamlEntryRepository`, or `MongoEntryRepository` / `PostgresEntryRepository` with `AKGENTIC_PERSISTENCE_BACKEND=mongo` / `postgres` (`akgentic-catalog`) | `persistence.py` via `wiring.py` |
 | `EventSubscriber` | `akgentic.core.orchestrator`                      | Orchestrator lifecycle and message hooks                    | `TelemetrySubscriber`, `EventStreamSubscriber`, `ChannelDispatcher`, `RuntimeCacheEvictionSubscriber` (`adapters/shared`) | `wiring.py` → `TeamManager(subscribers=...)` |
 
 ## Server Architecture
@@ -1120,6 +1120,73 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_EVENT_STORE_PATH`    | `data/event_store` | Root directory for event store persistence |
 | `AKGENTIC_CATALOG_PATH`        | `data/catalog` | Catalog directory for team/agent/tool/template definitions |
 | `AKGENTIC_CHANNEL_REGISTRY_PATH` | `None`      | Path to channel registry YAML; disabled when unset |
+| `AKGENTIC_PERSISTENCE_BACKEND` | `yaml`         | `yaml`, `mongo` or `postgres`. Selects the backend for **both** the team event store and the catalog; see [Database persistence](#database-persistence-community-tier) |
+| `AKGENTIC_POSTGRES_DSN`        | `None`         | `postgresql://user:password@host:port/db`. Required when the backend is `postgres`, ignored otherwise. Held as a secret: it never appears in the settings' `repr` |
+| `AKGENTIC_MONGODB_URI`         | `None`         | `mongodb://…` or `mongodb+srv://…`. Required when the backend is `mongo`, ignored otherwise. Held as a secret |
+| `AKGENTIC_MONGODB_DATABASE_NAME` | `akgentic`   | MongoDB database for the team events and the catalog (collection `catalog_entries`) |
+
+The persistence fields carry enterprise's names (`persistence_backend`,
+`postgres_dsn`, `mongodb_uri`, `mongodb_database_name`) under this tier's
+`AKGENTIC_` prefix.
+
+#### Database persistence (community tier)
+
+By default the community tier keeps team state under `AKGENTIC_EVENT_STORE_PATH`
+and the catalog under `AKGENTIC_CATALOG_PATH`, as YAML files. With
+`AKGENTIC_PERSISTENCE_BACKEND=mongo` or `postgres` both move to that database,
+and the two path settings are ignored:
+
+| Backend    | Team events (`akgentic-team`) | Catalog (`akgentic-catalog`) | Extra |
+|------------|-------------------------------|------------------------------|-------|
+| `mongo`    | `MongoEventStore`             | `MongoEntryRepository`       | `akgentic-infra[mongo]` |
+| `postgres` | `NagraEventStore`             | `PostgresEntryRepository`    | `akgentic-infra[postgres]` |
+
+**MongoDB**
+
+1. Install the extra: `pip install "akgentic-infra[mongo]"`. No setup step is
+   needed: the stores create their own indexes.
+2. Seed the catalog, e.g.
+   `ak-catalog --backend mongo --uri mongodb://localhost:27017 --db akgentic import <bundle.yaml>`.
+3. Start the server with:
+
+   ```bash
+   AKGENTIC_PERSISTENCE_BACKEND=mongo
+   AKGENTIC_MONGODB_URI=mongodb://akgentic:secret@localhost:27017
+   AKGENTIC_MONGODB_DATABASE_NAME=akgentic
+   ```
+
+**PostgreSQL**
+
+1. Install the extra: `pip install "akgentic-infra[postgres]"`.
+2. Create the tables once per database. Both scripts are idempotent and read
+   `DB_CONN_STRING_PERSISTENCE`:
+
+   ```bash
+   export DB_CONN_STRING_PERSISTENCE=postgresql://akgentic:secret@localhost:5432/akgentic
+   python -m akgentic.team.scripts.init_db
+   python -m akgentic.catalog.scripts.init_db
+   ```
+
+3. Seed the catalog, e.g. `ak-catalog --backend postgres import <bundle.yaml>`.
+4. Start the server with:
+
+   ```bash
+   AKGENTIC_PERSISTENCE_BACKEND=postgres
+   AKGENTIC_POSTGRES_DSN=postgresql://akgentic:secret@localhost:5432/akgentic
+   ```
+
+Notes:
+
+- Only the `postgresql://` scheme is accepted. Nagra rejects `postgres://`.
+- Selecting a database backend without its extra fails at startup with
+  `PersistenceBackendUnavailableError`, naming the missing modules.
+- The channel registry (`AKGENTIC_CHANNEL_REGISTRY_PATH`) and workspaces
+  (`AKGENTIC_WORKSPACES_ROOT`) stay on the filesystem.
+- This does not make the community tier multi-instance: run **one** server per
+  database. Each server restores the teams it finds `RUNNING` at boot, so two
+  servers on one database would run the same team twice.
+- Code that composes its own server can bypass the setting for one store with
+  `wire_community(settings, event_store=..., catalog_repository=...)`.
 
 ### Worker Settings (all tiers)
 
@@ -1218,6 +1285,10 @@ uv add akgentic-infra
 # or
 pip install akgentic-infra
 ```
+
+For database persistence in the community tier, add the matching extra:
+`pip install "akgentic-infra[mongo]"` or `pip install "akgentic-infra[postgres]"`
+(see [Database persistence](#database-persistence-community-tier)).
 
 That is the whole install. Every other akgentic package — `akgentic-core`,
 `akgentic-llm`, `akgentic-tool`, `akgentic-agent`, `akgentic-team`,

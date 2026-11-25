@@ -250,6 +250,25 @@ def _isolate_delete_modes(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_persistence_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's environment from moving persistence to a database.
+
+    Every ``CommunitySettings(...)`` fixture reads the environment, so a shell
+    exporting ``AKGENTIC_PERSISTENCE_BACKEND=mongo`` or ``postgres`` — which is
+    how the feature is turned on — would make every wired test fail settings
+    validation or open a real database connection. Specs that want a backend
+    set it on their settings object or in their own ``monkeypatch``.
+    """
+    for name in (
+        "AKGENTIC_PERSISTENCE_BACKEND",
+        "AKGENTIC_POSTGRES_DSN",
+        "AKGENTIC_MONGODB_URI",
+        "AKGENTIC_MONGODB_DATABASE_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture()
 def server_settings(tmp_path: Path) -> CommunitySettings:
     """Server settings with tmp_path-based workspaces."""

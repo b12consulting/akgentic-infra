@@ -12,7 +12,7 @@ from akgentic.infra.protocols.team_handle import TeamHandle
 if TYPE_CHECKING:
     from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
     from akgentic.infra.protocols.placement import PlacementStrategy
-    from akgentic.team.repositories.yaml import YamlEventStore
+    from akgentic.team.ports import EventStore
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class LocalRuntimeCache(RuntimeCache):
     def warm(
         self,
         worker_handle: LocalWorkerHandle,
-        event_store: YamlEventStore,
+        event_store: EventStore,
         placement: PlacementStrategy,
     ) -> None:
         """Auto-restore teams that were running before a server restart.

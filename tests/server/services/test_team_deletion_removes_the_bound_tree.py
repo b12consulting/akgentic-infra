@@ -56,7 +56,11 @@ from akgentic.infra.server.settings import CommunitySettings
 from akgentic.infra.wiring import wire_community
 from tests.fixtures.team_metadata import seed_metadata_namespace
 
-TIMEOUT = 10.0
+# A deadlock backstop, not a latency budget: an ask returns the moment the actor answers.
+# The first team bound in a test process pays a one-time cold start in its orchestrator
+# (about 20x a warm bind). Late in the suite on a slow CI runner that crossed 10 s, so
+# the bound is set well clear of it.
+TIMEOUT = 30.0
 
 DESK_NS = "acme-desk"
 """A team whose Manager carries a default ``WorkspaceTool()``."""

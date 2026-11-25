@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, TypeGuard
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from akgentic.catalog import parse_prefixes
@@ -21,6 +22,30 @@ from akgentic.infra.adapters.shared.channel_parser_registry import ChannelConfig
 from akgentic.team.models import DeleteMode
 
 _VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
+
+_POSTGRES_SCHEME = "postgresql://"
+_MONGODB_SCHEMES = ("mongodb://", "mongodb+srv://")
+# The same database-name rule enterprise applies to ``mongodb_database_name``.
+_MONGODB_DB_NAME_PATTERN = r'^[^/\\. "$*<>:|?\x00]{1,63}$'
+
+
+class PersistenceBackend(StrEnum):
+    """Storage backend for the community tier's event store and catalog.
+
+    The database values match enterprise's ``persistence_backend``.
+    """
+
+    YAML = "yaml"
+    MONGO = "mongo"
+    POSTGRES = "postgres"
+
+
+#: The connection-string field each database backend requires.
+_CONNECTION_FIELD = {
+    PersistenceBackend.MONGO: "mongodb_uri",
+    PersistenceBackend.POSTGRES: "postgres_dsn",
+}
+
 
 # The small model the server's team-description generator uses by default:
 # an ``akgentic.llm.ModelConfig`` provider id and a model id.
@@ -224,7 +249,18 @@ class CommunitySettings(ServerSettings):
 
     Adds filesystem-backed workspace and catalog configuration
     specific to the community (single-process) deployment tier.
+
+    The persistence fields use enterprise's names (``persistence_backend``,
+    ``postgres_dsn``, ``mongodb_uri``, ``mongodb_database_name``), read here
+    under the tier's ``AKGENTIC_`` prefix.
+
+    Validation errors omit the rejected input (``hide_input_in_errors``):
+    ``postgres_dsn`` and ``mongodb_uri`` carry a password, and pydantic would
+    otherwise print it in the ``ValidationError`` raised at startup. The field
+    name and the reason are still reported.
     """
+
+    model_config = SettingsConfigDict(env_prefix="AKGENTIC_", hide_input_in_errors=True)
 
     workspaces_root: Path = Field(
         default=Path("workspaces"),
@@ -256,3 +292,79 @@ class CommunitySettings(ServerSettings):
             "matching extra to be installed; an unknown name fails loud."
         ),
     )
+    persistence_backend: PersistenceBackend = Field(
+        default=PersistenceBackend.YAML,
+        description=(
+            "Where the community tier keeps team state and the catalog: 'yaml' "
+            "(the default — event_store_path and catalog_path on the local "
+            "filesystem), 'mongo' (MongoEventStore and MongoEntryRepository in "
+            "mongodb_database_name at mongodb_uri; needs the akgentic-infra[mongo] "
+            "extra) or 'postgres' (NagraEventStore and PostgresEntryRepository "
+            "against postgres_dsn; needs the akgentic-infra[postgres] extra). Both "
+            "stores move together. The channel registry and workspaces stay on "
+            "the filesystem under every backend."
+        ),
+    )
+    postgres_dsn: SecretStr | None = Field(
+        default=None,
+        description=(
+            "libpq DSN (postgresql://user:password@host:port/db) used when "
+            "persistence_backend is 'postgres'; required then, ignored otherwise. "
+            "The tables must already exist: run "
+            "'python -m akgentic.team.scripts.init_db' and "
+            "'python -m akgentic.catalog.scripts.init_db' (both read "
+            "DB_CONN_STRING_PERSISTENCE) once per database before starting the "
+            "server."
+        ),
+    )
+    mongodb_uri: SecretStr | None = Field(
+        default=None,
+        description=(
+            "MongoDB connection URI (mongodb:// or mongodb+srv://) used when "
+            "persistence_backend is 'mongo'; required then, ignored otherwise. "
+            "No setup step is needed: the stores create their own indexes."
+        ),
+    )
+    mongodb_database_name: str = Field(
+        default="akgentic",
+        pattern=_MONGODB_DB_NAME_PATTERN,
+        description=(
+            "MongoDB database holding the team events and the catalog "
+            "(collection 'catalog_entries') when persistence_backend is 'mongo'."
+        ),
+    )
+
+    @field_validator("postgres_dsn")
+    @classmethod
+    def _validate_postgres_scheme(cls, v: SecretStr | None) -> SecretStr | None:
+        """Reject a DSN Nagra cannot open, without echoing it.
+
+        Only ``postgresql://`` is accepted. Nagra's ``Transaction`` dispatches on
+        that exact prefix and raises ``ValueError(f"Invalid dsn string: {dsn}")``
+        for anything else — ``postgres://`` included — which would surface on the
+        first database call and print the password into the log. Failing here,
+        with a message that names the scheme only, avoids both.
+        """
+        if v is not None and not v.get_secret_value().startswith(_POSTGRES_SCHEME):
+            raise ValueError("postgres_dsn must start with 'postgresql://'")
+        return v
+
+    @field_validator("mongodb_uri")
+    @classmethod
+    def _validate_mongodb_scheme(cls, v: SecretStr | None) -> SecretStr | None:
+        """Reject a URI pymongo cannot open, naming the schemes only."""
+        if v is not None and not v.get_secret_value().startswith(_MONGODB_SCHEMES):
+            raise ValueError("mongodb_uri must start with 'mongodb://' or 'mongodb+srv://'")
+        return v
+
+    @model_validator(mode="after")
+    def _require_connection_for_backend(self) -> CommunitySettings:
+        """Fail at settings construction, not at the first database call."""
+        # An empty value never gets here: the scheme checks above reject it.
+        field = _CONNECTION_FIELD.get(self.persistence_backend)
+        if field is not None and getattr(self, field) is None:
+            raise ValueError(
+                f"persistence_backend is '{self.persistence_backend}' but {field} "
+                f"(AKGENTIC_{field.upper()}) is not set"
+            )
+        return self
