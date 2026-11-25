@@ -97,14 +97,19 @@ def _stored_document(row: tuple[object, ...] | None) -> Mapping[str, Any] | None
     """The ``data`` of a ``SELECT data`` row, decoded; ``None`` when there is no row.
 
     psycopg 3 decodes a ``json`` column to Python objects; a string is decoded
-    here. A value that is not a JSON object reads as an empty document, which
-    ``read_stored_binding`` reports and ignores like any other unreadable one.
+    here. A string that is not JSON (psycopg hands a stored JSON string scalar
+    back as a ``str``) or a value that is not a JSON object reads as an empty
+    document, which ``read_stored_binding`` reports and ignores like any other
+    unreadable one.
     """
     if row is None:
         return None
     data = row[0]
     if isinstance(data, str | bytes):
-        data = json.loads(data)
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return {}
     return data if isinstance(data, Mapping) else {}
 
 

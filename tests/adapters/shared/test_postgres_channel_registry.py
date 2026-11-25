@@ -344,6 +344,22 @@ class TestReadingBack:
             assert registry.find_binding_sync(uuid.uuid4(), "@Human") is None
         assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
 
+    async def test_a_string_that_is_not_json_reads_as_none_rather_than_raising(
+        self,
+        registry: PostgresChannelRegistry,
+        recorder: _Recorder,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """psycopg returns a stored JSON string scalar (``'"abc"'::json``) as a bare ``str``."""
+        recorder.rows = [("abc",), ("abc",)]
+        with caplog.at_level(logging.WARNING):
+            assert registry.find_binding_sync(uuid.uuid4(), "@Human") is None
+            assert (
+                await registry.find_binding(ChannelAddress(channel="slack", channel_user_id="U1"))
+                is None
+            )
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 2
+
 
 # -- AC 8: threads ------------------------------------------------------------------
 
