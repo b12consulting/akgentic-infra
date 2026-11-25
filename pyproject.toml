@@ -56,15 +56,21 @@ dependencies = [
 ak-infra = "akgentic.infra.cli.main:app"
 
 [project.optional-dependencies]
-# Database persistence for the community tier's event store and catalog
-# (AKGENTIC_PERSISTENCE_BACKEND=mongo | postgres). Floors match the core deps above.
+# Database persistence for the community tier's event store, catalog and channel
+# bindings (AKGENTIC_PERSISTENCE_BACKEND=mongo | postgres). Floors match the core
+# deps above. Each extra also lists its driver explicitly, because infra's own
+# channel registry calls it directly, not only through team and catalog:
+# pymongo for MongoChannelRegistry, nagra and psycopg for PostgresChannelRegistry.
 mongo = [
     "akgentic-team[mongo]>=1.12.0",
     "akgentic-catalog[mongo]>=2.2.7",
+    "pymongo>=4.0.0",
 ]
 postgres = [
     "akgentic-team[postgres]>=1.12.0",
     "akgentic-catalog[postgres]>=2.2.7",
+    "nagra>=0.11",
+    "psycopg[binary,pool]>=3.1",
 ]
 
 dev = [
@@ -102,6 +108,12 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+# Nagra ships no py.typed marker. PostgresChannelRegistry imports it lazily
+# inside its functions; one override here instead of an ignore on each import.
+[[tool.mypy.overrides]]
+module = ["nagra"]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py312"

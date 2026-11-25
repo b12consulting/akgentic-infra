@@ -16,7 +16,9 @@ from akgentic.infra.adapters.shared.channel_parser_registry import (
 from akgentic.infra.adapters.shared.channel_router import ChannelRouteContext, DefaultChannelRouter
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
 from akgentic.infra.adapters.shared.keep_every_tree_policy import KeepEveryTreePolicy
+from akgentic.infra.adapters.shared.mongo_channel_registry import MongoChannelRegistry
 from akgentic.infra.adapters.shared.null_event_stream import NullEventStream, NullStreamReader
+from akgentic.infra.adapters.shared.postgres_channel_registry import PostgresChannelRegistry
 from akgentic.infra.adapters.shared.runtime_cache_eviction_subscriber import (
     RuntimeCacheEvictionSubscriber,
 )
@@ -34,8 +36,10 @@ __all__ = [
     "EventStreamSubscriber",
     "ChannelDispatcher",
     "KeepEveryTreePolicy",
+    "MongoChannelRegistry",
     "NullEventStream",
     "NullStreamReader",
+    "PostgresChannelRegistry",
     "RuntimeCacheEvictionSubscriber",
     "TeamTreeOnlyPolicy",
     "TelegramChannelAdapter",

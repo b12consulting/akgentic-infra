@@ -34,8 +34,10 @@ class ChannelDispatcher(EventSubscriber):
 
     Blocking:
         ``on_message`` runs in a Pykka actor thread with no event loop and must
-        **never** block or await — its only registry call is
-        ``find_binding_sync``, which answers from memory. A missed delivery is
+        **never** await or block unboundedly — its only registry call is
+        ``find_binding_sync``, which the protocol limits to an in-process index
+        or one indexed point read, never a scan and never async I/O. It is not
+        made at all when no adapter is configured. A missed delivery is
         recoverable; a stalled actor thread is not. ``on_stop`` makes no
         registry call at all — it discards one set entry and fans out to the
         adapters (ADR-043 §D5, as amended by ADR-045 §D6).
@@ -81,10 +83,12 @@ class ChannelDispatcher(EventSubscriber):
     def on_message(self, msg: Message) -> None:
         """Dispatch a SentMessage to every adapter matching the recipient's binding.
 
-        Four conditions, in order: the event is a ``SentMessage``; its team is
-        not replaying; the recipient agent has a binding; and an adapter claims
-        it. Absence means skip, never guess — an unbound agent's message is
-        silently left to the WebSocket.
+        Five conditions, in order: the event is a ``SentMessage``; an adapter is
+        configured at all; its team is not replaying; the recipient agent has a
+        binding; and an adapter claims it. Absence means skip, never guess — an
+        unbound agent's message is silently left to the WebSocket. The adapter
+        check comes before the lookup so that a deployment with no channel pays
+        no registry read per message, which on a database registry is a query.
 
         **The binding is the whole rule, including for agent-to-agent
         traffic.** This used to drop anything whose recipient was not a user
@@ -95,14 +99,18 @@ class ChannelDispatcher(EventSubscriber):
         nothing. A chat bound to a member therefore sees what that member is
         told — which is what binding it means.
 
-        Performs no blocking call: ``find_binding_sync`` answers from an
-        in-process index. The orchestrator already guards every subscriber
-        callback, so no local ``try/except`` is needed or wanted here.
+        Performs no unbounded call: ``find_binding_sync`` answers from an
+        in-process index or with one indexed point read, as the
+        ``ChannelRegistryReadSync`` protocol requires. The orchestrator already
+        guards every subscriber callback, so no local ``try/except`` is needed
+        or wanted here.
 
         Args:
             msg: Orchestrator event message.
         """
         if not isinstance(msg, SentMessage):
+            return
+        if not self._adapters:
             return
         if msg.recipient.team_id in self._restoring:
             return

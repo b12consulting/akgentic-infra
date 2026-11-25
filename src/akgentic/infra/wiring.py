@@ -11,7 +11,6 @@ from akgentic.infra.adapters.community.local_event_stream import LocalEventStrea
 from akgentic.infra.adapters.community.local_placement import LocalPlacement
 from akgentic.infra.adapters.community.local_runtime_cache import LocalRuntimeCache
 from akgentic.infra.adapters.community.local_worker_handle import LocalWorkerHandle
-from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
 from akgentic.infra.adapters.shared.channel_dispatcher import ChannelDispatcher
 from akgentic.infra.adapters.shared.channel_parser_registry import ChannelParserRegistry
 from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSubscriber
@@ -20,6 +19,7 @@ from akgentic.infra.adapters.shared.telemetry_subscriber import TelemetrySubscri
 from akgentic.infra.adapters.shared.workspace_deletion_mode import workspace_deletion_policy_for
 from akgentic.infra.persistence import build_stores
 from akgentic.infra.protocols.authz import TeamAccessPolicy
+from akgentic.infra.protocols.channels import ChannelRegistry
 from akgentic.infra.server.auth_loader import load_auth_strategy
 from akgentic.infra.server.deps import CommunityServices
 from akgentic.infra.server.services.team_service import TeamService
@@ -36,6 +36,7 @@ def wire_community(
     team_access_policy: TeamAccessPolicy | None = None,
     event_store: EventStore | None = None,
     catalog_repository: EntryRepository | None = None,
+    channel_registry: ChannelRegistry | None = None,
 ) -> CommunityServices:
     """Assemble community-tier services for single-process deployment.
 
@@ -45,8 +46,11 @@ def wire_community(
 
     Persistence follows ``settings.persistence_backend`` (YAML by default,
     MongoDB with the ``[mongo]`` extra, PostgreSQL with the ``[postgres]``
-    extra). A caller that needs a store the settings cannot describe passes it
-    instead; an override wins over the setting for that store only.
+    extra), the channel bindings included: the registry comes from the same
+    stores, and one instance serves both the container and the outbound
+    ``ChannelDispatcher``. A caller that needs a store the settings cannot
+    describe passes it instead; an override wins over the setting for that
+    store only.
 
     Args:
         settings: Community-tier configuration
@@ -55,6 +59,8 @@ def wire_community(
         event_store: Team event store to use instead of the one
             ``settings.persistence_backend`` selects.
         catalog_repository: Catalog repository to use instead of the one
+            ``settings.persistence_backend`` selects.
+        channel_registry: Channel registry to use instead of the one
             ``settings.persistence_backend`` selects.
 
     Returns:
@@ -70,15 +76,20 @@ def wire_community(
     # Auth defaults to NoAuth (settings.auth_strategy == "noauth") via the loader,
     # which short-circuits without any entry-point lookup or auth-library import.
     auth = load_auth_strategy(settings.auth_strategy)
-    channel_registry = YamlChannelRegistry(registry_path=settings.channel_registry_path)
     channel_parser_registry = ChannelParserRegistry(channels_config=settings.channels)
 
     # Shared backends — persistence and the event bus, used by server and worker alike.
     # ``team_delete_mode`` is the record half of a deletion (purge or retire);
     # ``workspace_delete_mode``, passed to the container below, is the trees half.
     # An injected store carries its own delete mode.
-    stores = build_stores(settings, event_store=event_store, catalog_repository=catalog_repository)
+    stores = build_stores(
+        settings,
+        event_store=event_store,
+        catalog_repository=catalog_repository,
+        channel_registry=channel_registry,
+    )
     event_store = stores.event_store
+    channel_registry = stores.channel_registry
     catalog = Catalog(repository=stores.catalog_repository)
     service_registry = NullServiceRegistry()
     event_stream = LocalEventStream()
@@ -87,8 +98,9 @@ def wire_community(
     actor_system = ActorSystem()
     # One dispatcher for every team: it reads the team off each message and off
     # the lifecycle hooks, so a revived team keeps its channel by construction.
-    # With no channel configured the adapter list is empty and the registry
-    # answers None, so nothing is delivered and behaviour is unchanged.
+    # With no channel configured the adapter list is empty and the dispatcher
+    # returns before any registry lookup, so a database-backed registry costs
+    # no read per message and nothing is delivered.
     shared_subscribers: list[EventSubscriber] = [
         TelemetrySubscriber(),
         EventStreamSubscriber(event_stream=event_stream),
