@@ -298,8 +298,22 @@ async def test_find_binding_sync_runs_on_the_callers_thread(
     thread.start()
     thread.join(timeout=5)
 
+    assert not thread.is_alive()
     assert found == [binding]
     assert recorder.calls == [("find_one", caller[0])]
+
+
+def test_find_binding_sync_never_creates_an_index(
+    registry: MongoChannelRegistry,
+    mongo_db: Any,
+) -> None:
+    """The sync read stays one ``find_one`` on the actor thread, even on a fresh instance."""
+    recorder = _recording(registry)
+
+    assert registry.find_binding_sync(uuid.uuid4(), "@Human") is None
+
+    assert [name for name, _ in recorder.calls] == ["find_one"]
+    assert set(mongo_db["channel_users"].index_information()) <= {"_id_"}
 
 
 class _RaisingCollection:

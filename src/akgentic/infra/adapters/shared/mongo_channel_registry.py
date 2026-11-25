@@ -164,8 +164,14 @@ class MongoChannelRegistry(ChannelRegistry):
         than an in-process index: another process may have written the binding
         (department's server writes it, its worker reads it), and the server
         keeps no cross-request state, so any replica must answer from the
-        collection. It does not create the indexes: an async operation always
-        precedes the first binding this read could find.
+        collection.
+
+        It does not create the indexes; they live in the database, created by
+        the first async operation of *any* instance on it. A collection written
+        before this class existed (department's earlier registry built only the
+        unique index) has no ``(team_id, agent_name)`` index until such an
+        operation runs, and until then this read scans. A deployment adopting
+        this class on existing bindings creates that index at rollout.
         """
         doc = self._collection.find_one(
             {"team_id": str(team_id), "agent_name": agent_name}, {"_id": 0}
