@@ -11,9 +11,7 @@ Two layers live here.
 - ``build_stores`` resolves ``CommunitySettings`` to those builders.
   ``persistence_backend`` picks the backend for all three stores at once — a
   deployment with teams in a database and the catalog or the channel bindings
-  in YAML (or the reverse) is not a configuration this module offers. The one
-  exception is interim: on ``postgres`` the bindings stay in the YAML file
-  until the Postgres channel registry lands, in the same release.
+  in YAML (or the reverse) is not a configuration this module offers.
 
 The ``yaml`` default imports nothing new, so a community install without an
 extra behaves exactly as before. The database builders import their stores
@@ -21,8 +19,9 @@ lazily, and ``build_stores`` turns a missing extra into one clear error at wire
 time, rather than an ``ImportError`` from deep inside the first request.
 
 Neither database builder creates tables. Postgres schema creation is a
-deployment step, kept out of the constructors by both packages
-(``akgentic.team.scripts.init_db`` and ``akgentic.catalog.scripts.init_db``).
+deployment step, kept out of the constructors by all three packages
+(``akgentic.team.scripts.init_db``, ``akgentic.catalog.scripts.init_db`` and
+``akgentic.infra.scripts.init_db``, which creates the ``channel_users`` table).
 Mongo needs none: ``MongoEventStore`` provisions its indexes at construction (the
 ``teams`` ones unless ``auto_create_indexes`` turns them off), and
 ``MongoEntryRepository`` and ``MongoChannelRegistry`` on their first operation.
@@ -40,6 +39,7 @@ from pydantic import SecretStr
 from akgentic.catalog import YamlEntryRepository
 from akgentic.catalog.repositories.base import EntryRepository
 from akgentic.infra.adapters.community.yaml_channel_registry import YamlChannelRegistry
+from akgentic.infra.adapters.shared.offload import Offload
 from akgentic.infra.protocols.channels import ChannelRegistry
 from akgentic.infra.server.settings import CommunitySettings, PersistenceBackend
 from akgentic.team.models import DeleteMode
@@ -95,6 +95,7 @@ def mongo_stores(
     *,
     delete_mode: DeleteMode,
     auto_create_indexes: bool | None = None,
+    offload: Offload | None = None,
 ) -> PersistenceStores:
     """The three Mongo stores in ``db``, over the caller's client.
 
@@ -109,6 +110,8 @@ def mongo_stores(
         auto_create_indexes: Passed straight to ``MongoEventStore``, where it
             gates the ``teams`` collection's indexes only; ``None`` defers to
             its ``MONGO_TEAM_AUTO_INDEX`` default.
+        offload: Passed to ``MongoChannelRegistry``, which runs its async
+            methods' driver work through it; ``None`` means ``asyncio.to_thread``.
 
     Returns:
         ``MongoEventStore`` on ``db``, ``MongoEntryRepository`` on
@@ -122,33 +125,39 @@ def mongo_stores(
     return PersistenceStores(
         MongoEventStore(db, auto_create_indexes=auto_create_indexes, delete_mode=delete_mode),
         MongoEntryRepository(db[CATALOG_COLLECTION]),
-        MongoChannelRegistry(db),
+        MongoChannelRegistry(db, offload=offload),
     )
 
 
-def postgres_stores(dsn: str, *, delete_mode: DeleteMode) -> PersistenceStores:
-    """The Nagra stores against ``dsn``. Opens no connection.
+def postgres_stores(
+    dsn: str, *, delete_mode: DeleteMode, offload: Offload | None = None
+) -> PersistenceStores:
+    """The three Nagra stores against ``dsn``. Opens no connection, creates no table.
 
-    **Interim channel registry.** The third slot holds a *disabled*
-    ``YamlChannelRegistry()`` — reads return ``None``, writes are no-ops — until
-    the Postgres channel registry replaces it later in the same epic and the
-    same release. No release ships this state.
+    The tables come from the three ``init_db`` scripts, run once per database
+    as a deployment step; until the infra one has run, every channel operation
+    fails with ``relation "channel_users" does not exist``.
 
     Args:
         dsn: A ``postgresql://`` connection string.
         delete_mode: How the event store deletes a team (soft retire or purge).
+        offload: Passed to ``PostgresChannelRegistry``, which runs its async
+            methods' driver work through it; ``None`` means ``asyncio.to_thread``.
 
     Returns:
-        ``NagraEventStore`` and ``PostgresEntryRepository``, both on ``dsn``,
-        and the disabled interim channel registry.
+        ``NagraEventStore``, ``PostgresEntryRepository`` and
+        ``PostgresChannelRegistry`` (table ``channel_users``), all on ``dsn``.
     """
     from akgentic.catalog.repositories.postgres import PostgresEntryRepository
+    from akgentic.infra.adapters.shared.postgres_channel_registry import (
+        PostgresChannelRegistry,
+    )
     from akgentic.team.repositories.postgres import NagraEventStore
 
     return PersistenceStores(
         NagraEventStore(dsn, delete_mode=delete_mode),
         PostgresEntryRepository(dsn),
-        YamlChannelRegistry(),
+        PostgresChannelRegistry(dsn, offload=offload),
     )
 
 
@@ -215,13 +224,9 @@ def _mongo_from_settings(settings: CommunitySettings) -> PersistenceStores:
 
 
 def _postgres_from_settings(settings: CommunitySettings) -> PersistenceStores:
-    """The Nagra stores against ``postgres_dsn``, bindings in the YAML file for now."""
-    stores = postgres_stores(
+    """The three Nagra stores against ``postgres_dsn``."""
+    return postgres_stores(
         _secret(settings.postgres_dsn, "postgres_dsn"), delete_mode=settings.team_delete_mode
-    )
-    # Interim for epic 85: its next story builds the Postgres registry and deletes this line.
-    return stores._replace(
-        channel_registry=YamlChannelRegistry(registry_path=settings.channel_registry_path)
     )
 
 

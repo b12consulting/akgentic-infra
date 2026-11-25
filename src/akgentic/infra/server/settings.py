@@ -278,9 +278,9 @@ class CommunitySettings(ServerSettings):
         default=None,
         description=(
             "Path to channel registry YAML file, used by the 'yaml' persistence "
-            "backend (and by 'postgres' until its Postgres channel registry lands); "
-            "when unset there, the channel registry is disabled (no-op lookups). "
-            "Ignored on 'mongo', which keeps the bindings in the database"
+            "backend only; when unset there, the channel registry is disabled "
+            "(no-op lookups). Ignored on 'mongo' and 'postgres', which keep the "
+            "bindings in the database"
         ),
     )
     auth_strategy: str = Field(

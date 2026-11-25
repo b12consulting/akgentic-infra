@@ -1,0 +1,18 @@
+# The channel bindings table of PostgresChannelRegistry, created by its init_db
+# (python -m akgentic.infra.scripts.init_db), never by the server.
+#
+# `data` holds the whole ChannelBinding as model_dump(mode="json") writes it;
+# the four promoted columns exist only to be keyed and indexed. Nagra turns the
+# natural key into the unique index `channel_users_idx` and adds a BIGSERIAL
+# `id` primary key.
+
+[channel_users]
+natural_key = ["channel", "channel_user_id"]
+not_null = ["team_id", "agent_name", "data"]
+
+[channel_users.columns]
+channel = "str"
+channel_user_id = "str"
+team_id = "str"
+agent_name = "str"
+data = "json"

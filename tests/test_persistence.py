@@ -10,6 +10,7 @@ Postgres stores only record the DSN at construction (these tests need the
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import subprocess
 import sys
@@ -85,6 +86,13 @@ class _BuilderSpy:
         # Explicit arguments only: a parameter left at its default is absent.
         self.calls.append(dict(self._signature.bind(*args, **kwargs).arguments))
         return self._real(*args, **kwargs)
+
+
+class _NoopOffload:
+    """A distinct offload, so a test can tell it reached the registry."""
+
+    async def __call__(self, fn: Callable[..., Any], *args: Any) -> Any:
+        return fn(*args)
 
 
 def _spy_on(monkeypatch: pytest.MonkeyPatch, name: str) -> _BuilderSpy:
@@ -256,6 +264,19 @@ class TestMongoStores:
         mongo_stores(db, delete_mode=DeleteMode.HARD, auto_create_indexes=False)
         assert set(db["channel_users"].index_information()) <= {"_id_"}
 
+    def test_an_injected_offload_reaches_the_channel_registry(self, db: Any) -> None:
+        offload = _NoopOffload()
+        registry = mongo_stores(
+            db, delete_mode=DeleteMode.HARD, auto_create_indexes=False, offload=offload
+        ).channel_registry
+        assert registry._offload is offload  # type: ignore[attr-defined]
+
+    def test_without_an_offload_the_registry_uses_to_thread(self, db: Any) -> None:
+        registry = mongo_stores(
+            db, delete_mode=DeleteMode.HARD, auto_create_indexes=False
+        ).channel_registry
+        assert registry._offload is asyncio.to_thread  # type: ignore[attr-defined]
+
 
 class TestPostgresStores:
     """``postgres_stores`` builds both Nagra stores on the DSN without a database."""
@@ -281,13 +302,23 @@ class TestPostgresStores:
         stores = postgres_stores(DSN, delete_mode=mode)
         assert stores.event_store._delete_mode is mode  # type: ignore[attr-defined]
 
-    def test_channel_registry_is_the_disabled_interim(self) -> None:
-        """Interim until the Postgres registry lands in the same release."""
+    def test_channel_registry_is_postgres_on_the_dsn(self) -> None:
+        from akgentic.infra.adapters.shared.postgres_channel_registry import (
+            PostgresChannelRegistry,
+        )
+
         registry = postgres_stores(DSN, delete_mode=DeleteMode.HARD).channel_registry
-        assert registry is not None
         assert isinstance(registry, ChannelRegistry)
-        assert isinstance(registry, YamlChannelRegistry)
-        assert registry._path is None
+        assert isinstance(registry, PostgresChannelRegistry)
+        assert registry._dsn == DSN
+        assert registry._offload is asyncio.to_thread
+
+    def test_an_injected_offload_reaches_the_channel_registry(self) -> None:
+        offload = _NoopOffload()
+        registry = postgres_stores(
+            DSN, delete_mode=DeleteMode.HARD, offload=offload
+        ).channel_registry
+        assert registry._offload is offload  # type: ignore[attr-defined]
 
 
 def test_public_builders_do_not_probe_for_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -397,6 +428,8 @@ for driver in ("pymongo", "nagra", "psycopg", "psycopg_pool"):
 from akgentic.infra.persistence import build_stores
 from akgentic.infra.server.settings import CommunitySettings
 import akgentic.infra.adapters.shared.mongo_channel_registry
+import akgentic.infra.adapters.shared.postgres_channel_registry
+import akgentic.infra.scripts.init_db
 
 tmp = Path(tempfile.mkdtemp())
 build_stores(
@@ -483,14 +516,18 @@ class TestBuildStoresPostgres:
         assert not (tmp_path / "event_store").exists()
         assert not (tmp_path / "catalog").exists()
 
-    def test_channel_registry_stays_in_the_yaml_file_for_now(self, tmp_path: Path) -> None:
-        """Interim: bindings keep living in the YAML file until the Postgres registry lands."""
+    def test_channel_registry_is_postgres_and_ignores_the_yaml_path(self, tmp_path: Path) -> None:
+        from akgentic.infra.adapters.shared.postgres_channel_registry import (
+            PostgresChannelRegistry,
+        )
+
         path = tmp_path / "channels.yaml"
         registry = build_stores(
             _postgres_settings(tmp_path, channel_registry_path=path)
         ).channel_registry
-        assert isinstance(registry, YamlChannelRegistry)
-        assert registry._path == path
+        assert isinstance(registry, PostgresChannelRegistry)
+        assert registry._dsn == DSN
+        assert not path.exists()
 
     def test_an_injected_catalog_replaces_the_one_the_pair_builds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -753,6 +790,37 @@ class TestWireCommunityOverrides:
         try:
             assert type(services.event_store) is YamlEventStore
             assert isinstance(services.catalog._repository, YamlEntryRepository)
+        finally:
+            services.team_manager._actor_system.shutdown(timeout=5)
+
+
+class TestWireCommunityOnPostgresBindsInTheDatabase:
+    """Community on ``postgres``: the bindings live in the database, one instance serves both legs.
+
+    The event store and catalog are injected so ``LocalRuntimeCache.warm`` stays
+    off the database; the registry is still built from the backend's builder.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _needs_postgres_extra(self) -> None:
+        pytest.importorskip("nagra")
+        pytest.importorskip("psycopg_pool")
+
+    def test_registry_is_postgres_on_the_dsn(self, tmp_path: Path) -> None:
+        from akgentic.infra.adapters.shared.postgres_channel_registry import (
+            PostgresChannelRegistry,
+        )
+
+        services = wire_community(
+            _postgres_settings(tmp_path),
+            event_store=YamlEventStore(data_dir=tmp_path / "injected_events"),
+            catalog_repository=YamlEntryRepository(root=tmp_path / "injected_catalog"),
+        )
+        try:
+            registry = services.channel_registry
+            assert isinstance(registry, PostgresChannelRegistry)
+            assert registry._dsn == DSN
+            assert _dispatcher(services)._registry is registry
         finally:
             services.team_manager._actor_system.shutdown(timeout=5)
 

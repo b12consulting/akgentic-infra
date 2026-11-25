@@ -21,7 +21,7 @@ Infrastructure backend for the [Akgentic](https://github.com/b12consulting/akgen
 | Persistence       | `YamlEventStore` (default), `MongoEventStore` or `NagraEventStore` (PostgreSQL) | MongoDB                       | MongoDB + Dapr State               |
 | Health monitoring | None (single process)  | `RedisHealthMonitor`          | `DaprHealthMonitor`                |
 | Recovery          | None (single process)  | `MarkStoppedRecovery`         | `AutoRestoreRecovery` / `NotifyOnlyRecovery` |
-| Channels          | `YamlChannelRegistry`  | `MongoChannelRegistry`        | `DaprChannelRegistry`              |
+| Channels          | `YamlChannelRegistry` (default), `MongoChannelRegistry` or `PostgresChannelRegistry`, per persistence backend | `MongoChannelRegistry`        | `DaprChannelRegistry`              |
 | Worker discovery  | N/A (same process)     | HTTP via Redis-registered URLs| Dapr service invocation            |
 | Observability     | Logfire (direct)       | Logfire (direct)              | Logfire + OTel Collector           |
 | Workspace storage | Local filesystem       | Docker named volume           | NFS / EFS                          |
@@ -367,7 +367,7 @@ Files are under `src/akgentic/infra/protocols/` unless a path is given. The **Us
 | `ChannelAdapter`          | `channels.py`               | Outbound message delivery to external channels                            | `TelegramChannelAdapter` (`adapters/shared`)                   | Worker — runs in the orchestrator's actor thread |
 | `ChannelRouter`| `channels.py`               | Decide what one inbound channel message does — see [Interaction channels](#interaction-channels) | `DefaultChannelRouter` (`adapters/shared`)                     | Server |
 | `ChannelParser`           | `channels.py`               | Parse channel-specific webhook payloads                                   | `TelegramChannelParser` (`adapters/shared`)                    | Server |
-| `ChannelRegistry`         | `channels.py`               | Bind one channel conversation to one agent of one team (async read/write) | `YamlChannelRegistry` (`adapters/community`), `MongoChannelRegistry` (`adapters/shared`) | Both — async reads/writes on the server, `find_binding_sync` on the worker |
+| `ChannelRegistry`         | `channels.py`               | Bind one channel conversation to one agent of one team (async read/write) | `YamlChannelRegistry` (`adapters/community`), `MongoChannelRegistry` (`adapters/shared`), `PostgresChannelRegistry` (`adapters/shared`) | Both — async reads/writes on the server, `find_binding_sync` on the worker |
 | `ChannelRegistryReadSync` | `channels.py`               | The sync read face of `ChannelRegistry` — `find_binding_sync`, answered from an in-process index or one indexed point read (never a scan, never async I/O) because the outbound path runs in an actor thread with no event loop | satisfied by every `ChannelRegistry` (it extends this) | Worker |
 | `EventStream`             | `event_stream.py`           | Tier-agnostic event streaming with replay and fan-out                     | `LocalEventStream` (`adapters/community`)                      | Both — worker appends, server reads / fans out |
 | `StreamReader`            | `event_stream.py`           | Cursor-based blocking reader for a team's event stream                    | `LocalStreamReader` (`adapters/community`)                     | Server — read side of the WebSocket fan-out |
@@ -1119,7 +1119,7 @@ All settings are loaded from environment variables prefixed with `AKGENTIC_`.
 | `AKGENTIC_WORKSPACES_ROOT`     | `workspaces`   | Root directory for team workspace storage |
 | `AKGENTIC_EVENT_STORE_PATH`    | `data/event_store` | Root directory for event store persistence |
 | `AKGENTIC_CATALOG_PATH`        | `data/catalog` | Catalog directory for team/agent/tool/template definitions |
-| `AKGENTIC_CHANNEL_REGISTRY_PATH` | `None`      | Path to channel registry YAML; disabled when unset. Applies to the `yaml` backend (and to `postgres` until the Postgres channel registry lands); ignored on `mongo`, which keeps the bindings in the database |
+| `AKGENTIC_CHANNEL_REGISTRY_PATH` | `None`      | Path to channel registry YAML; disabled when unset. Applies to the `yaml` backend only; ignored on `mongo` and `postgres`, which keep the bindings in the database |
 | `AKGENTIC_PERSISTENCE_BACKEND` | `yaml`         | `yaml`, `mongo` or `postgres`. Selects the backend for the team event store, the catalog and the channel bindings; see [Database persistence](#database-persistence-community-tier) |
 | `AKGENTIC_POSTGRES_DSN`        | `None`         | `postgresql://user:password@host:port/db`. Required when the backend is `postgres`, ignored otherwise. Held as a secret: it never appears in the settings' `repr` |
 | `AKGENTIC_MONGODB_URI`         | `None`         | `mongodb://…` or `mongodb+srv://…`. Required when the backend is `mongo`, ignored otherwise. Held as a secret |
@@ -1140,7 +1140,7 @@ too, beside the teams they point at:
 | Backend    | Team events (`akgentic-team`) | Catalog (`akgentic-catalog`) | Channel bindings | Extra |
 |------------|-------------------------------|------------------------------|------------------|-------|
 | `mongo`    | `MongoEventStore`             | `MongoEntryRepository`       | `MongoChannelRegistry` (collection `channel_users`) | `akgentic-infra[mongo]` |
-| `postgres` | `NagraEventStore`             | `PostgresEntryRepository`    | the YAML file at `AKGENTIC_CHANNEL_REGISTRY_PATH`, for now | `akgentic-infra[postgres]` |
+| `postgres` | `NagraEventStore`             | `PostgresEntryRepository`    | `PostgresChannelRegistry` (table `channel_users`) | `akgentic-infra[postgres]` |
 
 **MongoDB**
 
@@ -1159,13 +1159,14 @@ too, beside the teams they point at:
 **PostgreSQL**
 
 1. Install the extra: `pip install "akgentic-infra[postgres]"`.
-2. Create the tables once per database. Both scripts are idempotent and read
-   `DB_CONN_STRING_PERSISTENCE`:
+2. Create the tables once per database. The three scripts are idempotent and
+   read `DB_CONN_STRING_PERSISTENCE`:
 
    ```bash
    export DB_CONN_STRING_PERSISTENCE=postgresql://akgentic:secret@localhost:5432/akgentic
    python -m akgentic.team.scripts.init_db
    python -m akgentic.catalog.scripts.init_db
+   python -m akgentic.infra.scripts.init_db
    ```
 
 3. Seed the catalog, e.g. `ak-catalog --backend postgres import <bundle.yaml>`.
@@ -1181,11 +1182,13 @@ Notes:
 - Only the `postgresql://` scheme is accepted. Nagra rejects `postgres://`.
 - Selecting a database backend without its extra fails at startup with
   `PersistenceBackendUnavailableError`, naming the missing modules.
-- On `mongo` the channel registry lives in the database (collection
-  `channel_users`) and `AKGENTIC_CHANNEL_REGISTRY_PATH` is ignored. On `postgres`
-  it stays in the YAML file at `AKGENTIC_CHANNEL_REGISTRY_PATH` until the
-  Postgres channel registry lands. Workspaces (`AKGENTIC_WORKSPACES_ROOT`) stay
-  on the filesystem on every backend.
+- On `mongo` and `postgres` the channel registry lives in the database
+  (collection / table `channel_users`) and `AKGENTIC_CHANNEL_REGISTRY_PATH` is
+  ignored. Workspaces (`AKGENTIC_WORKSPACES_ROOT`) stay on the filesystem on
+  every backend.
+- On `postgres` the server creates no table: until
+  `python -m akgentic.infra.scripts.init_db` has run against the database, every
+  channel message fails with `relation "channel_users" does not exist`.
 - Switching an existing deployment from `yaml` to a database carries no channel
   bindings over — there is no copy tool, so each chat starts a new team on its
   next message. Teams do not carry over either unless you copy them yourself.

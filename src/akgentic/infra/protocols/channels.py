@@ -372,6 +372,9 @@ class ChannelRegistry(ChannelRegistryReadSync, Protocol):
     - ``MongoChannelRegistry`` (``akgentic.infra.adapters.shared``): the
       ``channel_users`` collection in the deployment's database, for any tier
       on Mongo; ``find_binding_sync`` is one indexed point read.
+    - ``PostgresChannelRegistry`` (``akgentic.infra.adapters.shared``): the
+      ``channel_users`` table in the deployment's database, for any tier on
+      Postgres; ``find_binding_sync`` is one indexed point read.
     - **Enterprise** (``DaprChannelRegistry``): Dapr state store.
     """
 
