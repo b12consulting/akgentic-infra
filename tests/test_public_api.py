@@ -9,11 +9,14 @@ import pytest
 
 _FRESH_IMPORT_TIMEOUT_SECONDS = 180
 
-# Story 63.6: each surface imported first in a cold interpreter, then every name a
-# client extension needs is read through it. ``OwnerOrAdminPolicy`` imports the
-# server's auth module, and the server imports it back for its default policy, so
-# a re-export added in the wrong place is an import cycle that only shows cold —
-# by the time the suite runs, ``sys.modules`` already holds every module warm.
+# Story 63.6: each surface imported in a cold interpreter, then every name a client
+# extension needs is read through it. ``OwnerOrAdminPolicy`` imports the server's
+# auth module, and the server imports it back for its default policy, so a
+# re-export added in the wrong place is an import cycle that only shows cold — by
+# the time the suite runs, ``sys.modules`` already holds every module warm. Python
+# initialises the parent package first, so every case runs ``akgentic.infra``'s
+# ``__init__`` before its own surface: the cases share one import order and differ
+# in the surface each name is resolved through.
 _FRESH_IMPORT_CHILD = """
 import importlib
 import sys

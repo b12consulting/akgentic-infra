@@ -334,8 +334,9 @@ class CommunitySettings(ServerSettings):
         default="akgentic",
         pattern=_MONGODB_DB_NAME_PATTERN,
         description=(
-            "MongoDB database holding the team events and the catalog "
-            "(collection 'catalog_entries') when persistence_backend is 'mongo'."
+            "MongoDB database holding the team events, the catalog (collection "
+            "'catalog_entries') and the channel bindings (collection "
+            "'channel_users') when persistence_backend is 'mongo'."
         ),
     )
 

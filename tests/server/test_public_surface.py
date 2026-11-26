@@ -137,6 +137,8 @@ _POLICY_SURFACE = [
     "build_manifest",
     "manifest_delta",
     "get_request_user",
+    "RequireAuthMiddleware",
+    "MAX_PAGE_SIZE",
     "AppManifest",
     "ManifestDelta",
     "AssemblyError",
