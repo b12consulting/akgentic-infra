@@ -297,14 +297,16 @@ class CommunitySettings(ServerSettings):
     persistence_backend: PersistenceBackend = Field(
         default=PersistenceBackend.YAML,
         description=(
-            "Where the community tier keeps team state and the catalog: 'yaml' "
-            "(the default — event_store_path and catalog_path on the local "
-            "filesystem), 'mongo' (MongoEventStore and MongoEntryRepository in "
-            "mongodb_database_name at mongodb_uri; needs the akgentic-infra[mongo] "
-            "extra) or 'postgres' (NagraEventStore and PostgresEntryRepository "
-            "against postgres_dsn; needs the akgentic-infra[postgres] extra). Both "
-            "stores move together. The channel registry and workspaces stay on "
-            "the filesystem under every backend."
+            "Where the community tier keeps team state, the catalog and the "
+            "channel registry: 'yaml' (the default — event_store_path, "
+            "catalog_path and channel_registry_path on the local filesystem), "
+            "'mongo' (MongoEventStore, MongoEntryRepository and "
+            "MongoChannelRegistry in mongodb_database_name at mongodb_uri; needs "
+            "the akgentic-infra[mongo] extra) or 'postgres' (NagraEventStore, "
+            "PostgresEntryRepository and PostgresChannelRegistry against "
+            "postgres_dsn; needs the akgentic-infra[postgres] extra). The three "
+            "stores move together. Only the workspaces stay on the filesystem "
+            "under every backend."
         ),
     )
     postgres_dsn: SecretStr | None = Field(
@@ -313,10 +315,11 @@ class CommunitySettings(ServerSettings):
             "libpq DSN (postgresql://user:password@host:port/db) used when "
             "persistence_backend is 'postgres'; required then, ignored otherwise. "
             "The tables must already exist: run "
-            "'python -m akgentic.team.scripts.init_db' and "
-            "'python -m akgentic.catalog.scripts.init_db' (both read "
-            "DB_CONN_STRING_PERSISTENCE) once per database before starting the "
-            "server."
+            "'python -m akgentic.team.scripts.init_db', "
+            "'python -m akgentic.catalog.scripts.init_db' and "
+            "'python -m akgentic.infra.scripts.init_db' (creates channel_users; "
+            "all three read DB_CONN_STRING_PERSISTENCE) once per database before "
+            "starting the server."
         ),
     )
     mongodb_uri: SecretStr | None = Field(
@@ -331,8 +334,9 @@ class CommunitySettings(ServerSettings):
         default="akgentic",
         pattern=_MONGODB_DB_NAME_PATTERN,
         description=(
-            "MongoDB database holding the team events and the catalog "
-            "(collection 'catalog_entries') when persistence_backend is 'mongo'."
+            "MongoDB database holding the team events, the catalog (collection "
+            "'catalog_entries') and the channel bindings (collection "
+            "'channel_users') when persistence_backend is 'mongo'."
         ),
     )
 

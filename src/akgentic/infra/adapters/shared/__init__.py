@@ -18,6 +18,7 @@ from akgentic.infra.adapters.shared.event_stream_subscriber import EventStreamSu
 from akgentic.infra.adapters.shared.keep_every_tree_policy import KeepEveryTreePolicy
 from akgentic.infra.adapters.shared.mongo_channel_registry import MongoChannelRegistry
 from akgentic.infra.adapters.shared.null_event_stream import NullEventStream, NullStreamReader
+from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
 from akgentic.infra.adapters.shared.postgres_channel_registry import PostgresChannelRegistry
 from akgentic.infra.adapters.shared.runtime_cache_eviction_subscriber import (
     RuntimeCacheEvictionSubscriber,
@@ -39,6 +40,7 @@ __all__ = [
     "MongoChannelRegistry",
     "NullEventStream",
     "NullStreamReader",
+    "OwnerOrAdminPolicy",
     "PostgresChannelRegistry",
     "RuntimeCacheEvictionSubscriber",
     "TeamTreeOnlyPolicy",

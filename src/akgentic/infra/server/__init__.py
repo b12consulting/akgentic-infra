@@ -25,8 +25,11 @@ Compatibility policy for that surface:
   ``server_modules``, ``build_app``, ``build_manifest`` and ``manifest_delta``
   with the result types a client asserts on (``AppManifest``,
   ``ManifestDelta``); the errors a composition can raise (``AssemblyError``
-  and its subclasses, ``RouteCollisionError`` among them); and
-  ``get_request_user`` with ``RequestUser``. A breaking change to any of them
+  and its subclasses, ``RouteCollisionError`` among them);
+  ``get_request_user`` with ``RequestUser``; ``RequireAuthMiddleware``, the
+  stock authentication a client module contributes at ``IDENTITY`` so its own
+  routes are authenticated like the framework's; and ``MAX_PAGE_SIZE``, the
+  page-size ceiling ``TeamService`` enforces. A breaking change to any of them
   requires a major version and a decision record.
 - **New contribution verbs arrive with a ``BaseAppModule`` default**, so a
   subclass keeps composing across the upgrade that adds them. That is why a
@@ -80,6 +83,7 @@ from akgentic.infra.server.assembly import (
 )
 from akgentic.infra.server.auth import RequestUser, get_request_user
 from akgentic.infra.server.deps import CommunityServices, TierServices
+from akgentic.infra.server.middleware.require_auth import RequireAuthMiddleware
 from akgentic.infra.server.models import (
     CreateTeamRequest,
     EventListResponse,
@@ -89,13 +93,14 @@ from akgentic.infra.server.models import (
     TeamListResponse,
     TeamResponse,
 )
-from akgentic.infra.server.services.team_service import TeamService
+from akgentic.infra.server.services.team_service import MAX_PAGE_SIZE, TeamService
 from akgentic.infra.server.settings import CommunitySettings, ServerSettings
 
 __all__ = [
     "APPLICATION",
     "EXTENSION",
     "IDENTITY",
+    "MAX_PAGE_SIZE",
     "OBSERVABILITY",
     "POLICY",
     "PROXY",
@@ -121,6 +126,7 @@ __all__ = [
     "MiddlewareSpec",
     "MissingStateProviderError",
     "RequestUser",
+    "RequireAuthMiddleware",
     "RouteCollisionError",
     "RouteSpec",
     "SendMessageRequest",
