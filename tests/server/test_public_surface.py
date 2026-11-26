@@ -19,17 +19,28 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from types import ModuleType
 
+import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+import akgentic.infra
+import akgentic.infra.adapters
+import akgentic.infra.adapters.shared
+import akgentic.infra.adapters.shared.owner_or_admin_policy
+import akgentic.infra.protocols
+import akgentic.infra.protocols.authz
 import akgentic.infra.server
 import akgentic.infra.server.app
 import akgentic.infra.server.assembly
 import akgentic.infra.server.auth
+import akgentic.infra.server.middleware
+import akgentic.infra.server.middleware.require_auth
+import akgentic.infra.server.services.team_service
 from akgentic.infra.server.app import create_app, server_modules
 from akgentic.infra.server.assembly import (
     APPLICATION,
@@ -53,6 +64,8 @@ from akgentic.infra.utils import StateKey
 _POLICY_SUB_SLOT = 510
 _UNBANDED = 999
 
+_OWNER_OR_ADMIN_MODULE = akgentic.infra.adapters.shared.owner_or_admin_policy
+
 # The published surface, written out. Deliberately a literal and not a
 # derivation: a sorted() or a doc-scrape would re-derive whatever the module
 # happens to say, which pins nothing. ``__all__`` groups by case — constants,
@@ -63,6 +76,7 @@ _EXPECTED_ALL = [
     "APPLICATION",
     "EXTENSION",
     "IDENTITY",
+    "MAX_PAGE_SIZE",
     "OBSERVABILITY",
     "POLICY",
     "PROXY",
@@ -88,6 +102,7 @@ _EXPECTED_ALL = [
     "MiddlewareSpec",
     "MissingStateProviderError",
     "RequestUser",
+    "RequireAuthMiddleware",
     "RouteCollisionError",
     "RouteSpec",
     "SendMessageRequest",
@@ -176,6 +191,7 @@ _DEFINED_IN = {
     "server_modules": akgentic.infra.server.app,
     "RequestUser": akgentic.infra.server.auth,
     "get_request_user": akgentic.infra.server.auth,
+    "RequireAuthMiddleware": akgentic.infra.server.middleware.require_auth,
 }
 
 
@@ -441,6 +457,78 @@ class TestIdentitySeamIsPublished:
         connection = HTTPConnection({"type": "http", "headers": []})
         connection.state.request_user = stashed
         assert get_request_user(connection) is stashed
+
+
+class TestClientExtensionNamesArePublished:
+    """Story 63.6: the six names a client extension needed from internal paths.
+
+    Each is checked on every surface that now publishes it, against the object at
+    its defining module path, which is also the import path that existed before
+    and must keep working. Identity, not equality: a re-definition on a surface
+    would satisfy every ``__all__`` and ``hasattr`` check while drifting apart.
+    """
+
+    @pytest.mark.parametrize(
+        ("surface", "name", "defining_module"),
+        [
+            (akgentic.infra.protocols, "TeamAccessContext", akgentic.infra.protocols.authz),
+            (akgentic.infra.protocols, "UserAccessContext", akgentic.infra.protocols.authz),
+            (akgentic.infra.protocols, "TeamListFilter", akgentic.infra.protocols.authz),
+            (akgentic.infra, "TeamAccessContext", akgentic.infra.protocols.authz),
+            (akgentic.infra, "UserAccessContext", akgentic.infra.protocols.authz),
+            (akgentic.infra, "TeamListFilter", akgentic.infra.protocols.authz),
+            (akgentic.infra.adapters, "OwnerOrAdminPolicy", _OWNER_OR_ADMIN_MODULE),
+            (akgentic.infra.adapters.shared, "OwnerOrAdminPolicy", _OWNER_OR_ADMIN_MODULE),
+            (akgentic.infra, "OwnerOrAdminPolicy", _OWNER_OR_ADMIN_MODULE),
+            (
+                akgentic.infra.server,
+                "RequireAuthMiddleware",
+                akgentic.infra.server.middleware.require_auth,
+            ),
+            (
+                akgentic.infra.server.middleware,
+                "RequireAuthMiddleware",
+                akgentic.infra.server.middleware.require_auth,
+            ),
+            (
+                akgentic.infra.server,
+                "MAX_PAGE_SIZE",
+                akgentic.infra.server.services.team_service,
+            ),
+        ],
+    )
+    def test_published_name_is_the_defining_modules_object(
+        self, surface: ModuleType, name: str, defining_module: ModuleType
+    ) -> None:
+        assert name in surface.__all__, f"{name} missing from {surface.__name__}.__all__"
+        assert getattr(surface, name) is getattr(defining_module, name)
+
+    def test_old_import_paths_still_work(self) -> None:
+        """The defining paths a 1.18.0 client already imports from are untouched."""
+        from akgentic.infra.adapters.shared.owner_or_admin_policy import OwnerOrAdminPolicy
+        from akgentic.infra.protocols.authz import (
+            TeamAccessContext,
+            TeamListFilter,
+            UserAccessContext,
+        )
+        from akgentic.infra.server.middleware import RequireAuthMiddleware
+        from akgentic.infra.server.services.team_service import MAX_PAGE_SIZE
+
+        assert akgentic.infra.TeamAccessContext is TeamAccessContext
+        assert akgentic.infra.UserAccessContext is UserAccessContext
+        assert akgentic.infra.TeamListFilter is TeamListFilter
+        assert akgentic.infra.OwnerOrAdminPolicy is OwnerOrAdminPolicy
+        assert akgentic.infra.server.RequireAuthMiddleware is RequireAuthMiddleware
+        assert akgentic.infra.server.MAX_PAGE_SIZE == MAX_PAGE_SIZE
+
+    def test_published_policy_subclass_satisfies_the_published_protocol(self) -> None:
+        """What a client writes with the published names composes with the contract."""
+        from akgentic.infra import OwnerOrAdminPolicy, TeamAccessPolicy
+
+        class _AcmeNarrowPolicy(OwnerOrAdminPolicy):
+            """A client policy narrowing the stock one, built only from public names."""
+
+        assert isinstance(_AcmeNarrowPolicy(), TeamAccessPolicy)
 
 
 class TestPublishedSurface:

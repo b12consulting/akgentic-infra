@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from akgentic.infra.protocols.auth import AuthStrategy
-from akgentic.infra.protocols.authz import TeamAccessPolicy
+from akgentic.infra.protocols.authz import (
+    TeamAccessContext,
+    TeamAccessPolicy,
+    TeamListFilter,
+    UserAccessContext,
+)
 from akgentic.infra.protocols.channels import (
     ChannelAdapter,
     ChannelAddress,
@@ -54,8 +59,11 @@ __all__ = [
     "RuntimeCache",
     "StreamClosed",
     "StreamReader",
+    "TeamAccessContext",
     "TeamAccessPolicy",
     "TeamHandle",
+    "TeamListFilter",
+    "UserAccessContext",
     "WorkerHandle",
     "WorkspaceDeletionPolicy",
 ]
